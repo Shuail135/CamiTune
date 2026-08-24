@@ -18,6 +18,8 @@ final class CoreAudioManager: ObservableObject {
     }
 
     private var timer: Timer?
+    private var deviceListListener: AudioObjectPropertyListenerBlock?
+    private var defaultOutputListener: AudioObjectPropertyListenerBlock?
     private var periodicRefreshInFlight = false
     private var sampleRateCapabilitiesByUID: [String: SampleRateCapabilities] = [:]
     private var cachedHiddenSystemAudioBridge: AudioDeviceInfo?
@@ -25,7 +27,11 @@ final class CoreAudioManager: ObservableObject {
 
     init() {
         schedulePeriodicRefresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        installHardwareListeners()
+        // Core Audio notifications drive normal updates. This slow poll is a
+        // recovery path for a lost notification or a restarted coreaudiod, not
+        // a permanent one-Hz tax on the HAL device graph.
+        timer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in
                 self.schedulePeriodicRefresh()
@@ -33,7 +39,67 @@ final class CoreAudioManager: ObservableObject {
         }
     }
 
-    deinit { timer?.invalidate() }
+    deinit {
+        timer?.invalidate()
+        let systemObject = AudioObjectID(kAudioObjectSystemObject)
+        if let deviceListListener {
+            var address = Self.deviceListAddress
+            _ = AudioObjectRemovePropertyListenerBlock(
+                systemObject,
+                &address,
+                .main,
+                deviceListListener
+            )
+        }
+        if let defaultOutputListener {
+            var address = Self.defaultOutputAddress
+            _ = AudioObjectRemovePropertyListenerBlock(
+                systemObject,
+                &address,
+                .main,
+                defaultOutputListener
+            )
+        }
+    }
+
+    private func installHardwareListeners() {
+        let refresh: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor in self?.schedulePeriodicRefresh() }
+        }
+        deviceListListener = refresh
+        defaultOutputListener = refresh
+        let systemObject = AudioObjectID(kAudioObjectSystemObject)
+        var deviceListAddress = Self.deviceListAddress
+        var defaultOutputAddress = Self.defaultOutputAddress
+        _ = AudioObjectAddPropertyListenerBlock(
+            systemObject,
+            &deviceListAddress,
+            .main,
+            refresh
+        )
+        _ = AudioObjectAddPropertyListenerBlock(
+            systemObject,
+            &defaultOutputAddress,
+            .main,
+            refresh
+        )
+    }
+
+    nonisolated private static var deviceListAddress: AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+    }
+
+    nonisolated private static var defaultOutputAddress: AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+    }
 
     func refresh() {
         // An explicit refresh is also the escape hatch after driver repair or a
@@ -151,6 +217,15 @@ final class CoreAudioManager: ObservableObject {
     /// before opening a transport instead of trusting a cached object ID.
     func freshlyResolvedSystemAudioBridge() -> AudioDeviceInfo? {
         let resolved = Self.deviceInfo(forUID: AudioDeviceInfo.systemAudioBridgeUID)
+        cachedHiddenSystemAudioBridge = resolved
+        hasResolvedHiddenSystemAudioBridge = true
+        return resolved
+    }
+
+    func freshlyResolvedSystemAudioBridgeWithoutBlockingUI() async -> AudioDeviceInfo? {
+        let resolved = await Task.detached(priority: .userInitiated) {
+            Self.deviceInfo(forUID: AudioDeviceInfo.systemAudioBridgeUID)
+        }.value
         cachedHiddenSystemAudioBridge = resolved
         hasResolvedHiddenSystemAudioBridge = true
         return resolved
@@ -572,33 +647,51 @@ final class CoreAudioManager: ObservableObject {
     }
 
     func setSampleRate(uid: String, rate: Double) async throws {
-        guard let device = device(uid: uid) else { throw AudioError.deviceNotFound(uid) }
-        if let actual = nominalSampleRate(uid: uid), abs(actual - rate) < 0.5 {
-            return
+        guard let device = await resolveDeviceWithoutBlockingUI(uid: uid) else {
+            throw AudioError.deviceNotFound(uid)
         }
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyNominalSampleRate,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var settable: DarwinBoolean = false
-        guard AudioObjectIsPropertySettable(device.objectID, &address, &settable) == noErr,
-              settable.boolValue else { throw AudioError.sampleRateNotSettable(device.name) }
-        var value = rate
-        let status = AudioObjectSetPropertyData(device.objectID, &address, 0, nil, UInt32(MemoryLayout<Double>.size), &value)
-        guard status == noErr else { throw AudioError.osStatus(status) }
-        for _ in 0..<20 {
-            if let actual = nominalSampleRate(uid: uid), abs(actual - rate) < 0.5 {
-                sampleRateCapabilitiesByUID.removeValue(forKey: uid)
+        try await Task.detached(priority: .userInitiated) {
+            if let actual = Self.nominalSampleRate(deviceID: device.objectID),
+               abs(actual - rate) < 0.5 {
                 return
             }
-            try await Task.sleep(for: .milliseconds(25))
-        }
-        throw AudioError.sampleRateDidNotApply(
-            device.name,
-            requested: rate,
-            actual: nominalSampleRate(uid: uid)
-        )
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyNominalSampleRate,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var settable: DarwinBoolean = false
+            guard AudioObjectIsPropertySettable(
+                device.objectID,
+                &address,
+                &settable
+            ) == noErr, settable.boolValue else {
+                throw AudioError.sampleRateNotSettable(device.name)
+            }
+            var value = rate
+            let status = AudioObjectSetPropertyData(
+                device.objectID,
+                &address,
+                0,
+                nil,
+                UInt32(MemoryLayout<Double>.size),
+                &value
+            )
+            guard status == noErr else { throw AudioError.osStatus(status) }
+            for attempt in 0..<20 {
+                let actual = Self.nominalSampleRate(deviceID: device.objectID)
+                if let actual, abs(actual - rate) < 0.5 { return }
+                guard attempt < 19 else {
+                    throw AudioError.sampleRateDidNotApply(
+                        device.name,
+                        requested: rate,
+                        actual: actual
+                    )
+                }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+        }.value
+        sampleRateCapabilitiesByUID.removeValue(forKey: uid)
     }
 
     func setDefaultOutput(uid: String) throws {
@@ -621,24 +714,117 @@ final class CoreAudioManager: ObservableObject {
     }
 
     func setDefaultOutputAndWait(uid: String) async throws {
-        let deviceName = device(uid: uid)?.name ?? uid
-        try setDefaultOutput(uid: uid)
-        for attempt in 0..<40 {
-            let current = await Task.detached(priority: .userInitiated) {
-                Self.defaultOutputDevice().flatMap(Self.deviceUID)
-            }.value
-            if defaultOutputUID != current { defaultOutputUID = current }
-            if current == uid { return }
-            guard attempt < 39 else { break }
-            try await Task.sleep(for: .milliseconds(25))
+        guard let device = await resolveDeviceWithoutBlockingUI(uid: uid) else {
+            throw AudioError.deviceNotFound(uid)
         }
-        throw AudioError.defaultOutputDidNotApply(deviceName)
+        let deviceName = device.name
+        try await Task.detached(priority: .userInitiated) {
+            var id = AudioDeviceID(device.objectID)
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            let status = AudioObjectSetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                0,
+                nil,
+                UInt32(MemoryLayout<AudioDeviceID>.size),
+                &id
+            )
+            guard status == noErr else { throw AudioError.osStatus(status) }
+            for attempt in 0..<40 {
+                let current = Self.defaultOutputDevice().flatMap(Self.deviceUID)
+                if current == uid { return }
+                guard attempt < 39 else {
+                    throw AudioError.defaultOutputDidNotApply(deviceName)
+                }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+        }.value
+        if defaultOutputUID != uid { defaultOutputUID = uid }
     }
 
     func setVolume(uid: String, scalar: Float32) throws {
         guard let device = device(uid: uid) else { throw AudioError.deviceNotFound(uid) }
-        let deviceID = AudioDeviceID(device.objectID)
+        try Self.setVolume(deviceID: device.objectID, scalar: scalar)
+    }
+
+    func setVolumeWithoutBlockingUI(uid: String, scalar: Float32) async throws {
+        guard let device = await resolveDeviceWithoutBlockingUI(uid: uid) else {
+            throw AudioError.deviceNotFound(uid)
+        }
+        try await Task.detached(priority: .userInitiated) {
+            try Self.setVolume(deviceID: device.objectID, scalar: scalar)
+        }.value
+    }
+
+    func volume(uid: String) -> Float32? {
+        guard let device = device(uid: uid) else { return nil }
+        return Self.floatProperty(
+            deviceID: device.objectID,
+            selector: kAudioDevicePropertyVolumeScalar
+        )
+    }
+
+    func volumeWithoutBlockingUI(uid: String) async -> Float32? {
+        guard let device = await resolveDeviceWithoutBlockingUI(uid: uid) else { return nil }
+        return await Task.detached(priority: .utility) {
+            Self.floatProperty(
+                deviceID: device.objectID,
+                selector: kAudioDevicePropertyVolumeScalar
+            )
+        }.value
+    }
+
+    func volumeDecibels(uid: String) -> Float32? {
+        guard let device = device(uid: uid) else { return nil }
+        return Self.floatProperty(
+            deviceID: device.objectID,
+            selector: kAudioDevicePropertyVolumeDecibels
+        )
+    }
+
+    func isMuted(uid: String) -> Bool? {
+        guard let device = device(uid: uid) else { return nil }
+        return Self.isMuted(deviceID: device.objectID)
+    }
+
+    func isMutedWithoutBlockingUI(uid: String) async -> Bool? {
+        guard let device = await resolveDeviceWithoutBlockingUI(uid: uid) else { return nil }
+        return await Task.detached(priority: .utility) {
+            Self.isMuted(deviceID: device.objectID)
+        }.value
+    }
+
+    func setMuted(uid: String, muted: Bool) {
+        guard let device = device(uid: uid) else { return }
+        Self.setMuted(deviceID: device.objectID, muted: muted)
+    }
+
+    func setMutedWithoutBlockingUI(uid: String, muted: Bool) async {
+        guard let device = await resolveDeviceWithoutBlockingUI(uid: uid) else { return }
+        await Task.detached(priority: .userInitiated) {
+            Self.setMuted(deviceID: device.objectID, muted: muted)
+        }.value
+    }
+
+    func unmute(uid: String) {
+        setMuted(uid: uid, muted: false)
+    }
+
+    nonisolated private static func setVolume(
+        deviceID: AudioDeviceID,
+        scalar: Float32
+    ) throws {
         let value = max(0, min(1, scalar))
+        if let current = floatProperty(
+            deviceID: deviceID,
+            selector: kAudioDevicePropertyVolumeScalar
+        ), abs(current - value) < 0.0005 {
+            return
+        }
         var didSet = false
 
         for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
@@ -649,9 +835,20 @@ final class CoreAudioManager: ObservableObject {
             )
             guard AudioObjectHasProperty(deviceID, &address) else { continue }
             var settable: DarwinBoolean = false
-            guard AudioObjectIsPropertySettable(deviceID, &address, &settable) == noErr, settable.boolValue else { continue }
+            guard AudioObjectIsPropertySettable(
+                deviceID,
+                &address,
+                &settable
+            ) == noErr, settable.boolValue else { continue }
             var v = value
-            if AudioObjectSetPropertyData(deviceID, &address, 0, nil, UInt32(MemoryLayout<Float32>.size), &v) == noErr {
+            if AudioObjectSetPropertyData(
+                deviceID,
+                &address,
+                0,
+                nil,
+                UInt32(MemoryLayout<Float32>.size),
+                &v
+            ) == noErr {
                 didSet = true
                 if element == kAudioObjectPropertyElementMain { break }
             }
@@ -659,68 +856,85 @@ final class CoreAudioManager: ObservableObject {
         if !didSet { throw AudioError.volumeNotSettable }
     }
 
-    func volume(uid: String) -> Float32? {
-        floatProperty(uid: uid, selector: kAudioDevicePropertyVolumeScalar)
-    }
-
-    func volumeDecibels(uid: String) -> Float32? {
-        floatProperty(uid: uid, selector: kAudioDevicePropertyVolumeDecibels)
-    }
-
-    func isMuted(uid: String) -> Bool? {
-        guard let device = device(uid: uid) else { return nil }
-        for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
-            var address = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyMute,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: element
-            )
-            guard AudioObjectHasProperty(device.objectID, &address) else { continue }
-            var value: UInt32 = 0
-            var size = UInt32(MemoryLayout<UInt32>.size)
-            if AudioObjectGetPropertyData(device.objectID, &address, 0, nil, &size, &value) == noErr {
-                return value != 0
-            }
-        }
-        return nil
-    }
-
-    func setMuted(uid: String, muted: Bool) {
-        guard let device = device(uid: uid) else { return }
-        for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
-            var address = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyMute,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: element
-            )
-            guard AudioObjectHasProperty(device.objectID, &address) else { continue }
-            var settable: DarwinBoolean = false
-            guard AudioObjectIsPropertySettable(device.objectID, &address, &settable) == noErr, settable.boolValue else { continue }
-            var value: UInt32 = muted ? 1 : 0
-            _ = AudioObjectSetPropertyData(device.objectID, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value)
-        }
-    }
-
-    func unmute(uid: String) {
-        setMuted(uid: uid, muted: false)
-    }
-
-    private func floatProperty(uid: String, selector: AudioObjectPropertySelector) -> Float32? {
-        guard let device = device(uid: uid) else { return nil }
+    nonisolated private static func floatProperty(
+        deviceID: AudioDeviceID,
+        selector: AudioObjectPropertySelector
+    ) -> Float32? {
         for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
             var address = AudioObjectPropertyAddress(
                 mSelector: selector,
                 mScope: kAudioDevicePropertyScopeOutput,
                 mElement: element
             )
-            guard AudioObjectHasProperty(device.objectID, &address) else { continue }
+            guard AudioObjectHasProperty(deviceID, &address) else { continue }
             var value: Float32 = 0
             var size = UInt32(MemoryLayout<Float32>.size)
-            if AudioObjectGetPropertyData(device.objectID, &address, 0, nil, &size, &value) == noErr {
+            if AudioObjectGetPropertyData(
+                deviceID,
+                &address,
+                0,
+                nil,
+                &size,
+                &value
+            ) == noErr {
                 return value
             }
         }
         return nil
+    }
+
+    nonisolated private static func isMuted(deviceID: AudioDeviceID) -> Bool? {
+        for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyMute,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: element
+            )
+            guard AudioObjectHasProperty(deviceID, &address) else { continue }
+            var value: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            if AudioObjectGetPropertyData(
+                deviceID,
+                &address,
+                0,
+                nil,
+                &size,
+                &value
+            ) == noErr {
+                return value != 0
+            }
+        }
+        return nil
+    }
+
+    nonisolated private static func setMuted(
+        deviceID: AudioDeviceID,
+        muted: Bool
+    ) {
+        if isMuted(deviceID: deviceID) == muted { return }
+        for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyMute,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: element
+            )
+            guard AudioObjectHasProperty(deviceID, &address) else { continue }
+            var settable: DarwinBoolean = false
+            guard AudioObjectIsPropertySettable(
+                deviceID,
+                &address,
+                &settable
+            ) == noErr, settable.boolValue else { continue }
+            var value: UInt32 = muted ? 1 : 0
+            _ = AudioObjectSetPropertyData(
+                deviceID,
+                &address,
+                0,
+                nil,
+                UInt32(MemoryLayout<UInt32>.size),
+                &value
+            )
+        }
     }
 
     nonisolated private static func enumerateOutputDevices() -> [AudioDeviceInfo] {

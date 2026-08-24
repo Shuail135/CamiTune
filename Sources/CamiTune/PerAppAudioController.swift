@@ -93,10 +93,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         var lastPacketDate: Date
     }
 
-    private struct HeadroomKey: Hashable {
+    private struct HeadroomKey: Hashable, Sendable {
         var applicationID: String
         var sampleRate: Double
-        var bands: [EQBand]
+        var settingsRevision: UInt64
     }
 
     private struct ApplicationIdentity: Hashable {
@@ -113,7 +113,14 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     private static let meterDecayTime: TimeInterval = 0.8
     private static let publishInterval: TimeInterval = 0.1
 
-    private let lock = NSLock()
+    // Keep UI/control state separate from real-time-ish DSP runtime state.
+    // MainActor code may take `stateLock`, but it must never wait on `audioLock`.
+    private let stateLock = NSLock()
+    private let audioLock = NSLock()
+    // Headroom cache synchronization is intentionally independent from the DSP
+    // runtime lock. No 600-point response calculation may run while this lock
+    // (or `audioLock`) is held.
+    private let headroomLock = NSLock()
     private let settingsURL: URL
     private let audioHistoryURL: URL
     private let monitorsRunningApplications: Bool
@@ -129,26 +136,51 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         label: "CamiTune.RunningApplicationRoster",
         qos: .utility
     )
+    private let audioMaintenanceQueue = DispatchQueue(
+        label: "CamiTune.PerAppAudioMaintenance",
+        qos: .userInitiated
+    )
+    private let headroomQueue = DispatchQueue(
+        label: "CamiTune.PerAppAudioHeadroom",
+        qos: .userInitiated
+    )
+    // Snapshot coalescing is isolated from both control state and DSP runtime.
+    // The MainActor never acquires an NSLock in order to publish applications.
+    private let publicationQueue = DispatchQueue(
+        label: "CamiTune.PerAppAudioPublication",
+        qos: .userInteractive
+    )
     private var clientsByID: [UInt32: PerAppDriverClient] = [:]
     private var identitiesByClientID: [UInt32: ApplicationIdentity] = [:]
     private var runningApplicationsByID: [String: ApplicationIdentity] = [:]
     private var settingsByApplication: [String: PerAppAudioSettings]
+    private var settingsRevisionByApplication: [String: UInt64] = [:]
     private var knownAudioApplicationIDs: Set<String>
+    // Presentation levels are copied out of the audio runtime after processing so
+    // SwiftUI publishing never needs to acquire `audioLock`.
+    private var presentationLevelsByApplication: [String: Double] = [:]
     private var levelsByApplication: [String: Double] = [:]
     private var lastAudibleDateByApplication: [String: Date] = [:]
     private var lastPacketDateByApplication: [String: Date] = [:]
     private var lastMeterUpdateByApplication: [String: Date] = [:]
     private var filterBanks: [UInt32: PerAppFilterBank] = [:]
+    // Protected only by `headroomLock`. A cache miss is seeded with a cheap,
+    // conservative scalar while the exact 600-point response is calculated on
+    // `headroomQueue`.
     private var headroomScalars: [HeadroomKey: Float] = [:]
+    private var pendingHeadroomKeys: Set<HeadroomKey> = []
     private var pendingMix: PendingMix?
     private var pendingPersistence: DispatchWorkItem?
     private var pendingHistoryPersistence: DispatchWorkItem?
     private var pendingRunningApplicationRefresh: DispatchWorkItem?
+    // Accessed only on `publicationQueue`. Keeping these off `stateLock` means
+    // the MainActor publication callback can never wait for controller state.
     private var pendingApplicationSnapshot: [PerAppAudioApplication]?
     private var mainPublishScheduled = false
     private var lastPublishDate = Date.distantPast
     private var identityResolutionRevision: UInt64 = 0
     private var meterPresentationSources: Set<String> = []
+    private var suspendedMeterPresentationSources: Set<String> = []
     private var workspaceObservers: [NSObjectProtocol] = []
 
     init(
@@ -196,17 +228,24 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                 current.generation >= candidate.generation ? current : candidate
             }
         )
-        lock.lock()
+        stateLock.lock()
         let clientsChanged = clientsByID != nextClients
         guard clientsChanged else {
-            lock.unlock()
+            stateLock.unlock()
             return
         }
         clientsByID = nextClients
-        filterBanks = filterBanks.filter { clientsByID[$0.key] != nil }
         identityResolutionRevision &+= 1
         let revision = identityResolutionRevision
-        lock.unlock()
+        stateLock.unlock()
+
+        let activeClientIDs = Set(nextClients.keys)
+        audioMaintenanceQueue.async { [weak self] in
+            guard let self else { return }
+            self.audioLock.lock()
+            self.filterBanks = self.filterBanks.filter { activeClientIDs.contains($0.key) }
+            self.audioLock.unlock()
+        }
 
         // Looking up NSRunningApplication, nested bundles, and application
         // metadata can trigger Launch Services disk work. Never do that on the
@@ -221,14 +260,15 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             )
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.lock.lock()
+                self.stateLock.lock()
                 guard self.identityResolutionRevision == revision else {
-                    self.lock.unlock()
+                    self.stateLock.unlock()
                     return
                 }
                 self.identitiesByClientID = resolvedIdentities
                 var settingsChanged = false
                 var audioHistoryChanged = false
+                var runtimeMigrations: [(from: String, to: String)] = []
                 for client in clients {
                     guard let identity = resolvedIdentities[client.clientID] else { continue }
                     let temporaryID = client.applicationKey
@@ -236,43 +276,64 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                     if self.settingsByApplication[identity.id] == nil,
                        let legacy = self.settingsByApplication[temporaryID] {
                         self.settingsByApplication[identity.id] = legacy
+                        self.settingsRevisionByApplication[identity.id] =
+                            self.settingsRevisionByApplication[temporaryID] ?? 0
                         settingsChanged = true
                     }
-                    if let temporaryLevel = self.levelsByApplication.removeValue(forKey: temporaryID) {
-                        self.levelsByApplication[identity.id] = max(
-                            self.levelsByApplication[identity.id] ?? 0,
+                    if let temporaryLevel = self.presentationLevelsByApplication.removeValue(
+                        forKey: temporaryID
+                    ) {
+                        self.presentationLevelsByApplication[identity.id] = max(
+                            self.presentationLevelsByApplication[identity.id] ?? 0,
                             temporaryLevel
                         )
                     }
-                    Self.moveLatestDate(
-                        from: temporaryID,
-                        to: identity.id,
-                        in: &self.lastAudibleDateByApplication
-                    )
-                    Self.moveLatestDate(
-                        from: temporaryID,
-                        to: identity.id,
-                        in: &self.lastPacketDateByApplication
-                    )
-                    Self.moveLatestDate(
-                        from: temporaryID,
-                        to: identity.id,
-                        in: &self.lastMeterUpdateByApplication
-                    )
-                    if self.lastAudibleDateByApplication[identity.id] != nil,
-                       identity.bundleID?.isEmpty == false,
-                       self.knownAudioApplicationIDs.insert(identity.id).inserted {
+                    runtimeMigrations.append((temporaryID, identity.id))
+                    if self.knownAudioApplicationIDs.remove(temporaryID) != nil {
+                        self.knownAudioApplicationIDs.insert(identity.id)
                         audioHistoryChanged = true
                     }
                 }
                 let savedSettings = self.settingsByApplication
                 let savedAudioHistory = self.knownAudioApplicationIDs
-                self.lock.unlock()
+                self.stateLock.unlock()
                 if settingsChanged {
                     self.schedulePersistence(savedSettings)
                 }
                 if audioHistoryChanged {
                     self.scheduleAudioHistoryPersistence(savedAudioHistory)
+                }
+                if !runtimeMigrations.isEmpty {
+                    self.audioMaintenanceQueue.async { [weak self] in
+                        guard let self else { return }
+                        self.audioLock.lock()
+                        for migration in runtimeMigrations {
+                            if let temporaryLevel = self.levelsByApplication.removeValue(
+                                forKey: migration.from
+                            ) {
+                                self.levelsByApplication[migration.to] = max(
+                                    self.levelsByApplication[migration.to] ?? 0,
+                                    temporaryLevel
+                                )
+                            }
+                            Self.moveLatestDate(
+                                from: migration.from,
+                                to: migration.to,
+                                in: &self.lastAudibleDateByApplication
+                            )
+                            Self.moveLatestDate(
+                                from: migration.from,
+                                to: migration.to,
+                                in: &self.lastPacketDateByApplication
+                            )
+                            Self.moveLatestDate(
+                                from: migration.from,
+                                to: migration.to,
+                                in: &self.lastMeterUpdateByApplication
+                            )
+                        }
+                        self.audioLock.unlock()
+                    }
                 }
                 self.publishApplications(force: true)
             }
@@ -280,32 +341,56 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     }
 
     func settings(for applicationID: String) -> PerAppAudioSettings {
-        lock.lock()
-        defer { lock.unlock() }
+        stateLock.lock()
+        defer { stateLock.unlock() }
         return settingsByApplication[applicationID] ?? PerAppAudioSettings()
     }
 
     func hasProducedAudio(for applicationID: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
+        stateLock.lock()
+        defer { stateLock.unlock() }
         return knownAudioApplicationIDs.contains(applicationID)
     }
 
-    func setVolume(_ volume: Double, for applicationID: String) {
-        updateSettings(for: applicationID) {
+    func setVolume(
+        _ volume: Double,
+        for applicationID: String,
+        interactionFinished: Bool = true
+    ) {
+        updateSettings(
+            for: applicationID,
+            persistChanges: interactionFinished,
+            forcePublication: interactionFinished
+        ) {
             $0.volume = min(max(volume, 0), 1)
         }
     }
 
     func setMeterPresentationActive(_ active: Bool, source: String) {
-        lock.lock()
+        stateLock.lock()
         if active {
             meterPresentationSources.insert(source)
         } else {
             meterPresentationSources.remove(source)
         }
-        lock.unlock()
-        if active {
+        let shouldPublish = active && !suspendedMeterPresentationSources.contains(source)
+        stateLock.unlock()
+        if shouldPublish {
+            scheduleRunningApplicationRefresh(immediate: true)
+            publishApplications(force: true)
+        }
+    }
+
+    func setMeterPresentationSuspended(_ suspended: Bool, source: String) {
+        stateLock.lock()
+        if suspended {
+            suspendedMeterPresentationSources.insert(source)
+        } else {
+            suspendedMeterPresentationSources.remove(source)
+        }
+        let shouldPublish = !suspended && meterPresentationSources.contains(source)
+        stateLock.unlock()
+        if shouldPublish {
             scheduleRunningApplicationRefresh(immediate: true)
             publishApplications(force: true)
         }
@@ -323,11 +408,18 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         ) { $0.eqBypassed = bypassed }
     }
 
-    func setEqualizerBands(_ bands: [EQBand], for applicationID: String) {
+    func setEqualizerBands(
+        _ bands: [EQBand],
+        for applicationID: String,
+        interactionFinished: Bool = true
+    ) {
         updateSettings(
             for: applicationID,
             resetFilterState: true,
-            resetHeadroom: true
+            resetHeadroom: true,
+            persistChanges: interactionFinished,
+            forcePublication: interactionFinished,
+            performDeferredCleanup: interactionFinished
         ) { $0.equalizerBands = bands }
     }
 
@@ -336,7 +428,38 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
               packet.sampleRate > 0,
               packet.interleaved.count % packet.channelCount == 0 else { return nil }
 
-        lock.lock()
+        // Snapshot UI/control state quickly. The expensive DSP section below is
+        // protected by `audioLock`, which MainActor code never acquires.
+        stateLock.lock()
+        let client = clientsByID[packet.clientID]
+        let identity = identitiesByClientID[packet.clientID]
+        let applicationID = identity?.id
+            ?? client?.applicationKey
+            ?? "client:\(packet.clientID)"
+        let settings = settingsByApplication[applicationID] ?? PerAppAudioSettings()
+        let settingsRevision = settingsRevisionByApplication[applicationID] ?? 0
+        let canPersistAudioHistory = identity?.bundleID?.isEmpty == false
+            || client?.bundleID?.isEmpty == false
+        stateLock.unlock()
+
+        let rawPeak = packet.interleaved.reduce(0.0) { max($0, Double(abs($1))) }
+        let now = Date()
+        // Resolve headroom before entering the DSP critical section. Cache
+        // misses never calculate the full EQ response on the ingest thread:
+        // they use an immediate conservative value and refine it asynchronously.
+        let eqHeadroom: Float
+        if settings.isMuted || settings.eqBypassed || settings.equalizerBands.isEmpty {
+            eqHeadroom = 1
+        } else {
+            eqHeadroom = headroomScalarForIngest(
+                settings,
+                applicationID: applicationID,
+                sampleRate: packet.sampleRate,
+                settingsRevision: settingsRevision
+            )
+        }
+
+        audioLock.lock()
         let completed: PCMFrame?
         if let pendingMix,
            pendingMix.sampleTime != packet.sampleTime ||
@@ -350,22 +473,9 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             completed = nil
         }
 
-        let now = Date()
-        let client = clientsByID[packet.clientID]
-        let identity = identitiesByClientID[packet.clientID]
-        let applicationID = identity?.id
-            ?? client?.applicationKey
-            ?? "client:\(packet.clientID)"
-        let settings = settingsByApplication[applicationID] ?? PerAppAudioSettings()
-        let rawPeak = packet.interleaved.reduce(0.0) { max($0, Double(abs($1))) }
         lastPacketDateByApplication[applicationID] = now
-        var audioHistoryToPersist: Set<String>?
         if rawPeak >= Self.applicationActivityFloor {
             lastAudibleDateByApplication[applicationID] = now
-            if identity?.bundleID?.isEmpty == false || client?.bundleID?.isEmpty == false,
-               knownAudioApplicationIDs.insert(applicationID).inserted {
-                audioHistoryToPersist = knownAudioApplicationIDs
-            }
         }
         var processed = packet.interleaved
         if settings.isMuted {
@@ -377,22 +487,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                     &processed,
                     channelCount: packet.channelCount,
                     sampleRate: packet.sampleRate,
-                    bands: settings.equalizerBands
+                    bands: settings.equalizerBands,
+                    settingsRevision: settingsRevision
                 )
                 filterBanks[packet.clientID] = bank
-            }
-            let headroomKey = HeadroomKey(
-                applicationID: applicationID,
-                sampleRate: packet.sampleRate,
-                bands: settings.equalizerBands
-            )
-            let eqHeadroom: Float
-            if settings.eqBypassed {
-                eqHeadroom = 1
-            } else {
-                eqHeadroom = headroomScalars[headroomKey]
-                    ?? Self.headroomScalar(settings, sampleRate: packet.sampleRate)
-                headroomScalars[headroomKey] = eqHeadroom
             }
             let scalar = Float(settings.volume) * eqHeadroom
             if scalar != 1 {
@@ -434,7 +532,18 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             self.pendingMix!.clientIDs.insert(packet.clientID)
             self.pendingMix!.lastPacketDate = now
         }
-        lock.unlock()
+        let presentationLevel = levelsByApplication[applicationID] ?? 0
+        audioLock.unlock()
+
+        var audioHistoryToPersist: Set<String>?
+        stateLock.lock()
+        presentationLevelsByApplication[applicationID] = presentationLevel
+        if rawPeak >= Self.applicationActivityFloor,
+           canPersistAudioHistory,
+           knownAudioApplicationIDs.insert(applicationID).inserted {
+            audioHistoryToPersist = knownAudioApplicationIDs
+        }
+        stateLock.unlock()
         if let audioHistoryToPersist {
             scheduleAudioHistoryPersistence(audioHistoryToPersist)
         }
@@ -443,37 +552,58 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     }
 
     func flushExpiredMix() -> PCMFrame? {
-        lock.lock()
+        audioLock.lock()
         let now = Date()
         guard let pendingMix else {
             decayLevelsLocked(now: now)
-            lock.unlock()
+            let presentationLevels = levelsByApplication
+            audioLock.unlock()
+            stateLock.lock()
+            presentationLevelsByApplication = presentationLevels
+            stateLock.unlock()
             publishApplications()
             return nil
         }
         let frameDuration = Double(pendingMix.samples.count / pendingMix.channelCount)
             / pendingMix.sampleRate
         guard now.timeIntervalSince(pendingMix.lastPacketDate) >= max(0.003, frameDuration) else {
-            lock.unlock()
+            audioLock.unlock()
             return nil
         }
         let completed = frame(from: pendingMix)
         self.pendingMix = nil
         decayLevelsLocked(now: now)
-        lock.unlock()
+        let presentationLevels = levelsByApplication
+        audioLock.unlock()
+        stateLock.lock()
+        presentationLevelsByApplication = presentationLevels
+        stateLock.unlock()
         publishApplications()
         return completed
     }
 
+    func resetRuntimeWithoutBlockingUI() async {
+        await Task.detached(priority: .userInitiated) { [self] in
+            resetRuntime()
+        }.value
+    }
+
     func resetRuntime() {
-        lock.lock()
+        audioLock.lock()
         pendingMix = nil
         filterBanks.removeAll()
         levelsByApplication.removeAll()
         lastAudibleDateByApplication.removeAll()
         lastPacketDateByApplication.removeAll()
         lastMeterUpdateByApplication.removeAll()
-        lock.unlock()
+        audioLock.unlock()
+        headroomLock.lock()
+        headroomScalars.removeAll()
+        pendingHeadroomKeys.removeAll()
+        headroomLock.unlock()
+        stateLock.lock()
+        presentationLevelsByApplication.removeAll()
+        stateLock.unlock()
         publishApplications(force: true)
     }
 
@@ -481,29 +611,51 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         for applicationID: String,
         resetFilterState: Bool = false,
         resetHeadroom: Bool = false,
+        persistChanges: Bool = true,
+        forcePublication: Bool = true,
+        performDeferredCleanup: Bool = true,
         change: (inout PerAppAudioSettings) -> Void
     ) {
-        lock.lock()
+        stateLock.lock()
         var settings = settingsByApplication[applicationID] ?? PerAppAudioSettings()
         change(&settings)
         settingsByApplication[applicationID] = settings
-        if resetHeadroom {
-            headroomScalars = headroomScalars.filter { $0.key.applicationID != applicationID }
+        if resetFilterState || resetHeadroom {
+            settingsRevisionByApplication[applicationID, default: 0] &+= 1
         }
-        if resetFilterState {
-            for clientID in clientsByID.values
-                .filter({
-                    identitiesByClientID[$0.clientID]?.id == applicationID
-                        || $0.applicationKey == applicationID
+        let settingsRevision = settingsRevisionByApplication[applicationID] ?? 0
+        let saved = persistChanges ? settingsByApplication : nil
+        stateLock.unlock()
+
+        // Correctness no longer depends on maintenance running before the next
+        // packet: `settingsRevision` is part of both the filter-bank and
+        // headroom signatures. Cleanup happens away from MainActor so an EQ
+        // drag cannot wait behind DSP processing.
+        if resetHeadroom && performDeferredCleanup {
+            audioMaintenanceQueue.async { [weak self] in
+                guard let self else { return }
+                self.stateLock.lock()
+                let isCurrentRevision =
+                    self.settingsRevisionByApplication[applicationID] == settingsRevision
+                self.stateLock.unlock()
+                guard isCurrentRevision else { return }
+
+                self.headroomLock.lock()
+                self.headroomScalars = self.headroomScalars.filter {
+                    $0.key.applicationID != applicationID
+                        || $0.key.settingsRevision == settingsRevision
+                }
+                self.pendingHeadroomKeys = Set(self.pendingHeadroomKeys.filter {
+                    $0.applicationID != applicationID
+                        || $0.settingsRevision == settingsRevision
                 })
-                .map(\.clientID) {
-                filterBanks.removeValue(forKey: clientID)
+                self.headroomLock.unlock()
             }
         }
-        let saved = settingsByApplication
-        lock.unlock()
-        schedulePersistence(saved)
-        publishApplications(force: true)
+        if let saved {
+            schedulePersistence(saved)
+        }
+        publishApplications(force: forcePublication)
     }
 
     private func frame(from mix: PendingMix) -> PCMFrame {
@@ -530,14 +682,17 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     }
 
     private func publishApplications(force: Bool = false) {
-        lock.lock()
+        stateLock.lock()
         let now = Date()
-        if !force && meterPresentationSources.isEmpty {
-            lock.unlock()
+        let hasVisiblePresentation = meterPresentationSources.contains {
+            !suspendedMeterPresentationSources.contains($0)
+        }
+        if !force && !hasVisiblePresentation {
+            stateLock.unlock()
             return
         }
         if !force && now.timeIntervalSince(lastPublishDate) < Self.publishInterval {
-            lock.unlock()
+            stateLock.unlock()
             return
         }
         lastPublishDate = now
@@ -545,9 +700,9 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         let identities = identitiesByClientID
         let runningApplications = runningApplicationsByID
         let settings = settingsByApplication
-        let levels = levelsByApplication
+        let levels = presentationLevelsByApplication
         let knownAudioApplications = knownAudioApplicationIDs
-        lock.unlock()
+        stateLock.unlock()
 
         var visibleIdentities = runningApplications.filter { _, identity in
             let hasProducedAudio = knownAudioApplications.contains(identity.id)
@@ -587,22 +742,40 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
         }
 
-        lock.lock()
-        pendingApplicationSnapshot = snapshot
-        guard !mainPublishScheduled else {
-            lock.unlock()
+        enqueueApplicationSnapshot(snapshot)
+    }
+
+    private func enqueueApplicationSnapshot(_ snapshot: [PerAppAudioApplication]) {
+        publicationQueue.async { [weak self] in
+            guard let self else { return }
+            // Always retain only the newest snapshot while a MainActor delivery
+            // is pending. This preserves the old coalescing behavior without
+            // making the UI reacquire `stateLock`.
+            self.pendingApplicationSnapshot = snapshot
+            self.scheduleMainPublicationIfNeeded()
+        }
+    }
+
+    private func scheduleMainPublicationIfNeeded() {
+        dispatchPrecondition(condition: .onQueue(publicationQueue))
+        guard !mainPublishScheduled, let snapshot = pendingApplicationSnapshot else {
             return
         }
+
+        pendingApplicationSnapshot = nil
         mainPublishScheduled = true
-        lock.unlock()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.lock.lock()
-            let latest = self.pendingApplicationSnapshot ?? []
-            self.pendingApplicationSnapshot = nil
-            self.mainPublishScheduled = false
-            self.lock.unlock()
-            self.applications = latest
+
+            // Intentionally lock-free on MainActor. `snapshot` is immutable and
+            // all coalescing bookkeeping stays on `publicationQueue`.
+            self.applications = snapshot
+
+            self.publicationQueue.async { [weak self] in
+                guard let self else { return }
+                self.mainPublishScheduled = false
+                self.scheduleMainPublicationIfNeeded()
+            }
         }
     }
 
@@ -648,17 +821,17 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                     return current.processID <= candidate.processID ? current : candidate
                 }
             )
-            self.lock.lock()
+            self.stateLock.lock()
             self.runningApplicationsByID = resolved
             self.pendingRunningApplicationRefresh = nil
-            self.lock.unlock()
+            self.stateLock.unlock()
             self.publishApplications(force: true)
         }
 
-        lock.lock()
+        stateLock.lock()
         pendingRunningApplicationRefresh?.cancel()
         pendingRunningApplicationRefresh = work
-        lock.unlock()
+        stateLock.unlock()
         runningApplicationQueue.asyncAfter(
             deadline: .now() + (immediate ? 0 : 0.1),
             execute: work
@@ -885,6 +1058,133 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         return Set(identifiers)
     }
 
+    private func headroomScalarForIngest(
+        _ settings: PerAppAudioSettings,
+        applicationID: String,
+        sampleRate: Double,
+        settingsRevision: UInt64
+    ) -> Float {
+        let key = HeadroomKey(
+            applicationID: applicationID,
+            sampleRate: sampleRate,
+            settingsRevision: settingsRevision
+        )
+
+        // The steady-state packet path is only one short lookup. Compute the
+        // fallback only after a miss, then double-check in case another packet
+        // populated the cache while it was being derived.
+        headroomLock.lock()
+        if let cached = headroomScalars[key] {
+            headroomLock.unlock()
+            return cached
+        }
+        headroomLock.unlock()
+
+        let fallback = Self.conservativeHeadroomScalar(settings)
+        headroomLock.lock()
+        if let cached = headroomScalars[key] {
+            headroomLock.unlock()
+            return cached
+        }
+        headroomScalars[key] = fallback
+        let shouldCalculate = pendingHeadroomKeys.insert(key).inserted
+        headroomLock.unlock()
+
+        if shouldCalculate {
+            scheduleExactHeadroomCalculation(
+                for: key,
+                settings: settings
+            )
+        }
+        return fallback
+    }
+
+    private func scheduleExactHeadroomCalculation(
+        for key: HeadroomKey,
+        settings: PerAppAudioSettings
+    ) {
+        headroomQueue.async { [weak self] in
+            guard let self else { return }
+
+            // Rapid EQ drags can enqueue multiple revisions. Skip obsolete work
+            // before doing the 600-point calculation.
+            self.stateLock.lock()
+            let isCurrentBeforeCalculation =
+                self.settingsRevisionByApplication[key.applicationID]
+                    == key.settingsRevision
+            self.stateLock.unlock()
+            guard isCurrentBeforeCalculation else {
+                self.finishHeadroomCalculation(for: key, scalar: nil)
+                return
+            }
+
+            // Intentionally outside every lock and outside the ingest call.
+            let exact = Self.headroomScalar(settings, sampleRate: key.sampleRate)
+
+            self.stateLock.lock()
+            let isStillCurrent =
+                self.settingsRevisionByApplication[key.applicationID]
+                    == key.settingsRevision
+            self.stateLock.unlock()
+            self.finishHeadroomCalculation(
+                for: key,
+                scalar: isStillCurrent ? exact : nil
+            )
+        }
+    }
+
+    private func finishHeadroomCalculation(
+        for key: HeadroomKey,
+        scalar: Float?
+    ) {
+        headroomLock.lock()
+        let wasPending = pendingHeadroomKeys.remove(key) != nil
+        if wasPending, let scalar {
+            headroomScalars[key] = scalar
+        } else if scalar == nil {
+            headroomScalars.removeValue(forKey: key)
+        }
+        headroomLock.unlock()
+    }
+
+    /// Fast first-packet protection used while exact headroom is calculated.
+    /// Gain filters contribute their positive nominal gain; resonant filter
+    /// types also receive a Q-derived margin. This intentionally errs toward
+    /// temporary attenuation rather than allowing a boosted EQ to clip.
+    private static func conservativeHeadroomScalar(
+        _ settings: PerAppAudioSettings
+    ) -> Float {
+        var maximumBoostDB = 0.0
+        for band in settings.equalizerBands where band.enabled {
+            let gain = (band.gain ?? 0).isFinite ? (band.gain ?? 0) : 0
+            let qValue = band.q ?? 0.70710678
+            let q = qValue.isFinite && qValue > 0 ? qValue : 0.70710678
+
+            switch band.kind {
+            case .peaking:
+                maximumBoostDB += max(0, gain)
+            case .lowShelf, .highShelf:
+                maximumBoostDB += max(0, gain) + resonanceMarginDB(forQ: q)
+            case .lowPass, .highPass:
+                maximumBoostDB += resonanceMarginDB(forQ: q)
+            case .notch, .allPass:
+                break
+            }
+        }
+        guard maximumBoostDB.isFinite, maximumBoostDB > 0 else { return 1 }
+        return Float(pow(10, -maximumBoostDB / 20))
+    }
+
+    private static func resonanceMarginDB(forQ q: Double) -> Double {
+        let threshold = 1 / sqrt(2.0)
+        guard q.isFinite, q > threshold else { return 0 }
+        let denominatorSquared = 1 - 1 / (4 * q * q)
+        guard denominatorSquared > 0 else { return 0 }
+        let peak = q / sqrt(denominatorSquared)
+        guard peak.isFinite, peak > 1 else { return 0 }
+        return 20 * log10(peak)
+    }
+
     private static func headroomScalar(
         _ settings: PerAppAudioSettings,
         sampleRate: Double
@@ -914,10 +1214,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         let work = DispatchWorkItem {
             Self.persistAudioHistory(identifiers, to: url)
         }
-        lock.lock()
+        stateLock.lock()
         pendingHistoryPersistence?.cancel()
         pendingHistoryPersistence = work
-        lock.unlock()
+        stateLock.unlock()
         persistenceQueue.asyncAfter(deadline: .now() + 0.25, execute: work)
     }
 
@@ -951,6 +1251,7 @@ private struct PerAppFilterBank {
         var channelCount: Int
         var sampleRate: Double
         var bands: [EQBand]
+        var settingsRevision: UInt64
     }
 
     private struct State {
@@ -976,7 +1277,8 @@ private struct PerAppFilterBank {
         _ samples: inout [Float],
         channelCount: Int,
         sampleRate: Double,
-        bands: [EQBand]
+        bands: [EQBand],
+        settingsRevision: UInt64
     ) {
         let activeBands = bands.filter {
             $0.enabled && $0.frequency > 0 && $0.frequency < sampleRate / 2
@@ -984,7 +1286,8 @@ private struct PerAppFilterBank {
         let nextSignature = Signature(
             channelCount: channelCount,
             sampleRate: sampleRate,
-            bands: activeBands
+            bands: activeBands,
+            settingsRevision: settingsRevision
         )
         if signature != nextSignature {
             signature = nextSignature

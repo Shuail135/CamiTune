@@ -98,17 +98,79 @@ enum AudioRuntimeHealth: Equatable, Sendable {
 private final class RuntimePresentationGate: @unchecked Sendable {
     private let lock = NSLock()
     private var profileID: UUID?
+    private var nextSampleUptime = 0.0
+    private var pendingSnapshot: PCMLevelSnapshot?
+    private var deliveryScheduled = false
+    private var generation: UInt64 = 0
+
+    /// PCM meters are presentation data, not part of the audio route. Sampling
+    /// them at display cadence avoids scanning every audio packet and, more
+    /// importantly, prevents audio-rate work from being queued on MainActor.
+    private let sampleInterval = 0.1
 
     func setProfileID(_ profileID: UUID?) {
         lock.lock()
         self.profileID = profileID
+        nextSampleUptime = 0
+        pendingSnapshot = nil
+        deliveryScheduled = false
+        generation &+= 1
         lock.unlock()
     }
 
-    func accepts(profileID: UUID) -> Bool {
+    func beginSample(profileID: UUID, uptime: TimeInterval) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return self.profileID == profileID
+        guard self.profileID == profileID, uptime >= nextSampleUptime else {
+            return false
+        }
+        nextSampleUptime = uptime + sampleInterval
+        return true
+    }
+
+    func submit(
+        _ snapshot: PCMLevelSnapshot,
+        profileID: UUID,
+        deliver: @escaping @MainActor (PCMLevelSnapshot) -> Void
+    ) {
+        lock.lock()
+        guard self.profileID == profileID else {
+            lock.unlock()
+            return
+        }
+        pendingSnapshot = snapshot
+        guard !deliveryScheduled else {
+            lock.unlock()
+            return
+        }
+        deliveryScheduled = true
+        let deliveryGeneration = generation
+        lock.unlock()
+
+        // Keep at most one delivery in the main queue. If AppKit is busy with
+        // scrolling or layout, newer audio replaces the stale observation.
+        Task { @MainActor [weak self] in
+            guard let snapshot = self?.takePending(
+                profileID: profileID,
+                generation: deliveryGeneration
+            ) else { return }
+            deliver(snapshot)
+        }
+    }
+
+    private func takePending(
+        profileID: UUID,
+        generation: UInt64
+    ) -> PCMLevelSnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard self.generation == generation, self.profileID == profileID else {
+            return nil
+        }
+        let snapshot = pendingSnapshot
+        pendingSnapshot = nil
+        deliveryScheduled = false
+        return snapshot
     }
 }
 
@@ -258,9 +320,12 @@ final class AudioRuntimeMonitor: ObservableObject {
     /// Level calculation happens on the meter branch, never on the audio route.
     func pcmConsumer(for session: AudioRuntimeSession) -> PCMRouter.MeterConsumer {
         { [weak self, presentationGate] frame in
-            guard presentationGate.accepts(profileID: session.profileID) else { return }
+            guard presentationGate.beginSample(
+                profileID: session.profileID,
+                uptime: ProcessInfo.processInfo.systemUptime
+            ) else { return }
             let snapshot = PCMLevelSnapshot.measure(frame)
-            Task { @MainActor [weak self] in
+            presentationGate.submit(snapshot, profileID: session.profileID) { [weak self] snapshot in
                 self?.ingest(snapshot, session: session)
             }
         }
@@ -383,7 +448,9 @@ final class AudioRuntimeMonitor: ObservableObject {
     }
 
     private func refreshRecentClipping(now: Date) {
-        status.clippingIsRecent = lastClipAt.map { now.timeIntervalSince($0) < 2 } ?? false
+        let isRecent = lastClipAt.map { now.timeIntervalSince($0) < 2 } ?? false
+        guard status.clippingIsRecent != isRecent else { return }
+        status.clippingIsRecent = isRecent
     }
 
     private func smooth(

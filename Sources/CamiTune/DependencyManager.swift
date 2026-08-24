@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 final class DependencyManager: ObservableObject {
-    enum Status: Equatable {
+    enum Status: Equatable, Sendable {
         case checking
         case missing
         case installed(String?)
@@ -24,9 +24,7 @@ final class DependencyManager: ObservableObject {
     }
 
     var supportDirectory: URL {
-        let base = CamiTunePaths.supportDirectory
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return base
+        CamiTunePaths.supportDirectory
     }
 
     var camillaDSPBinary: URL { supportDirectory.appendingPathComponent("bin/camilladsp") }
@@ -40,9 +38,13 @@ final class DependencyManager: ObservableObject {
     }
 
     private func createSupportLayout() throws {
+        try Self.createSupportLayout(at: supportDirectory)
+    }
+
+    nonisolated private static func createSupportLayout(at base: URL) throws {
         for directory in ["bin", "configs", "coeffs", "logs"] {
             try FileManager.default.createDirectory(
-                at: supportDirectory.appendingPathComponent(directory, isDirectory: true),
+                at: base.appendingPathComponent(directory, isDirectory: true),
                 withIntermediateDirectories: true
             )
         }
@@ -60,8 +62,19 @@ final class DependencyManager: ObservableObject {
     }
 
     func refreshWithoutBlockingUI() async {
-        try? createSupportLayout()
-        refreshCamillaDSPStatus()
+        let base = supportDirectory
+        let binary = camillaDSPBinary
+        let capabilityMarker = camillaDSPCapabilityMarker
+        let camillaStatus = await Task.detached(priority: .utility) {
+            try? Self.createSupportLayout(at: base)
+            return Self.camillaDSPStatus(
+                binary: binary,
+                capabilityMarker: capabilityMarker
+            )
+        }.value
+        if camillaDSPStatus != camillaStatus {
+            camillaDSPStatus = camillaStatus
+        }
         let supported = await coreAudio
             .systemAudioBridgePresentationIsSupportedWithoutBlockingUI()
         let bridgePresent: Bool
@@ -75,16 +88,28 @@ final class DependencyManager: ObservableObject {
     }
 
     private func refreshCamillaDSPStatus() {
-        if FileManager.default.isExecutableFile(atPath: camillaDSPBinary.path),
-           (try? String(contentsOf: camillaDSPCapabilityMarker, encoding: .utf8))?
+        camillaDSPStatus = Self.camillaDSPStatus(
+            binary: camillaDSPBinary,
+            capabilityMarker: camillaDSPCapabilityMarker
+        )
+    }
+
+    nonisolated private static func camillaDSPStatus(
+        binary: URL,
+        capabilityMarker: URL
+    ) -> Status {
+        if FileManager.default.isExecutableFile(atPath: binary.path),
+           (try? String(contentsOf: capabilityMarker, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) == Self.coreAudioUIDCapability {
-            camillaDSPStatus = .installed(version(of: camillaDSPBinary))
-        } else if FileManager.default.isExecutableFile(atPath: camillaDSPBinary.path) {
-            camillaDSPStatus = .failed(
+            let version = (try? Self.runBlocking(binary.path, ["--version"]))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return .installed(version)
+        } else if FileManager.default.isExecutableFile(atPath: binary.path) {
+            return .failed(
                 "Installed build lacks required Core Audio UID support. Select Install / Repair Everything."
             )
         } else {
-            camillaDSPStatus = .missing
+            return .missing
         }
     }
 
@@ -185,7 +210,7 @@ final class DependencyManager: ObservableObject {
                 encoding: .utf8
             )
             setupMessage = "UID-capable CamillaDSP is installed and verified."
-            refresh()
+            await refreshWithoutBlockingUI()
         } catch {
             setupFailed = true
             camillaDSPStatus = .failed(error.localizedDescription)
@@ -292,7 +317,7 @@ final class DependencyManager: ObservableObject {
         if case .installed = audioDriverStatus {} else {
             await performAudioDriverInstall()
         }
-        refresh()
+        await refreshWithoutBlockingUI()
         if case .installed = camillaDSPStatus, case .installed = audioDriverStatus {
             setupFailed = false
             setupMessage = "Setup complete. CamillaDSP and System Audio Bridge are ready."
@@ -346,11 +371,6 @@ final class DependencyManager: ObservableObject {
         p.waitUntilExit()
         guard p.terminationStatus == 0 else { throw SetupError.commandFailed(output) }
         return output
-    }
-
-    private func version(of binary: URL) -> String? {
-        (try? Self.runBlocking(binary.path, ["--version"]))?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func shellQuote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }

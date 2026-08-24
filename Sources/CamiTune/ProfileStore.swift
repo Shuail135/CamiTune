@@ -57,6 +57,12 @@ final class ProfileStore: ObservableObject {
     private var isLoading = true
     private var saveDeferralDepth = 0
     private var needsDeferredSave = false
+    private var persistenceRevision: UInt64 = 0
+    private var pendingPersistence: DispatchWorkItem?
+    private let persistenceQueue = DispatchQueue(
+        label: "CamiTune.ProfilePersistence",
+        qos: .utility
+    )
     /// An existing store that this version cannot decode may belong to a newer
     /// CamiTune version. Never replace it with the empty in-memory fallback.
     private var protectsUnreadableStorage = false
@@ -78,6 +84,10 @@ final class ProfileStore: ObservableObject {
             selectedProfileID = profiles.first?.id
         }
         isLoading = false
+    }
+
+    deinit {
+        pendingPersistence?.cancel()
     }
 
     var selectedProfile: DeviceProfile? {
@@ -117,6 +127,18 @@ final class ProfileStore: ObservableObject {
     func setProfileEnabled(profileID: UUID, enabled: Bool) {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else { return }
         profiles[index].isEnabled = enabled
+    }
+
+    func setOutputVolumeScalar(profileID: UUID, scalar: Double) {
+        guard let index = profiles.firstIndex(where: { $0.id == profileID }) else { return }
+        guard abs(profiles[index].outputVolumeScalar - scalar) >= 0.0005 else { return }
+
+        // Mutate a local copy, then publish the completed value. Avoid passing
+        // the actor-isolated @Published array element as inout across an async
+        // call boundary (rejected by Swift's strict actor isolation checks).
+        var updated = profiles
+        updated[index].outputVolumeScalar = scalar
+        profiles = updated
     }
 
     func setOutputDevice(profileID: UUID, device: AudioDeviceInfo) {
@@ -267,13 +289,64 @@ final class ProfileStore: ObservableObject {
             profiles: profiles,
             physicalDeviceDefaults: physicalDeviceDefaults
         )
-        do {
-            let data = try JSONEncoder().encode(stored)
-            try data.write(to: url, options: .atomic)
+        persistenceRevision &+= 1
+        let revision = persistenceRevision
+        let destination = url
+        pendingPersistence?.cancel()
+
+        let work = DispatchWorkItem { [weak self] in
+            let result = Result {
+                try Self.persist(stored, to: destination)
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.persistenceRevision == revision else { return }
+                self.pendingPersistence = nil
+                switch result {
+                case .success:
+                    self.persistenceError = nil
+                case .failure(let error):
+                    self.persistenceError = "CamiTune could not save your profiles: \(error.localizedDescription)"
+                }
+            }
+        }
+        pendingPersistence = work
+        // Controls can publish dozens of values while the pointer is down.
+        // Persist only the settled snapshot, and encode/write it away from the
+        // main actor so AppKit scrolling and animations are never held up by
+        // an atomic profiles.json replacement.
+        persistenceQueue.asyncAfter(deadline: .now() + 0.2, execute: work)
+    }
+
+    /// App termination is already synchronous. Flush the latest in-memory
+    /// snapshot after all previously-started writes so the debounce never
+    /// sacrifices durability.
+    func flushPendingSaveSynchronously() {
+        guard !isLoading, !protectsUnreadableStorage else { return }
+        pendingPersistence?.cancel()
+        pendingPersistence = nil
+        persistenceRevision &+= 1
+        let stored = StoredProfileConfiguration(
+            profiles: profiles,
+            physicalDeviceDefaults: physicalDeviceDefaults
+        )
+        let destination = url
+        let result = persistenceQueue.sync {
+            Result { try Self.persist(stored, to: destination) }
+        }
+        switch result {
+        case .success:
             persistenceError = nil
-        } catch {
+        case .failure(let error):
             persistenceError = "CamiTune could not save your profiles: \(error.localizedDescription)"
         }
+    }
+
+    private nonisolated static func persist(
+        _ stored: StoredProfileConfiguration,
+        to url: URL
+    ) throws {
+        let data = try JSONEncoder().encode(stored)
+        try data.write(to: url, options: .atomic)
     }
 
     private func protectUnreadableStorage(details: String) {
@@ -282,7 +355,7 @@ final class ProfileStore: ObservableObject {
     }
 }
 
-private struct StoredProfileConfiguration: Codable {
+private struct StoredProfileConfiguration: Codable, Sendable {
     var profiles: [DeviceProfile]
     var physicalDeviceDefaults: [PhysicalDeviceDefaultProfile]
 }

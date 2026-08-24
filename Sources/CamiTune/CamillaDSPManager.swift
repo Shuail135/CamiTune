@@ -26,29 +26,39 @@ final class CamillaDSPManager: ObservableObject {
             return
         }
 
-        terminateStalePrivateEngines(binary: binary)
+        await Self.terminateStalePrivateEngines(binary: binary)
 
         let logDirectory = supportDirectory().appendingPathComponent("logs", isDirectory: true)
-        try FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
         let logURL = logDirectory.appendingPathComponent("camilladsp.log")
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: logURL)
-        try handle.seekToEnd()
+        let handle = try await Task.detached(priority: .utility) {
+            try FileManager.default.createDirectory(
+                at: logDirectory,
+                withIntermediateDirectories: true
+            )
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: logURL)
+            try handle.seekToEnd()
+            return handle
+        }.value
 
-        let p = Process()
-        p.executableURL = binary
-        p.arguments = ["--address", "127.0.0.1", "--port", String(controlPort), "--wait", "--gain=-20", "--logfile", logURL.path]
-        p.standardOutput = handle
-        p.standardError = handle
-        let pipe = Pipe()
-        p.standardInput = pipe
+        let port = controlPort
+        let (p, pipe) = try await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = binary
+            process.arguments = ["--address", "127.0.0.1", "--port", String(port), "--wait", "--gain=-20", "--logfile", logURL.path]
+            process.standardOutput = handle
+            process.standardError = handle
+            let pipe = Pipe()
+            process.standardInput = pipe
+            try process.run()
+            return (process, pipe)
+        }.value
         p.terminationHandler = { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in
                 self.isRunning = false
             }
         }
-        try p.run()
         inputPipe = pipe
         process = p
         hasAppliedConfig = false
@@ -69,15 +79,25 @@ final class CamillaDSPManager: ObservableObject {
         inputPipe = nil
     }
 
+    func closeAudioInputWithoutBlockingUI() async {
+        let handle = inputPipe?.fileHandleForWriting
+        inputPipe = nil
+        await Task.detached(priority: .userInitiated) {
+            try? handle?.close()
+        }.value
+    }
+
     func apply(yaml: String) async throws {
         do {
             let configDirectory = supportDirectory().appendingPathComponent("configs", isDirectory: true)
-            try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
-            try yaml.write(
-                to: configDirectory.appendingPathComponent("active.yml"),
-                atomically: true,
-                encoding: .utf8
-            )
+            let configURL = configDirectory.appendingPathComponent("active.yml")
+            try await Task.detached(priority: .utility) {
+                try FileManager.default.createDirectory(
+                    at: configDirectory,
+                    withIntermediateDirectories: true
+                )
+                try yaml.write(to: configURL, atomically: true, encoding: .utf8)
+            }.value
             try await rpc.setConfig(yaml: yaml)
             // Startup uses -20 dB as a safety guard. Once a valid graph is active,
             // its derived response-processing headroom replaces that guard.
@@ -138,7 +158,7 @@ final class CamillaDSPManager: ObservableObject {
     }
 
     func stop() async {
-        closeAudioInput()
+        await closeAudioInputWithoutBlockingUI()
         // Disconnecting first also aborts a stuck in-flight RPC. Waiting for an
         // "Exit" reply here could otherwise make profile switching hang forever.
         await rpc.disconnect()
@@ -152,7 +172,9 @@ final class CamillaDSPManager: ObservableObject {
                     kill(childProcess.processIdentifier, SIGKILL)
                 }
             }
-            childProcess.waitUntilExit()
+            await Task.detached(priority: .utility) {
+                childProcess.waitUntilExit()
+            }.value
         }
         process = nil
         hasAppliedConfig = false
@@ -174,7 +196,7 @@ final class CamillaDSPManager: ObservableObject {
         throw finalError ?? CamillaError.connectionTimeout
     }
 
-    private func terminateStalePrivateEngines(binary: URL) {
+    private nonisolated static func terminateStalePrivateEngines(binary: URL) async {
         // Only match CamillaDSP instances launched from this app's private
         // Application Support binary. Do not touch Homebrew or user-managed
         // CamillaDSP installations.
@@ -182,20 +204,23 @@ final class CamillaDSPManager: ObservableObject {
         // executable. Older app builds used port 1234 and did not pass
         // --address, so restricting the argument pattern left orphan engines
         // competing for the routing stream indefinitely.
-        let pattern = "^\(NSRegularExpression.escapedPattern(for: binary.path))( |$)"
-        let killer = Process()
-        killer.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        killer.arguments = ["-TERM", "-f", pattern]
-        killer.standardOutput = FileHandle.nullDevice
-        killer.standardError = FileHandle.nullDevice
-        try? killer.run()
-        killer.waitUntilExit()
+        await Task.detached(priority: .utility) {
+            let pattern = "^\(NSRegularExpression.escapedPattern(for: binary.path))( |$)"
+            let killer = Process()
+            killer.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+            killer.arguments = ["-TERM", "-f", pattern]
+            killer.standardOutput = FileHandle.nullDevice
+            killer.standardError = FileHandle.nullDevice
+            try? killer.run()
+            killer.waitUntilExit()
+        }.value
     }
 
     private func supportDirectory() -> URL {
-        let base = CamiTunePaths.supportDirectory
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return base
+        // Callers create their concrete log/config directories in detached work.
+        // Merely computing the Application Support URL must stay side-effect free
+        // so this MainActor-owned manager never performs filesystem I/O here.
+        CamiTunePaths.supportDirectory
     }
 
     enum CamillaError: LocalizedError {

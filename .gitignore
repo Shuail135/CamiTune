@@ -9,6 +9,7 @@ DerivedData/
 *.xcworkspace/xcuserdata/
 *.xcuserstate
 *.dSYM/
+*.xcarchive/
 
 # Generated application and release output
 dist/
@@ -17,13 +18,15 @@ tmp/
 *.zip
 *.sha256
 
-# Local-only tests and upstream driver notes
+# Local-only tests and test runner
 /Tests/
+/test-local.sh
+
 /Drivers/SystemAudioBridge/BLACKHOLE_CHANGES.md
 /Drivers/SystemAudioBridge/UPSTREAM.md
 /Drivers/SystemAudioBridge/test-transport.sh
+CamiTune_Interface_Stalling_Full_Diagnosis.md
+Front_Stage_Implementation.md
 
 # Local visual preview (not an application resource)
 Sources/CamiTune/tray-icon-preview.png
-test-local.sh
-DeviceCorrection.md

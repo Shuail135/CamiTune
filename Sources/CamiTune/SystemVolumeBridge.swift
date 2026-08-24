@@ -14,75 +14,172 @@ final class SystemVolumeBridge {
     private var physicalMuteListener: AudioObjectPropertyListenerBlock?
     private var isApplyingRoutingVolume = false
     private var routingSupportsVolume = false
-    private var onVolume: ((Double) -> Void)?
+    private var onVolume: (@MainActor (Double) -> Void)?
 
     func start(
         routingDevice: AudioDeviceInfo,
         physicalUID: String,
         coreAudio: CoreAudioManager,
-        onVolume: @escaping (Double) -> Void
-    ) {
-        stop()
+        onVolume: @escaping @MainActor (Double) -> Void
+    ) async {
+        // Listener removal can enter Core Audio. Keep route replacement
+        // serialized without making MainActor perform that HAL teardown.
+        await stopWithoutBlockingUI()
         self.coreAudio = coreAudio
         self.routingUID = routingDevice.id
         self.physicalUID = physicalUID
         self.routingID = routingDevice.objectID
-        self.physicalID = coreAudio.device(uid: physicalUID)?.objectID
+        self.physicalID = await coreAudio.resolveDeviceWithoutBlockingUI(uid: physicalUID)?.objectID
         self.onVolume = onVolume
 
-        let initialVolume = coreAudio.volume(uid: physicalUID) ?? 1
-        routingSupportsVolume = coreAudio.volume(uid: routingDevice.id) != nil
+        let initialVolume = await coreAudio.volumeWithoutBlockingUI(uid: physicalUID) ?? 1
+        routingSupportsVolume = await coreAudio.volumeWithoutBlockingUI(uid: routingDevice.id) != nil
         if routingSupportsVolume {
-            try? coreAudio.setVolume(uid: routingDevice.id, scalar: initialVolume)
-            coreAudio.setMuted(uid: routingDevice.id, muted: coreAudio.isMuted(uid: physicalUID) ?? false)
+            try? await coreAudio.setVolumeWithoutBlockingUI(
+                uid: routingDevice.id,
+                scalar: initialVolume
+            )
+            let initiallyMuted = await coreAudio.isMutedWithoutBlockingUI(uid: physicalUID) ?? false
+            await coreAudio.setMutedWithoutBlockingUI(
+                uid: routingDevice.id,
+                muted: initiallyMuted
+            )
         }
         onVolume(Double(initialVolume))
-        synchronize()
+        await synchronize()
 
         let volumeBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            Task { @MainActor in self?.synchronize() }
+            Task { @MainActor in await self?.synchronize() }
         }
         let muteBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            Task { @MainActor in self?.synchronizeMute() }
+            Task { @MainActor in await self?.synchronizeMute() }
         }
         let physicalVolumeBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            Task { @MainActor in self?.synchronizeFromPhysical() }
+            Task { @MainActor in await self?.synchronizeFromPhysical() }
         }
         let physicalMuteBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            Task { @MainActor in self?.synchronizeMuteFromPhysical() }
+            Task { @MainActor in await self?.synchronizeMuteFromPhysical() }
         }
         self.volumeListener = volumeBlock
         self.muteListener = muteBlock
         self.physicalVolumeListener = physicalVolumeBlock
         self.physicalMuteListener = physicalMuteBlock
 
-        var volumeAddress = Self.volumeAddress
-        var muteAddress = Self.muteAddress
-        _ = AudioObjectAddPropertyListenerBlock(routingDevice.objectID, &volumeAddress, .main, volumeBlock)
-        _ = AudioObjectAddPropertyListenerBlock(routingDevice.objectID, &muteAddress, .main, muteBlock)
-        if let physicalID {
-            _ = AudioObjectAddPropertyListenerBlock(physicalID, &volumeAddress, .main, physicalVolumeBlock)
-            _ = AudioObjectAddPropertyListenerBlock(physicalID, &muteAddress, .main, physicalMuteBlock)
-        }
+        let routingID = routingDevice.objectID
+        let physicalDeviceID = self.physicalID
+        await Task.detached(priority: .utility) {
+            Self.addListeners(
+                routingID: routingID,
+                physicalID: physicalDeviceID,
+                volumeListener: volumeBlock,
+                muteListener: muteBlock,
+                physicalVolumeListener: physicalVolumeBlock,
+                physicalMuteListener: physicalMuteBlock
+            )
+        }.value
+    }
+
+    func stopWithoutBlockingUI() async {
+        let routingID = self.routingID
+        let physicalID = self.physicalID
+        let volumeListener = self.volumeListener
+        let muteListener = self.muteListener
+        let physicalVolumeListener = self.physicalVolumeListener
+        let physicalMuteListener = self.physicalMuteListener
+        clearState()
+
+        await Task.detached(priority: .utility) {
+            Self.removeListeners(
+                routingID: routingID,
+                physicalID: physicalID,
+                volumeListener: volumeListener,
+                muteListener: muteListener,
+                physicalVolumeListener: physicalVolumeListener,
+                physicalMuteListener: physicalMuteListener
+            )
+        }.value
     }
 
     func stop() {
-        if let id = routingID, let block = volumeListener {
-            var address = Self.volumeAddress
-            _ = AudioObjectRemovePropertyListenerBlock(id, &address, .main, block)
+        let routingID = self.routingID
+        let physicalID = self.physicalID
+        let volumeListener = self.volumeListener
+        let muteListener = self.muteListener
+        let physicalVolumeListener = self.physicalVolumeListener
+        let physicalMuteListener = self.physicalMuteListener
+        clearState()
+        Self.removeListeners(
+            routingID: routingID,
+            physicalID: physicalID,
+            volumeListener: volumeListener,
+            muteListener: muteListener,
+            physicalVolumeListener: physicalVolumeListener,
+            physicalMuteListener: physicalMuteListener
+        )
+    }
+
+    func setVolume(_ scalar: Float32, physicalUID requestedUID: String) async -> Bool {
+        guard requestedUID == physicalUID,
+              let coreAudio,
+              let routingUID else { return false }
+        if routingSupportsVolume {
+            try? await coreAudio.setVolumeWithoutBlockingUI(uid: routingUID, scalar: scalar)
+            await synchronize()
+        } else {
+            onVolume?(Double(scalar))
+            await applyPhysicalVolume(scalar, uid: requestedUID)
         }
-        if let id = routingID, let block = muteListener {
-            var address = Self.muteAddress
-            _ = AudioObjectRemovePropertyListenerBlock(id, &address, .main, block)
+        return true
+    }
+
+    private func synchronize() async {
+        guard let coreAudio, let routingUID, let physicalUID else { return }
+        let target = routingSupportsVolume
+            ? await coreAudio.volumeWithoutBlockingUI(uid: routingUID)
+            : await coreAudio.volumeWithoutBlockingUI(uid: physicalUID)
+        guard self.routingUID == routingUID,
+              self.physicalUID == physicalUID,
+              let target else { return }
+        onVolume?(Double(target))
+        await applyPhysicalVolume(target, uid: physicalUID)
+    }
+
+    private func synchronizeMute() async {
+        guard routingSupportsVolume,
+              let coreAudio, let routingUID, let physicalUID,
+              let muted = await coreAudio.isMutedWithoutBlockingUI(uid: routingUID) else { return }
+        guard self.routingUID == routingUID, self.physicalUID == physicalUID else { return }
+        await coreAudio.setMutedWithoutBlockingUI(uid: physicalUID, muted: muted)
+    }
+
+    private func synchronizeFromPhysical() async {
+        guard !isApplyingRoutingVolume,
+              let coreAudio, let routingUID, let physicalUID,
+              let volume = await coreAudio.volumeWithoutBlockingUI(uid: physicalUID) else { return }
+        guard self.routingUID == routingUID, self.physicalUID == physicalUID else { return }
+        if routingSupportsVolume {
+            try? await coreAudio.setVolumeWithoutBlockingUI(uid: routingUID, scalar: volume)
         }
-        if let id = physicalID, let block = physicalVolumeListener {
-            var address = Self.volumeAddress
-            _ = AudioObjectRemovePropertyListenerBlock(id, &address, .main, block)
-        }
-        if let id = physicalID, let block = physicalMuteListener {
-            var address = Self.muteAddress
-            _ = AudioObjectRemovePropertyListenerBlock(id, &address, .main, block)
-        }
+        guard self.routingUID == routingUID, self.physicalUID == physicalUID else { return }
+        onVolume?(Double(volume))
+    }
+
+    private func synchronizeMuteFromPhysical() async {
+        guard routingSupportsVolume,
+              let coreAudio, let routingUID, let physicalUID,
+              let muted = await coreAudio.isMutedWithoutBlockingUI(uid: physicalUID) else { return }
+        guard self.routingUID == routingUID, self.physicalUID == physicalUID else { return }
+        await coreAudio.setMutedWithoutBlockingUI(uid: routingUID, muted: muted)
+    }
+
+    private func applyPhysicalVolume(_ target: Float32, uid: String) async {
+        guard let coreAudio, uid == physicalUID else { return }
+        isApplyingRoutingVolume = true
+        defer { isApplyingRoutingVolume = false }
+        try? await coreAudio.setVolumeWithoutBlockingUI(uid: uid, scalar: target)
+    }
+
+    private func clearState() {
         volumeListener = nil
         muteListener = nil
         physicalVolumeListener = nil
@@ -94,64 +191,74 @@ final class SystemVolumeBridge {
         isApplyingRoutingVolume = false
         routingSupportsVolume = false
         onVolume = nil
+        coreAudio = nil
     }
 
-    func setVolume(_ scalar: Float32, physicalUID requestedUID: String) -> Bool {
-        guard requestedUID == physicalUID,
-              let coreAudio,
-              let routingUID else { return false }
-        if routingSupportsVolume {
-            try? coreAudio.setVolume(uid: routingUID, scalar: scalar)
-            synchronize()
-        } else {
-            onVolume?(Double(scalar))
-            applyPhysicalVolume(scalar, uid: requestedUID)
+    nonisolated private static func addListeners(
+        routingID: AudioDeviceID,
+        physicalID: AudioDeviceID?,
+        volumeListener: @escaping AudioObjectPropertyListenerBlock,
+        muteListener: @escaping AudioObjectPropertyListenerBlock,
+        physicalVolumeListener: @escaping AudioObjectPropertyListenerBlock,
+        physicalMuteListener: @escaping AudioObjectPropertyListenerBlock
+    ) {
+        var volumeAddress = Self.volumeAddress
+        var muteAddress = Self.muteAddress
+        _ = AudioObjectAddPropertyListenerBlock(
+            routingID,
+            &volumeAddress,
+            .main,
+            volumeListener
+        )
+        _ = AudioObjectAddPropertyListenerBlock(
+            routingID,
+            &muteAddress,
+            .main,
+            muteListener
+        )
+        if let physicalID {
+            _ = AudioObjectAddPropertyListenerBlock(
+                physicalID,
+                &volumeAddress,
+                .main,
+                physicalVolumeListener
+            )
+            _ = AudioObjectAddPropertyListenerBlock(
+                physicalID,
+                &muteAddress,
+                .main,
+                physicalMuteListener
+            )
         }
-        return true
     }
 
-    private func synchronize() {
-        guard let coreAudio, let routingUID, let physicalUID else { return }
-        let target = routingSupportsVolume
-            ? coreAudio.volume(uid: routingUID)
-            : coreAudio.volume(uid: physicalUID)
-        guard let target else { return }
-        onVolume?(Double(target))
-        applyPhysicalVolume(target, uid: physicalUID)
-    }
-
-    private func synchronizeMute() {
-        guard routingSupportsVolume,
-              let coreAudio, let routingUID, let physicalUID,
-              let muted = coreAudio.isMuted(uid: routingUID) else { return }
-        coreAudio.setMuted(uid: physicalUID, muted: muted)
-    }
-
-    private func synchronizeFromPhysical() {
-        guard !isApplyingRoutingVolume,
-              let coreAudio, let routingUID, let physicalUID,
-              let volume = coreAudio.volume(uid: physicalUID) else { return }
-        if routingSupportsVolume {
-            try? coreAudio.setVolume(uid: routingUID, scalar: volume)
+    nonisolated private static func removeListeners(
+        routingID: AudioDeviceID?,
+        physicalID: AudioDeviceID?,
+        volumeListener: AudioObjectPropertyListenerBlock?,
+        muteListener: AudioObjectPropertyListenerBlock?,
+        physicalVolumeListener: AudioObjectPropertyListenerBlock?,
+        physicalMuteListener: AudioObjectPropertyListenerBlock?
+    ) {
+        if let id = routingID, let block = volumeListener {
+            var address = volumeAddress
+            _ = AudioObjectRemovePropertyListenerBlock(id, &address, .main, block)
         }
-        onVolume?(Double(volume))
+        if let id = routingID, let block = muteListener {
+            var address = muteAddress
+            _ = AudioObjectRemovePropertyListenerBlock(id, &address, .main, block)
+        }
+        if let id = physicalID, let block = physicalVolumeListener {
+            var address = volumeAddress
+            _ = AudioObjectRemovePropertyListenerBlock(id, &address, .main, block)
+        }
+        if let id = physicalID, let block = physicalMuteListener {
+            var address = muteAddress
+            _ = AudioObjectRemovePropertyListenerBlock(id, &address, .main, block)
+        }
     }
 
-    private func synchronizeMuteFromPhysical() {
-        guard routingSupportsVolume,
-              let coreAudio, let routingUID, let physicalUID,
-              let muted = coreAudio.isMuted(uid: physicalUID) else { return }
-        coreAudio.setMuted(uid: routingUID, muted: muted)
-    }
-
-    private func applyPhysicalVolume(_ target: Float32, uid: String) {
-        guard let coreAudio else { return }
-        isApplyingRoutingVolume = true
-        defer { isApplyingRoutingVolume = false }
-        try? coreAudio.setVolume(uid: uid, scalar: target)
-    }
-
-    private static var volumeAddress: AudioObjectPropertyAddress {
+    nonisolated private static var volumeAddress: AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVolumeScalar,
             mScope: kAudioDevicePropertyScopeOutput,
@@ -159,7 +266,7 @@ final class SystemVolumeBridge {
         )
     }
 
-    private static var muteAddress: AudioObjectPropertyAddress {
+    nonisolated private static var muteAddress: AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
             mScope: kAudioDevicePropertyScopeOutput,

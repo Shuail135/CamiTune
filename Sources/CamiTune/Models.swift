@@ -25,21 +25,21 @@ struct AudioDeviceInfo: Identifiable, Hashable, Sendable {
     }
 }
 
-struct PhysicalOutputIdentity: Identifiable, Codable, Hashable {
+struct PhysicalOutputIdentity: Identifiable, Codable, Hashable, Sendable {
     var uid: String
     var name: String
 
     var id: String { uid }
 }
 
-struct PhysicalDeviceDefaultProfile: Identifiable, Codable, Hashable {
+struct PhysicalDeviceDefaultProfile: Identifiable, Codable, Hashable, Sendable {
     var physicalDevice: PhysicalOutputIdentity
     var profileID: UUID
 
     var id: String { physicalDevice.uid }
 }
 
-struct DeviceProfile: Identifiable, Codable, Hashable {
+struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     var id: UUID = UUID()
     var name: String
     var outputDevice: PhysicalOutputIdentity
@@ -49,6 +49,7 @@ struct DeviceProfile: Identifiable, Codable, Hashable {
     var outputVolumeScalar: Double = 0.0625
     var sampleRate: Int = 48_000
     var chunkSize: Int = 1024
+    var spatialRenderingMode: SpatialRenderingMode = .standard
     var processing: ProcessingProfile
     private var unmigratedEqualizerAPOText: String?
 
@@ -63,6 +64,7 @@ struct DeviceProfile: Identifiable, Codable, Hashable {
         outputVolumeScalar: Double = 0.0625,
         sampleRate: Int = 48_000,
         chunkSize: Int = 1024,
+        spatialRenderingMode: SpatialRenderingMode = .standard,
         equalizerAPOText: String = DeviceProfile.defaultEqualizerAPOText,
         processing: ProcessingProfile? = nil
     ) {
@@ -75,6 +77,7 @@ struct DeviceProfile: Identifiable, Codable, Hashable {
         self.outputVolumeScalar = outputVolumeScalar
         self.sampleRate = sampleRate
         self.chunkSize = chunkSize
+        self.spatialRenderingMode = spatialRenderingMode
         if let processing {
             self.processing = processing
             self.unmigratedEqualizerAPOText = nil
@@ -174,7 +177,8 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
     private enum CodingKeys: String, CodingKey {
         case id, name, outputDevice, outputDeviceUID, outputDeviceName, isEnabled
         case autoActivateWhenProfileDeviceSelected
-        case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize, equalizerAPOText, processing
+        case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize
+        case spatialRenderingMode, equalizerAPOText, processing
     }
 
     private enum LegacyCodingKeys: String, CodingKey {
@@ -207,6 +211,10 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         outputVolumeScalar = try values.decodeIfPresent(Double.self, forKey: .outputVolumeScalar) ?? 0.0625
         sampleRate = try values.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 48_000
         chunkSize = try values.decodeIfPresent(Int.self, forKey: .chunkSize) ?? 1024
+        spatialRenderingMode = try values.decodeIfPresent(
+            SpatialRenderingMode.self,
+            forKey: .spatialRenderingMode
+        ) ?? .standard
         let legacyText = try values.decodeIfPresent(String.self, forKey: .equalizerAPOText)
             ?? Self.defaultEqualizerAPOText
         if let decodedProcessing = try values.decodeIfPresent(ProcessingProfile.self, forKey: .processing) {
@@ -232,6 +240,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         try values.encode(outputVolumeScalar, forKey: .outputVolumeScalar)
         try values.encode(sampleRate, forKey: .sampleRate)
         try values.encode(chunkSize, forKey: .chunkSize)
+        try values.encode(spatialRenderingMode, forKey: .spatialRenderingMode)
         // Do not let a placeholder graph overwrite an invalid legacy document.
         // Keeping it unmigrated means the editor can still surface and repair it.
         if unmigratedEqualizerAPOText == nil {

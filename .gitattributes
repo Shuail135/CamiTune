@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Xcode project files are text and should merge as text
+*.pbxproj text
+*.xcscheme text

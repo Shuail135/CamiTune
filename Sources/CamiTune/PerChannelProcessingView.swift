@@ -1,29 +1,21 @@
 import SwiftUI
 
+@MainActor
 struct PerChannelProcessingView: View {
-    @ObservedObject var state: AppState
+    let state: AppState
     @Binding var profile: DeviceProfile
 
-    @State private var selectedChannelIndex = 0
-    @State private var gainDB = 0.0
-    @State private var delayMilliseconds = 0.0
-    @State private var limiterEnabled = false
-    // Per-channel EQ is opt-in; new and migrated profiles begin with zero bands.
-    @State private var bands: [EQBand] = []
-    @State private var pendingBandCount: Int?
-    @State private var showBandReductionConfirmation = false
-    @State private var filterResponse: [EQResponsePoint] = []
-    @State private var totalResponse: [EQResponsePoint] = []
-    @State private var suppressChanges = false
-    @State private var isSaved = true
-    @State private var liveApplyTask: Task<Void, Never>?
-    @State private var runtimeVisualsActive = false
+    @State var selectedChannelIndex = 0
+    @State var pendingBandCount: Int?
+    @State var showBandReductionConfirmation = false
+    @StateObject var runtime = PerChannelEditorRuntime()
+    @State var runtimeVisualsActive = false
 
-    private var profileIsActive: Bool {
+    var profileIsActive: Bool {
         state.isActive && state.activeProfileID == profile.id
     }
 
-    private var editableChannels: [ChannelProcessing] {
+    var editableChannels: [ChannelProcessing] {
         // The current bridge/runtime is stereo. Keeping these as semantic channel
         // records allows the same editor to expand when the runtime exposes a
         // larger channel layout.
@@ -35,7 +27,7 @@ struct PerChannelProcessingView: View {
         ]
     }
 
-    private var selectedChannel: ChannelProcessing {
+    var selectedChannel: ChannelProcessing {
         editableChannels.first(where: { $0.index == selectedChannelIndex })
             ?? editableChannels[0]
     }
@@ -43,26 +35,11 @@ struct PerChannelProcessingView: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("Per-channel EQ, Gain & Delay").font(.title3.bold())
-                    Text(isSaved ? "Saved" : "Not saved")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(isSaved ? Color.green : Color.secondary)
-                    Spacer()
-                    Button("Reset channel") { resetSelectedChannel() }
-                        .disabled(
-                            gainDB == 0 && delayMilliseconds == 0
-                                && bands.isEmpty && !limiterEnabled
-                        )
-                    Button { saveSelectedChannel() } label: {
-                        Text("Save")
-                            .foregroundStyle(Color.white)
-                            .padding(.horizontal, 13)
-                            .padding(.vertical, 5)
-                            .background(Color.blue, in: RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                }
+                PerChannelHeader(
+                    status: runtime.status,
+                    onReset: resetSelectedChannel,
+                    onSave: saveSelectedChannel
+                )
 
                 Text("Global processing runs first. These settings then affect only the selected physical channel.")
                     .font(.caption)
@@ -89,95 +66,37 @@ struct PerChannelProcessingView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                PreampGainControl(
-                    gainDB: $gainDB,
-                    limiterEnabled: $limiterEnabled,
+                PerChannelGainRow(
+                    gain: runtime.gain,
+                    limiter: runtime.limiter,
                     meters: state.meters,
                     profileID: profile.id,
-                    title: "Channel gain",
                     channelIndex: selectedChannelIndex,
-                    visualEffectsEnabled: runtimeVisualsActive
+                    visualEffectsEnabled: runtimeVisualsActive,
+                    onChanged: channelSettingsChanged,
+                    onEditingChanged: continuousEditingChanged
                 )
 
-                HStack(spacing: 12) {
-                    Text("Channel delay")
-                        .frame(width: 130, alignment: .leading)
-                    Slider(value: $delayMilliseconds, in: 0...100, step: 0.01)
-                    Text(
-                        delayMilliseconds.formatted(
-                            .number.precision(.fractionLength(2))
-                        ) + " ms"
-                    )
-                    .monospacedDigit()
-                    .frame(width: 76, alignment: .trailing)
-                }
+                PerChannelDelayRow(
+                    delay: runtime.delay,
+                    onChanged: channelSettingsChanged,
+                    onEditingChanged: continuousEditingChanged
+                )
+
                 Text("Use delay to time-align this channel. Fractional-sample values are supported.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack {
-                        Text("Combined channel response")
-                            .font(.caption.weight(.medium))
-                        Spacer()
-                        Text("gain + channel filters")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    LineGraph(
-                        points: totalResponse.map { ($0.frequency, $0.gainDB) },
-                        xRange: 20...20_000,
-                        yRange: -24...24,
-                        zeroLine: true,
-                        lineColor: .blue
-                    )
-                    .frame(height: 120)
-                }
+                PerChannelResponseGraph(responses: runtime.responses)
 
-                HStack(spacing: 8) {
-                    Text("EQ bands")
-                    Picker("EQ bands", selection: Binding(
-                        get: { bands.count },
-                        set: { requestBandCount($0) }
-                    )) {
-                        ForEach(0...20, id: \.self) { count in
-                            Text("\(count)").tag(count)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 64)
-                }
-
-                if bands.isEmpty {
-                    HStack {
-                        Text("No channel-specific filters. The channel gain still applies.")
-                            .foregroundStyle(.secondary)
-                        Button("Add 8 bands") {
-                            bands = EQEditorSupport.resizedBands(bands, count: 8)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
-                } else {
-                    let columnWidth = 96.0
-                    let contentWidth = GraphicEqualizerBands.requiredContentWidth(
-                        bandCount: bands.count,
-                        columnWidth: columnWidth
-                    )
-                    OverflowAwareHorizontalScrollView(
-                        contentWidth: contentWidth,
-                        height: 402
-                    ) {
-                        GraphicEqualizerBands(
-                            bands: $bands,
-                            spectrum: state.spectrum,
-                            profileID: profile.id,
-                            responsePoints: filterResponse,
-                            setKind: EQEditorSupport.setKind,
-                            columnWidth: columnWidth,
-                            showsSpectrumLevels: false
-                        )
-                    }
-                }
+                PerChannelBandsSection(
+                    bands: runtime.bands,
+                    responses: runtime.responses,
+                    requestBandCount: requestBandCount,
+                    setKind: EQEditorSupport.setKind,
+                    onBandChanged: channelSettingsChanged,
+                    onGainEditingChanged: continuousEditingChanged
+                )
             }
             .padding(6)
         }
@@ -193,215 +112,288 @@ struct PerChannelProcessingView: View {
         }
         .onAppear {
             runtimeVisualsActive = true
-            loadSelectedChannel()
+            loadSelectedChannelIfNeeded()
         }
-        .onChange(of: gainDB) { _ in channelSettingsChanged() }
-        .onChange(of: delayMilliseconds) { _ in channelSettingsChanged() }
-        .onChange(of: limiterEnabled) { _ in channelSettingsChanged() }
-        .onChange(of: bands) { _ in channelSettingsChanged() }
+        .onChange(of: profile.id) { _ in
+            runtime.loadedProfileID = nil
+            loadSelectedChannelIfNeeded()
+        }
         .onChange(of: profile.sampleRate) { _ in updateResponses() }
         .onDisappear {
             runtimeVisualsActive = false
-            liveApplyTask?.cancel()
-            preserveSelectedDraft()
         }
     }
+}
 
-    private func selectChannel(_ index: Int) {
-        guard index != selectedChannelIndex else { return }
-        liveApplyTask?.cancel()
-        preserveSelectedDraft()
-        selectedChannelIndex = index
-        loadSelectedChannel()
-    }
+private struct PerChannelHeader: View {
+    @ObservedObject var status: PerChannelStatusState
+    let onReset: @MainActor () -> Void
+    let onSave: @MainActor () -> Void
 
-    private func requestBandCount(_ count: Int) {
-        guard count != bands.count else { return }
-        if EQEditorSupport.shouldRefitWhenReducing(bands, to: count) {
-            pendingBandCount = count
-            showBandReductionConfirmation = true
-            return
-        }
-        bands = EQEditorSupport.resizedBands(bands, count: count)
-    }
-
-    private var bandReductionConfirmationMessage: String {
-        let target = pendingBandCount ?? bands.count
-        return "Every current band has an active value. Reducing from \(bands.count) to \(target) bands will recalculate frequency, gain, and Q to approximate the same channel-EQ response."
-    }
-
-    private func applyPendingBandReduction() {
-        guard let target = pendingBandCount else { return }
-        pendingBandCount = nil
-        bands = EQEditorSupport.responseFittedBands(
-            bands,
-            count: target,
-            sampleRate: Double(profile.sampleRate)
-        )
-    }
-
-    private func loadSelectedChannel() {
-        suppressChanges = true
-        liveApplyTask?.cancel()
-        let draft = state.channelEQDraft(
-            for: profile.id,
-            channelIndex: selectedChannelIndex
-        )
-        let limiterDraft = state.channelLimiterDraft(
-            for: profile.id,
-            channelIndex: selectedChannelIndex
-        )
-        let delayDraft = state.channelDelayDraft(
-            for: profile.id,
-            channelIndex: selectedChannelIndex
-        )
-        if let draft, let parsed = try? EqualizerAPOParser().parse(draft) {
-            gainDB = parsed.preampDB
-            bands = EQEditorSupport.organizedBands(parsed.bands)
-            delayMilliseconds = delayDraft
-                ?? profile.processing.settings(forChannel: selectedChannelIndex)?.delayMilliseconds
-                ?? 0
-            limiterEnabled = limiterDraft
-                ?? profile.processing.settings(forChannel: selectedChannelIndex)?.limiterEnabled
-                ?? false
-        } else {
-            let settings = profile.processing.settings(forChannel: selectedChannelIndex) ?? .identity
-            gainDB = settings.gainDB
-            bands = EQEditorSupport.organizedBands(settings.bands)
-            delayMilliseconds = delayDraft ?? settings.delayMilliseconds
-            limiterEnabled = limiterDraft ?? settings.limiterEnabled
-        }
-        updateResponses()
-        isSaved = draft == nil && limiterDraft == nil && delayDraft == nil
-        DispatchQueue.main.async { suppressChanges = false }
-    }
-
-    private func channelSettingsChanged() {
-        guard !suppressChanges else { return }
-        updateResponses()
-        isSaved = false
-        preserveSelectedDraft()
-        guard profileIsActive else { return }
-        liveApplyTask?.cancel()
-        liveApplyTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            applySessionDraftsLive()
+    var body: some View {
+        HStack {
+            Text("Per-channel EQ, Gain & Delay").font(.title3.bold())
+            Text(status.isSaved ? "Saved" : "Not saved")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(status.isSaved ? Color.green : Color.secondary)
+            Spacer()
+            Button("Reset channel") {
+                onReset()
+            }
+            .disabled(!status.canReset)
+            Button {
+                onSave()
+            } label: {
+                Text("Save")
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 5)
+                    .background(Color.blue, in: RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
         }
     }
+}
 
-    private func saveSelectedChannel() {
-        liveApplyTask?.cancel()
-        var updated = profile
-        do {
-            try updated.setChannelProcessing(
-                index: selectedChannel.index,
-                role: selectedChannel.role,
-                gainDB: gainDB,
-                bands: bands,
-                delayMilliseconds: delayMilliseconds,
-                limiterEnabled: limiterEnabled
-            )
-        } catch {
-            state.errorMessage = error.localizedDescription
-            return
-        }
+private struct PerChannelGainRow: View {
+    @ObservedObject var gain: PerChannelValueState<Double>
+    @ObservedObject var limiter: PerChannelValueState<Bool>
+    let meters: AudioRuntimeMonitor
+    let profileID: UUID
+    let channelIndex: Int
+    let visualEffectsEnabled: Bool
+    let onChanged: @MainActor () -> Void
+    let onEditingChanged: @MainActor (Bool) -> Void
 
-        profile = updated
-        state.clearChannelEQDraft(
-            for: profile.id,
-            channelIndex: selectedChannel.index
-        )
-        isSaved = true
-        if profileIsActive { applySessionDraftsLive() }
-    }
-
-    private func resetSelectedChannel() {
-        gainDB = 0
-        delayMilliseconds = 0
-        bands = []
-        limiterEnabled = false
-    }
-
-    private func preserveSelectedDraft() {
-        guard !isSaved else { return }
-        state.setChannelEQDraft(
-            EqualizerAPOSerializer().serialize(
-                ParsedEQ(preampDB: gainDB, bands: bands, warnings: [])
+    var body: some View {
+        PreampGainControl(
+            gainDB: Binding(
+                get: { gain.value },
+                set: { newValue in
+                    let clamped = min(12, max(-12, newValue))
+                    guard clamped != gain.value else { return }
+                    gain.value = clamped
+                    onChanged()
+                }
             ),
-            for: profile.id,
-            channelIndex: selectedChannelIndex
-        )
-        state.setChannelLimiterDraft(
-            limiterEnabled,
-            for: profile.id,
-            channelIndex: selectedChannelIndex
-        )
-        state.setChannelDelayDraft(
-            delayMilliseconds,
-            for: profile.id,
-            channelIndex: selectedChannelIndex
-        )
-    }
-
-    private func applySessionDraftsLive() {
-        do {
-            let liveProfile = try state.applyingSessionEQDrafts(to: profile)
-            Task { await state.apply(profile: liveProfile) }
-        } catch {
-            state.errorMessage = error.localizedDescription
-        }
-    }
-
-    private func updateResponses() {
-        filterResponse = EQResponseCalculator().calculate(
-            parsed: ParsedEQ(preampDB: 0, bands: bands, warnings: []),
-            sampleRate: Double(profile.sampleRate)
-        )
-        totalResponse = EQResponseCalculator().calculate(
-            parsed: ParsedEQ(preampDB: gainDB, bands: bands, warnings: []),
-            sampleRate: Double(profile.sampleRate)
+            limiterEnabled: Binding(
+                get: { limiter.value },
+                set: { newValue in
+                    guard newValue != limiter.value else { return }
+                    limiter.value = newValue
+                    onChanged()
+                }
+            ),
+            meters: meters,
+            profileID: profileID,
+            title: "Channel gain",
+            channelIndex: channelIndex,
+            visualEffectsEnabled: visualEffectsEnabled,
+            onEditingChanged: onEditingChanged
         )
     }
 }
 
-private extension ChannelRole {
-    var groupName: String {
-        switch self {
-        case .left, .right: return "Front"
-        case .center: return "Center"
-        case .lowFrequencyEffects: return "Subwoofer"
-        case .leftSurround, .rightSurround: return "Surround"
-        case .leftRearSurround, .rightRearSurround: return "Rear"
-        case .unknown: return "Other"
+private struct PerChannelDelayRow: View {
+    @ObservedObject var delay: PerChannelValueState<Double>
+    let onChanged: @MainActor () -> Void
+    let onEditingChanged: @MainActor (Bool) -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("Channel delay")
+                .frame(width: 130, alignment: .leading)
+            ChannelDelaySlider(
+                value: Binding(
+                    get: { delay.value },
+                    set: { newValue in
+                        let clamped = min(100, max(0, newValue))
+                        guard clamped != delay.value else { return }
+                        delay.value = clamped
+                        onChanged()
+                    }
+                ),
+                onEditingChanged: onEditingChanged
+            )
+            .frame(minWidth: 180, maxWidth: .infinity)
+            Text(
+                delay.value.formatted(
+                    .number.precision(.fractionLength(2))
+                ) + " ms"
+            )
+            .monospacedDigit()
+            .frame(width: 76, alignment: .trailing)
+        }
+    }
+}
+
+/// Pure SwiftUI delay control. The native macOS Slider inherited system accent
+/// rendering (which can produce the black track seen in the screenshot) and its
+/// AppKit tracking could compete with the page ScrollView. This control owns its
+/// hit-testing and uses a high-priority horizontal drag instead.
+private struct ChannelDelaySlider: View {
+    @Binding var value: Double
+    let onEditingChanged: @MainActor (Bool) -> Void
+    @State private var isDragging = false
+
+    private let range = 0.0...100.0
+    private let step = 0.01
+    private let inset: CGFloat = 9
+
+    var body: some View {
+        GeometryReader { geometry in
+            let track = CGRect(
+                x: inset,
+                y: (geometry.size.height - 7) / 2,
+                width: max(1, geometry.size.width - 2 * inset),
+                height: 7
+            )
+            let amount = normalized(value)
+            let thumbX = track.minX + track.width * amount
+
+            ZStack {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.18))
+                    .frame(width: track.width, height: track.height)
+                    .position(x: track.midX, y: track.midY)
+
+                Capsule()
+                    .fill(Color.blue.opacity(0.9))
+                    .frame(width: track.width, height: track.height)
+                    .scaleEffect(x: amount, y: 1, anchor: .leading)
+                    .position(x: track.midX, y: track.midY)
+
+                Circle()
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                    .overlay(Circle().stroke(Color.primary.opacity(0.75), lineWidth: 1.5))
+                    .frame(width: 17, height: 17)
+                    .shadow(color: .black.opacity(0.2), radius: 1.5, y: 1)
+                    .position(x: thumbX, y: track.midY)
+            }
+            .contentShape(Rectangle())
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        if !isDragging {
+                            isDragging = true
+                            onEditingChanged(true)
+                        }
+                        setValue(forX: gesture.location.x, track: track)
+                    }
+                    .onEnded { _ in
+                        guard isDragging else { return }
+                        isDragging = false
+                        onEditingChanged(false)
+                    }
+            )
+        }
+        .frame(height: 24)
+        .accessibilityElement()
+        .accessibilityLabel("Channel delay")
+        .accessibilityValue("\(value.formatted(.number.precision(.fractionLength(2)))) milliseconds")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: value = quantized(min(range.upperBound, value + step))
+            case .decrement: value = quantized(max(range.lowerBound, value - step))
+            @unknown default: break
+            }
         }
     }
 
-    var displayName: String {
-        switch self {
-        case .left: return "Left"
-        case .right: return "Right"
-        case .center: return "Center"
-        case .lowFrequencyEffects: return "Low-frequency effects"
-        case .leftSurround: return "Left surround"
-        case .rightSurround: return "Right surround"
-        case .leftRearSurround: return "Left rear surround"
-        case .rightRearSurround: return "Right rear surround"
-        case .unknown: return "Unknown"
-        }
+    private func normalized(_ current: Double) -> Double {
+        let clamped = min(range.upperBound, max(range.lowerBound, current))
+        return (clamped - range.lowerBound) / (range.upperBound - range.lowerBound)
     }
 
-    var shortName: String {
-        switch self {
-        case .left: return "L"
-        case .right: return "R"
-        case .center: return "C"
-        case .lowFrequencyEffects: return "LFE"
-        case .leftSurround: return "Ls"
-        case .rightSurround: return "Rs"
-        case .leftRearSurround: return "Lrs"
-        case .rightRearSurround: return "Rrs"
-        case .unknown: return "?"
+    private func setValue(forX x: CGFloat, track: CGRect) {
+        let ratio = min(1, max(0, (x - track.minX) / track.width))
+        let raw = range.lowerBound + Double(ratio) * (range.upperBound - range.lowerBound)
+        let next = quantized(raw)
+        guard next != value else { return }
+        value = next
+    }
+
+    private func quantized(_ raw: Double) -> Double {
+        (raw / step).rounded() * step
+    }
+}
+
+private struct PerChannelResponseGraph: View {
+    @ObservedObject var responses: PerChannelResponseState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("Combined channel response")
+                    .font(.caption.weight(.medium))
+                Spacer()
+                Text("gain + channel filters")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            LineGraph(
+                points: responses.totalResponse.map { ($0.frequency, $0.gainDB) },
+                xRange: 20...20_000,
+                yRange: -24...24,
+                zeroLine: true,
+                lineColor: .blue
+            )
+            .frame(height: 120)
+        }
+    }
+}
+
+private struct PerChannelBandsSection: View {
+    @ObservedObject var bands: PerChannelBandsState
+    let responses: PerChannelResponseState
+    let requestBandCount: @MainActor (Int) -> Void
+    let setKind: (EQBand.Kind, inout EQBand) -> Void
+    let onBandChanged: @MainActor () -> Void
+    let onGainEditingChanged: @MainActor (Bool) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text("EQ bands")
+                Picker("EQ bands", selection: Binding(
+                    get: { bands.count },
+                    set: { requestBandCount($0) }
+                )) {
+                    ForEach(0...20, id: \.self) { count in
+                        Text("\(count)").tag(count)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 64)
+            }
+
+            if bands.isEmpty {
+                HStack {
+                    Text("No channel-specific filters. The channel gain still applies.")
+                        .foregroundStyle(.secondary)
+                    Button("Add 8 bands") { requestBandCount(8) }
+                }
+                .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
+            } else {
+                let columnWidth = 96.0
+                let contentWidth = GraphicEqualizerBands.requiredContentWidth(
+                    bandCount: bands.count,
+                    columnWidth: columnWidth
+                )
+                OverflowAwareHorizontalScrollView(
+                    contentWidth: contentWidth,
+                    height: 402
+                ) {
+                    PerChannelGraphicEqualizerBands(
+                        bands: bands,
+                        responses: responses,
+                        setKind: setKind,
+                        columnWidth: columnWidth,
+                        onBandChanged: onBandChanged,
+                        onGainEditingChanged: onGainEditingChanged
+                    )
+                }
+            }
         }
     }
 }

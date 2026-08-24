@@ -3,14 +3,19 @@ import SwiftUI
 /// Simple crossfeed controls. The split/merge mixers and the cross-path
 /// low-pass, delay, and gain filters remain graph/compiler implementation
 /// details as required by the roadmap.
+@MainActor
 struct CrossfeedEditorView: View {
-    @ObservedObject var state: AppState
+    let state: AppState
     @Binding var profile: DeviceProfile
 
     @State private var settings = CrossfeedProcessor.standard
     @State private var isEnabled = false
     @State private var suppressChanges = false
     @State private var liveApplyTask: Task<Void, Never>?
+    @State private var hasPendingCommit = false
+    @State private var pendingCommitGeneration: UInt64 = 0
+    @State private var continuousEditDepth = 0
+    @State private var loadedProfileID: UUID?
 
     private var profileIsActive: Bool {
         state.isActive && state.activeProfileID == profile.id
@@ -91,8 +96,12 @@ struct CrossfeedEditorView: View {
             }
             .padding(6)
         }
-        .onAppear { load() }
-        .onChange(of: profile.id) { _ in load() }
+        .onAppear { loadIfNeeded() }
+        .onChange(of: profile.id) { _ in
+            loadedProfileID = nil
+            loadIfNeeded()
+        }
+        .onDisappear { flushPendingCommit() }
     }
 
     private func controlRow(
@@ -105,31 +114,117 @@ struct CrossfeedEditorView: View {
         HStack(spacing: 12) {
             Text(title)
                 .frame(width: 130, alignment: .leading)
-            Slider(value: value, in: range, step: step)
+            Slider(
+                value: value,
+                in: range,
+                step: step,
+                onEditingChanged: { isEditing in
+                    continuousEditingChanged(isEditing)
+                }
+            )
             Text(valueText)
                 .monospacedDigit()
                 .frame(width: 78, alignment: .trailing)
         }
     }
 
+    private func loadIfNeeded() {
+        guard loadedProfileID != profile.id else { return }
+        load()
+    }
+
     private func load() {
+        liveApplyTask?.cancel()
+        pendingCommitGeneration &+= 1
+        hasPendingCommit = false
         suppressChanges = true
         let saved = profile.processing.crossfeed
         settings = saved?.processor ?? .standard
         isEnabled = saved?.isEnabled ?? false
+        loadedProfileID = profile.id
         DispatchQueue.main.async { suppressChanges = false }
     }
 
     private func commit() {
         guard !suppressChanges else { return }
-        profile.processing.setCrossfeed(settings, enabled: isEnabled)
-        guard profileIsActive else { return }
-        let updated = profile
         liveApplyTask?.cancel()
-        liveApplyTask = Task {
-            try? await Task.sleep(for: .milliseconds(120))
-            guard !Task.isCancelled else { return }
-            await state.apply(profile: updated)
+        pendingCommitGeneration &+= 1
+        hasPendingCommit = true
+        guard continuousEditDepth == 0 else { return }
+        scheduleCommit(milliseconds: 120)
+    }
+
+    private func continuousEditingChanged(_ isEditing: Bool) {
+        if isEditing {
+            continuousEditDepth += 1
+            liveApplyTask?.cancel()
+            return
         }
+        continuousEditDepth = max(0, continuousEditDepth - 1)
+        guard continuousEditDepth == 0, hasPendingCommit else { return }
+        scheduleCommit(milliseconds: 50)
+    }
+
+    private func scheduleCommit(milliseconds: Int) {
+        liveApplyTask?.cancel()
+        let generation = pendingCommitGeneration
+        let pendingSettings = settings
+        let pendingEnabled = isEnabled
+        let profileID = profile.id
+        liveApplyTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .milliseconds(milliseconds))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  continuousEditDepth == 0,
+                  profile.id == profileID,
+                  pendingCommitGeneration == generation else { return }
+            await persist(
+                pendingSettings,
+                enabled: pendingEnabled,
+                profileID: profileID
+            )
+            if pendingCommitGeneration == generation {
+                hasPendingCommit = false
+            }
+        }
+    }
+
+    private func flushPendingCommit() {
+        guard !suppressChanges, hasPendingCommit else { return }
+        liveApplyTask?.cancel()
+        let generation = pendingCommitGeneration
+        let pendingSettings = settings
+        let pendingEnabled = isEnabled
+        let profileID = profile.id
+        Task { @MainActor in
+            guard profile.id == profileID,
+                  pendingCommitGeneration == generation else { return }
+            await persist(
+                pendingSettings,
+                enabled: pendingEnabled,
+                profileID: profileID
+            )
+            if pendingCommitGeneration == generation {
+                hasPendingCommit = false
+            }
+        }
+    }
+
+    @MainActor
+    private func persist(
+        _ pendingSettings: CrossfeedProcessor,
+        enabled: Bool,
+        profileID: UUID
+    ) async {
+        guard profile.id == profileID else { return }
+        var updated = profile
+        updated.processing.setCrossfeed(pendingSettings, enabled: enabled)
+        guard updated != profile else { return }
+        profile = updated
+        guard profileIsActive else { return }
+        await state.apply(profile: updated)
     }
 }

@@ -32,13 +32,39 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
 
     deinit { stop() }
 
+    /// Starts a fresh driver transport without performing any lifecycle join,
+    /// shared-memory setup, or Core Audio transaction on MainActor. The caller
+    /// still awaits completion so route transitions remain serialized, but the
+    /// SwiftUI run loop stays free while the blocking work executes.
     @MainActor
     func start(
         deviceObjectID: AudioObjectID,
         expectedSampleRate: Double,
         pcmRouter: PCMRouter,
         perAppAudio: PerAppAudioController
-    ) throws {
+    ) async throws {
+        let runGeneration = try await Task.detached(priority: .userInitiated) { [self] in
+            try startSynchronously(
+                deviceObjectID: deviceObjectID,
+                expectedSampleRate: expectedSampleRate,
+                pcmRouter: pcmRouter,
+                perAppAudio: perAppAudio
+            )
+        }.value
+
+        guard isCurrentGeneration(runGeneration) else { return }
+        runtimeError = nil
+        status = "Waiting for System Audio Bridge frames…"
+    }
+
+    /// Blocking lifecycle primitive used only from detached work or synchronous
+    /// process teardown. Never call this directly from MainActor.
+    private func startSynchronously(
+        deviceObjectID: AudioObjectID,
+        expectedSampleRate: Double,
+        pcmRouter: PCMRouter,
+        perAppAudio: PerAppAudioController
+    ) throws -> UInt64 {
         stop()
         guard let transport = sabr_client_transport_create(
             sabr_client_transport_max_channels(),
@@ -63,15 +89,14 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         workerFinished = false
         generation &+= 1
         let runGeneration = generation
-        state.unlock()
-
         let thread = Thread { [weak self] in self?.run(generation: runGeneration) }
         thread.name = "System Audio Bridge Transport"
         thread.qualityOfService = .userInteractive
         worker = thread
-        runtimeError = nil
-        status = "Waiting for System Audio Bridge frames…"
+        state.unlock()
+
         thread.start()
+        return runGeneration
     }
 
     func stop() {
@@ -79,9 +104,10 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         generation &+= 1
         let stoppedGeneration = generation
         stopping = true
-        // The worker only polls the shared ring and never performs blocking I/O.
-        // Wait for it to release the mapped region before destroying that
-        // region; a timeout here could otherwise turn a slow shutdown into a
+        // Wait for the worker to release the mapped region before destroying
+        // that region. The worker may be finishing an in-flight per-app mix, so
+        // this blocking primitive must never be invoked directly by MainActor.
+        // A timeout here could otherwise turn a slow shutdown into a
         // use-after-unmap crash.
         while !workerFinished { state.wait() }
         let transport = self.transport
@@ -103,6 +129,14 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             self?.statistics = Statistics()
             self?.runtimeError = nil
         }
+    }
+
+    /// Route shutdown can wait for an in-flight per-app mix to finish. Never
+    /// make that join on MainActor, where it would freeze every SwiftUI window.
+    func stopWithoutBlockingUI() async {
+        await Task.detached(priority: .userInitiated) { [self] in
+            stop()
+        }.value
     }
 
     private func run(generation runGeneration: UInt64) {

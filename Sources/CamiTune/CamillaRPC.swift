@@ -1,11 +1,29 @@
 import Foundation
 
+private final class CamillaRPCWatchdog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+
+    func markFired() {
+        lock.lock()
+        fired = true
+        lock.unlock()
+    }
+
+    var didFire: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return fired
+    }
+}
+
 actor CamillaRPC {
     private var task: URLSessionWebSocketTask?
     private let session = URLSession(configuration: .default)
     private let url: URL
     private var requestInProgress = false
     private var requestWaiters: [CheckedContinuation<Void, Never>] = []
+    private let requestTimeout: Duration = .seconds(2.5)
 
     init(port: UInt16) {
         self.url = URL(string: "ws://127.0.0.1:\(port)")!
@@ -51,11 +69,41 @@ actor CamillaRPC {
         // UI debounce tasks are routinely cancelled; shield this exchange in
         // an independent task so cancellation cannot leave the next command to
         // consume the previous command's reply.
+        let socket = task
         let exchange = Task {
-            try await task.send(.string(text))
-            return try await task.receive()
+            try await socket.send(.string(text))
+            return try await socket.receive()
         }
-        let message = try await exchange.value
+        let watchdog = CamillaRPCWatchdog()
+        let timeout = requestTimeout
+        let watchdogTask = Task.detached(priority: .utility) {
+            do {
+                try await Task.sleep(for: timeout)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            watchdog.markFired()
+            // Cancelling the socket is intentional: a timed-out receive must
+            // finish before the serial request slot is released, otherwise a
+            // later command could consume this command's delayed reply.
+            socket.cancel(with: .goingAway, reason: nil)
+        }
+
+        let message: URLSessionWebSocketTask.Message
+        do {
+            message = try await exchange.value
+            watchdogTask.cancel()
+            if watchdog.didFire {
+                if self.task === socket { self.task = nil }
+                throw RPCError.requestTimedOut
+            }
+        } catch {
+            watchdogTask.cancel()
+            if self.task === socket { self.task = nil }
+            if watchdog.didFire { throw RPCError.requestTimedOut }
+            throw error
+        }
         let responseData: Data
         switch message {
         case .string(let value): responseData = Data(value.utf8)
@@ -220,12 +268,14 @@ actor CamillaRPC {
     enum RPCError: LocalizedError {
         case notConnected
         case invalidRequest
+        case requestTimedOut
         case invalidResponse(String)
         case commandFailed(String)
         var errorDescription: String? {
             switch self {
             case .notConnected: return "CamillaDSP websocket is not connected."
             case .invalidRequest: return "CamiTune attempted to send an invalid command to CamillaDSP."
+            case .requestTimedOut: return "CamillaDSP did not answer the control request in time."
             case .invalidResponse(let detail): return "CamillaDSP returned an invalid response: \(detail)."
             case .commandFailed(let value): return "CamillaDSP command failed: \(value)"
             }

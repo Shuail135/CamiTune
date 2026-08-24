@@ -45,7 +45,7 @@ struct CamillaDSPRuntimePatch: Hashable, Sendable {
 
 /// The only layer that knows how a ProcessingGraph maps to CamillaDSP's full
 /// configuration and runtime filter-patch formats.
-struct CamillaDSPCompiler {
+struct CamillaDSPCompiler: Sendable {
     func compile(_ graph: ProcessingGraph) -> CamillaDSPConfiguration {
         let filters = graph.processors.map(yamlFilter)
         let filterSection = filters.isEmpty

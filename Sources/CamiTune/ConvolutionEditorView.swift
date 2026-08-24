@@ -1,8 +1,9 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+@MainActor
 struct ConvolutionEditorView: View {
-    @ObservedObject var state: AppState
+    let state: AppState
     @Binding var profile: DeviceProfile
 
     @State private var convolution: ConvolutionProcessor?
@@ -10,6 +11,7 @@ struct ConvolutionEditorView: View {
     @State private var showImporter = false
     @State private var isImporting = false
     @State private var suppressChanges = false
+    @State private var loadedProfileID: UUID?
 
     private var profileIsActive: Bool {
         state.isActive && state.activeProfileID == profile.id
@@ -104,8 +106,11 @@ struct ConvolutionEditorView: View {
             }
             .padding(6)
         }
-        .onAppear { load() }
-        .onChange(of: profile.id) { _ in load() }
+        .onAppear { loadIfNeeded() }
+        .onChange(of: profile.id) { _ in
+            loadedProfileID = nil
+            loadIfNeeded()
+        }
         .fileImporter(
             isPresented: $showImporter,
             allowedContentTypes: [.wav],
@@ -120,11 +125,17 @@ struct ConvolutionEditorView: View {
         }
     }
 
+    private func loadIfNeeded() {
+        guard loadedProfileID != profile.id else { return }
+        load()
+    }
+
     private func load() {
         suppressChanges = true
         let saved = profile.processing.convolution
         convolution = saved?.processor
         isEnabled = saved?.isEnabled ?? false
+        loadedProfileID = profile.id
         DispatchQueue.main.async { suppressChanges = false }
     }
 

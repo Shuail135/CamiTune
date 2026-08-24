@@ -22,6 +22,9 @@ final class SpectrumAnalyzer: ObservableObject, @unchecked Sendable {
     private var receivedBuffer = false
     private var analysisSessionID: UUID?
     private var presentedProfileID: UUID?
+    private var pendingPointsPublication: ([SpectrumPoint], AudioRuntimeSession)?
+    private var pointsPublicationScheduled = false
+    private var pointsPublicationGeneration: UInt64 = 0
     private var sourceName = "System Audio Bridge"
 
     deinit {
@@ -29,11 +32,14 @@ final class SpectrumAnalyzer: ObservableObject, @unchecked Sendable {
     }
 
     @MainActor
-    func start(session: AudioRuntimeSession, sourceName: String) {
-        stop()
-        stateLock.lock()
-        analysisSessionID = session.id
-        stateLock.unlock()
+    func start(session: AudioRuntimeSession, sourceName: String) async {
+        await stopWithoutBlockingUI()
+        stateLock.withLock {
+            analysisSessionID = session.id
+            pendingPointsPublication = nil
+            pointsPublicationScheduled = false
+            pointsPublicationGeneration &+= 1
+        }
         activeSession = session
         lastPointsPublication = .distantPast
         self.sourceName = sourceName
@@ -55,15 +61,18 @@ final class SpectrumAnalyzer: ObservableObject, @unchecked Sendable {
             presentedProfileID = nil
         }
         let shouldReset = previous != presentedProfileID
+        if shouldReset {
+            pendingPointsPublication = nil
+            pointsPublicationScheduled = false
+            pointsPublicationGeneration &+= 1
+        }
         stateLock.unlock()
         guard shouldReset else { return }
         points = []
         lastPointsPublication = .distantPast
-        processingLock.lock()
-        pendingSamples.removeAll(keepingCapacity: true)
-        smoothedDB.removeAll(keepingCapacity: true)
-        processingLock.unlock()
-        resetReceivedBuffer()
+        Task.detached(priority: .utility) { [weak self] in
+            self?.resetProcessingState()
+        }
     }
 
     func ingest(
@@ -110,19 +119,44 @@ final class SpectrumAnalyzer: ObservableObject, @unchecked Sendable {
     }
 
     @MainActor
-    func stop() {
-        stateLock.lock()
-        analysisSessionID = nil
-        stateLock.unlock()
+    func stopWithoutBlockingUI() async {
+        invalidateSessionAndPresentation()
         activeSession = nil
         lastPointsPublication = .distantPast
         points = []
+        status = "Analyzer idle"
+        await Task.detached(priority: .utility) { [self] in
+            resetProcessingState()
+        }.value
+    }
+
+    /// Synchronous teardown is retained for process termination and targeted
+    /// tests. Normal runtime transitions should await stopWithoutBlockingUI().
+    @MainActor
+    func stop() {
+        invalidateSessionAndPresentation()
+        activeSession = nil
+        lastPointsPublication = .distantPast
+        points = []
+        resetProcessingState()
+        status = "Analyzer idle"
+    }
+
+    private func invalidateSessionAndPresentation() {
+        stateLock.lock()
+        analysisSessionID = nil
+        pendingPointsPublication = nil
+        pointsPublicationScheduled = false
+        pointsPublicationGeneration &+= 1
+        stateLock.unlock()
+    }
+
+    private func resetProcessingState() {
         processingLock.lock()
         pendingSamples.removeAll(keepingCapacity: true)
         smoothedDB.removeAll(keepingCapacity: true)
         processingLock.unlock()
         resetReceivedBuffer()
-        status = "Analyzer idle"
     }
 
     private func accept(
@@ -252,20 +286,60 @@ final class SpectrumAnalyzer: ObservableObject, @unchecked Sendable {
                     let frequency = minimumFrequency * pow(maximumFrequency / minimumFrequency, t)
                     return SpectrumPoint(frequency: frequency, db: db)
                 }
-                Task { @MainActor [weak self] in
-                    guard let self,
-                          self.activeSession == session,
-                          self.accepts(session: session) else { return }
-                    let now = Date()
-                    guard UIRenderPerformance.allowsSpectrumPublication(
-                        since: self.lastPointsPublication,
-                        now: now
-                    ) else { return }
-                    self.lastPointsPublication = now
-                    self.points = mapped
-                }
+                schedulePointsPublication(mapped, session: session)
             }
         }
+    }
+
+    /// Keep only the newest FFT result while MainActor is occupied. Without
+    /// this gate, scrolling can leave a tail of obsolete graph updates that
+    /// continues invalidating the view after the interaction has finished.
+    private func schedulePointsPublication(
+        _ points: [SpectrumPoint],
+        session: AudioRuntimeSession
+    ) {
+        stateLock.lock()
+        guard analysisSessionID == session.id,
+              presentedProfileID == session.profileID else {
+            stateLock.unlock()
+            return
+        }
+        pendingPointsPublication = (points, session)
+        guard !pointsPublicationScheduled else {
+            stateLock.unlock()
+            return
+        }
+        pointsPublicationScheduled = true
+        let generation = pointsPublicationGeneration
+        stateLock.unlock()
+
+        Task { @MainActor [weak self] in
+            self?.publishPendingPoints(generation: generation)
+        }
+    }
+
+    @MainActor
+    private func publishPendingPoints(generation: UInt64) {
+        stateLock.lock()
+        guard pointsPublicationGeneration == generation else {
+            stateLock.unlock()
+            return
+        }
+        let publication = pendingPointsPublication
+        pendingPointsPublication = nil
+        pointsPublicationScheduled = false
+        stateLock.unlock()
+
+        guard let (mapped, session) = publication,
+              activeSession == session,
+              accepts(session: session) else { return }
+        let now = Date()
+        guard UIRenderPerformance.allowsSpectrumPublication(
+            since: lastPointsPublication,
+            now: now
+        ) else { return }
+        lastPointsPublication = now
+        points = mapped
     }
 
     private func markFirstBufferReceived() -> Bool {

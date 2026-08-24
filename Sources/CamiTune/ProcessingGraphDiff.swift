@@ -10,7 +10,7 @@ enum ProcessingGraphUpdate: Equatable, Sendable {
     case replaceConfiguration
 }
 
-struct ProcessingGraphDiffer {
+struct ProcessingGraphDiffer: Sendable {
     func update(
         from current: ProcessingGraph,
         to next: ProcessingGraph

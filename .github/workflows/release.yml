@@ -1,4 +1,4 @@
-name: Build and release
+name: CamiTune CI and Release
 
 on:
   push:
@@ -8,330 +8,147 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: read
   contents: read
+
+concurrency:
+  group: camitune-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   build:
-    runs-on: macos-latest
+    name: Build application
+    runs-on: macos-26
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
 
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Restore audio component cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/camilladsp/camilladsp
+            build/camilladsp/build-key
+            build/driver/CamillaAudio.driver
+            build/driver/build-key
+          key: audio-components-${{ runner.os }}-${{ runner.arch }}-camilladsp-05e9cfcdf43c0dfe078ed3feb8af4c8bd701fd74-${{ hashFiles('Contributions/CamillaDSP/*.patch', 'Drivers/SystemAudioBridge/Driver/**', 'Drivers/SystemAudioBridge/Shared/**', 'Drivers/SystemAudioBridge/build-driver.sh') }}
+
+      - name: Validate release tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tags must use vMAJOR.MINOR.PATCH, for example v0.3.1."
+            exit 1
+          fi
+
       - name: Build application
+        shell: bash
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
         run: ./build-app.sh
 
-      - name: Verify application bundle
+      - name: Verify Release bundle
+        if: github.ref_type == 'tag'
         shell: bash
         run: |
           set -euo pipefail
+          app="dist/CamiTune.app"
+          executable="$app/Contents/MacOS/CamiTune"
+          resources="$app/Contents/Resources"
+          expected_version="${GITHUB_REF_NAME#v}"
 
-          APP="dist/CamiTune.app"
-          EXECUTABLE="${APP}/Contents/MacOS/CamiTune"
-          RESOURCES="${APP}/Contents/Resources"
-          ICON="${RESOURCES}/icon.png"
-          LICENSE="${RESOURCES}/LICENSE"
-          THIRD_PARTY="${RESOURCES}/THIRD_PARTY.md"
-          DRIVER="${APP}/Contents/Resources/Drivers/CamillaAudio.driver"
-          CAMILLADSP="${APP}/Contents/Resources/CamillaDSP/camilladsp"
+          test -d "$app" || { echo "::error::Missing $app"; exit 1; }
+          test -x "$executable" || { echo "::error::Missing app executable"; exit 1; }
+          test -s "$resources/icon.png" || { echo "::error::Missing icon.png"; exit 1; }
+          test -s "$resources/LICENSE" || { echo "::error::Missing LICENSE"; exit 1; }
+          test -s "$resources/THIRD_PARTY.md" || { echo "::error::Missing THIRD_PARTY.md"; exit 1; }
+          test -d "$resources/DeviceCorrectionTargets" || { echo "::error::Missing DeviceCorrectionTargets"; exit 1; }
+          test -d "$resources/Drivers/CamillaAudio.driver" || { echo "::error::Missing bundled audio driver"; exit 1; }
+          test -x "$resources/CamillaDSP/camilladsp" || { echo "::error::Missing bundled CamillaDSP"; exit 1; }
 
-          echo "=== Checking application ==="
-
-          if [[ ! -d "${APP}" ]]; then
-            echo "::error::Application bundle does not exist: ${APP}"
+          bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+          if [[ "$bundle_version" != "$expected_version" ]]; then
+            echo "::error::Bundle version $bundle_version does not match tag $GITHUB_REF_NAME."
             exit 1
           fi
 
-          if [[ ! -x "${EXECUTABLE}" ]]; then
-            echo "::error::Main executable missing or not executable: ${EXECUTABLE}"
-            exit 1
-          fi
-
-          echo "=== Checking application resources ==="
-
-          for resource in "${ICON}" "${LICENSE}" "${THIRD_PARTY}"; do
-            if [[ ! -s "${resource}" ]]; then
-              echo "::error::Application resource is missing or empty: ${resource}"
-              exit 1
-            fi
-          done
-
-          if [[ ! -x "${CAMILLADSP}" ]]; then
-            echo "::error::UID-capable CamillaDSP is missing or not executable: ${CAMILLADSP}"
-            exit 1
-          fi
-
-          SWIFTPM_BUNDLE="$(find "${APP}" -name 'CamiTune_CamiTune.bundle' -print -quit)"
-          if [[ -n "${SWIFTPM_BUNDLE}" ]]; then
-            echo "::error::The direct compiler build unexpectedly contains a SwiftPM resource bundle."
-            exit 1
-          fi
-
-          echo "Application resources are present and no SwiftPM bundle is required."
-
-          echo
-          echo "=== Checking bundled driver ==="
-
-          if [[ ! -d "${DRIVER}" ]]; then
-            echo "::error::Bundled audio driver is missing: ${DRIVER}"
-            exit 1
-          fi
-
-          echo
-          echo "=== Main executable ==="
-          file "${EXECUTABLE}"
-
-          echo
+          echo "=== Application ==="
+          file "$executable"
           echo "=== Linked libraries ==="
-          otool -L "${EXECUTABLE}"
+          otool -L "$executable"
+          echo "=== Signature ==="
+          codesign --display --verbose=4 "$app"
 
-          echo
-          echo "=== Code signature ==="
-
-          # DO NOT use `|| true`.
-          # A broken signature must fail the workflow.
-          codesign --display --verbose=4 "${APP}"
-          codesign --verify --deep --strict --verbose=4 "${APP}"
-
-          echo
-          echo "Application bundle verification passed."
-
-      - name: Verify bundle version
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Package Release
+        if: github.ref_type == 'tag'
         shell: bash
         run: |
           set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          archive="CamiTune-v${version}-app.zip"
 
-          bundle_version="$(/usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleShortVersionString' \
-            dist/CamiTune.app/Contents/Info.plist)"
+          ditto -c -k --sequesterRsrc --keepParent dist/CamiTune.app "$archive"
+          test -s "$archive" || { echo "::error::Release ZIP was not created."; exit 1; }
+          shasum -a 256 "$archive" > SHA256SUMS
 
-          if [[ "${GITHUB_REF_NAME}" != "v${bundle_version}" ]]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match bundle version v${bundle_version}."
-            exit 1
-          fi
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          ditto -x -k "$archive" "$tmp"
+          codesign --verify --deep --strict --verbose=4 "$tmp/CamiTune.app"
+          shasum -a 256 -c SHA256SUMS
 
-          echo "Bundle version matches tag: ${bundle_version}"
-
-      - name: Package application
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          version="$(/usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleShortVersionString' \
-            dist/CamiTune.app/Contents/Info.plist)"
-
-          app_archive="CamiTune-v${version}-app.zip"
-          build_archive="CamiTune-v${version}-build-folder.zip"
-
-          ditto -c -k --sequesterRsrc --keepParent \
-            dist/CamiTune.app \
-            "${app_archive}"
-
-          ditto -c -k --sequesterRsrc --keepParent \
-            dist \
-            "${build_archive}"
-
-          if [[ ! -s "${app_archive}" ]]; then
-            echo "::error::Application ZIP was not created."
-            exit 1
-          fi
-
-          if [[ ! -s "${build_archive}" ]]; then
-            echo "::error::Build-folder ZIP was not created."
-            exit 1
-          fi
-
-          shasum -a 256 \
-            "${app_archive}" \
-            "${build_archive}" > SHA256SUMS
-
-      - name: Verify packaged application
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          version="$(/usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleShortVersionString' \
-            dist/CamiTune.app/Contents/Info.plist)"
-
-          ARCHIVE="CamiTune-v${version}-app.zip"
-          TMP="$(mktemp -d)"
-
-          cleanup() {
-            rm -rf "${TMP}"
-          }
-
-          trap cleanup EXIT
-
-          echo "Extracting ${ARCHIVE}"
-
-          ditto -x -k \
-            "${ARCHIVE}" \
-            "${TMP}"
-
-          APP="${TMP}/CamiTune.app"
-          EXECUTABLE="${APP}/Contents/MacOS/CamiTune"
-          RESOURCES="${APP}/Contents/Resources"
-          ICON="${RESOURCES}/icon.png"
-          LICENSE="${RESOURCES}/LICENSE"
-          THIRD_PARTY="${RESOURCES}/THIRD_PARTY.md"
-          DRIVER="${APP}/Contents/Resources/Drivers/CamillaAudio.driver"
-          CAMILLADSP="${APP}/Contents/Resources/CamillaDSP/camilladsp"
-
-          echo
-          echo "=== Checking extracted application ==="
-
-          if [[ ! -d "${APP}" ]]; then
-            echo "::error::CamiTune.app missing from packaged ZIP."
-            exit 1
-          fi
-
-          if [[ ! -x "${EXECUTABLE}" ]]; then
-            echo "::error::Executable missing from packaged application."
-            exit 1
-          fi
-
-          echo
-          echo "=== Checking packaged application resources ==="
-
-          for resource in "${ICON}" "${LICENSE}" "${THIRD_PARTY}"; do
-            if [[ ! -s "${resource}" ]]; then
-              echo "::error::Packaged application resource is missing or empty: ${resource}"
-              exit 1
-            fi
-          done
-
-          if [[ ! -x "${CAMILLADSP}" ]]; then
-            echo "::error::Packaged UID-capable CamillaDSP is missing or not executable."
-            exit 1
-          fi
-
-          SWIFTPM_BUNDLE="$(find "${APP}" -name 'CamiTune_CamiTune.bundle' -print -quit)"
-          if [[ -n "${SWIFTPM_BUNDLE}" ]]; then
-            echo "::error::Packaged direct compiler build contains a SwiftPM resource bundle."
-            exit 1
-          fi
-
-          echo "Packaged application resources are present."
-
-          echo
-          echo "=== Checking packaged driver ==="
-
-          if [[ ! -d "${DRIVER}" ]]; then
-            echo "::error::Audio driver missing from packaged application."
-            exit 1
-          fi
-
-          echo
-          echo "=== Packaged executable ==="
-          file "${EXECUTABLE}"
-
-          echo
-          echo "=== Verifying packaged code signature ==="
-          codesign --verify \
-            --deep \
-            --strict \
-            --verbose=4 \
-            "${APP}"
-
-          echo
-          echo "======================================"
-          echo "PACKAGED APPLICATION PASSED ALL CHECKS"
-          echo "======================================"
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload Release files
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@v7
         with:
-          name: CamiTune-macos
+          name: CamiTune-${{ github.ref_name }}
           path: |
             CamiTune-v*-app.zip
-            CamiTune-v*-build-folder.zip
             SHA256SUMS
           if-no-files-found: error
+          retention-days: 14
 
   release:
+    name: Publish GitHub Release
     if: github.event_name == 'push' && github.ref_type == 'tag'
     needs: build
     runs-on: ubuntu-latest
-
     permissions:
       actions: read
       contents: write
 
     steps:
-      - name: Download tagged build artifact
-        uses: actions/download-artifact@v4
+      - name: Download Release files
+        uses: actions/download-artifact@v8
         with:
-          name: CamiTune-macos
+          name: CamiTune-${{ github.ref_name }}
+          path: release-files
 
-      - name: Verify release files
+      - name: Verify downloaded files
+        working-directory: release-files
         shell: bash
         run: |
           set -euo pipefail
+          sha256sum -c SHA256SUMS
+          expected="CamiTune-${GITHUB_REF_NAME}-app.zip"
+          test -s "$expected" || { echo "::error::Expected $expected"; exit 1; }
 
-          ls -lah
-
-          shopt -s nullglob
-
-          app_archives=(CamiTune-v*-app.zip)
-          build_archives=(CamiTune-v*-build-folder.zip)
-
-          if [[ "${#app_archives[@]}" -ne 1 ]]; then
-            echo "::error::Expected exactly one application archive."
-            exit 1
-          fi
-
-          if [[ "${#build_archives[@]}" -ne 1 ]]; then
-            echo "::error::Expected exactly one build-folder archive."
-            exit 1
-          fi
-
-          if [[ ! -s SHA256SUMS ]]; then
-            echo "::error::SHA256SUMS is missing."
-            exit 1
-          fi
-
-          shasum -a 256 -c SHA256SUMS
-
-          expected_app="CamiTune-${GITHUB_REF_NAME}-app.zip"
-          expected_build="CamiTune-${GITHUB_REF_NAME}-build-folder.zip"
-
-          if [[ "${app_archives[0]}" != "${expected_app}" ]]; then
-            echo "::error::Tagged build should produce ${expected_app}, but produced ${app_archives[0]}."
-            exit 1
-          fi
-
-          if [[ "${build_archives[0]}" != "${expected_build}" ]]; then
-            echo "::error::Tagged build should produce ${expected_build}, but produced ${build_archives[0]}."
-            exit 1
-          fi
-
-          bundle_version="$(
-            unzip -p "${app_archives[0]}" 'CamiTune.app/Contents/Info.plist' |
-              sed -n 's#.*<key>CFBundleShortVersionString</key><string>\([^<]*\)</string>.*#\1#p'
-          )"
-
-          if [[ -z "${bundle_version}" || "${GITHUB_REF_NAME}" != "v${bundle_version}" ]]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match the app bundle version v${bundle_version:-unknown}."
-            exit 1
-          fi
-
-          echo "Release files verified for ${GITHUB_REF_NAME}."
-
-      - name: Publish GitHub release
+      - name: Publish GitHub Release
+        working-directory: release-files
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+        shell: bash
         run: |
           set -euo pipefail
-
-          gh release create "${GITHUB_REF_NAME}" \
-            CamiTune-v*-app.zip \
-            CamiTune-v*-build-folder.zip \
+          gh release create "$GITHUB_REF_NAME" \
+            "CamiTune-${GITHUB_REF_NAME}-app.zip" \
             SHA256SUMS \
             --verify-tag \
             --generate-notes \
-            --title "CamiTune ${GITHUB_REF_NAME}"
+            --title "CamiTune $GITHUB_REF_NAME"

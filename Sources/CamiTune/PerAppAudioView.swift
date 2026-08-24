@@ -49,16 +49,8 @@ struct PerAppAudioView: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 12) {
-                    Image(nsImage: icon(for: application))
-                        .resizable()
-                        .frame(width: 36, height: 36)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(application.displayName).font(.title3.bold())
-                        Text(application.bundleID ?? "PID \(application.processID)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
+                    PerApplicationIdentityHeader(application: application)
+                        .equatable()
                 }
 
                 HStack(spacing: 12) {
@@ -78,8 +70,12 @@ struct PerAppAudioView: View {
                         volume: application.settings.volume,
                         level: application.level,
                         isMuted: application.settings.isMuted,
-                        onVolumeChange: {
-                            controller.setVolume($0, for: application.id)
+                        onVolumeChange: { volume, interactionFinished in
+                            controller.setVolume(
+                                volume,
+                                for: application.id,
+                                interactionFinished: interactionFinished
+                            )
                         }
                     )
                     .frame(height: 24)
@@ -90,28 +86,12 @@ struct PerAppAudioView: View {
 
                 Divider()
 
-                HStack {
-                    Text("Per-application EQ").font(.headline)
-                    Spacer()
-                    Toggle(
-                        "Bypass EQ",
-                        isOn: Binding(
-                            get: { application.settings.eqBypassed },
-                            set: { controller.setEQBypassed($0, for: application.id) }
-                        )
-                    )
-                    Button("Reset EQ") {
-                        controller.setEqualizerBands([], for: application.id)
-                    }
-                    .disabled(application.settings.equalizerBands.isEmpty)
-                }
-
-                HStack(spacing: 18) {
-                    eqControl(.bass, title: "Bass", application: application)
-                    eqControl(.mids, title: "Mids", application: application)
-                    eqControl(.treble, title: "Treble", application: application)
-                }
-                .disabled(application.settings.eqBypassed)
+                PerApplicationEQControls(
+                    applicationID: application.id,
+                    settings: application.settings,
+                    controller: controller
+                )
+                .equatable()
 
                 Text("Application EQ is available only in the main CamiTune window. Menu-bar controls intentionally expose volume and mute only.")
                     .font(.caption)
@@ -121,48 +101,141 @@ struct PerAppAudioView: View {
         }
     }
 
-    private func eqControl(
-        _ control: SimpleEQRange,
-        title: String,
-        application: PerAppAudioApplication
-    ) -> some View {
-        let bands = application.settings.equalizerBands
-        let value = SimpleEQControl.value(for: control, in: bands) ?? 0
-        return VStack(alignment: .leading, spacing: 5) {
+}
+
+private struct PerApplicationIdentityHeader: View, Equatable {
+    let application: PerAppAudioApplication
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.application.id == rhs.application.id
+            && lhs.application.bundleID == rhs.application.bundleID
+            && lhs.application.bundleURL == rhs.application.bundleURL
+            && lhs.application.processID == rhs.application.processID
+            && lhs.application.displayName == rhs.application.displayName
+    }
+
+    var body: some View {
+        Image(nsImage: PerAppIconCache.icon(for: application))
+            .resizable()
+            .frame(width: 36, height: 36)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(application.displayName).font(.title3.bold())
+            Text(application.bundleID ?? "PID \(application.processID)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        Spacer()
+    }
+}
+
+private struct PerApplicationEQControls: View, Equatable {
+    let applicationID: String
+    let settings: PerAppAudioSettings
+    let controller: PerAppAudioController
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.applicationID == rhs.applicationID
+            && lhs.settings.eqBypassed == rhs.settings.eqBypassed
+            && lhs.settings.equalizerBands == rhs.settings.equalizerBands
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Per-application EQ").font(.headline)
+                Spacer()
+                Toggle(
+                    "Bypass EQ",
+                    isOn: Binding(
+                        get: { settings.eqBypassed },
+                        set: { controller.setEQBypassed($0, for: applicationID) }
+                    )
+                )
+                Button("Reset EQ") {
+                    controller.setEqualizerBands([], for: applicationID)
+                }
+                .disabled(settings.equalizerBands.isEmpty)
+            }
+
+            HStack(spacing: 18) {
+                PerApplicationSimpleEQSlider(
+                    applicationID: applicationID,
+                    settings: settings,
+                    controller: controller,
+                    control: .bass,
+                    title: "Bass"
+                )
+                PerApplicationSimpleEQSlider(
+                    applicationID: applicationID,
+                    settings: settings,
+                    controller: controller,
+                    control: .mids,
+                    title: "Mids"
+                )
+                PerApplicationSimpleEQSlider(
+                    applicationID: applicationID,
+                    settings: settings,
+                    controller: controller,
+                    control: .treble,
+                    title: "Treble"
+                )
+            }
+            .disabled(settings.eqBypassed)
+        }
+    }
+}
+
+private struct PerApplicationSimpleEQSlider: View {
+    let applicationID: String
+    let settings: PerAppAudioSettings
+    let controller: PerAppAudioController
+    let control: SimpleEQRange
+    let title: String
+    @State private var interactionValue: Double?
+
+    private var sourceBands: [EQBand] {
+        settings.equalizerBands.isEmpty ? EQDefaults.bands : settings.equalizerBands
+    }
+
+    private var displayedValue: Double {
+        interactionValue ?? SimpleEQControl.value(for: control, in: sourceBands) ?? 0
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Text(title)
                 Spacer()
-                Text(value, format: .number.precision(.fractionLength(1)))
+                Text(displayedValue, format: .number.precision(.fractionLength(1)))
                     .monospacedDigit()
                 Text("dB").foregroundStyle(.secondary)
             }
             Slider(
                 value: Binding(
-                    get: {
-                        SimpleEQControl.value(
-                            for: control,
-                            in: application.settings.equalizerBands
-                        ) ?? 0
-                    },
+                    get: { displayedValue },
                     set: { newValue in
-                        let source = application.settings.equalizerBands.isEmpty
-                            ? EQDefaults.bands
-                            : application.settings.equalizerBands
+                        interactionValue = newValue
                         controller.setEqualizerBands(
-                            SimpleEQControl.setting(newValue, for: control, in: source),
-                            for: application.id
+                            SimpleEQControl.setting(newValue, for: control, in: sourceBands),
+                            for: applicationID,
+                            interactionFinished: false
                         )
                     }
                 ),
                 in: -12...12,
-                step: 0.5
+                step: 0.5,
+                onEditingChanged: { editing in
+                    guard !editing, let finalValue = interactionValue else { return }
+                    controller.setEqualizerBands(
+                        SimpleEQControl.setting(finalValue, for: control, in: sourceBands),
+                        for: applicationID,
+                        interactionFinished: true
+                    )
+                    DispatchQueue.main.async { interactionValue = nil }
+                }
             )
         }
         .frame(maxWidth: .infinity)
-    }
-
-    private func icon(for application: PerAppAudioApplication) -> NSImage {
-        PerAppIconCache.icon(for: application)
     }
 }
 
@@ -170,7 +243,7 @@ struct MeteredApplicationVolumeSlider: View {
     var volume: Double
     var level: Double
     var isMuted: Bool
-    var onVolumeChange: (Double) -> Void
+    var onVolumeChange: (Double, Bool) -> Void
     @State private var interactionVolume: Double?
 
     var body: some View {
@@ -209,16 +282,16 @@ struct MeteredApplicationVolumeSlider: View {
                 value: meterAmount
             )
             .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+            .highPriorityGesture(DragGesture(minimumDistance: 0).onChanged { value in
                 let ratio = min(1, max(0, (value.location.x - track.minX) / track.width))
                 let adjusted = (ratio * 100).rounded() / 100
                 interactionVolume = adjusted
-                onVolumeChange(adjusted)
+                onVolumeChange(adjusted, false)
             }.onEnded { value in
                 let ratio = min(1, max(0, (value.location.x - track.minX) / track.width))
                 let adjusted = (ratio * 100).rounded() / 100
                 interactionVolume = adjusted
-                onVolumeChange(adjusted)
+                onVolumeChange(adjusted, true)
                 DispatchQueue.main.async {
                     interactionVolume = nil
                 }
@@ -226,13 +299,28 @@ struct MeteredApplicationVolumeSlider: View {
         }
         .accessibilityElement()
         .accessibilityLabel("Application volume")
+        .accessibilityValue("\(Int(((interactionVolume ?? volume) * 100).rounded())) percent")
+        .accessibilityAdjustableAction { direction in
+            let current = interactionVolume ?? volume
+            let next: Double
+            switch direction {
+            case .increment: next = min(1, current + 0.01)
+            case .decrement: next = max(0, current - 0.01)
+            @unknown default: return
+            }
+            interactionVolume = next
+            onVolumeChange(next, true)
+            DispatchQueue.main.async { interactionVolume = nil }
+        }
     }
 
 }
 
 @MainActor
 enum PerAppIconCache {
+    private static let maximumEntries = 128
     private static var images: [String: NSImage] = [:]
+    private static var insertionOrder: [String] = []
 
     static func icon(for application: PerAppAudioApplication) -> NSImage {
         if let cached = images[application.id] { return cached }
@@ -254,7 +342,12 @@ enum PerAppIconCache {
                 accessibilityDescription: nil
             ) ?? NSImage()
         }
+        if images.count >= maximumEntries, let oldest = insertionOrder.first {
+            images.removeValue(forKey: oldest)
+            insertionOrder.removeFirst()
+        }
         images[application.id] = resolved
+        insertionOrder.append(application.id)
         return resolved
     }
 }

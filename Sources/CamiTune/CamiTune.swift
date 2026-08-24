@@ -92,6 +92,7 @@ private final class CamiTunePresentationCoordinator {
 
     let state = AppState()
     private var mainWindow: NSWindow?
+    private var mainWindowVisibilityObservers: [NSObjectProtocol] = []
 
     func showMainWindow() {
         NSApp.setActivationPolicy(.regular)
@@ -119,16 +120,57 @@ private final class CamiTunePresentationCoordinator {
                 created.center()
             }
             created.setFrameAutosaveName("CamiTuneMainWindow")
+            monitorPresentation(of: created)
             mainWindow = created
             window = created
         }
         window.makeKeyAndOrderFront(nil)
+        state.setMainWindowPresentationActive(true)
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window else { return }
+            self.updatePresentation(for: window)
+        }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func monitorPresentation(of window: NSWindow) {
+        let center = NotificationCenter.default
+        let willCloseNotification = NSWindow.willCloseNotification
+        let names: [Notification.Name] = [
+            NSWindow.didMiniaturizeNotification,
+            NSWindow.didDeminiaturizeNotification,
+            NSWindow.didChangeOcclusionStateNotification,
+            willCloseNotification
+        ]
+        mainWindowVisibilityObservers = names.map { name in
+            let isCloseNotification = name == willCloseNotification
+            return center.addObserver(
+                forName: name,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, let window = self.mainWindow else { return }
+                    if isCloseNotification {
+                        self.state.setMainWindowPresentationActive(false)
+                    } else {
+                        self.updatePresentation(for: window)
+                    }
+                }
+            }
+        }
+    }
+
+    private func updatePresentation(for window: NSWindow) {
+        let isPresented = window.isVisible
+            && !window.isMiniaturized
+            && window.occlusionState.contains(.visible)
+        state.setMainWindowPresentationActive(isPresented)
     }
 }
 
 private struct CamillaMenuBarView: View {
-    @ObservedObject var state: AppState
+    let state: AppState
 
     var body: some View {
         VStack(alignment: .center, spacing: 12) {
@@ -223,8 +265,12 @@ private struct PerAppMenuBarControls: View {
                                     volume: application.settings.volume,
                                     level: application.level,
                                     isMuted: application.settings.isMuted,
-                                    onVolumeChange: {
-                                        controller.setVolume($0, for: application.id)
+                                    onVolumeChange: { volume, interactionFinished in
+                                        controller.setVolume(
+                                            volume,
+                                            for: application.id,
+                                            interactionFinished: interactionFinished
+                                        )
                                     }
                                 )
                                 .frame(width: 28, height: 126)
@@ -261,7 +307,7 @@ private struct VerticalMeteredApplicationVolumeSlider: View {
     var volume: Double
     var level: Double
     var isMuted: Bool
-    var onVolumeChange: (Double) -> Void
+    var onVolumeChange: (Double, Bool) -> Void
     @State private var interactionVolume: Double?
 
     var body: some View {
@@ -300,20 +346,32 @@ private struct VerticalMeteredApplicationVolumeSlider: View {
                 value: meterAmount
             )
             .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+            .highPriorityGesture(DragGesture(minimumDistance: 0).onChanged { value in
                 let adjusted = adjustedVolume(for: value.location.y, in: track)
                 interactionVolume = adjusted
-                onVolumeChange(adjusted)
+                onVolumeChange(adjusted, false)
             }.onEnded { value in
                 let adjusted = adjustedVolume(for: value.location.y, in: track)
                 interactionVolume = adjusted
-                onVolumeChange(adjusted)
+                onVolumeChange(adjusted, true)
                 DispatchQueue.main.async { interactionVolume = nil }
             })
         }
         .accessibilityElement()
         .accessibilityLabel("Application volume")
-        .accessibilityValue("\(Int((volume * 100).rounded())) percent")
+        .accessibilityValue("\(Int(((interactionVolume ?? volume) * 100).rounded())) percent")
+        .accessibilityAdjustableAction { direction in
+            let current = interactionVolume ?? volume
+            let next: Double
+            switch direction {
+            case .increment: next = min(1, current + 0.01)
+            case .decrement: next = max(0, current - 0.01)
+            @unknown default: return
+            }
+            interactionVolume = next
+            onVolumeChange(next, true)
+            DispatchQueue.main.async { interactionVolume = nil }
+        }
     }
 
     private func adjustedVolume(for y: CGFloat, in track: CGRect) -> Double {

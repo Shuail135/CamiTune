@@ -1,8 +1,9 @@
 import Foundation
 
-/// Prototype-1 source routing. It keeps the source layout intact for meters,
-/// analysis, and the future FrontStageRenderer while supplying today's stereo
-/// processing engine with a conservative, bounded fallback mix.
+/// Prototype-1 source routing. It keeps the source layout intact for meters and
+/// analysis while supplying the stereo FrontStageRenderer/CamillaDSP path with
+/// a conservative, bounded fallback mix. Front Stage mode replaces this path
+/// with role-specific multichannel rendering; Standard mode retains it.
 struct SpatialSourceRouter {
     func stereoFallback(for frame: PCMFrame) -> PCMFrame? {
         guard frame.channelCount > 0,

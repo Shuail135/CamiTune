@@ -38,20 +38,23 @@ enum UIRenderPerformance {
     }
 
     static func allowsSpectrumPublication(
-        since _: Date,
-        now _: Date = Date()
+        since previousPublication: Date,
+        now: Date = Date()
     ) -> Bool {
-        // Spectrum redraws fan out to both canvases and every visible EQ band.
-        // Preserve the last frame while AppKit is tracking a scroll or resize;
-        // the next FFT frame is published as soon as interaction ends.
-        !isInteractionInProgress
+        // Keep the analyzer alive during scrolling. FFT production is already
+        // capped at 20 fps off the main actor; this guard only coalesces an
+        // accidental duplicate publication instead of freezing live visuals.
+        let minimumInterval = 1.0 / 30.0
+        return now.timeIntervalSince(previousPublication) >= minimumInterval
     }
 
     static var meterPollMilliseconds: Int {
-        isInteractionInProgress ? 250 : 100
+        // Eight updates per second leave enough time for AppKit's live-scroll
+        // work while view animations interpolate between samples.
+        isInteractionInProgress ? 125 : 100
     }
 
     static var animatedLevelTransitionDuration: Double {
-        isInteractionInProgress ? 0.10 : 0.08
+        isInteractionInProgress ? 0.125 : 0.10
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct PCMFrame: Sendable {
     let interleaved: [Float]
@@ -56,6 +57,7 @@ final class PCMRouter: @unchecked Sendable {
     private var analyzerBranch: AnalyzerPCMBranch?
     private var meterBranch: MeterPCMBranch?
     private var statisticsValue = Statistics()
+    private var spatialRenderingMode: SpatialRenderingMode = .standard
 
     var statistics: Statistics {
         state.lock()
@@ -63,14 +65,37 @@ final class PCMRouter: @unchecked Sendable {
         return statisticsValue
     }
 
+    /// Serializes router replacement without making the caller's executor wait
+    /// on worker joins. In particular, AppState can await this from MainActor
+    /// without freezing SwiftUI for the branch shutdown timeouts below.
     func start(
         camillaSink: FileHandle,
+        spatialRenderingMode: SpatialRenderingMode = .standard,
         meterConsumer: MeterConsumer? = nil,
         analyzerConsumer: AnalyzerConsumer? = nil
+    ) async {
+        await Task.detached(priority: .userInitiated) { [self] in
+            startSynchronously(
+                camillaSink: camillaSink,
+                spatialRenderingMode: spatialRenderingMode,
+                meterConsumer: meterConsumer,
+                analyzerConsumer: analyzerConsumer
+            )
+        }.value
+    }
+
+    /// Blocking lifecycle primitive. Keep it private so normal runtime code
+    /// cannot accidentally join PCM workers on MainActor.
+    private func startSynchronously(
+        camillaSink: FileHandle,
+        spatialRenderingMode: SpatialRenderingMode,
+        meterConsumer: MeterConsumer?,
+        analyzerConsumer: AnalyzerConsumer?
     ) {
         stop()
         let camillaBranch = CamillaPCMBranch(
             handle: camillaSink,
+            spatialRenderingMode: spatialRenderingMode,
             recoveryHandler: { [weak self] droppedFrames in
                 self?.recordCamillaRecovery(droppedFrames: droppedFrames)
             },
@@ -99,10 +124,19 @@ final class PCMRouter: @unchecked Sendable {
 
         state.lock()
         statisticsValue = Statistics()
+        self.spatialRenderingMode = spatialRenderingMode
         self.camillaBranch = camillaBranch
         self.meterBranch = meterBranch
         self.analyzerBranch = analyzerBranch
         state.unlock()
+    }
+
+    func setSpatialRenderingMode(_ mode: SpatialRenderingMode) {
+        state.lock()
+        spatialRenderingMode = mode
+        let camillaBranch = self.camillaBranch
+        state.unlock()
+        camillaBranch?.setSpatialRenderingMode(mode)
     }
 
     func route(_ frame: PCMFrame) {
@@ -118,6 +152,14 @@ final class PCMRouter: @unchecked Sendable {
         camillaBranch?.enqueue(frame)
         meterBranch?.enqueue(frame)
         analyzerBranch?.enqueue(frame)
+    }
+
+    /// Normal runtime shutdown path. The synchronous stop remains available for
+    /// process teardown and tests, but AppState should await this method.
+    func stopWithoutBlockingUI() async {
+        await Task.detached(priority: .userInitiated) { [self] in
+            stop()
+        }.value
     }
 
     func stop() {
@@ -358,7 +400,17 @@ struct LowLatencyPCMQueue {
 }
 
 private final class CamillaPCMBranch: @unchecked Sendable {
-    private let handle: FileHandle
+    private enum SpatialPath: Equatable {
+        case standard
+        case stereo
+        case multichannelMovie
+    }
+
+    // Own a duplicate of CamillaDSP stdin instead of retaining the manager's
+    // FileHandle object. Foundation FileHandle raises NSException (not a Swift
+    // Error) if write(contentsOf:) races with close() on that same object.
+    // Keeping a separate descriptor gives the writer independent lifetime.
+    private let handle: FileHandle?
     private let recoveryHandler: (Int) -> Void
     private let failureHandler: () -> Void
     private let adjustmentHandler: (Double, Int) -> Void
@@ -371,24 +423,55 @@ private final class CamillaPCMBranch: @unchecked Sendable {
     private var rateController = AdaptiveRateController()
     private var resampler = AdaptivePCMResampler()
     private let sourceRouter = SpatialSourceRouter()
+    private let spatialPolicy = SpatialPolicy()
+    private let frontStageRenderer = FrontStageRenderer()
+    private let multichannelMovieRenderer = MultichannelMovieRenderer()
+    private var lastSourceFormat: SpatialSourceFormat?
+    private var lastSpatialPath: SpatialPath?
+    private var spatialRenderingMode: SpatialRenderingMode
+    private var needsSpatialReset = false
 
     init(
         handle: FileHandle,
+        spatialRenderingMode: SpatialRenderingMode,
         recoveryHandler: @escaping (Int) -> Void,
         failureHandler: @escaping () -> Void,
         adjustmentHandler: @escaping (Double, Int) -> Void
     ) {
-        self.handle = handle
+        let duplicatedDescriptor = Darwin.dup(handle.fileDescriptor)
+        if duplicatedDescriptor >= 0 {
+            self.handle = FileHandle(
+                fileDescriptor: duplicatedDescriptor,
+                closeOnDealloc: true
+            )
+        } else {
+            self.handle = nil
+        }
+        self.spatialRenderingMode = spatialRenderingMode
         self.recoveryHandler = recoveryHandler
         self.failureHandler = failureHandler
         self.adjustmentHandler = adjustmentHandler
     }
 
+    func setSpatialRenderingMode(_ mode: SpatialRenderingMode) {
+        condition.lock()
+        if spatialRenderingMode != mode {
+            spatialRenderingMode = mode
+            needsSpatialReset = true
+        }
+        condition.unlock()
+    }
+
     func start() {
         condition.lock()
         stopping = false
-        workerFinished = false
+        workerFinished = handle == nil
         condition.unlock()
+
+        guard handle != nil else {
+            failureHandler()
+            return
+        }
 
         let thread = Thread { [weak self] in self?.run() }
         thread.name = "CamiTune CamillaDSP PCM Writer"
@@ -417,14 +500,28 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         condition.broadcast()
         let deadline = Date().addingTimeInterval(0.5)
         while !workerFinished, condition.wait(until: deadline) {}
-        // The app closes CamillaDSP stdin before calling this method, which
-        // normally releases a blocked write immediately. Retain a finite join
-        // as a final safety boundary for unusual FileHandle/platform failures.
+        // Keep the join finite. The branch owns a duplicated descriptor, so
+        // CamillaDSPManager can close its stdin handle independently without
+        // invalidating an in-flight Foundation write on this worker.
+        let canCloseHandle = workerFinished
         worker = nil
         condition.unlock()
+
+        // Never close this FileHandle while its worker may still be inside
+        // write(contentsOf:); doing so recreates the NSConcreteFileHandle race
+        // this ownership split is intended to eliminate.
+        if canCloseHandle { try? handle?.close() }
     }
 
     private func run() {
+        guard let handle else {
+            condition.lock()
+            workerFinished = true
+            condition.broadcast()
+            condition.unlock()
+            return
+        }
+
         while true {
             condition.lock()
             while queue.isEmpty && !stopping { condition.wait() }
@@ -440,13 +537,64 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             }
             let queuedFrames = queue.queuedFrames
             let shouldResetRateMatcher = needsRateMatcherReset
+            let shouldResetSpatialRenderer = needsSpatialReset
+            let spatialRenderingMode = self.spatialRenderingMode
             needsRateMatcherReset = false
+            needsSpatialReset = false
             condition.unlock()
             if shouldResetRateMatcher {
                 rateController.reset()
                 resampler.reset()
+                frontStageRenderer.reset()
+                multichannelMovieRenderer.reset()
             }
-            guard let routedFrame = sourceRouter.stereoFallback(for: frame) else {
+            if shouldResetSpatialRenderer {
+                frontStageRenderer.reset()
+                multichannelMovieRenderer.reset()
+                lastSpatialPath = nil
+            }
+            let sourceFormat = frame.sourceFormat
+            if lastSourceFormat != sourceFormat {
+                lastSourceFormat = sourceFormat
+                frontStageRenderer.reset()
+                multichannelMovieRenderer.reset()
+                lastSpatialPath = nil
+            }
+            let decision = spatialPolicy.decision(
+                for: frame,
+                mode: spatialRenderingMode
+            )
+            let spatialPath: SpatialPath
+            switch decision {
+            case .standard: spatialPath = .standard
+            case .stereo: spatialPath = .stereo
+            case .multichannelMovie: spatialPath = .multichannelMovie
+            }
+            if lastSpatialPath != spatialPath {
+                // A fixed 7.1 endpoint can alternate between stereo-only and
+                // discrete payloads. Clear delayed surround/reflection state
+                // so no samples from the previous semantic path reappear.
+                frontStageRenderer.reset()
+                multichannelMovieRenderer.reset()
+                lastSpatialPath = spatialPath
+            }
+            let renderedFrame: PCMFrame?
+            switch decision {
+            case .standard:
+                renderedFrame = sourceRouter.stereoFallback(for: frame)
+            case .stereo(let intent):
+                renderedFrame = sourceRouter.stereoFallback(for: frame).flatMap {
+                    frontStageRenderer.render(frame: $0, intent: intent)
+                }
+            case .multichannelMovie(let intent):
+                renderedFrame = multichannelMovieRenderer.render(
+                    frame: frame,
+                    intent: intent
+                ).flatMap {
+                    frontStageRenderer.render(frame: $0, intent: intent)
+                } ?? sourceRouter.stereoFallback(for: frame)
+            }
+            guard let renderedFrame else {
                 recoveryHandler(frame.frameCount)
                 continue
             }
@@ -458,7 +606,7 @@ private final class CamillaPCMBranch: @unchecked Sendable {
                 elapsedFrames: frame.frameCount
             )
             adjustmentHandler(adjustmentPPM, bufferedFrames)
-            let adjustedFrame = resampler.process(routedFrame, adjustmentPPM: adjustmentPPM)
+            let adjustedFrame = resampler.process(renderedFrame, adjustmentPPM: adjustmentPPM)
             guard !adjustedFrame.interleaved.isEmpty else { continue }
             do {
                 try adjustedFrame.interleaved.withUnsafeBytes { bytes in

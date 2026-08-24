@@ -39,23 +39,32 @@ final class CamillaDSPController {
         self.differ = differ
     }
 
-    func configuration(for graph: ProcessingGraph) -> CamillaDSPConfiguration {
-        compiler.compile(graph)
+    func configuration(for graph: ProcessingGraph) async -> CamillaDSPConfiguration {
+        let compiler = self.compiler
+        return await Task.detached(priority: .userInitiated) {
+            compiler.compile(graph)
+        }.value
     }
 
     func applyGraph(_ graph: ProcessingGraph) async throws {
-        let update = activeGraph.map { differ.update(from: $0, to: graph) }
-            ?? .replaceConfiguration
+        let currentGraph = activeGraph
+        let differ = self.differ
+        let update = await Task.detached(priority: .userInitiated) {
+            currentGraph.map { differ.update(from: $0, to: graph) }
+                ?? .replaceConfiguration
+        }.value
 
         switch update {
         case .unchanged:
             lastGraphUpdate = .unchanged
             patchedFilterCount = 0
         case .patch(let processors):
+            let compiler = self.compiler
+            let patch = await Task.detached(priority: .userInitiated) {
+                compiler.compileRuntimePatch(processors: processors)
+            }.value
             do {
-                try await manager.apply(
-                    patch: compiler.compileRuntimePatch(processors: processors)
-                )
+                try await manager.apply(patch: patch)
                 lastGraphUpdate = .runtimePatch
                 patchedFilterCount = processors.count
             } catch is CancellationError {
@@ -63,12 +72,19 @@ final class CamillaDSPController {
             } catch {
                 // A full graph remains a compatibility and recovery path if a
                 // running engine rejects a patch after its protocol/state changes.
-                try await manager.apply(configuration: compiler.compile(graph))
+                let configuration = await Task.detached(priority: .userInitiated) {
+                    compiler.compile(graph)
+                }.value
+                try await manager.apply(configuration: configuration)
                 lastGraphUpdate = .fullConfiguration
                 patchedFilterCount = 0
             }
         case .replaceConfiguration:
-            try await manager.apply(configuration: compiler.compile(graph))
+            let compiler = self.compiler
+            let configuration = await Task.detached(priority: .userInitiated) {
+                compiler.compile(graph)
+            }.value
+            try await manager.apply(configuration: configuration)
             lastGraphUpdate = .fullConfiguration
             patchedFilterCount = 0
         }

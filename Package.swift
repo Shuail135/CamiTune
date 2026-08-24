@@ -23,11 +23,14 @@ var packageTargets: [Target] = [
     )
 ]
 
+// Tests are intentionally local-only. Opt in when running the local test
+// suite so a clean GitHub checkout does not require the ignored Tests folder.
 if ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] == "1" {
     packageTargets.append(
         .testTarget(
             name: "CamiTuneTests",
-            dependencies: ["CamiTune", "SystemAudioBridgeC"]
+            dependencies: ["CamiTune", "SystemAudioBridgeC"],
+            path: "Tests/CamiTuneTests"
         )
     )
 }
