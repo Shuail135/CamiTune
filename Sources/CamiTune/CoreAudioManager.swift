@@ -2,10 +2,17 @@ import Foundation
 import CoreAudio
 import AudioToolbox
 import SystemAudioBridgeC
+import Darwin
+
+struct PhysicalVolumeTransferSnapshot: Sendable {
+    let scalar: Float32?
+    let decibels: [Float32]
+}
 
 @MainActor
 final class CoreAudioManager: ObservableObject {
-    static let minimumPresentationDriverVersion = "0.4.0"
+    // Driver 0.7.8 publishes media-key state through the lock-free SABR lane.
+    static let minimumPresentationDriverVersion = "0.7.8"
 
     @Published private(set) var outputDevices: [AudioDeviceInfo] = []
     @Published private(set) var defaultOutputUID: String?
@@ -755,8 +762,12 @@ final class CoreAudioManager: ObservableObject {
         guard let device = await resolveDeviceWithoutBlockingUI(uid: uid) else {
             throw AudioError.deviceNotFound(uid)
         }
+        try await setVolumeWithoutBlockingUI(deviceID: device.objectID, scalar: scalar)
+    }
+
+    func setVolumeWithoutBlockingUI(deviceID: AudioDeviceID, scalar: Float32) async throws {
         try await Task.detached(priority: .userInitiated) {
-            try Self.setVolume(deviceID: device.objectID, scalar: scalar)
+            try Self.setVolume(deviceID: deviceID, scalar: scalar)
         }.value
     }
 
@@ -770,10 +781,49 @@ final class CoreAudioManager: ObservableObject {
 
     func volumeWithoutBlockingUI(uid: String) async -> Float32? {
         guard let device = await resolveDeviceWithoutBlockingUI(uid: uid) else { return nil }
-        return await Task.detached(priority: .utility) {
+        return await volumeWithoutBlockingUI(deviceID: device.objectID)
+    }
+
+    func volumeWithoutBlockingUI(deviceID: AudioDeviceID) async -> Float32? {
+        await Task.detached(priority: .utility) {
             Self.floatProperty(
-                deviceID: device.objectID,
+                deviceID: deviceID,
                 selector: kAudioDevicePropertyVolumeScalar
+            )
+        }.value
+    }
+
+    /// Snapshots the physical endpoint's scalar->dB transfer function before
+    /// playback begins. Runtime media-key handling can then use pure in-memory
+    /// interpolation and never query the active hardware endpoint.
+    func volumeTransferSnapshotWithoutBlockingUI(
+        deviceID: AudioDeviceID,
+        intervals: Int = 256
+    ) async -> PhysicalVolumeTransferSnapshot {
+        let count = max(16, min(1024, intervals))
+        return await Task.detached(priority: .utility) { () -> PhysicalVolumeTransferSnapshot in
+            let scalar = Self.floatProperty(
+                deviceID: deviceID,
+                selector: kAudioDevicePropertyVolumeScalar
+            )
+            let effectiveDecibels = Self.floatProperty(
+                deviceID: deviceID,
+                selector: kAudioDevicePropertyVolumeDecibels
+            )
+            let range = Self.volumeDecibelRange(deviceID: deviceID)
+            let nativeSamples = (0...count).map { index in
+                let scalar = Float32(index) / Float32(count)
+                return Self.volumeDecibels(deviceID: deviceID, scalar: scalar)
+            }
+            return PhysicalVolumeTransferSnapshot(
+                scalar: scalar,
+                decibels: SystemVolumeTransferCurve.calibratedDecibels(
+                    nativeSamples: nativeSamples,
+                    scalar: scalar ?? 1,
+                    effectiveDecibels: effectiveDecibels,
+                    minimumDecibels: range.map { Float32($0.mMinimum) },
+                    maximumDecibels: range.map { Float32($0.mMaximum) }
+                )
             )
         }.value
     }
@@ -786,6 +836,16 @@ final class CoreAudioManager: ObservableObject {
         )
     }
 
+    func volumeDecibelsWithoutBlockingUI(uid: String) async -> Float32? {
+        guard let device = await resolveDeviceWithoutBlockingUI(uid: uid) else { return nil }
+        return await Task.detached(priority: .utility) {
+            Self.floatProperty(
+                deviceID: device.objectID,
+                selector: kAudioDevicePropertyVolumeDecibels
+            )
+        }.value
+    }
+
     func isMuted(uid: String) -> Bool? {
         guard let device = device(uid: uid) else { return nil }
         return Self.isMuted(deviceID: device.objectID)
@@ -793,8 +853,12 @@ final class CoreAudioManager: ObservableObject {
 
     func isMutedWithoutBlockingUI(uid: String) async -> Bool? {
         guard let device = await resolveDeviceWithoutBlockingUI(uid: uid) else { return nil }
-        return await Task.detached(priority: .utility) {
-            Self.isMuted(deviceID: device.objectID)
+        return await isMutedWithoutBlockingUI(deviceID: device.objectID)
+    }
+
+    func isMutedWithoutBlockingUI(deviceID: AudioDeviceID) async -> Bool? {
+        await Task.detached(priority: .utility) {
+            Self.isMuted(deviceID: deviceID)
         }.value
     }
 
@@ -805,8 +869,12 @@ final class CoreAudioManager: ObservableObject {
 
     func setMutedWithoutBlockingUI(uid: String, muted: Bool) async {
         guard let device = await resolveDeviceWithoutBlockingUI(uid: uid) else { return }
+        await setMutedWithoutBlockingUI(deviceID: device.objectID, muted: muted)
+    }
+
+    func setMutedWithoutBlockingUI(deviceID: AudioDeviceID, muted: Bool) async {
         await Task.detached(priority: .userInitiated) {
-            Self.setMuted(deviceID: device.objectID, muted: muted)
+            Self.setMuted(deviceID: deviceID, muted: muted)
         }.value
     }
 
@@ -819,12 +887,6 @@ final class CoreAudioManager: ObservableObject {
         scalar: Float32
     ) throws {
         let value = max(0, min(1, scalar))
-        if let current = floatProperty(
-            deviceID: deviceID,
-            selector: kAudioDevicePropertyVolumeScalar
-        ), abs(current - value) < 0.0005 {
-            return
-        }
         var didSet = false
 
         for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
@@ -840,6 +902,23 @@ final class CoreAudioManager: ObservableObject {
                 &address,
                 &settable
             ) == noErr, settable.boolValue else { continue }
+            var current: Float32 = 0
+            var currentSize = UInt32(MemoryLayout<Float32>.size)
+            if AudioObjectGetPropertyData(
+                deviceID,
+                &address,
+                0,
+                nil,
+                &currentSize,
+                &current
+            ) == noErr, abs(current - value) < 0.0005 {
+                didSet = true
+                // A master element controls every channel. Without one, keep
+                // checking every channel so a prior interrupted write cannot
+                // leave the physical output with mismatched left/right gains.
+                if element == kAudioObjectPropertyElementMain { break }
+                continue
+            }
             var v = value
             if AudioObjectSetPropertyData(
                 deviceID,
@@ -877,6 +956,68 @@ final class CoreAudioManager: ObservableObject {
                 &size,
                 &value
             ) == noErr {
+                return value
+            }
+        }
+        return nil
+    }
+
+    nonisolated private static func volumeDecibels(
+        deviceID: AudioDeviceID,
+        scalar: Float32
+    ) -> Float32 {
+        let clamped = max(0, min(1, scalar))
+        for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyVolumeScalarToDecibels,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: element
+            )
+            guard AudioObjectHasProperty(deviceID, &address) else { continue }
+            var value = clamped
+            var size = UInt32(MemoryLayout<Float32>.size)
+            if AudioObjectGetPropertyData(
+                deviceID,
+                &address,
+                0,
+                nil,
+                &size,
+                &value
+            ) == noErr, value.isFinite {
+                return max(-150, min(0, value))
+            }
+        }
+
+        // A few endpoints expose a scalar control without the conversion
+        // property. Falling back to amplitude dB is monotonic, reaches 0 dB at
+        // scalar 1, and keeps exact zero representable as Camilla's floor.
+        guard clamped > 0 else { return -150 }
+        return max(-150, min(0, 20 * log10f(clamped)))
+    }
+
+    nonisolated private static func volumeDecibelRange(
+        deviceID: AudioDeviceID
+    ) -> AudioValueRange? {
+        for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyVolumeRangeDecibels,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: element
+            )
+            guard AudioObjectHasProperty(deviceID, &address) else { continue }
+            var value = AudioValueRange()
+            var size = UInt32(MemoryLayout<AudioValueRange>.size)
+            if AudioObjectGetPropertyData(
+                deviceID,
+                &address,
+                0,
+                nil,
+                &size,
+                &value
+            ) == noErr,
+               value.mMinimum.isFinite,
+               value.mMaximum.isFinite,
+               value.mMaximum > value.mMinimum {
                 return value
             }
         }

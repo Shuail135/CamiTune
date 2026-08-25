@@ -837,6 +837,28 @@ final class AppState: NSObject, ObservableObject {
                     )
                 }
             )
+
+            // Seed the virtual master before constructing the PCM writer. The
+            // writer snapshots this value in its initializer, which guarantees
+            // that the first processed frame matches the physical endpoint's
+            // original level instead of briefly starting at unity.
+            let volumeSession = await volumeBridge.start(
+                routingDevice: routing,
+                physicalUID: output.id,
+                coreAudio: coreAudio,
+                onVolume: { [weak self] volume in
+                    self?.profiles.setOutputVolumeScalar(
+                        profileID: profile.id,
+                        scalar: volume
+                    )
+                },
+                onMasterGain: { [pcmRouter] linearGain, muted in
+                    pcmRouter.setSystemMaster(
+                        linearGain: linearGain,
+                        muted: muted
+                    )
+                }
+            )
             await pcmRouter.start(
                 camillaSink: try dsp.audioInputHandle(),
                 spatialRenderingMode: profile.spatialRenderingMode,
@@ -861,9 +883,13 @@ final class AppState: NSObject, ObservableObject {
                 do {
                     try await driverTransport.start(
                         deviceObjectID: currentBridge.objectID,
+                        controlDeviceObjectID: routing.objectID,
                         expectedSampleRate: sampleRate,
                         pcmRouter: pcmRouter,
-                        perAppAudio: perAppAudio
+                        perAppAudio: perAppAudio,
+                        masterControlConsumer: { scalar, muted in
+                            volumeSession?.apply(scalar: scalar, muted: muted)
+                        }
                     )
                     transportConnected = true
                     break
@@ -878,22 +904,10 @@ final class AppState: NSObject, ObservableObject {
                 throw transportError ?? AppError.missingRoutingDriver
             }
 
-            // Switch only when activation did not originate from this profile
-            // output. The same Core Audio object remains selected afterward.
             if coreAudio.defaultOutputUID != routing.id {
                 try await coreAudio.setDefaultOutputAndWait(uid: routing.id)
             }
-
-            await volumeBridge.start(
-                routingDevice: routing,
-                physicalUID: output.id,
-                coreAudio: coreAudio
-            ) { [weak self] volume in
-                self?.profiles.setOutputVolumeScalar(
-                    profileID: profile.id,
-                    scalar: volume
-                )
-            }
+            await volumeBridge.engageProcessingVolume()
 
             activeSession = runtimeSession
             activeSampleRate = profile.sampleRate
@@ -1053,7 +1067,6 @@ final class AppState: NSObject, ObservableObject {
 
     private func stopProcessingPipeline() async {
         meters.stop()
-        await volumeBridge.stopWithoutBlockingUI()
         await driverTransport.stopWithoutBlockingUI()
         await perAppAudio.resetRuntimeWithoutBlockingUI()
         // Stop the PCM writer before closing CamillaDSP's original stdin
@@ -1064,6 +1077,10 @@ final class AppState: NSObject, ObservableObject {
         await spectrum.stopWithoutBlockingUI()
         await dsp.stop()
         dspController.resetRuntime()
+        // Only after Camilla has released the physical endpoint do we copy the
+        // user's latest profile volume/mute back to that device. This avoids
+        // active-render HAL volume writes, which can stall USB/Bluetooth output.
+        await volumeBridge.stopWithoutBlockingUI()
     }
 
     private func monitorRouting() async {
@@ -1175,13 +1192,16 @@ final class AppState: NSObject, ObservableObject {
         monitorTimer = nil
         profiles.flushPendingSaveSynchronously()
         meters.stop()
-        volumeBridge.stop()
         driverTransport.stop()
         perAppAudio.resetRuntime()
         pcmRouter.stop()
         dsp.closeAudioInput()
         spectrum.stop()
-
+        // Release Camilla's CoreAudio playback handle before restoring hardware
+        // volume. The physical endpoint must never be volume-written while the
+        // private DSP engine is rendering to it.
+        dsp.forceStopAndWait()
+        volumeBridge.stop()
         if let routingUID = activeRoutingUID,
            coreAudio.defaultOutputUID == routingUID {
             let targetUID = activeProfileID.flatMap { id in profiles.profiles.first(where: { $0.id == id })?.outputDeviceUID }
@@ -1196,7 +1216,6 @@ final class AppState: NSObject, ObservableObject {
             profiles.profiles.first(where: { $0.id == id })?.outputDeviceUID
         } ?? previousDefaultUID
         coreAudio.destroyAllProfileRoutingDevices(fallbackUID: cleanupFallbackUID)
-        dsp.forceStopAndWait()
         isActive = false
         activeSession = nil
         activeSampleRate = nil

@@ -125,7 +125,33 @@ enum
     kObjectID_Device2                   = 12,
     kObjectID_ProfileDevice_First       = kObjectID_Device2,
     kObjectID_ProfileDevice_Last        = 43,
+    kObjectID_ProfileStream_First       = 44,
+    kObjectID_ProfileStream_Last        = 75,
+    kObjectID_ProfileVolume_First       = 76,
+    kObjectID_ProfileVolume_Last        = 107,
+    kObjectID_ProfileMute_First         = 108,
+    kObjectID_ProfileMute_Last          = 139,
 };
+
+#define kProfileDevice_Count 32
+#define kDevice_ClockDomain 0x53414252U /* 'SABR' */
+
+_Static_assert(
+    kObjectID_ProfileDevice_Last - kObjectID_ProfileDevice_First + 1 == kProfileDevice_Count,
+    "profile device ID range must match profile capacity"
+);
+_Static_assert(
+    kObjectID_ProfileStream_Last - kObjectID_ProfileStream_First + 1 == kProfileDevice_Count,
+    "profile stream ID range must match profile capacity"
+);
+_Static_assert(
+    kObjectID_ProfileVolume_Last - kObjectID_ProfileVolume_First + 1 == kProfileDevice_Count,
+    "profile volume ID range must match profile capacity"
+);
+_Static_assert(
+    kObjectID_ProfileMute_Last - kObjectID_ProfileMute_First + 1 == kProfileDevice_Count,
+    "profile mute ID range must match profile capacity"
+);
 
 enum
 {
@@ -146,11 +172,9 @@ struct ObjectInfo {
     AudioObjectPropertyScope scope;
 };
 
-//    Declare the stuff that tracks the state of the plug-in, the device and its sub-objects.
-//    Note that we use global variables here because this driver only ever has a single device. If
-//    multiple devices were supported, this state would need to be encapsulated in one or more structs
-//    so that each object's state can be tracked individually.
-//    Note also that we share a single mutex across all objects to be thread safe for the same reason.
+//    The main transport device and each published profile device have stable object IDs. Profile
+//    devices own distinct stream/control objects and keep independent IO state. They intentionally
+//    share one sample-rate clock domain because they are endpoints of the same bridge engine.
 
 
 #ifndef kDriver_Name
@@ -162,7 +186,7 @@ struct ObjectInfo {
 #endif
 
 #ifndef kPlugIn_Icon
-#define                             kPlugIn_Icon                        "SystemAudioBridge.icns"
+#define                             kPlugIn_Icon                        "AppIcon.icns"
 #endif
 
 #ifndef kHas_Driver_Name_Format
@@ -265,42 +289,51 @@ static AudioServerPlugInHostRef     gPlugIn_Host                        = NULL;
 
 static CFStringRef                  gBox_Name                           = NULL;
 
+#define kBoxAcquiredStorageKey CFSTR("box acquired")
+#define kBoxNameStorageKey CFSTR("box name")
+
 #ifndef kBox_Aquired
 #define                             kBox_Aquired                 	true
 #endif
 static Boolean                      gBox_Acquired                       = kBox_Aquired;
 
 
-static pthread_mutex_t              gDevice_IOMutex                     = PTHREAD_MUTEX_INITIALIZER;
 static CFStringRef                  gDevice_DisplayName                 = NULL;
 static Boolean                      gDevice_IsHidden                    = kDevice_IsHidden;
-static CFStringRef                  gProfileDevice_UIDs[32]             = { NULL };
-static CFStringRef                  gProfileDevice_Names[32]            = { NULL };
+static CFStringRef                  gProfileDevice_UIDs[kProfileDevice_Count] = { NULL };
+static CFStringRef                  gProfileDevice_AssignedUIDs[kProfileDevice_Count] = { NULL };
+static CFStringRef                  gProfileDevice_Names[kProfileDevice_Count] = { NULL };
+/*
+ * Profile object IDs are validated from the HAL real-time callbacks. Never
+ * take gPlugIn_StateMutex from those callbacks. The backing IO-state array has
+ * static lifetime, and profile liveness plus volume/mute controls are atomic so
+ * media-key traffic cannot priority-invert the audio thread.
+ */
+static _Atomic bool                 gProfileDevice_IsLive[kProfileDevice_Count] = { false };
 static Float64                      gDevice_SampleRate                  = 48000.0;
-static Float64                      gDevice_RequestedSampleRate         = 0.0;
-static UInt64                       gDevice_IOIsRunning                 = 0;
-static UInt64                       gDevice2_IOIsRunning                = 0;
 static const UInt32                 kDevice_RingBufferSize              = 16384;
 static Float64                      gDevice_HostTicksPerFrame           = 0.0;
 static Float64                      gDevice_AdjustedTicksPerFrame       = 0.0;
-static Float64                      gDevice_PreviousTicks               = 0.0;
-static UInt64                       gDevice_NumberTimeStamps            = 0;
-static Float64                      gDevice_AnchorSampleTime            = 0.0;
-static UInt64                       gDevice_AnchorHostTime              = 0;
 
 static bool                         gStream_Input_IsActive              = true;
-static bool                         gStream_Output_IsActive             = true;
 
-static const Float32                kVolume_MinDB                       = -64.0;
+static const Float32                kVolume_MinDB                       = -96.0;
 static const Float32                kVolume_MaxDB                       = 0.0;
-static Float32                      gVolume_Master_Value                = 1.0;
+static _Atomic Float32              gVolume_Master_Value                = 1.0f;
 static Float32                      gPitch_Adjust                       = 0.5;
-static bool                         gMute_Master_Value                  = false;
+static _Atomic bool                 gMute_Master_Value                  = false;
 static UInt32                       kClockSource_NumberItems            = 2;
 #define                             kClockSource_InternalFixed         "Internal Fixed"
 #define                             kClockSource_InternalAdjustable    "Internal Adjustable"
 static UInt32                       gClockSource_Value                  = 0;
 static bool                         gPitch_Adjust_Enabled               = false;
+static _Atomic UInt64               gTimingSampleRateBits               = 0;
+static _Atomic UInt64               gTimingEffectiveTicksPerFrameBits   = 0;
+
+#if DEBUG
+static _Atomic bool                 gDebugOverloadPending                = false;
+static dispatch_source_t            gDebugOverloadReporter               = NULL;
+#endif
 
 static struct ObjectInfo            kDevice_ObjectList[]                = {
 #if kDevice_HasInput
@@ -317,21 +350,7 @@ static struct ObjectInfo            kDevice_ObjectList[]                = {
     { kObjectID_ClockSource,            kObjectType_Control,    kAudioObjectPropertyScopeGlobal }
 };
 
-static struct ObjectInfo            kDevice2_ObjectList[]                = {
-#if kDevice2_HasInput
-    { kObjectID_Stream_Input,           kObjectType_Stream,     kAudioObjectPropertyScopeInput  },
-    { kObjectID_Volume_Input_Master,    kObjectType_Control,    kAudioObjectPropertyScopeInput  },
-    { kObjectID_Mute_Input_Master,      kObjectType_Control,    kAudioObjectPropertyScopeInput  },
-#endif
-#if kDevice2_HasOutput
-    { kObjectID_Stream_Output,          kObjectType_Stream,     kAudioObjectPropertyScopeOutput },
-    { kObjectID_Volume_Output_Master,   kObjectType_Control,    kAudioObjectPropertyScopeOutput },
-    { kObjectID_Mute_Output_Master,     kObjectType_Control,    kAudioObjectPropertyScopeOutput },
-#endif
-};
-
 static const UInt32                 kDevice_ObjectListSize              = sizeof(kDevice_ObjectList) / sizeof(struct ObjectInfo);
-static const UInt32                 kDevice2_ObjectListSize              = sizeof(kDevice2_ObjectList) / sizeof(struct ObjectInfo);
 
 #ifndef kSampleRates
 #define                             kSampleRates       8000, 16000, 24000, 44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000
@@ -347,7 +366,103 @@ static const UInt32                 kDevice_SampleRatesSize             = sizeof
 #define                             kBytes_Per_Channel                  (kBits_Per_Channel/ 8)
 #define                             kBytes_Per_Frame                    (kNumber_Of_Channels * kBytes_Per_Channel)
 #define                             kRing_Buffer_Frame_Size             ((65536 + kLatency_Frame_Size))
-static Float32*                     gRingBuffer = NULL;
+
+struct DeviceIOState {
+    pthread_mutex_t ioMutex;
+    UInt64 runningCount;
+    Float64 requestedSampleRate;
+    Float64 previousTicks;
+    UInt64 numberTimeStamps;
+    UInt64 anchorHostTime;
+#if kDevice_HasInput
+    Float32* ringBuffer;
+    Float64 lastOutputSampleTime;
+    Float64 lastMixOutputSampleTime;
+    Boolean isBufferClear;
+#endif
+    bool outputStreamIsActive;
+    _Atomic Float32 volume;
+    _Atomic bool mute;
+};
+
+/* Called with gPlugIn_StateMutex held; real-time readers load one atomic value. */
+static void publish_timing_snapshot(void)
+{
+    atomic_store_explicit(
+        &gTimingSampleRateBits,
+        sabr_double_to_bits(gDevice_SampleRate),
+        memory_order_release
+    );
+    atomic_store_explicit(
+        &gTimingEffectiveTicksPerFrameBits,
+        sabr_double_to_bits(
+            gClockSource_Value > 0
+                ? gDevice_AdjustedTicksPerFrame
+                : gDevice_HostTicksPerFrame
+        ),
+        memory_order_release
+    );
+}
+
+static Float64 copy_timing_sample_rate(void)
+{
+    return sabr_bits_to_double(atomic_load_explicit(
+        &gTimingSampleRateBits,
+        memory_order_acquire
+    ));
+}
+
+static Float64 copy_timing_effective_ticks_per_frame(void)
+{
+    return sabr_bits_to_double(atomic_load_explicit(
+        &gTimingEffectiveTicksPerFrameBits,
+        memory_order_acquire
+    ));
+}
+
+#if DEBUG
+static void start_debug_overload_reporter(void)
+{
+    if(gDebugOverloadReporter != NULL) { return; }
+    dispatch_source_t reporter = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_TIMER,
+        0,
+        0,
+        dispatch_get_global_queue(QOS_CLASS_UTILITY, 0)
+    );
+    if(reporter == NULL) { return; }
+    gDebugOverloadReporter = reporter;
+    dispatch_source_set_timer(
+        reporter,
+        dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC),
+        NSEC_PER_SEC,
+        NSEC_PER_MSEC * 100
+    );
+    dispatch_source_set_event_handler(reporter, ^{
+        if(atomic_exchange_explicit(
+            &gDebugOverloadPending,
+            false,
+            memory_order_acq_rel
+        ))
+        {
+            DebugMsg("SystemAudioBridge overload: MixOutput missed an audio deadline. Try increasing the buffer frame size.");
+        }
+    });
+    dispatch_resume(reporter);
+}
+#endif
+
+static struct DeviceIOState gMainDeviceIOState = {
+    .ioMutex = PTHREAD_MUTEX_INITIALIZER,
+#if kDevice_HasInput
+    .lastMixOutputSampleTime = -1.0,
+    .isBufferClear = true,
+#endif
+    .outputStreamIsActive = true,
+    .volume = 1.0f,
+};
+static struct DeviceIOState gProfileDeviceIOStates[kProfileDevice_Count];
+static bool gProfileDeviceIOStatesInitialized = false;
 
 
 //==================================================================================================
@@ -471,19 +586,30 @@ static CFStringRef get_device_name(void)
     }
     return name;
 }
-static CFStringRef get_device2_uid(void)      { RETURN_FORMATTED_STRING(kDevice2_UID) }
-static CFStringRef get_device2_name(void)     { RETURN_FORMATTED_STRING(kDevice2_Name) }
 static CFStringRef get_device_model_uid(void) { RETURN_FORMATTED_STRING(kDevice_ModelUID) }
 
-static bool is_profile_device_object(AudioObjectID objectID)
+static bool is_profile_device_id(AudioObjectID objectID)
 {
     return objectID >= kObjectID_ProfileDevice_First &&
         objectID <= kObjectID_ProfileDevice_Last;
 }
 
-static bool is_device_object(AudioObjectID objectID)
+static bool is_profile_stream_id(AudioObjectID objectID)
 {
-    return objectID == kObjectID_Device || is_profile_device_object(objectID);
+    return objectID >= kObjectID_ProfileStream_First &&
+        objectID <= kObjectID_ProfileStream_Last;
+}
+
+static bool is_profile_volume_id(AudioObjectID objectID)
+{
+    return objectID >= kObjectID_ProfileVolume_First &&
+        objectID <= kObjectID_ProfileVolume_Last;
+}
+
+static bool is_profile_mute_id(AudioObjectID objectID)
+{
+    return objectID >= kObjectID_ProfileMute_First &&
+        objectID <= kObjectID_ProfileMute_Last;
 }
 
 static UInt32 profile_device_index(AudioObjectID objectID)
@@ -491,22 +617,165 @@ static UInt32 profile_device_index(AudioObjectID objectID)
     return (UInt32)(objectID - kObjectID_ProfileDevice_First);
 }
 
-static UInt32 profile_device_count(void)
+static AudioObjectID profile_device_id(UInt32 index)
+{
+    return kObjectID_ProfileDevice_First + index;
+}
+
+static AudioObjectID profile_stream_id(UInt32 index)
+{
+    return kObjectID_ProfileStream_First + index;
+}
+
+static AudioObjectID profile_volume_id(UInt32 index)
+{
+    return kObjectID_ProfileVolume_First + index;
+}
+
+static AudioObjectID profile_mute_id(UInt32 index)
+{
+    return kObjectID_ProfileMute_First + index;
+}
+
+static UInt32 profile_child_index(AudioObjectID objectID)
+{
+    if(is_profile_stream_id(objectID)) { return (UInt32)(objectID - kObjectID_ProfileStream_First); }
+    if(is_profile_volume_id(objectID)) { return (UInt32)(objectID - kObjectID_ProfileVolume_First); }
+    return (UInt32)(objectID - kObjectID_ProfileMute_First);
+}
+
+static bool profile_slot_is_live(UInt32 index)
+{
+    if(index >= kProfileDevice_Count) { return false; }
+    return atomic_load_explicit(
+        &gProfileDevice_IsLive[index],
+        memory_order_acquire
+    );
+}
+
+static bool is_profile_device_object(AudioObjectID objectID)
+{
+    return is_profile_device_id(objectID) &&
+        profile_slot_is_live(profile_device_index(objectID));
+}
+
+static bool is_profile_stream_object(AudioObjectID objectID)
+{
+    return is_profile_stream_id(objectID) && profile_slot_is_live(profile_child_index(objectID));
+}
+
+static bool is_profile_control_object(AudioObjectID objectID)
+{
+    return (is_profile_volume_id(objectID) || is_profile_mute_id(objectID)) &&
+        profile_slot_is_live(profile_child_index(objectID));
+}
+
+static bool is_device_object(AudioObjectID objectID)
+{
+    return objectID == kObjectID_Device || is_profile_device_object(objectID);
+}
+
+static bool is_stream_object(AudioObjectID objectID)
+{
+    return objectID == kObjectID_Stream_Input ||
+        objectID == kObjectID_Stream_Output ||
+        is_profile_stream_object(objectID);
+}
+
+static bool is_control_object(AudioObjectID objectID)
+{
+    return objectID == kObjectID_Volume_Input_Master ||
+        objectID == kObjectID_Volume_Output_Master ||
+        objectID == kObjectID_Mute_Input_Master ||
+        objectID == kObjectID_Mute_Output_Master ||
+        objectID == kObjectID_Pitch_Adjust ||
+        objectID == kObjectID_ClockSource ||
+        is_profile_control_object(objectID);
+}
+
+static AudioObjectID profile_owner_device(AudioObjectID childObjectID)
+{
+    return profile_device_id(profile_child_index(childObjectID));
+}
+
+static AudioObjectID stream_owner_device(AudioObjectID streamObjectID)
+{
+    return is_profile_stream_id(streamObjectID)
+        ? profile_owner_device(streamObjectID)
+        : kObjectID_Device;
+}
+
+static AudioObjectID control_owner_device(AudioObjectID controlObjectID)
+{
+    return (is_profile_volume_id(controlObjectID) || is_profile_mute_id(controlObjectID))
+        ? profile_owner_device(controlObjectID)
+        : kObjectID_Device;
+}
+
+static AudioObjectID canonical_control_id(AudioObjectID controlObjectID)
+{
+    if(is_profile_volume_id(controlObjectID)) { return kObjectID_Volume_Output_Master; }
+    if(is_profile_mute_id(controlObjectID)) { return kObjectID_Mute_Output_Master; }
+    return controlObjectID;
+}
+
+static struct DeviceIOState* device_io_state(AudioObjectID deviceObjectID)
+{
+    if(deviceObjectID == kObjectID_Device) { return &gMainDeviceIOState; }
+    if(!is_profile_device_id(deviceObjectID)) { return NULL; }
+    return &gProfileDeviceIOStates[profile_device_index(deviceObjectID)];
+}
+
+static struct DeviceIOState* control_io_state(AudioObjectID controlObjectID)
+{
+    return device_io_state(control_owner_device(controlObjectID));
+}
+
+/* Requires gPlugIn_StateMutex. */
+static UInt32 profile_device_count_locked(void)
 {
     UInt32 count = 0;
-    pthread_mutex_lock(&gPlugIn_StateMutex);
-    for(UInt32 index = 0; index < 32; ++index)
+    for(UInt32 index = 0; index < kProfileDevice_Count; ++index)
     {
         if(gProfileDevice_UIDs[index] != NULL) { ++count; }
     }
+    return count;
+}
+
+static UInt32 profile_device_count(void)
+{
+    pthread_mutex_lock(&gPlugIn_StateMutex);
+    const UInt32 count = profile_device_count_locked();
     pthread_mutex_unlock(&gPlugIn_StateMutex);
     return count;
+}
+
+/* Requires gPlugIn_StateMutex and snapshots acquisition plus profile membership together. */
+static UInt32 published_device_count_locked(void)
+{
+    return gBox_Acquired ? 1 + profile_device_count_locked() : 0;
+}
+
+/* Requires gPlugIn_StateMutex. Returns the exact number of IDs written. */
+static UInt32 copy_published_devices_locked(AudioObjectID* destination, UInt32 capacity)
+{
+    UInt32 written = 0;
+    if(destination == NULL || capacity == 0 || !gBox_Acquired) { return 0; }
+    destination[written++] = kObjectID_Device;
+    for(UInt32 slot = 0; slot < kProfileDevice_Count && written < capacity; ++slot)
+    {
+        if(gProfileDevice_UIDs[slot] != NULL)
+        {
+            destination[written++] = profile_device_id(slot);
+        }
+    }
+    return written;
 }
 
 static CFStringRef copy_profile_device_uid(AudioObjectID objectID)
 {
     CFStringRef result = NULL;
-    if(!is_profile_device_object(objectID)) { return NULL; }
+    if(!is_profile_device_id(objectID)) { return NULL; }
     pthread_mutex_lock(&gPlugIn_StateMutex);
     result = gProfileDevice_UIDs[profile_device_index(objectID)];
     if(result != NULL) { CFRetain(result); }
@@ -517,7 +786,7 @@ static CFStringRef copy_profile_device_uid(AudioObjectID objectID)
 static CFStringRef copy_profile_device_name(AudioObjectID objectID)
 {
     CFStringRef result = NULL;
-    if(!is_profile_device_object(objectID)) { return NULL; }
+    if(!is_profile_device_id(objectID)) { return NULL; }
     pthread_mutex_lock(&gPlugIn_StateMutex);
     result = gProfileDevice_Names[profile_device_index(objectID)];
     if(result != NULL) { CFRetain(result); }
@@ -531,10 +800,10 @@ static void notify_profile_devices(
 )
 {
     if(gPlugIn_Host == NULL || addressCount == 0 || addresses == NULL) { return; }
-    AudioObjectID deviceIDs[32];
+    AudioObjectID deviceIDs[kProfileDevice_Count];
     UInt32 deviceCount = 0;
     pthread_mutex_lock(&gPlugIn_StateMutex);
-    for(UInt32 slot = 0; slot < 32; ++slot)
+    for(UInt32 slot = 0; slot < kProfileDevice_Count; ++slot)
     {
         if(gProfileDevice_UIDs[slot] != NULL)
         {
@@ -561,18 +830,24 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
     }
 
     CFIndex count = CFArrayGetCount(profiles);
-    if(count < 0 || count > 32) { return kAudioHardwareIllegalOperationError; }
+    if(count < 0 || count > kProfileDevice_Count) { return kAudioHardwareIllegalOperationError; }
 
-    CFStringRef requestedUIDs[32] = { NULL };
-    CFStringRef requestedNames[32] = { NULL };
-    CFStringRef replacementUIDs[32] = { NULL };
-    CFStringRef replacementNames[32] = { NULL };
-    CFStringRef previousUIDs[32] = { NULL };
-    CFStringRef previousNames[32] = { NULL };
-    bool assignedSlots[32] = { false };
-    bool changedNames[32] = { false };
+    CFStringRef requestedUIDs[kProfileDevice_Count] = { NULL };
+    CFStringRef requestedNames[kProfileDevice_Count] = { NULL };
+    CFStringRef previousUIDs[kProfileDevice_Count] = { NULL };
+    CFStringRef previousNames[kProfileDevice_Count] = { NULL };
+    SInt32 requestedSlots[kProfileDevice_Count];
+    bool assignedSlots[kProfileDevice_Count] = { false };
+    bool addedSlots[kProfileDevice_Count] = { false };
+    bool removedSlots[kProfileDevice_Count] = { false };
+    bool changedNames[kProfileDevice_Count] = { false };
     bool deviceListChanged = false;
     OSStatus result = noErr;
+
+    for(UInt32 index = 0; index < kProfileDevice_Count; ++index)
+    {
+        requestedSlots[index] = -1;
+    }
 
     for(CFIndex index = 0; index < count; ++index)
     {
@@ -587,8 +862,10 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
         CFTypeRef name = CFDictionaryGetValue(profile, CFSTR(SABR_TRANSPORT_KEY_DISPLAY_NAME));
         if(uid == NULL || CFGetTypeID(uid) != CFStringGetTypeID() ||
             CFStringGetLength((CFStringRef)uid) == 0 ||
+            CFStringGetLength((CFStringRef)uid) > SABR_TRANSPORT_MAX_DEVICE_UID_UTF16_LENGTH ||
             name == NULL || CFGetTypeID(name) != CFStringGetTypeID() ||
-            CFStringGetLength((CFStringRef)name) == 0)
+            CFStringGetLength((CFStringRef)name) == 0 ||
+            CFStringGetLength((CFStringRef)name) > SABR_TRANSPORT_MAX_DISPLAY_NAME_UTF16_LENGTH)
         {
             result = kAudioHardwareIllegalOperationError;
             goto Cleanup;
@@ -614,10 +891,10 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
     for(CFIndex index = 0; index < count; ++index)
     {
         SInt32 slot = -1;
-        for(UInt32 candidate = 0; candidate < 32; ++candidate)
+        for(UInt32 candidate = 0; candidate < kProfileDevice_Count; ++candidate)
         {
-            if(!assignedSlots[candidate] && gProfileDevice_UIDs[candidate] != NULL &&
-                CFStringCompare(gProfileDevice_UIDs[candidate], requestedUIDs[index], 0) == kCFCompareEqualTo)
+            if(!assignedSlots[candidate] && gProfileDevice_AssignedUIDs[candidate] != NULL &&
+                CFStringCompare(gProfileDevice_AssignedUIDs[candidate], requestedUIDs[index], 0) == kCFCompareEqualTo)
             {
                 slot = (SInt32)candidate;
                 break;
@@ -625,9 +902,9 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
         }
         if(slot < 0)
         {
-            for(UInt32 candidate = 0; candidate < 32; ++candidate)
+            for(UInt32 candidate = 0; candidate < kProfileDevice_Count; ++candidate)
             {
-                if(!assignedSlots[candidate] && gProfileDevice_UIDs[candidate] == NULL)
+                if(!assignedSlots[candidate] && gProfileDevice_AssignedUIDs[candidate] == NULL)
                 {
                     slot = (SInt32)candidate;
                     break;
@@ -636,82 +913,133 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
         }
         if(slot < 0)
         {
-            for(UInt32 candidate = 0; candidate < 32; ++candidate)
-            {
-                if(!assignedSlots[candidate])
-                {
-                    slot = (SInt32)candidate;
-                    break;
-                }
-            }
+            result = kAudioHardwareIllegalOperationError;
+            pthread_mutex_unlock(&gPlugIn_StateMutex);
+            goto Cleanup;
         }
         assignedSlots[slot] = true;
-        replacementUIDs[slot] = requestedUIDs[index];
-        replacementNames[slot] = requestedNames[index];
-        requestedUIDs[index] = NULL;
-        requestedNames[index] = NULL;
+        requestedSlots[index] = slot;
     }
-    for(UInt32 slot = 0; slot < 32; ++slot)
+
+    for(UInt32 slot = 0; slot < kProfileDevice_Count; ++slot)
     {
-        bool uidChanged = (gProfileDevice_UIDs[slot] == NULL) != (replacementUIDs[slot] == NULL);
-        if(!uidChanged && gProfileDevice_UIDs[slot] != NULL)
+        if(!assignedSlots[slot] && gProfileDevice_UIDs[slot] != NULL &&
+            gProfileDeviceIOStates[slot].runningCount > 0)
         {
-            uidChanged = CFStringCompare(gProfileDevice_UIDs[slot], replacementUIDs[slot], 0) != kCFCompareEqualTo;
+            result = kAudioHardwareIllegalOperationError;
+            pthread_mutex_unlock(&gPlugIn_StateMutex);
+            goto Cleanup;
         }
-        deviceListChanged = deviceListChanged || uidChanged;
-        if(!uidChanged && gProfileDevice_Names[slot] != NULL && replacementNames[slot] != NULL)
+    }
+
+    for(UInt32 slot = 0; slot < kProfileDevice_Count; ++slot)
+    {
+        previousUIDs[slot] = gProfileDevice_UIDs[slot];
+        previousNames[slot] = gProfileDevice_Names[slot];
+        removedSlots[slot] = previousUIDs[slot] != NULL && !assignedSlots[slot];
+        if(removedSlots[slot])
+        {
+            // Publish death before releasing the CF objects. Removed slots are
+            // guaranteed not to have running IO by the check above.
+            atomic_store_explicit(
+                &gProfileDevice_IsLive[slot],
+                false,
+                memory_order_release
+            );
+        }
+        gProfileDevice_UIDs[slot] = NULL;
+        gProfileDevice_Names[slot] = NULL;
+    }
+
+    for(CFIndex index = 0; index < count; ++index)
+    {
+        UInt32 slot = (UInt32)requestedSlots[index];
+        if(gProfileDevice_AssignedUIDs[slot] == NULL)
+        {
+            gProfileDevice_AssignedUIDs[slot] = requestedUIDs[index];
+            requestedUIDs[index] = NULL;
+        }
+        gProfileDevice_UIDs[slot] = gProfileDevice_AssignedUIDs[slot];
+        CFRetain(gProfileDevice_UIDs[slot]);
+        gProfileDevice_Names[slot] = requestedNames[index];
+        requestedNames[index] = NULL;
+        addedSlots[slot] = previousUIDs[slot] == NULL;
+        if(addedSlots[slot])
+        {
+            // All profile metadata and persistent IO state are ready before a
+            // real-time callback can accept this object ID.
+            atomic_store_explicit(
+                &gProfileDevice_IsLive[slot],
+                true,
+                memory_order_release
+            );
+        }
+        if(previousNames[slot] != NULL)
         {
             changedNames[slot] = CFStringCompare(
+                previousNames[slot],
                 gProfileDevice_Names[slot],
-                replacementNames[slot],
                 0
             ) != kCFCompareEqualTo;
         }
-        previousUIDs[slot] = gProfileDevice_UIDs[slot];
-        previousNames[slot] = gProfileDevice_Names[slot];
-        gProfileDevice_UIDs[slot] = replacementUIDs[slot];
-        gProfileDevice_Names[slot] = replacementNames[slot];
+        deviceListChanged = deviceListChanged || addedSlots[slot];
+    }
+    for(UInt32 slot = 0; slot < kProfileDevice_Count; ++slot)
+    {
+        deviceListChanged = deviceListChanged || removedSlots[slot];
     }
     pthread_mutex_unlock(&gPlugIn_StateMutex);
 
     if(gPlugIn_Host != NULL)
     {
         AudioObjectPropertyAddress nameAddress = {
-            kAudioObjectPropertyName,
-            kAudioObjectPropertyScopeGlobal,
-            kAudioObjectPropertyElementMain
+            kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain
         };
-        for(UInt32 slot = 0; slot < 32; ++slot)
-        {
-            if(replacementUIDs[slot] != NULL && changedNames[slot])
-            {
-                gPlugIn_Host->PropertiesChanged(
-                    gPlugIn_Host,
-                    kObjectID_ProfileDevice_First + slot,
-                    1,
-                    &nameAddress
-                );
-            }
-        }
         if(deviceListChanged)
         {
-            AudioObjectPropertyAddress deviceListAddress = {
-                kAudioPlugInPropertyDeviceList,
-                kAudioObjectPropertyScopeGlobal,
-                kAudioObjectPropertyElementMain
+            // The plug-in device list is the creation/destruction boundary. Never
+            // notify a new object before HAL discovers it or a dead object after removal.
+            AudioObjectPropertyAddress plugInAddresses[] = {
+                { kAudioPlugInPropertyDeviceList, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain },
+                { kAudioObjectPropertyOwnedObjects, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain },
             };
-            gPlugIn_Host->PropertiesChanged(gPlugIn_Host, kObjectID_PlugIn, 1, &deviceListAddress);
+            gPlugIn_Host->PropertiesChanged(
+                gPlugIn_Host,
+                kObjectID_PlugIn,
+                sizeof(plugInAddresses) / sizeof(plugInAddresses[0]),
+                plugInAddresses
+            );
             AudioObjectPropertyAddress boxDeviceListAddress = {
                 kAudioBoxPropertyDeviceList,
                 kAudioObjectPropertyScopeGlobal,
                 kAudioObjectPropertyElementMain
             };
             gPlugIn_Host->PropertiesChanged(gPlugIn_Host, kObjectID_Box, 1, &boxDeviceListAddress);
+
+            AudioObjectPropertyAddress relatedAddress = {
+                kAudioDevicePropertyRelatedDevices,
+                kAudioObjectPropertyScopeGlobal,
+                kAudioObjectPropertyElementMain
+            };
+            gPlugIn_Host->PropertiesChanged(gPlugIn_Host, kObjectID_Device, 1, &relatedAddress);
+            notify_profile_devices(1, &relatedAddress);
+        }
+        for(UInt32 slot = 0; slot < kProfileDevice_Count; ++slot)
+        {
+            if(assignedSlots[slot] && !addedSlots[slot] && changedNames[slot])
+            {
+                gPlugIn_Host->PropertiesChanged(
+                    gPlugIn_Host,
+                    profile_device_id(slot),
+                    1,
+                    &nameAddress
+                );
+            }
         }
     }
 
 Cleanup:
-    for(UInt32 index = 0; index < 32; ++index)
+    for(UInt32 index = 0; index < kProfileDevice_Count; ++index)
     {
         if(requestedUIDs[index] != NULL) { CFRelease(requestedUIDs[index]); }
         if(requestedNames[index] != NULL) { CFRelease(requestedNames[index]); }
@@ -719,6 +1047,62 @@ Cleanup:
         if(previousNames[index] != NULL) { CFRelease(previousNames[index]); }
     }
     return result;
+}
+
+static CFPropertyListRef create_transport_capabilities(void)
+{
+    CFMutableDictionaryRef capabilities = CFDictionaryCreateMutable(
+        kCFAllocatorDefault,
+        3,
+        &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks
+    );
+    if(capabilities == NULL) { return NULL; }
+    int64_t protocolValue = SABR_TRANSPORT_PROTOCOL_VERSION;
+    int64_t abiValue = SABR_TRANSPORT_ABI_VERSION;
+    int64_t channelCapacityValue = kNumber_Of_Channels;
+    CFNumberRef protocolVersion = CFNumberCreate(
+        kCFAllocatorDefault,
+        kCFNumberSInt64Type,
+        &protocolValue
+    );
+    CFNumberRef abiVersion = CFNumberCreate(
+        kCFAllocatorDefault,
+        kCFNumberSInt64Type,
+        &abiValue
+    );
+    CFNumberRef channelCapacity = CFNumberCreate(
+        kCFAllocatorDefault,
+        kCFNumberSInt64Type,
+        &channelCapacityValue
+    );
+    if(protocolVersion == NULL || abiVersion == NULL || channelCapacity == NULL)
+    {
+        if(protocolVersion != NULL) { CFRelease(protocolVersion); }
+        if(abiVersion != NULL) { CFRelease(abiVersion); }
+        if(channelCapacity != NULL) { CFRelease(channelCapacity); }
+        CFRelease(capabilities);
+        return NULL;
+    }
+    CFDictionarySetValue(
+        capabilities,
+        CFSTR(SABR_TRANSPORT_KEY_PROTOCOL_VERSION),
+        protocolVersion
+    );
+    CFDictionarySetValue(
+        capabilities,
+        CFSTR(SABR_TRANSPORT_KEY_ABI_VERSION),
+        abiVersion
+    );
+    CFDictionarySetValue(
+        capabilities,
+        CFSTR(SABR_TRANSPORT_KEY_CHANNEL_CAPACITY),
+        channelCapacity
+    );
+    CFRelease(protocolVersion);
+    CFRelease(abiVersion);
+    CFRelease(channelCapacity);
+    return capabilities;
 }
 
 // Volume conversions
@@ -741,63 +1125,170 @@ static Float32 volume_from_decibel(Float32 decibel)
 
 static Float32 volume_to_scalar(Float32 volume)
 {
-	Float32 decibel = volume_to_decibel(volume);
-	return (decibel - kVolume_MinDB) / (kVolume_MaxDB - kVolume_MinDB);
+    // Keep the macOS-facing profile scalar round-trippable. This value is a
+    // control surface only: private SABR PCM is never attenuated here, and the
+    // companion applies the physical endpoint's measured curve in PCM.
+    if(!isfinite(volume) || volume <= 0.0f) { return 0.0f; }
+    if(volume >= 1.0f) { return 1.0f; }
+    return volume;
 }
 
 static Float32 volume_from_scalar(Float32 scalar)
 {
-	Float32 decibel = scalar * (kVolume_MaxDB - kVolume_MinDB) + kVolume_MinDB;
-	return volume_from_decibel(decibel);
+    if(!isfinite(scalar) || scalar <= 0.0f) { return 0.0f; }
+    if(scalar >= 1.0f) { return 1.0f; }
+    return scalar;
+}
+
+static AudioObjectID mute_control_for_volume(AudioObjectID volumeControlID)
+{
+    if(is_profile_volume_id(volumeControlID))
+    {
+        return profile_mute_id(profile_child_index(volumeControlID));
+    }
+    return canonical_control_id(volumeControlID) == kObjectID_Volume_Input_Master
+        ? kObjectID_Mute_Input_Master
+        : kObjectID_Mute_Output_Master;
+}
+
+static void notify_mute_control_changed(AudioObjectID volumeControlID)
+{
+    if(gPlugIn_Host == NULL) { return; }
+    const AudioObjectID muteControlID = mute_control_for_volume(volumeControlID);
+    const AudioObjectPropertyScope scope =
+        canonical_control_id(volumeControlID) == kObjectID_Volume_Input_Master
+            ? kAudioObjectPropertyScopeInput
+            : kAudioObjectPropertyScopeOutput;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        AudioObjectPropertyAddress address = {
+            kAudioBooleanControlPropertyValue,
+            scope,
+            kAudioObjectPropertyElementMain
+        };
+        gPlugIn_Host->PropertiesChanged(gPlugIn_Host, muteControlID, 1, &address);
+    });
+}
+
+// Store the profile/bridge control state only. A positive volume write also
+// clears a stale mute, matching normal macOS behavior. The lock-free SABR
+// latest-value lane carries the complete snapshot to the companion; it does
+// not wake PCM delivery and never touches the live physical endpoint.
+static bool set_volume_control_state(
+    AudioObjectID volumeControlID,
+    Float32 newVolume,
+    bool* outMuteChanged
+)
+{
+    if(outMuteChanged != NULL) { *outMuteChanged = false; }
+    struct DeviceIOState* state = control_io_state(volumeControlID);
+    const bool isProfile = is_profile_volume_id(volumeControlID) && state != NULL;
+    const Float32 previousVolume = isProfile
+        ? atomic_load_explicit(&state->volume, memory_order_relaxed)
+        : atomic_load_explicit(&gVolume_Master_Value, memory_order_relaxed);
+    const bool wasMuted = isProfile
+        ? atomic_load_explicit(&state->mute, memory_order_relaxed)
+        : atomic_load_explicit(&gMute_Master_Value, memory_order_relaxed);
+
+    const bool muteChanged = newVolume > 0.0f && wasMuted;
+    if(previousVolume == newVolume && !muteChanged) { return false; }
+
+    if(isProfile)
+    {
+        atomic_store_explicit(&state->volume, newVolume, memory_order_relaxed);
+        if(muteChanged)
+        {
+            atomic_store_explicit(&state->mute, false, memory_order_relaxed);
+        }
+    }
+    else
+    {
+        atomic_store_explicit(&gVolume_Master_Value, newVolume, memory_order_relaxed);
+        if(muteChanged)
+        {
+            atomic_store_explicit(&gMute_Master_Value, false, memory_order_relaxed);
+        }
+    }
+    const bool volumeChanged = previousVolume != newVolume;
+    if(outMuteChanged != NULL) { *outMuteChanged = muteChanged; }
+    if(volumeChanged || muteChanged)
+    {
+        sabr_driver_transport_publish_control(
+            control_owner_device(volumeControlID),
+            newVolume,
+            muteChanged ? false : wasMuted
+        );
+    }
+    return volumeChanged;
 }
 
 static UInt32 device_object_list_size(AudioObjectPropertyScope scope, AudioObjectID objectID) {
-    const struct ObjectInfo* list = objectID == kObjectID_Device
-        ? kDevice_ObjectList
-        : (is_profile_device_object(objectID) ? kDevice2_ObjectList : NULL);
-    const UInt32 listSize = objectID == kObjectID_Device
-        ? kDevice_ObjectListSize
-        : (is_profile_device_object(objectID) ? kDevice2_ObjectListSize : 0);
-    if(list == NULL) { return 0; }
-    if(scope == kAudioObjectPropertyScopeGlobal) { return listSize; }
-    UInt32 count = 0;
-    for(UInt32 index = 0; index < listSize; ++index)
+    if(is_profile_device_object(objectID))
     {
-        count += (list[index].scope == scope);
+        return scope == kAudioObjectPropertyScopeGlobal ||
+            scope == kAudioObjectPropertyScopeOutput ? 3 : 0;
+    }
+    if(objectID != kObjectID_Device) { return 0; }
+    if(scope == kAudioObjectPropertyScopeGlobal) { return kDevice_ObjectListSize; }
+    UInt32 count = 0;
+    for(UInt32 index = 0; index < kDevice_ObjectListSize; ++index)
+    {
+        count += (kDevice_ObjectList[index].scope == scope);
     }
     return count;
 }
 
 static UInt32 device_stream_list_size(AudioObjectPropertyScope scope, AudioObjectID objectID) {
-    const struct ObjectInfo* list = objectID == kObjectID_Device
-        ? kDevice_ObjectList
-        : (is_profile_device_object(objectID) ? kDevice2_ObjectList : NULL);
-    const UInt32 listSize = objectID == kObjectID_Device
-        ? kDevice_ObjectListSize
-        : (is_profile_device_object(objectID) ? kDevice2_ObjectListSize : 0);
-    UInt32 count = 0;
-    for(UInt32 index = 0; list != NULL && index < listSize; ++index)
+    if(is_profile_device_object(objectID))
     {
-        count += list[index].type == kObjectType_Stream &&
-            (list[index].scope == scope || scope == kAudioObjectPropertyScopeGlobal);
+        return scope == kAudioObjectPropertyScopeGlobal ||
+            scope == kAudioObjectPropertyScopeOutput ? 1 : 0;
+    }
+    if(objectID != kObjectID_Device) { return 0; }
+    UInt32 count = 0;
+    for(UInt32 index = 0; index < kDevice_ObjectListSize; ++index)
+    {
+        count += kDevice_ObjectList[index].type == kObjectType_Stream &&
+            (kDevice_ObjectList[index].scope == scope || scope == kAudioObjectPropertyScopeGlobal);
     }
     return count;
 }
 
 static UInt32 device_control_list_size(AudioObjectPropertyScope scope, AudioObjectID objectID) {
-    const struct ObjectInfo* list = objectID == kObjectID_Device
-        ? kDevice_ObjectList
-        : (is_profile_device_object(objectID) ? kDevice2_ObjectList : NULL);
-    const UInt32 listSize = objectID == kObjectID_Device
-        ? kDevice_ObjectListSize
-        : (is_profile_device_object(objectID) ? kDevice2_ObjectListSize : 0);
-    UInt32 count = 0;
-    for(UInt32 index = 0; list != NULL && index < listSize; ++index)
+    if(is_profile_device_object(objectID))
     {
-        count += list[index].type == kObjectType_Control &&
-            (list[index].scope == scope || scope == kAudioObjectPropertyScopeGlobal);
+        return scope == kAudioObjectPropertyScopeGlobal ||
+            scope == kAudioObjectPropertyScopeOutput ? 2 : 0;
+    }
+    if(objectID != kObjectID_Device) { return 0; }
+    UInt32 count = 0;
+    for(UInt32 index = 0; index < kDevice_ObjectListSize; ++index)
+    {
+        count += kDevice_ObjectList[index].type == kObjectType_Control &&
+            (kDevice_ObjectList[index].scope == scope || scope == kAudioObjectPropertyScopeGlobal);
     }
     return count;
+}
+
+static UInt32 related_device_count(void)
+{
+    return 1 + profile_device_count();
+}
+
+static UInt32 copy_related_devices(AudioObjectID* destination, UInt32 capacity)
+{
+    UInt32 written = 0;
+    if(destination == NULL || capacity == 0) { return 0; }
+    pthread_mutex_lock(&gPlugIn_StateMutex);
+    destination[written++] = kObjectID_Device;
+    for(UInt32 slot = 0; slot < kProfileDevice_Count && written < capacity; ++slot)
+    {
+        if(gProfileDevice_UIDs[slot] != NULL)
+        {
+            destination[written++] = profile_device_id(slot);
+        }
+    }
+    pthread_mutex_unlock(&gPlugIn_StateMutex);
+    return written;
 }
 
 static UInt32 minimum(UInt32 a, UInt32 b) {
@@ -826,36 +1317,6 @@ static AudioChannelLayoutTag device_channel_layout_tag(void)
         case 8: return kAudioChannelLayoutTag_MPEG_7_1_C;
         default: return kAudioChannelLayoutTag_Unknown;
     }
-}
-
-static AudioChannelLabel device_channel_label(UInt32 channelIndex)
-{
-    static const AudioChannelLabel stereo[] = {
-        kAudioChannelLabel_Left,
-        kAudioChannelLabel_Right
-    };
-    static const AudioChannelLabel fivePointOne[] = {
-        kAudioChannelLabel_Left,
-        kAudioChannelLabel_Right,
-        kAudioChannelLabel_Center,
-        kAudioChannelLabel_LFEScreen,
-        kAudioChannelLabel_LeftSurround,
-        kAudioChannelLabel_RightSurround
-    };
-    static const AudioChannelLabel sevenPointOne[] = {
-        kAudioChannelLabel_Left,
-        kAudioChannelLabel_Right,
-        kAudioChannelLabel_Center,
-        kAudioChannelLabel_LFEScreen,
-        kAudioChannelLabel_LeftSurround,
-        kAudioChannelLabel_RightSurround,
-        kAudioChannelLabel_RearSurroundLeft,
-        kAudioChannelLabel_RearSurroundRight
-    };
-    if(kNumber_Of_Channels == 2 && channelIndex < 2) { return stereo[channelIndex]; }
-    if(kNumber_Of_Channels == 6 && channelIndex < 6) { return fivePointOne[channelIndex]; }
-    if(kNumber_Of_Channels == 8 && channelIndex < 8) { return sevenPointOne[channelIndex]; }
-    return kAudioChannelLabel_Unknown;
 }
 
 #pragma mark Factory
@@ -1004,52 +1465,87 @@ static OSStatus	SystemAudioBridge_Initialize(AudioServerPlugInDriverRef inDriver
 			kCFStringEncodingUTF8
 		);
 	}
+	if(!gProfileDeviceIOStatesInitialized)
+	{
+		for(UInt32 slot = 0; slot < kProfileDevice_Count; ++slot)
+		{
+			pthread_mutex_init(&gProfileDeviceIOStates[slot].ioMutex, NULL);
+#if kDevice_HasInput
+			gProfileDeviceIOStates[slot].lastMixOutputSampleTime = -1.0;
+			gProfileDeviceIOStates[slot].isBufferClear = true;
+#endif
+			gProfileDeviceIOStates[slot].outputStreamIsActive = true;
+			atomic_store_explicit(&gProfileDeviceIOStates[slot].volume, 1.0f, memory_order_relaxed);
+			atomic_store_explicit(&gProfileDeviceIOStates[slot].mute, false, memory_order_relaxed);
+		}
+		gProfileDeviceIOStatesInitialized = true;
+	}
 	gDevice_IsHidden = kDevice_IsHidden;
 	pthread_mutex_unlock(&gPlugIn_StateMutex);
 	
 	//	initialize the box acquired property from the settings
 	CFPropertyListRef theSettingsData = NULL;
-	gPlugIn_Host->CopyFromStorage(gPlugIn_Host, CFSTR("box acquired"), &theSettingsData);
+	Boolean restoredBoxAcquired = kBox_Aquired;
+	gPlugIn_Host->CopyFromStorage(gPlugIn_Host, kBoxAcquiredStorageKey, &theSettingsData);
 	if(theSettingsData != NULL)
 	{
 		if(CFGetTypeID(theSettingsData) == CFBooleanGetTypeID())
 		{
-			gBox_Acquired = CFBooleanGetValue((CFBooleanRef)theSettingsData);
+			restoredBoxAcquired = CFBooleanGetValue((CFBooleanRef)theSettingsData);
 		}
 		else if(CFGetTypeID(theSettingsData) == CFNumberGetTypeID())
 		{
 			SInt32 theValue = 0;
 			CFNumberGetValue((CFNumberRef)theSettingsData, kCFNumberSInt32Type, &theValue);
-			gBox_Acquired = theValue ? 1 : 0;
+			restoredBoxAcquired = theValue ? 1 : 0;
 		}
 		CFRelease(theSettingsData);
+		theSettingsData = NULL;
 	}
 	
 	//	initialize the box name from the settings
-	gPlugIn_Host->CopyFromStorage(gPlugIn_Host, CFSTR("box acquired"), &theSettingsData);
+	CFStringRef restoredBoxName = NULL;
+	gPlugIn_Host->CopyFromStorage(gPlugIn_Host, kBoxNameStorageKey, &theSettingsData);
 	if(theSettingsData != NULL)
 	{
 		if(CFGetTypeID(theSettingsData) == CFStringGetTypeID())
 		{
-			gBox_Name = (CFStringRef)theSettingsData;
-			CFRetain(gBox_Name);
+			restoredBoxName = CFStringCreateCopy(
+				kCFAllocatorDefault,
+				(CFStringRef)theSettingsData
+			);
 		}
 		CFRelease(theSettingsData);
+		theSettingsData = NULL;
 	}
 	
 	//	set the box name directly as a last resort
-	if(gBox_Name == NULL)
+	if(restoredBoxName == NULL)
 	{
-		gBox_Name = CFSTR("SystemAudioBridge Box");
+		restoredBoxName = CFStringCreateWithCString(
+			kCFAllocatorDefault,
+			"SystemAudioBridge Box",
+			kCFStringEncodingUTF8
+		);
 	}
+	FailWithAction(restoredBoxName == NULL, theAnswer = kAudioHardwareUnspecifiedError, Done, "SystemAudioBridge_Initialize: unable to allocate the box name");
 	
 	//	calculate the host ticks per frame
 	struct mach_timebase_info theTimeBaseInfo;
 	mach_timebase_info(&theTimeBaseInfo);
 	Float64 theHostClockFrequency = (Float64)theTimeBaseInfo.denom / (Float64)theTimeBaseInfo.numer;
 	theHostClockFrequency *= 1000000000.0;
+	pthread_mutex_lock(&gPlugIn_StateMutex);
+	gBox_Acquired = restoredBoxAcquired;
+	if(gBox_Name != NULL) { CFRelease(gBox_Name); }
+	gBox_Name = restoredBoxName;
 	gDevice_HostTicksPerFrame = theHostClockFrequency / gDevice_SampleRate;
-    gDevice_AdjustedTicksPerFrame = gDevice_HostTicksPerFrame - gDevice_HostTicksPerFrame/100.0 * 2.0*(gPitch_Adjust - 0.5);
+	gDevice_AdjustedTicksPerFrame = gDevice_HostTicksPerFrame - gDevice_HostTicksPerFrame/100.0 * 2.0*(gPitch_Adjust - 0.5);
+	publish_timing_snapshot();
+	pthread_mutex_unlock(&gPlugIn_StateMutex);
+#if DEBUG
+	start_debug_overload_reporter();
+#endif
     
     // DebugMsg("SystemAudioBridge theTimeBaseInfo.numer: %u \t theTimeBaseInfo.denom: %u", theTimeBaseInfo.numer, theTimeBaseInfo.denom);
 	
@@ -1109,6 +1605,7 @@ static OSStatus	SystemAudioBridge_AddDeviceClient(AudioServerPlugInDriverRef inD
 	FailWithAction(!is_device_object(inDeviceObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_AddDeviceClient: bad device ID");
 	FailWithAction(inClientInfo == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_AddDeviceClient: missing client info");
 	sabr_driver_transport_add_client(
+		inDeviceObjectID,
 		inClientInfo->mClientID,
 		inClientInfo->mProcessID,
 		inClientInfo->mBundleID
@@ -1131,7 +1628,7 @@ static OSStatus	SystemAudioBridge_RemoveDeviceClient(AudioServerPlugInDriverRef 
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_RemoveDeviceClient: bad driver reference");
 	FailWithAction(!is_device_object(inDeviceObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_RemoveDeviceClient: bad device ID");
 	FailWithAction(inClientInfo == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_RemoveDeviceClient: missing client info");
-	sabr_driver_transport_remove_client(inClientInfo->mClientID);
+	sabr_driver_transport_remove_client(inDeviceObjectID, inClientInfo->mClientID);
 
 Done:
 	return theAnswer;
@@ -1166,19 +1663,30 @@ static OSStatus	SystemAudioBridge_PerformDeviceConfigurationChange(AudioServerPl
     switch(inChangeAction)
     {
         case ChangeAction_EnablePitchControl:
+            FailWithAction(inDeviceObjectID != kObjectID_Device, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_PerformDeviceConfigurationChange: pitch belongs to the main device");
             pthread_mutex_lock(&gPlugIn_StateMutex);
             gPitch_Adjust_Enabled = true;
             pthread_mutex_unlock(&gPlugIn_StateMutex);
             break;
         case ChangeAction_DisablePitchControl:
+            FailWithAction(inDeviceObjectID != kObjectID_Device, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_PerformDeviceConfigurationChange: pitch belongs to the main device");
             pthread_mutex_lock(&gPlugIn_StateMutex);
             gPitch_Adjust_Enabled = false;
             pthread_mutex_unlock(&gPlugIn_StateMutex);
             break;
         case ChangeAction_SetSampleRate:
             pthread_mutex_lock(&gPlugIn_StateMutex);
-            newSampleRate = gDevice_RequestedSampleRate;
+            struct DeviceIOState* requestingState = device_io_state(inDeviceObjectID);
+            newSampleRate = requestingState != NULL
+                ? requestingState->requestedSampleRate
+                : 0.0;
+            bool relatedIOIsRunning = gMainDeviceIOState.runningCount > 0;
+            for(UInt32 slot = 0; slot < kProfileDevice_Count && !relatedIOIsRunning; ++slot)
+            {
+                relatedIOIsRunning = gProfileDeviceIOStates[slot].runningCount > 0;
+            }
             pthread_mutex_unlock(&gPlugIn_StateMutex);
+            FailWithAction(relatedIOIsRunning, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_PerformDeviceConfigurationChange: related device IO is running");
             FailWithAction(!is_valid_sample_rate(newSampleRate), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_PerformDeviceConfigurationChange: bad sample rate");
             
             //	lock the state mutex
@@ -1194,9 +1702,60 @@ static OSStatus	SystemAudioBridge_PerformDeviceConfigurationChange(AudioServerPl
             theHostClockFrequency *= 1000000000.0;
             gDevice_HostTicksPerFrame = theHostClockFrequency / gDevice_SampleRate;
             gDevice_AdjustedTicksPerFrame = gDevice_HostTicksPerFrame - gDevice_HostTicksPerFrame/100.0 * 2.0*(gPitch_Adjust - 0.5);
+			publish_timing_snapshot();
             
             //	unlock the state mutex
             pthread_mutex_unlock(&gPlugIn_StateMutex);
+
+            if(gPlugIn_Host != NULL)
+            {
+                AudioObjectID relatedDevices[1 + kProfileDevice_Count];
+                UInt32 relatedCount = copy_related_devices(
+                    relatedDevices,
+                    sizeof(relatedDevices) / sizeof(relatedDevices[0])
+                );
+                AudioObjectPropertyAddress rateAddress = {
+                    kAudioDevicePropertyNominalSampleRate,
+                    kAudioObjectPropertyScopeGlobal,
+                    kAudioObjectPropertyElementMain
+                };
+                AudioObjectPropertyAddress formatAddresses[] = {
+                    { kAudioStreamPropertyVirtualFormat, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain },
+                    { kAudioStreamPropertyPhysicalFormat, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain },
+                };
+                for(UInt32 index = 0; index < relatedCount; ++index)
+                {
+                    if(relatedDevices[index] != inDeviceObjectID)
+                    {
+                        gPlugIn_Host->PropertiesChanged(
+                            gPlugIn_Host,
+                            relatedDevices[index],
+                            1,
+                            &rateAddress
+                        );
+                    }
+                    AudioObjectID outputStream = relatedDevices[index] == kObjectID_Device
+                        ? kObjectID_Stream_Output
+                        : profile_stream_id(profile_device_index(relatedDevices[index]));
+                    gPlugIn_Host->PropertiesChanged(
+                        gPlugIn_Host,
+                        outputStream,
+                        sizeof(formatAddresses) / sizeof(formatAddresses[0]),
+                        formatAddresses
+                    );
+#if kDevice_HasInput
+                    if(relatedDevices[index] == kObjectID_Device)
+                    {
+                        gPlugIn_Host->PropertiesChanged(
+                            gPlugIn_Host,
+                            kObjectID_Stream_Input,
+                            sizeof(formatAddresses) / sizeof(formatAddresses[0]),
+                            formatAddresses
+                        );
+                    }
+#endif
+                }
+            }
             
             // DebugMsg("SystemAudioBridge theTimeBaseInfo.numer: %u \t theTimeBaseInfo.denom: %u", theTimeBaseInfo.numer, theTimeBaseInfo.denom);
             break;
@@ -1253,7 +1812,6 @@ static Boolean	SystemAudioBridge_HasProperty(AudioServerPlugInDriverRef inDriver
 			break;
 		
 		case kObjectID_Device:
-        case kObjectID_Device2:
 			theAnswer = SystemAudioBridge_HasDeviceProperty(inDriver, inObjectID, inClientProcessID, inAddress);
 			break;
 		
@@ -1275,6 +1833,14 @@ static Boolean	SystemAudioBridge_HasProperty(AudioServerPlugInDriverRef inDriver
 			if(is_profile_device_object(inObjectID))
 			{
 				theAnswer = SystemAudioBridge_HasDeviceProperty(inDriver, inObjectID, inClientProcessID, inAddress);
+			}
+			else if(is_profile_stream_object(inObjectID))
+			{
+				theAnswer = SystemAudioBridge_HasStreamProperty(inDriver, inObjectID, inClientProcessID, inAddress);
+			}
+			else if(is_profile_control_object(inObjectID))
+			{
+				theAnswer = SystemAudioBridge_HasControlProperty(inDriver, inObjectID, inClientProcessID, inAddress);
 			}
 			break;
 	};
@@ -1310,7 +1876,6 @@ static OSStatus	SystemAudioBridge_IsPropertySettable(AudioServerPlugInDriverRef 
 			break;
 		
 		case kObjectID_Device:
-        case kObjectID_Device2:
 			theAnswer = SystemAudioBridge_IsDevicePropertySettable(inDriver, inObjectID, inClientProcessID, inAddress, outIsSettable);
 			break;
 		
@@ -1329,9 +1894,19 @@ static OSStatus	SystemAudioBridge_IsPropertySettable(AudioServerPlugInDriverRef 
 			break;
 
 		default:
-			theAnswer = is_profile_device_object(inObjectID)
-				? SystemAudioBridge_IsDevicePropertySettable(inDriver, inObjectID, inClientProcessID, inAddress, outIsSettable)
-				: kAudioHardwareBadObjectError;
+			if(is_profile_device_object(inObjectID))
+			{
+				theAnswer = SystemAudioBridge_IsDevicePropertySettable(inDriver, inObjectID, inClientProcessID, inAddress, outIsSettable);
+			}
+			else if(is_profile_stream_object(inObjectID))
+			{
+				theAnswer = SystemAudioBridge_IsStreamPropertySettable(inDriver, inObjectID, inClientProcessID, inAddress, outIsSettable);
+			}
+			else if(is_profile_control_object(inObjectID))
+			{
+				theAnswer = SystemAudioBridge_IsControlPropertySettable(inDriver, inObjectID, inClientProcessID, inAddress, outIsSettable);
+			}
+			else { theAnswer = kAudioHardwareBadObjectError; }
 			break;
 	};
 
@@ -1365,7 +1940,6 @@ static OSStatus	SystemAudioBridge_GetPropertyDataSize(AudioServerPlugInDriverRef
 			break;
 		
 		case kObjectID_Device:
-        case kObjectID_Device2:
 			theAnswer = SystemAudioBridge_GetDevicePropertyDataSize(inDriver, inObjectID, inClientProcessID, inAddress, inQualifierDataSize, inQualifierData, outDataSize);
 			break;
 		
@@ -1384,9 +1958,19 @@ static OSStatus	SystemAudioBridge_GetPropertyDataSize(AudioServerPlugInDriverRef
 			break;
 			
 		default:
-			theAnswer = is_profile_device_object(inObjectID)
-				? SystemAudioBridge_GetDevicePropertyDataSize(inDriver, inObjectID, inClientProcessID, inAddress, inQualifierDataSize, inQualifierData, outDataSize)
-				: kAudioHardwareBadObjectError;
+			if(is_profile_device_object(inObjectID))
+			{
+				theAnswer = SystemAudioBridge_GetDevicePropertyDataSize(inDriver, inObjectID, inClientProcessID, inAddress, inQualifierDataSize, inQualifierData, outDataSize);
+			}
+			else if(is_profile_stream_object(inObjectID))
+			{
+				theAnswer = SystemAudioBridge_GetStreamPropertyDataSize(inDriver, inObjectID, inClientProcessID, inAddress, inQualifierDataSize, inQualifierData, outDataSize);
+			}
+			else if(is_profile_control_object(inObjectID))
+			{
+				theAnswer = SystemAudioBridge_GetControlPropertyDataSize(inDriver, inObjectID, inClientProcessID, inAddress, inQualifierDataSize, inQualifierData, outDataSize);
+			}
+			else { theAnswer = kAudioHardwareBadObjectError; }
 			break;
 	};
 
@@ -1421,7 +2005,6 @@ static OSStatus	SystemAudioBridge_GetPropertyData(AudioServerPlugInDriverRef inD
 			break;
 		
 		case kObjectID_Device:
-        case kObjectID_Device2:
 			theAnswer = SystemAudioBridge_GetDevicePropertyData(inDriver, inObjectID, inClientProcessID, inAddress, inQualifierDataSize, inQualifierData, inDataSize, outDataSize, outData);
 			break;
 		
@@ -1440,9 +2023,19 @@ static OSStatus	SystemAudioBridge_GetPropertyData(AudioServerPlugInDriverRef inD
 			break;
 			
 		default:
-			theAnswer = is_profile_device_object(inObjectID)
-				? SystemAudioBridge_GetDevicePropertyData(inDriver, inObjectID, inClientProcessID, inAddress, inQualifierDataSize, inQualifierData, inDataSize, outDataSize, outData)
-				: kAudioHardwareBadObjectError;
+			if(is_profile_device_object(inObjectID))
+			{
+				theAnswer = SystemAudioBridge_GetDevicePropertyData(inDriver, inObjectID, inClientProcessID, inAddress, inQualifierDataSize, inQualifierData, inDataSize, outDataSize, outData);
+			}
+			else if(is_profile_stream_object(inObjectID))
+			{
+				theAnswer = SystemAudioBridge_GetStreamPropertyData(inDriver, inObjectID, inClientProcessID, inAddress, inQualifierDataSize, inQualifierData, inDataSize, outDataSize, outData);
+			}
+			else if(is_profile_control_object(inObjectID))
+			{
+				theAnswer = SystemAudioBridge_GetControlPropertyData(inDriver, inObjectID, inClientProcessID, inAddress, inQualifierDataSize, inQualifierData, inDataSize, outDataSize, outData);
+			}
+			else { theAnswer = kAudioHardwareBadObjectError; }
 			break;
 	};
 
@@ -1460,6 +2053,7 @@ static OSStatus	SystemAudioBridge_SetPropertyData(AudioServerPlugInDriverRef inD
 	//	check the arguments
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_SetPropertyData: bad driver reference");
 	FailWithAction(inAddress == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetPropertyData: no address");
+	FailWithAction(inData == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetPropertyData: no data");
 	
 	//	Note that for each object, this driver implements all the required properties plus a few
 	//	extras that are useful but not required. There is more detailed commentary about each
@@ -1475,7 +2069,6 @@ static OSStatus	SystemAudioBridge_SetPropertyData(AudioServerPlugInDriverRef inD
 			break;
 		
 		case kObjectID_Device:
-        case kObjectID_Device2:
 			theAnswer = SystemAudioBridge_SetDevicePropertyData(inDriver, inObjectID, inClientProcessID, inAddress, inQualifierDataSize, inQualifierData, inDataSize, inData, &theNumberPropertiesChanged, theChangedAddresses);
 			break;
 		
@@ -1494,9 +2087,19 @@ static OSStatus	SystemAudioBridge_SetPropertyData(AudioServerPlugInDriverRef inD
 			break;
 			
 		default:
-			theAnswer = is_profile_device_object(inObjectID)
-				? SystemAudioBridge_SetDevicePropertyData(inDriver, inObjectID, inClientProcessID, inAddress, inQualifierDataSize, inQualifierData, inDataSize, inData, &theNumberPropertiesChanged, theChangedAddresses)
-				: kAudioHardwareBadObjectError;
+			if(is_profile_device_object(inObjectID))
+			{
+				theAnswer = SystemAudioBridge_SetDevicePropertyData(inDriver, inObjectID, inClientProcessID, inAddress, inQualifierDataSize, inQualifierData, inDataSize, inData, &theNumberPropertiesChanged, theChangedAddresses);
+			}
+			else if(is_profile_stream_object(inObjectID))
+			{
+				theAnswer = SystemAudioBridge_SetStreamPropertyData(inDriver, inObjectID, inClientProcessID, inAddress, inQualifierDataSize, inQualifierData, inDataSize, inData, &theNumberPropertiesChanged, theChangedAddresses);
+			}
+			else if(is_profile_control_object(inObjectID))
+			{
+				theAnswer = SystemAudioBridge_SetControlPropertyData(inDriver, inObjectID, inClientProcessID, inAddress, inQualifierDataSize, inQualifierData, inDataSize, inData, &theNumberPropertiesChanged, theChangedAddresses);
+			}
+			else { theAnswer = kAudioHardwareBadObjectError; }
 			break;
 	};
 
@@ -1504,30 +2107,6 @@ static OSStatus	SystemAudioBridge_SetPropertyData(AudioServerPlugInDriverRef inD
 	if(theNumberPropertiesChanged > 0 && gPlugIn_Host != NULL)
 	{
 		gPlugIn_Host->PropertiesChanged(gPlugIn_Host, inObjectID, theNumberPropertiesChanged, theChangedAddresses);
-
-		// The native profile endpoints intentionally share the transport's
-		// volume and mute controls. Forward control changes to every published
-		// endpoint so device-level Core Audio listeners (including CamiTune's
-		// physical-output mirror) observe the value selected in macOS.
-		if(inObjectID == kObjectID_Volume_Output_Master ||
-			inObjectID == kObjectID_Mute_Output_Master)
-		{
-			AudioObjectPropertyAddress deviceAddresses[2];
-			deviceAddresses[0].mSelector = inObjectID == kObjectID_Volume_Output_Master
-				? kAudioDevicePropertyVolumeScalar
-				: kAudioDevicePropertyMute;
-			deviceAddresses[0].mScope = kAudioObjectPropertyScopeOutput;
-			deviceAddresses[0].mElement = kAudioObjectPropertyElementMain;
-			UInt32 deviceAddressCount = 1;
-			if(inObjectID == kObjectID_Volume_Output_Master)
-			{
-				deviceAddresses[1].mSelector = kAudioDevicePropertyVolumeDecibels;
-				deviceAddresses[1].mScope = kAudioObjectPropertyScopeOutput;
-				deviceAddresses[1].mElement = kAudioObjectPropertyElementMain;
-				deviceAddressCount = 2;
-			}
-			notify_profile_devices(deviceAddressCount, deviceAddresses);
-		}
 
 		// A presentation command changes whether the main device appears in
 		// macOS and may also rename it. Notify the plug-in device list as well
@@ -1669,7 +2248,9 @@ static OSStatus	SystemAudioBridge_GetPlugInPropertyDataSize(AudioServerPlugInDri
 			break;
 			
 		case kAudioObjectPropertyOwnedObjects:
-			*outDataSize = (gBox_Acquired ? 2 + profile_device_count() : 1) * sizeof(AudioObjectID);
+			pthread_mutex_lock(&gPlugIn_StateMutex);
+			*outDataSize = (1 + published_device_count_locked()) * sizeof(AudioObjectID);
+			pthread_mutex_unlock(&gPlugIn_StateMutex);
 			break;
 			
 		case kAudioPlugInPropertyBoxList:
@@ -1681,9 +2262,9 @@ static OSStatus	SystemAudioBridge_GetPlugInPropertyDataSize(AudioServerPlugInDri
 			break;
 			
 		case kAudioPlugInPropertyDeviceList:
-			*outDataSize = gBox_Acquired
-				? (1 + profile_device_count()) * sizeof(AudioObjectID)
-				: 0;
+			pthread_mutex_lock(&gPlugIn_StateMutex);
+			*outDataSize = published_device_count_locked() * sizeof(AudioObjectID);
+			pthread_mutex_unlock(&gPlugIn_StateMutex);
 			break;
 			
 		case kAudioPlugInPropertyTranslateUIDToDevice:
@@ -1758,27 +2339,20 @@ static OSStatus	SystemAudioBridge_GetPlugInPropertyData(AudioServerPlugInDriverR
 			//	number is allowed to be smaller than the actual size of the list. In such
 			//	case, only that number of items will be returned
 			theNumberItemsToFetch = inDataSize / sizeof(AudioObjectID);
-			
-			UInt32 ownedObjectCount = gBox_Acquired ? 2 + profile_device_count() : 1;
-			if(theNumberItemsToFetch > ownedObjectCount) { theNumberItemsToFetch = ownedObjectCount; }
 			UInt32 writtenObjects = 0;
-			if(writtenObjects < theNumberItemsToFetch) { ((AudioObjectID*)outData)[writtenObjects++] = kObjectID_Box; }
-			if(gBox_Acquired && writtenObjects < theNumberItemsToFetch)
-			{
-				((AudioObjectID*)outData)[writtenObjects++] = kObjectID_Device;
-			}
 			pthread_mutex_lock(&gPlugIn_StateMutex);
-			for(UInt32 slot = 0; gBox_Acquired && slot < 32 && writtenObjects < theNumberItemsToFetch; ++slot)
+			if(writtenObjects < theNumberItemsToFetch)
 			{
-				if(gProfileDevice_UIDs[slot] != NULL)
-				{
-					((AudioObjectID*)outData)[writtenObjects++] = kObjectID_ProfileDevice_First + slot;
-				}
+				((AudioObjectID*)outData)[writtenObjects++] = kObjectID_Box;
+				writtenObjects += copy_published_devices_locked(
+					((AudioObjectID*)outData) + writtenObjects,
+					theNumberItemsToFetch - writtenObjects
+				);
 			}
 			pthread_mutex_unlock(&gPlugIn_StateMutex);
 			
 			//	Return how many bytes we wrote to
-			*outDataSize = theNumberItemsToFetch * sizeof(AudioClassID);
+			*outDataSize = writtenObjects * sizeof(AudioObjectID);
 			break;
 			
 		case kAudioPlugInPropertyBoxList:
@@ -1800,7 +2374,7 @@ static OSStatus	SystemAudioBridge_GetPlugInPropertyData(AudioServerPlugInDriverR
 			}
 			
 			//	Return how many bytes we wrote to
-			*outDataSize = theNumberItemsToFetch * sizeof(AudioClassID);
+			*outDataSize = theNumberItemsToFetch * sizeof(AudioObjectID);
 			break;
 			
 		case kAudioPlugInPropertyTranslateUIDToBox:
@@ -1812,10 +2386,12 @@ static OSStatus	SystemAudioBridge_GetPlugInPropertyData(AudioServerPlugInDriverR
 			FailWithAction(inDataSize < sizeof(AudioObjectID), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetPlugInPropertyData: not enough space for the return value of kAudioPlugInPropertyTranslateUIDToBox");
 			FailWithAction(inQualifierDataSize != sizeof(CFStringRef), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetPlugInPropertyData: the qualifier is the wrong size for kAudioPlugInPropertyTranslateUIDToBox");
 			FailWithAction(inQualifierData == NULL, theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetPlugInPropertyData: no qualifier for kAudioPlugInPropertyTranslateUIDToBox");
+			CFStringRef requestedBoxUID = *((CFStringRef const*)inQualifierData);
+			FailWithAction(requestedBoxUID == NULL || CFGetTypeID(requestedBoxUID) != CFStringGetTypeID(), theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetPlugInPropertyData: invalid qualifier for kAudioPlugInPropertyTranslateUIDToBox");
 
 			CFStringRef boxUID = get_box_uid();
 
-			if(CFStringCompare(*((CFStringRef*)inQualifierData), boxUID, 0) == kCFCompareEqualTo)
+			if(CFStringCompare(requestedBoxUID, boxUID, 0) == kCFCompareEqualTo)
 			{
 				*((AudioObjectID*)outData) = kObjectID_Box;
 			}
@@ -1832,26 +2408,15 @@ static OSStatus	SystemAudioBridge_GetPlugInPropertyData(AudioServerPlugInDriverR
 			//	number is allowed to be smaller than the actual size of the list. In such
 			//	case, only that number of items will be returned
 			theNumberItemsToFetch = inDataSize / sizeof(AudioObjectID);
-			
-			UInt32 availableDeviceCount = gBox_Acquired ? 1 + profile_device_count() : 0;
-			if(theNumberItemsToFetch > availableDeviceCount) { theNumberItemsToFetch = availableDeviceCount; }
-			UInt32 writtenDevices = 0;
-			if(gBox_Acquired && writtenDevices < theNumberItemsToFetch)
-			{
-				((AudioObjectID*)outData)[writtenDevices++] = kObjectID_Device;
-			}
 			pthread_mutex_lock(&gPlugIn_StateMutex);
-			for(UInt32 slot = 0; gBox_Acquired && slot < 32 && writtenDevices < theNumberItemsToFetch; ++slot)
-			{
-				if(gProfileDevice_UIDs[slot] != NULL)
-				{
-					((AudioObjectID*)outData)[writtenDevices++] = kObjectID_ProfileDevice_First + slot;
-				}
-			}
+			const UInt32 writtenDevices = copy_published_devices_locked(
+				(AudioObjectID*)outData,
+				theNumberItemsToFetch
+			);
 			pthread_mutex_unlock(&gPlugIn_StateMutex);
 			
 			//	Return how many bytes we wrote to
-			*outDataSize = theNumberItemsToFetch * sizeof(AudioClassID);
+			*outDataSize = writtenDevices * sizeof(AudioObjectID);
 			break;
 			
 		case kAudioPlugInPropertyTranslateUIDToDevice:
@@ -1866,7 +2431,8 @@ static OSStatus	SystemAudioBridge_GetPlugInPropertyData(AudioServerPlugInDriverR
             
             
 			
-			CFStringRef requestedUID = *((CFStringRef*)inQualifierData);
+			CFStringRef requestedUID = *((CFStringRef const*)inQualifierData);
+			FailWithAction(requestedUID == NULL || CFGetTypeID(requestedUID) != CFStringGetTypeID(), theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetPlugInPropertyData: invalid qualifier for kAudioPlugInPropertyTranslateUIDToDevice");
 			CFStringRef deviceUID = get_device_uid();
 
 			if(CFStringCompare(requestedUID, deviceUID, 0) == kCFCompareEqualTo)
@@ -1877,7 +2443,7 @@ static OSStatus	SystemAudioBridge_GetPlugInPropertyData(AudioServerPlugInDriverR
 			{
 				*((AudioObjectID*)outData) = kAudioObjectUnknown;
 				pthread_mutex_lock(&gPlugIn_StateMutex);
-				for(UInt32 slot = 0; slot < 32; ++slot)
+				for(UInt32 slot = 0; slot < kProfileDevice_Count; ++slot)
 				{
 					if(gProfileDevice_UIDs[slot] != NULL &&
 						CFStringCompare(requestedUID, gProfileDevice_UIDs[slot], 0) == kCFCompareEqualTo)
@@ -1896,7 +2462,7 @@ static OSStatus	SystemAudioBridge_GetPlugInPropertyData(AudioServerPlugInDriverR
 			//	The resource bundle is a path relative to the path of the plug-in's bundle.
 			//	To specify that the plug-in bundle itself should be used, we just return the
 			//	empty string.
-			FailWithAction(inDataSize < sizeof(AudioObjectID), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetPlugInPropertyData: not enough space for the return value of kAudioPlugInPropertyResourceBundle");
+			FailWithAction(inDataSize < sizeof(CFStringRef), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetPlugInPropertyData: not enough space for the return value of kAudioPlugInPropertyResourceBundle");
 			*((CFStringRef*)outData) = CFSTR("");
 			*outDataSize = sizeof(CFStringRef);
 			break;
@@ -2139,9 +2705,9 @@ static OSStatus	SystemAudioBridge_GetBoxPropertyDataSize(AudioServerPlugInDriver
 			
 		case kAudioBoxPropertyDeviceList:
 			{
-				*outDataSize = gBox_Acquired
-					? (1 + profile_device_count()) * sizeof(AudioObjectID)
-					: 0;
+				pthread_mutex_lock(&gPlugIn_StateMutex);
+				*outDataSize = published_device_count_locked() * sizeof(AudioObjectID);
+				pthread_mutex_unlock(&gPlugIn_StateMutex);
 			}
 			break;
 			
@@ -2201,11 +2767,11 @@ static OSStatus	SystemAudioBridge_GetBoxPropertyData(AudioServerPlugInDriverRef 
 			FailWithAction(inDataSize < sizeof(CFStringRef), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetBoxPropertyData: not enough space for the return value of kAudioObjectPropertyManufacturer for the box");
 			pthread_mutex_lock(&gPlugIn_StateMutex);
 			*((CFStringRef*)outData) = gBox_Name;
-			pthread_mutex_unlock(&gPlugIn_StateMutex);
 			if(*((CFStringRef*)outData) != NULL)
 			{
 				CFRetain(*((CFStringRef*)outData));
 			}
+			pthread_mutex_unlock(&gPlugIn_StateMutex);
 			*outDataSize = sizeof(CFStringRef);
 			break;
 			
@@ -2314,26 +2880,12 @@ static OSStatus	SystemAudioBridge_GetBoxPropertyData(AudioServerPlugInDriverRef 
 		case kAudioBoxPropertyDeviceList:
 			//	This is used to indicate which devices came from this box
 			pthread_mutex_lock(&gPlugIn_StateMutex);
-			if(gBox_Acquired)
-			{
-				UInt32 capacity = inDataSize / sizeof(AudioObjectID);
-				UInt32 written = 0;
-				if(capacity > 0) { ((AudioObjectID*)outData)[written++] = kObjectID_Device; }
-				for(UInt32 slot = 0; slot < 32 && written < capacity; ++slot)
-				{
-					if(gProfileDevice_UIDs[slot] != NULL)
-					{
-						((AudioObjectID*)outData)[written++] = kObjectID_ProfileDevice_First + slot;
-					}
-				}
-				*outDataSize = written * sizeof(AudioObjectID);
-			}
-			else
-			{
-				*outDataSize = 0;
-			}
-            
+			const UInt32 written = copy_published_devices_locked(
+				(AudioObjectID*)outData,
+				inDataSize / sizeof(AudioObjectID)
+			);
 			pthread_mutex_unlock(&gPlugIn_StateMutex);
+			*outDataSize = written * sizeof(AudioObjectID);
 			break;
 			
 		default:
@@ -2358,6 +2910,7 @@ static OSStatus	SystemAudioBridge_SetBoxPropertyData(AudioServerPlugInDriverRef 
 	FailWithAction(outNumberPropertiesChanged == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetBoxPropertyData: no place to return the number of properties that changed");
 	FailWithAction(outChangedAddresses == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetBoxPropertyData: no place to return the properties that changed");
 	FailWithAction(inObjectID != kObjectID_Box, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_SetBoxPropertyData: not the box object");
+	FailWithAction(inData == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetBoxPropertyData: no data");
 	
 	//	initialize the returned number of changed properties
 	*outNumberPropertiesChanged = 0;
@@ -2370,20 +2923,19 @@ static OSStatus	SystemAudioBridge_SetBoxPropertyData(AudioServerPlugInDriverRef 
 		case kAudioObjectPropertyName:
 			//	Boxes should allow their name to be editable
 			{
-				FailWithAction(inData == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetBoxPropertyData: NULL data for kAudioObjectPropertyName");
 				FailWithAction(inDataSize != sizeof(CFStringRef), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_SetBoxPropertyData: wrong size for the data for kAudioObjectPropertyName");
-				CFStringRef* theNewName = (CFStringRef*)inData;
+				CFStringRef const* theNewName = (CFStringRef const*)inData;
+				FailWithAction(*theNewName == NULL || CFGetTypeID(*theNewName) != CFStringGetTypeID(), theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetBoxPropertyData: invalid data for kAudioObjectPropertyName");
+				CFStringRef persistedName = CFStringCreateCopy(kCFAllocatorDefault, *theNewName);
+				FailWithAction(persistedName == NULL, theAnswer = kAudioHardwareUnspecifiedError, Done, "SystemAudioBridge_SetBoxPropertyData: unable to copy kAudioObjectPropertyName");
 				pthread_mutex_lock(&gPlugIn_StateMutex);
-				if((theNewName != NULL) && (*theNewName != NULL))
-				{
-					CFRetain(*theNewName);
-				}
-				if(gBox_Name != NULL)
-				{
-					CFRelease(gBox_Name);
-				}
-				gBox_Name = *theNewName;
+				CFStringRef previousName = gBox_Name;
+				gBox_Name = persistedName;
+				CFRetain(gBox_Name);
 				pthread_mutex_unlock(&gPlugIn_StateMutex);
+				if(previousName != NULL) { CFRelease(previousName); }
+				gPlugIn_Host->WriteToStorage(gPlugIn_Host, kBoxNameStorageKey, persistedName);
+				CFRelease(persistedName);
 				*outNumberPropertiesChanged = 1;
 				outChangedAddresses[0].mSelector = kAudioObjectPropertyName;
 				outChangedAddresses[0].mScope = kAudioObjectPropertyScopeGlobal;
@@ -2411,13 +2963,19 @@ static OSStatus	SystemAudioBridge_SetBoxPropertyData(AudioServerPlugInDriverRef 
 			//	When the box is acquired, it means the contents, namely the device, are available to the system
 			{
 				FailWithAction(inDataSize != sizeof(UInt32), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_SetBoxPropertyData: wrong size for the data for kAudioBoxPropertyAcquired");
+				const Boolean newAcquired = *((const UInt32*)inData) != 0;
+				Boolean acquisitionChanged = false;
 				pthread_mutex_lock(&gPlugIn_StateMutex);
-				if(gBox_Acquired != (*((UInt32*)inData) != 0))
+				if(gBox_Acquired != newAcquired)
 				{
-					//	the new value is different from the old value, so save it
-					gBox_Acquired = *((UInt32*)inData) != 0;
-					gPlugIn_Host->WriteToStorage(gPlugIn_Host, CFSTR("box acquired"), gBox_Acquired ? kCFBooleanTrue : kCFBooleanFalse);
-					
+					gBox_Acquired = newAcquired;
+					acquisitionChanged = true;
+				}
+				pthread_mutex_unlock(&gPlugIn_StateMutex);
+				if(acquisitionChanged)
+				{
+					gPlugIn_Host->WriteToStorage(gPlugIn_Host, kBoxAcquiredStorageKey, newAcquired ? kCFBooleanTrue : kCFBooleanFalse);
+
 					//	and it means that this property and the device list property have changed
 					*outNumberPropertiesChanged = 2;
 					outChangedAddresses[0].mSelector = kAudioBoxPropertyAcquired;
@@ -2432,9 +2990,8 @@ static OSStatus	SystemAudioBridge_SetBoxPropertyData(AudioServerPlugInDriverRef 
 																									{
 																										AudioObjectPropertyAddress theAddress = { kAudioPlugInPropertyDeviceList, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
 																										gPlugIn_Host->PropertiesChanged(gPlugIn_Host, kObjectID_PlugIn, 1, &theAddress);
-																									});
+																		});
 				}
-				pthread_mutex_unlock(&gPlugIn_StateMutex);
 			}
 			break;
 			
@@ -2497,6 +3054,7 @@ static Boolean	SystemAudioBridge_HasDeviceProperty(AudioServerPlugInDriverRef in
 		case kAudioDevicePropertyDeviceCanBeDefaultSystemDevice:
 		case kAudioDevicePropertyLatency:
 		case kAudioDevicePropertySafetyOffset:
+		case kAudioDevicePropertyStreamConfiguration:
 		case kAudioDevicePropertyPreferredChannelsForStereo:
 		case kAudioDevicePropertyPreferredChannelLayout:
 			theAnswer = (inAddress->mScope == kAudioObjectPropertyScopeInput) || (inAddress->mScope == kAudioObjectPropertyScopeOutput);
@@ -2546,6 +3104,7 @@ static OSStatus	SystemAudioBridge_IsDevicePropertySettable(AudioServerPlugInDriv
 		case kAudioDevicePropertyLatency:
 		case kAudioDevicePropertyStreams:
 		case kAudioObjectPropertyControlList:
+		case kAudioDevicePropertyStreamConfiguration:
 		case kAudioDevicePropertySafetyOffset:
 		case kAudioDevicePropertyAvailableNominalSampleRates:
 		case kAudioDevicePropertyIsHidden:
@@ -2631,7 +3190,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyDataSize(AudioServerPlugInDri
 			break;
 
 		case kAudioDevicePropertyRelatedDevices:
-			*outDataSize = sizeof(AudioObjectID);
+			*outDataSize = related_device_count() * sizeof(AudioObjectID);
 			break;
 
 		case kAudioDevicePropertyClockDomain:
@@ -2639,7 +3198,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyDataSize(AudioServerPlugInDri
 			break;
 
 		case kAudioDevicePropertyDeviceIsAlive:
-			*outDataSize = sizeof(AudioClassID);
+			*outDataSize = sizeof(UInt32);
 			break;
 
 		case kAudioDevicePropertyDeviceIsRunning:
@@ -2666,6 +3225,11 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyDataSize(AudioServerPlugInDri
             *outDataSize = device_control_list_size(inAddress->mScope, inObjectID) * sizeof(AudioObjectID);
 			break;
 
+		case kAudioDevicePropertyStreamConfiguration:
+			*outDataSize = offsetof(AudioBufferList, mBuffers) +
+				(inAddress->mScope == kAudioObjectPropertyScopeOutput ? sizeof(AudioBuffer) : 0);
+			break;
+
 		case kAudioDevicePropertySafetyOffset:
 			*outDataSize = sizeof(UInt32);
 			break;
@@ -2687,7 +3251,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyDataSize(AudioServerPlugInDri
 			break;
 
 		case kAudioDevicePropertyPreferredChannelLayout:
-			*outDataSize = offsetof(AudioChannelLayout, mChannelDescriptions) + (kNumber_Of_Channels * sizeof(AudioChannelDescription));
+			*outDataSize = offsetof(AudioChannelLayout, mChannelDescriptions);
 			break;
 
 		case kAudioDevicePropertyZeroTimeStampPeriod:
@@ -2722,7 +3286,6 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 	//	declare the local variables
 	OSStatus theAnswer = 0;
 	UInt32 theNumberItemsToFetch;
-	UInt32 theItemIndex;
 	
 	//	check the arguments
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetDevicePropertyData: bad driver reference");
@@ -2766,7 +3329,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			*((CFStringRef*)outData) = inObjectID == kObjectID_Device
 				? get_device_name()
 				: copy_profile_device_name(inObjectID);
-			if(*((CFStringRef*)outData) == NULL) { *((CFStringRef*)outData) = get_device2_name(); }
+			FailWithAction(*((CFStringRef*)outData) == NULL, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetDevicePropertyData: inactive profile device");
 			*outDataSize = sizeof(CFStringRef);
 			break;
 			
@@ -2783,12 +3346,25 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			//	case, only that number of items will be returned
             theNumberItemsToFetch = minimum(inDataSize / sizeof(AudioObjectID), device_object_list_size(inAddress->mScope, inObjectID));
 
-			const struct ObjectInfo* ownedList = inObjectID == kObjectID_Device ? kDevice_ObjectList : kDevice2_ObjectList;
-			for(UInt32 index = 0, written = 0; written < theNumberItemsToFetch; ++index)
+			if(is_profile_device_id(inObjectID))
 			{
-				if(ownedList[index].scope == inAddress->mScope || inAddress->mScope == kAudioObjectPropertyScopeGlobal)
+				UInt32 slot = profile_device_index(inObjectID);
+				AudioObjectID profileObjects[] = {
+					profile_stream_id(slot), profile_volume_id(slot), profile_mute_id(slot)
+				};
+				for(UInt32 index = 0; index < theNumberItemsToFetch; ++index)
 				{
-					((AudioObjectID*)outData)[written++] = ownedList[index].id;
+					((AudioObjectID*)outData)[index] = profileObjects[index];
+				}
+			}
+			else
+			{
+				for(UInt32 index = 0, written = 0; written < theNumberItemsToFetch; ++index)
+				{
+					if(kDevice_ObjectList[index].scope == inAddress->mScope || inAddress->mScope == kAudioObjectPropertyScopeGlobal)
+					{
+						((AudioObjectID*)outData)[written++] = kDevice_ObjectList[index].id;
+					}
 				}
 			}
 
@@ -2805,7 +3381,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			*((CFStringRef*)outData) = inObjectID == kObjectID_Device
 				? get_device_uid()
 				: copy_profile_device_uid(inObjectID);
-			if(*((CFStringRef*)outData) == NULL) { *((CFStringRef*)outData) = get_device2_uid(); }
+			FailWithAction(*((CFStringRef*)outData) == NULL, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetDevicePropertyData: inactive profile device");
 			*outDataSize = sizeof(CFStringRef);
 			break;
 
@@ -2837,19 +3413,14 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			//	that they are related to each other. Note that at minimum, a device is
 			//	related to itself, so this list will always be at least one item long.
 
-			//	Calculate the number of items that have been requested. Note that this
-			//	number is allowed to be smaller than the actual size of the list. In such
-			//	case, only that number of items will be returned
-			theNumberItemsToFetch = inDataSize / sizeof(AudioObjectID);
-			
-			//	we only have the one device...
-			if(theNumberItemsToFetch > 1)
-			{
-				theNumberItemsToFetch = 1;
-			}
-			
-			//	Write the devices' object IDs into the return value
-			if(theNumberItemsToFetch > 0) { ((AudioObjectID*)outData)[0] = inObjectID; }
+			theNumberItemsToFetch = minimum(
+				inDataSize / sizeof(AudioObjectID),
+				related_device_count()
+			);
+			theNumberItemsToFetch = copy_related_devices(
+				(AudioObjectID*)outData,
+				theNumberItemsToFetch
+			);
 			
 			//	report how much we wrote
 			*outDataSize = theNumberItemsToFetch * sizeof(AudioObjectID);
@@ -2863,7 +3434,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			//	be synchronized with others or doesn't know should return 0 for this
 			//	property.
 			FailWithAction(inDataSize < sizeof(UInt32), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetDevicePropertyData: not enough space for the return value of kAudioDevicePropertyClockDomain for the device");
-			*((UInt32*)outData) = 0;
+			*((UInt32*)outData) = kDevice_ClockDomain;
 			*outDataSize = sizeof(UInt32);
 			break;
 
@@ -2889,12 +3460,10 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
             //    This property returns whether or not IO is running for the device. Note that
             //    we need to take both the state lock to check this value for thread safety.
             FailWithAction(inDataSize < sizeof(UInt32), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetDevicePropertyData: not enough space for the return value of kAudioDevicePropertyDeviceIsRunning for the device");
-            pthread_mutex_lock(&gPlugIn_StateMutex);
-			*((UInt32*)outData) = inObjectID == kObjectID_Device
-				? (gDevice_IOIsRunning > 0 ? 1 : 0)
-				: (gDevice2_IOIsRunning > 0 ? 1 : 0);
-            
-            pthread_mutex_unlock(&gPlugIn_StateMutex);
+			pthread_mutex_lock(&gPlugIn_StateMutex);
+			struct DeviceIOState* runningState = device_io_state(inObjectID);
+			*((UInt32*)outData) = runningState != NULL && runningState->runningCount > 0 ? 1 : 0;
+			pthread_mutex_unlock(&gPlugIn_StateMutex);
             *outDataSize = sizeof(UInt32);
             break;
 
@@ -2932,13 +3501,22 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			//	case, only that number of items will be returned
             theNumberItemsToFetch = minimum(inDataSize / sizeof(AudioObjectID), device_stream_list_size(inAddress->mScope, inObjectID));
 
-			const struct ObjectInfo* streamList = inObjectID == kObjectID_Device ? kDevice_ObjectList : kDevice2_ObjectList;
-			for(UInt32 index = 0, written = 0; written < theNumberItemsToFetch; ++index)
+			if(is_profile_device_id(inObjectID))
 			{
-				if(streamList[index].type == kObjectType_Stream &&
-					(streamList[index].scope == inAddress->mScope || inAddress->mScope == kAudioObjectPropertyScopeGlobal))
+				if(theNumberItemsToFetch > 0)
 				{
-					((AudioObjectID*)outData)[written++] = streamList[index].id;
+					((AudioObjectID*)outData)[0] = profile_stream_id(profile_device_index(inObjectID));
+				}
+			}
+			else
+			{
+				for(UInt32 index = 0, written = 0; written < theNumberItemsToFetch; ++index)
+				{
+					if(kDevice_ObjectList[index].type == kObjectType_Stream &&
+						(kDevice_ObjectList[index].scope == inAddress->mScope || inAddress->mScope == kAudioObjectPropertyScopeGlobal))
+					{
+						((AudioObjectID*)outData)[written++] = kDevice_ObjectList[index].id;
+					}
 				}
 			}
 
@@ -2953,20 +3531,51 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 
             theNumberItemsToFetch = minimum(inDataSize / sizeof(AudioObjectID), device_control_list_size(inAddress->mScope, inObjectID));
 
-			const struct ObjectInfo* controlList = inObjectID == kObjectID_Device ? kDevice_ObjectList : kDevice2_ObjectList;
-			pthread_mutex_lock(&gPlugIn_StateMutex);
-			for(UInt32 index = 0, written = 0; written < theNumberItemsToFetch; ++index)
+			if(is_profile_device_id(inObjectID))
 			{
-				if(controlList[index].type == kObjectType_Control &&
-					!(!gPitch_Adjust_Enabled && controlList[index].id == kObjectID_Pitch_Adjust))
+				UInt32 slot = profile_device_index(inObjectID);
+				AudioObjectID profileControls[] = {
+					profile_volume_id(slot), profile_mute_id(slot)
+				};
+				for(UInt32 index = 0; index < theNumberItemsToFetch; ++index)
 				{
-					((AudioObjectID*)outData)[written++] = controlList[index].id;
+					((AudioObjectID*)outData)[index] = profileControls[index];
 				}
 			}
-			pthread_mutex_unlock(&gPlugIn_StateMutex);
+			else
+			{
+				pthread_mutex_lock(&gPlugIn_StateMutex);
+				for(UInt32 index = 0, written = 0; written < theNumberItemsToFetch; ++index)
+				{
+					if(kDevice_ObjectList[index].type == kObjectType_Control &&
+						!(!gPitch_Adjust_Enabled && kDevice_ObjectList[index].id == kObjectID_Pitch_Adjust))
+					{
+						((AudioObjectID*)outData)[written++] = kDevice_ObjectList[index].id;
+					}
+				}
+				pthread_mutex_unlock(&gPlugIn_StateMutex);
+			}
 
 			//	report how much we wrote
 			*outDataSize = theNumberItemsToFetch * sizeof(AudioObjectID);
+			break;
+
+		case kAudioDevicePropertyStreamConfiguration:
+			{
+				const bool hasOutput = inAddress->mScope == kAudioObjectPropertyScopeOutput;
+				const UInt32 configurationSize = offsetof(AudioBufferList, mBuffers) +
+					(hasOutput ? sizeof(AudioBuffer) : 0);
+				FailWithAction(inDataSize < configurationSize, theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetDevicePropertyData: not enough space for kAudioDevicePropertyStreamConfiguration");
+				AudioBufferList* configuration = (AudioBufferList*)outData;
+				configuration->mNumberBuffers = hasOutput ? 1 : 0;
+				if(hasOutput)
+				{
+					configuration->mBuffers[0].mNumberChannels = kNumber_Of_Channels;
+					configuration->mBuffers[0].mDataByteSize = 0;
+					configuration->mBuffers[0].mData = NULL;
+				}
+				*outDataSize = configurationSize;
+			}
 			break;
 
 		case kAudioDevicePropertySafetyOffset:
@@ -3046,20 +3655,13 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			//	This property returns the semantic order for the device's
 			//	compiled 2.0, 5.1, or 7.1 LPCM layout.
 			{
-				//	calculate how big the
-				UInt32 theACLSize = offsetof(AudioChannelLayout, mChannelDescriptions) + (kNumber_Of_Channels * sizeof(AudioChannelDescription));
+				// A tag-only layout is fixed-size and survives the HAL's out-of-process
+				// property proxy without a variable trailing-description payload.
+				UInt32 theACLSize = offsetof(AudioChannelLayout, mChannelDescriptions);
 				FailWithAction(inDataSize < theACLSize, theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetDevicePropertyData: not enough space for the return value of kAudioDevicePropertyPreferredChannelLayout for the device");
-				((AudioChannelLayout*)outData)->mChannelLayoutTag = kAudioChannelLayoutTag_UseChannelDescriptions;
+				((AudioChannelLayout*)outData)->mChannelLayoutTag = device_channel_layout_tag();
 				((AudioChannelLayout*)outData)->mChannelBitmap = 0;
-				((AudioChannelLayout*)outData)->mNumberChannelDescriptions = kNumber_Of_Channels;
-				for(theItemIndex = 0; theItemIndex < kNumber_Of_Channels; ++theItemIndex)
-				{
-					((AudioChannelLayout*)outData)->mChannelDescriptions[theItemIndex].mChannelLabel = device_channel_label(theItemIndex);
-					((AudioChannelLayout*)outData)->mChannelDescriptions[theItemIndex].mChannelFlags = 0;
-					((AudioChannelLayout*)outData)->mChannelDescriptions[theItemIndex].mCoordinates[0] = 0;
-					((AudioChannelLayout*)outData)->mChannelDescriptions[theItemIndex].mCoordinates[1] = 0;
-					((AudioChannelLayout*)outData)->mChannelDescriptions[theItemIndex].mCoordinates[2] = 0;
-				}
+				((AudioChannelLayout*)outData)->mNumberChannelDescriptions = 0;
 				*outDataSize = theACLSize;
 			}
 			break;
@@ -3087,8 +3689,8 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 
 		case SABR_TRANSPORT_PROPERTY:
 			FailWithAction(inDataSize < sizeof(CFPropertyListRef), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetDevicePropertyData: not enough space for transport property list");
-			/* CFNull cannot be serialized by Core Audio's custom-property proxy. */
-			*((CFPropertyListRef*)outData) = CFRetain(CFSTR("disconnected"));
+			*((CFPropertyListRef*)outData) = create_transport_capabilities();
+			FailWithAction(*((CFPropertyListRef*)outData) == NULL, theAnswer = kAudioHardwareUnspecifiedError, Done, "SystemAudioBridge_GetDevicePropertyData: could not create transport capabilities");
 			*outDataSize = sizeof(CFPropertyListRef);
 			break;
 
@@ -3111,7 +3713,7 @@ Done:
 
 static OSStatus	SystemAudioBridge_SetDevicePropertyData(AudioServerPlugInDriverRef inDriver, AudioObjectID inObjectID, pid_t inClientProcessID, const AudioObjectPropertyAddress* inAddress, UInt32 inQualifierDataSize, const void* inQualifierData, UInt32 inDataSize, const void* inData, UInt32* outNumberPropertiesChanged, AudioObjectPropertyAddress outChangedAddresses[2])
 {
-	#pragma unused(inClientProcessID, inQualifierDataSize, inQualifierData)
+	#pragma unused(inQualifierDataSize, inQualifierData)
 	
 	//	declare the local variables
 	OSStatus theAnswer = 0;
@@ -3123,6 +3725,7 @@ static OSStatus	SystemAudioBridge_SetDevicePropertyData(AudioServerPlugInDriverR
 	FailWithAction(outNumberPropertiesChanged == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetDevicePropertyData: no place to return the number of properties that changed");
 	FailWithAction(outChangedAddresses == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetDevicePropertyData: no place to return the properties that changed");
 	FailWithAction(!is_device_object(inObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_SetDevicePropertyData: not the device object");
+	FailWithAction(inData == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetDevicePropertyData: no data");
 	
 	//	initialize the returned number of changed properties
 	*outNumberPropertiesChanged = 0;
@@ -3152,6 +3755,11 @@ static OSStatus	SystemAudioBridge_SetDevicePropertyData(AudioServerPlugInDriverR
 					) == kCFCompareEqualTo)
 				{
 					FailWithAction(inObjectID != kObjectID_Device, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetDevicePropertyData: presentation is only supported by the main device");
+					theAnswer = sabr_driver_transport_authorize_property_list(
+						propertyList,
+						inClientProcessID
+					);
+					FailWithAction(theAnswer != noErr, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetDevicePropertyData: unauthorized presentation command");
 					CFTypeRef name = CFDictionaryGetValue(
 						dictionary,
 						CFSTR(SABR_TRANSPORT_KEY_DISPLAY_NAME)
@@ -3161,8 +3769,9 @@ static OSStatus	SystemAudioBridge_SetDevicePropertyData(AudioServerPlugInDriverR
 						CFSTR(SABR_TRANSPORT_KEY_VISIBLE)
 					);
 					FailWithAction(name == NULL ||
-						CFGetTypeID(name) != CFStringGetTypeID() ||
-						CFStringGetLength((CFStringRef)name) == 0 ||
+							CFGetTypeID(name) != CFStringGetTypeID() ||
+							CFStringGetLength((CFStringRef)name) == 0 ||
+							CFStringGetLength((CFStringRef)name) > SABR_TRANSPORT_MAX_DISPLAY_NAME_UTF16_LENGTH ||
 						visible == NULL ||
 						CFGetTypeID(visible) != CFBooleanGetTypeID(),
 						theAnswer = kAudioHardwareIllegalOperationError,
@@ -3199,6 +3808,11 @@ static OSStatus	SystemAudioBridge_SetDevicePropertyData(AudioServerPlugInDriverR
 					) == kCFCompareEqualTo)
 				{
 					FailWithAction(inObjectID != kObjectID_Device, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetDevicePropertyData: profile devices are only configured through the main device");
+					theAnswer = sabr_driver_transport_authorize_property_list(
+						propertyList,
+						inClientProcessID
+					);
+					FailWithAction(theAnswer != noErr, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetDevicePropertyData: unauthorized profile-device command");
 					CFTypeRef profiles = CFDictionaryGetValue(
 						dictionary,
 						CFSTR(SABR_TRANSPORT_KEY_PROFILES)
@@ -3207,7 +3821,10 @@ static OSStatus	SystemAudioBridge_SetDevicePropertyData(AudioServerPlugInDriverR
 					break;
 				}
 			}
-			theAnswer = sabr_driver_transport_connect_property_list(propertyList);
+			theAnswer = sabr_driver_transport_connect_property_list(
+				propertyList,
+				inClientProcessID
+			);
 			break;
 
 		case kAudioDevicePropertyNominalSampleRate:
@@ -3221,12 +3838,15 @@ static OSStatus	SystemAudioBridge_SetDevicePropertyData(AudioServerPlugInDriverR
 			//	make sure that the new value is different than the old value
 			pthread_mutex_lock(&gPlugIn_StateMutex);
 			theOldSampleRate = gDevice_SampleRate;
-			gDevice_RequestedSampleRate = *((const Float64*)inData);
+			struct DeviceIOState* requestingState = device_io_state(inObjectID);
+			FailWithAction(requestingState == NULL, pthread_mutex_unlock(&gPlugIn_StateMutex); theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_SetDevicePropertyData: missing device state");
+			requestingState->requestedSampleRate = *((const Float64*)inData);
 			pthread_mutex_unlock(&gPlugIn_StateMutex);
 			if(*((const Float64*)inData) != theOldSampleRate)
 			{
 				//	we dispatch this so that the change can happen asynchronously
-				dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{ gPlugIn_Host->RequestDeviceConfigurationChange(gPlugIn_Host, kObjectID_Device, ChangeAction_SetSampleRate, NULL); });
+				AudioObjectID requestingDevice = inObjectID;
+				dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{ gPlugIn_Host->RequestDeviceConfigurationChange(gPlugIn_Host, requestingDevice, ChangeAction_SetSampleRate, NULL); });
 			}
 			break;
 		
@@ -3253,7 +3873,7 @@ static Boolean	SystemAudioBridge_HasStreamProperty(AudioServerPlugInDriverRef in
 	//	check the arguments
 	FailIf(inDriver != gAudioServerPlugInDriverRef, Done, "SystemAudioBridge_HasStreamProperty: bad driver reference");
 	FailIf(inAddress == NULL, Done, "SystemAudioBridge_HasStreamProperty: no address");
-	FailIf((inObjectID != kObjectID_Stream_Input) && (inObjectID != kObjectID_Stream_Output), Done, "SystemAudioBridge_HasStreamProperty: not a stream object");
+	FailIf(!is_stream_object(inObjectID), Done, "SystemAudioBridge_HasStreamProperty: not a stream object");
 	
 	//	Note that for each object, this driver implements all the required properties plus a few
 	//	extras that are useful but not required. There is more detailed commentary about each
@@ -3295,7 +3915,7 @@ static OSStatus	SystemAudioBridge_IsStreamPropertySettable(AudioServerPlugInDriv
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_IsStreamPropertySettable: bad driver reference");
 	FailWithAction(inAddress == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_IsStreamPropertySettable: no address");
 	FailWithAction(outIsSettable == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_IsStreamPropertySettable: no place to put the return value");
-	FailWithAction((inObjectID != kObjectID_Stream_Input) && (inObjectID != kObjectID_Stream_Output), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_IsStreamPropertySettable: not a stream object");
+	FailWithAction(!is_stream_object(inObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_IsStreamPropertySettable: not a stream object");
 	
 	//	Note that for each object, this driver implements all the required properties plus a few
 	//	extras that are useful but not required. There is more detailed commentary about each
@@ -3343,7 +3963,7 @@ static OSStatus	SystemAudioBridge_GetStreamPropertyDataSize(AudioServerPlugInDri
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetStreamPropertyDataSize: bad driver reference");
 	FailWithAction(inAddress == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetStreamPropertyDataSize: no address");
 	FailWithAction(outDataSize == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetStreamPropertyDataSize: no place to put the return value");
-	FailWithAction((inObjectID != kObjectID_Stream_Input) && (inObjectID != kObjectID_Stream_Output), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetStreamPropertyDataSize: not a stream object");
+	FailWithAction(!is_stream_object(inObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetStreamPropertyDataSize: not a stream object");
 	
 	//	Note that for each object, this driver implements all the required properties plus a few
 	//	extras that are useful but not required. There is more detailed commentary about each
@@ -3418,7 +4038,7 @@ static OSStatus	SystemAudioBridge_GetStreamPropertyData(AudioServerPlugInDriverR
 	FailWithAction(inAddress == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetStreamPropertyData: no address");
 	FailWithAction(outDataSize == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetStreamPropertyData: no place to put the return value size");
 	FailWithAction(outData == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetStreamPropertyData: no place to put the return value");
-	FailWithAction((inObjectID != kObjectID_Stream_Input) && (inObjectID != kObjectID_Stream_Output), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetStreamPropertyData: not a stream object");
+	FailWithAction(!is_stream_object(inObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetStreamPropertyData: not a stream object");
 	
 	//	Note that for each object, this driver implements all the required properties plus a few
 	//	extras that are useful but not required.
@@ -3444,7 +4064,7 @@ static OSStatus	SystemAudioBridge_GetStreamPropertyData(AudioServerPlugInDriverR
 		case kAudioObjectPropertyOwner:
 			//	The stream's owner is the device object
 			FailWithAction(inDataSize < sizeof(AudioObjectID), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetStreamPropertyData: not enough space for the return value of kAudioObjectPropertyOwner for the stream");
-			*((AudioObjectID*)outData) = kObjectID_Device;
+			*((AudioObjectID*)outData) = stream_owner_device(inObjectID);
 			*outDataSize = sizeof(AudioObjectID);
 			break;
 			
@@ -3459,7 +4079,10 @@ static OSStatus	SystemAudioBridge_GetStreamPropertyData(AudioServerPlugInDriverR
 			//	value.
 			FailWithAction(inDataSize < sizeof(UInt32), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetStreamPropertyData: not enough space for the return value of kAudioStreamPropertyIsActive for the stream");
 			pthread_mutex_lock(&gPlugIn_StateMutex);
-			*((UInt32*)outData) = (inObjectID == kObjectID_Stream_Input) ? gStream_Input_IsActive : gStream_Output_IsActive;
+			struct DeviceIOState* streamState = device_io_state(stream_owner_device(inObjectID));
+			*((UInt32*)outData) = inObjectID == kObjectID_Stream_Input
+				? gStream_Input_IsActive
+				: (streamState != NULL && streamState->outputStreamIsActive ? 1 : 0);
 			pthread_mutex_unlock(&gPlugIn_StateMutex);
 			*outDataSize = sizeof(UInt32);
 			break;
@@ -3569,13 +4192,15 @@ static OSStatus	SystemAudioBridge_SetStreamPropertyData(AudioServerPlugInDriverR
 	//	declare the local variables
 	OSStatus theAnswer = 0;
 	Float64 theOldSampleRate;
+	Float64 theRequestedSampleRate;
 	
 	//	check the arguments
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_SetStreamPropertyData: bad driver reference");
 	FailWithAction(inAddress == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetStreamPropertyData: no address");
 	FailWithAction(outNumberPropertiesChanged == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetStreamPropertyData: no place to return the number of properties that changed");
 	FailWithAction(outChangedAddresses == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetStreamPropertyData: no place to return the properties that changed");
-	FailWithAction((inObjectID != kObjectID_Stream_Input) && (inObjectID != kObjectID_Stream_Output), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_SetStreamPropertyData: not a stream object");
+	FailWithAction(!is_stream_object(inObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_SetStreamPropertyData: not a stream object");
+	FailWithAction(inData == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetStreamPropertyData: no data");
 	
 	//	initialize the returned number of changed properties
 	*outNumberPropertiesChanged = 0;
@@ -3603,9 +4228,11 @@ static OSStatus	SystemAudioBridge_SetStreamPropertyData(AudioServerPlugInDriverR
 			}
 			else
 			{
-				if(gStream_Output_IsActive != (*((const UInt32*)inData) != 0))
+				struct DeviceIOState* streamState = device_io_state(stream_owner_device(inObjectID));
+				FailWithAction(streamState == NULL, pthread_mutex_unlock(&gPlugIn_StateMutex); theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_SetStreamPropertyData: missing device state");
+				if(streamState->outputStreamIsActive != (*((const UInt32*)inData) != 0))
 				{
-					gStream_Output_IsActive = *((const UInt32*)inData) != 0;
+					streamState->outputStreamIsActive = *((const UInt32*)inData) != 0;
 					*outNumberPropertiesChanged = 1;
 					outChangedAddresses[0].mSelector = kAudioStreamPropertyIsActive;
 					outChangedAddresses[0].mScope = kAudioObjectPropertyScopeGlobal;
@@ -3629,17 +4256,29 @@ static OSStatus	SystemAudioBridge_SetStreamPropertyData(AudioServerPlugInDriverR
 			FailWithAction(((const AudioStreamBasicDescription*)inData)->mBytesPerFrame != kBytes_Per_Frame, theAnswer = kAudioDeviceUnsupportedFormatError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported bytes per frame for kAudioStreamPropertyPhysicalFormat");
 			FailWithAction(((const AudioStreamBasicDescription*)inData)->mChannelsPerFrame != kNumber_Of_Channels, theAnswer = kAudioDeviceUnsupportedFormatError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported channels per frame for kAudioStreamPropertyPhysicalFormat");
 			FailWithAction(((const AudioStreamBasicDescription*)inData)->mBitsPerChannel != kBits_Per_Channel, theAnswer = kAudioDeviceUnsupportedFormatError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported bits per channel for kAudioStreamPropertyPhysicalFormat");
-			FailWithAction(!is_valid_sample_rate(((const AudioStreamBasicDescription*)inData)->mSampleRate), theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported sample rate for kAudioStreamPropertyPhysicalFormat");
+			theRequestedSampleRate = ((const AudioStreamBasicDescription*)inData)->mSampleRate;
+			if(theRequestedSampleRate == 0)
+			{
+				// Core Audio can use zero as an unspecified rate while mirroring an
+				// otherwise-identical format through its out-of-process proxy.
+				pthread_mutex_lock(&gPlugIn_StateMutex);
+				theRequestedSampleRate = gDevice_SampleRate;
+				pthread_mutex_unlock(&gPlugIn_StateMutex);
+			}
+			FailWithAction(!is_valid_sample_rate(theRequestedSampleRate), theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported sample rate for kAudioStreamPropertyPhysicalFormat");
 			
 			//	If we made it this far, the requested format is something we support, so make sure the sample rate is actually different
 			pthread_mutex_lock(&gPlugIn_StateMutex);
 			theOldSampleRate = gDevice_SampleRate;
-			gDevice_RequestedSampleRate = ((const AudioStreamBasicDescription*)inData)->mSampleRate;
+			AudioObjectID requestingDevice = stream_owner_device(inObjectID);
+			struct DeviceIOState* requestingState = device_io_state(requestingDevice);
+			FailWithAction(requestingState == NULL, pthread_mutex_unlock(&gPlugIn_StateMutex); theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_SetStreamPropertyData: missing device state");
+			requestingState->requestedSampleRate = theRequestedSampleRate;
 			pthread_mutex_unlock(&gPlugIn_StateMutex);
-			if(((const AudioStreamBasicDescription*)inData)->mSampleRate != theOldSampleRate)
+			if(theRequestedSampleRate != theOldSampleRate)
 			{
 				//	we dispatch this so that the change can happen asynchronously
-				dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{ gPlugIn_Host->RequestDeviceConfigurationChange(gPlugIn_Host, kObjectID_Device, ChangeAction_SetSampleRate, NULL); });
+				dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{ gPlugIn_Host->RequestDeviceConfigurationChange(gPlugIn_Host, requestingDevice, ChangeAction_SetSampleRate, NULL); });
 			}
 			break;
 		
@@ -3666,11 +4305,12 @@ static Boolean	SystemAudioBridge_HasControlProperty(AudioServerPlugInDriverRef i
 	//	check the arguments
 	FailIf(inDriver != gAudioServerPlugInDriverRef, Done, "SystemAudioBridge_HasControlProperty: bad driver reference");
 	FailIf(inAddress == NULL, Done, "SystemAudioBridge_HasControlProperty: no address");
+	FailIf(!is_control_object(inObjectID), Done, "SystemAudioBridge_HasControlProperty: not a control object");
 	
 	//	Note that for each object, this driver implements all the required properties plus a few
 	//	extras that are useful but not required. There is more detailed commentary about each
 	//	property in the SystemAudioBridge_GetControlPropertyData() method.
-	switch(inObjectID)
+	switch(canonical_control_id(inObjectID))
 	{
 		case kObjectID_Volume_Input_Master:
 		case kObjectID_Volume_Output_Master:
@@ -3759,11 +4399,12 @@ static OSStatus	SystemAudioBridge_IsControlPropertySettable(AudioServerPlugInDri
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_IsControlPropertySettable: bad driver reference");
 	FailWithAction(inAddress == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_IsControlPropertySettable: no address");
 	FailWithAction(outIsSettable == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_IsControlPropertySettable: no place to put the return value");
+	FailWithAction(!is_control_object(inObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_IsControlPropertySettable: not a control object");
 	
 	//	Note that for each object, this driver implements all the required properties plus a few
 	//	extras that are useful but not required. There is more detailed commentary about each
 	//	property in the SystemAudioBridge_GetControlPropertyData() method.
-	switch(inObjectID)
+	switch(canonical_control_id(inObjectID))
 	{
 		case kObjectID_Volume_Input_Master:
 		case kObjectID_Volume_Output_Master:
@@ -3880,11 +4521,12 @@ static OSStatus	SystemAudioBridge_GetControlPropertyDataSize(AudioServerPlugInDr
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetControlPropertyDataSize: bad driver reference");
 	FailWithAction(inAddress == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetControlPropertyDataSize: no address");
 	FailWithAction(outDataSize == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetControlPropertyDataSize: no place to put the return value");
+	FailWithAction(!is_control_object(inObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetControlPropertyDataSize: not a control object");
 	
 	//	Note that for each object, this driver implements all the required properties plus a few
 	//	extras that are useful but not required. There is more detailed commentary about each
 	//	property in the SystemAudioBridge_GetControlPropertyData() method.
-	switch(inObjectID)
+	switch(canonical_control_id(inObjectID))
 	{
 		case kObjectID_Volume_Input_Master:
 		case kObjectID_Volume_Output_Master:
@@ -4075,13 +4717,14 @@ static OSStatus	SystemAudioBridge_GetControlPropertyData(AudioServerPlugInDriver
 	FailWithAction(inAddress == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetControlPropertyData: no address");
 	FailWithAction(outDataSize == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetControlPropertyData: no place to put the return value size");
 	FailWithAction(outData == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetControlPropertyData: no place to put the return value");
+	FailWithAction(!is_control_object(inObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetControlPropertyData: not a control object");
 	
 	//	Note that for each object, this driver implements all the required properties plus a few
 	//	extras that are useful but not required.
 	//
 	//	Also, since most of the data that will get returned is static, there are few instances where
 	//	it is necessary to lock the state mutex.
-	switch(inObjectID)
+	switch(canonical_control_id(inObjectID))
 	{
 		case kObjectID_Volume_Input_Master:
 		case kObjectID_Volume_Output_Master:
@@ -4104,7 +4747,7 @@ static OSStatus	SystemAudioBridge_GetControlPropertyData(AudioServerPlugInDriver
 				case kAudioObjectPropertyOwner:
 					//	The control's owner is the device object
 					FailWithAction(inDataSize < sizeof(AudioObjectID), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetControlPropertyData: not enough space for the return value of kAudioObjectPropertyOwner for the volume control");
-					*((AudioObjectID*)outData) = kObjectID_Device;
+					*((AudioObjectID*)outData) = control_owner_device(inObjectID);
 					*outDataSize = sizeof(AudioObjectID);
 					break;
 					
@@ -4116,7 +4759,7 @@ static OSStatus	SystemAudioBridge_GetControlPropertyData(AudioServerPlugInDriver
 				case kAudioControlPropertyScope:
 					//	This property returns the scope that the control is attached to.
 					FailWithAction(inDataSize < sizeof(AudioObjectPropertyScope), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetControlPropertyData: not enough space for the return value of kAudioControlPropertyScope for the volume control");
-					*((AudioObjectPropertyScope*)outData) = (inObjectID == kObjectID_Volume_Input_Master) ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput;
+					*((AudioObjectPropertyScope*)outData) = canonical_control_id(inObjectID) == kObjectID_Volume_Input_Master ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput;
 					*outDataSize = sizeof(AudioObjectPropertyScope);
 					break;
 
@@ -4129,21 +4772,24 @@ static OSStatus	SystemAudioBridge_GetControlPropertyData(AudioServerPlugInDriver
 
 				case kAudioLevelControlPropertyScalarValue:
 					//	This returns the value of the control in the normalized range of 0 to 1.
-					//	Note that we need to take the state lock to examine the value.
+					//	The media-key control path is intentionally lock-free.
 					FailWithAction(inDataSize < sizeof(Float32), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetControlPropertyData: not enough space for the return value of kAudioLevelControlPropertyScalarValue for the volume control");
-					pthread_mutex_lock(&gPlugIn_StateMutex);
-					*((Float32*)outData) = volume_to_scalar(gVolume_Master_Value);
-					pthread_mutex_unlock(&gPlugIn_StateMutex);
+					struct DeviceIOState* volumeState = control_io_state(inObjectID);
+					Float32 volumeValue = is_profile_volume_id(inObjectID) && volumeState != NULL
+						? atomic_load_explicit(&volumeState->volume, memory_order_relaxed)
+						: atomic_load_explicit(&gVolume_Master_Value, memory_order_relaxed);
+					*((Float32*)outData) = volume_to_scalar(volumeValue);
 					*outDataSize = sizeof(Float32);
 					break;
 
 				case kAudioLevelControlPropertyDecibelValue:
 					//	This returns the dB value of the control.
-					//	Note that we need to take the state lock to examine the value.
+					//	The media-key control path is intentionally lock-free.
 					FailWithAction(inDataSize < sizeof(Float32), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetControlPropertyData: not enough space for the return value of kAudioLevelControlPropertyDecibelValue for the volume control");
-					pthread_mutex_lock(&gPlugIn_StateMutex);
-					*((Float32*)outData) = gVolume_Master_Value;
-					pthread_mutex_unlock(&gPlugIn_StateMutex);
+					struct DeviceIOState* decibelState = control_io_state(inObjectID);
+					*((Float32*)outData) = is_profile_volume_id(inObjectID) && decibelState != NULL
+						? atomic_load_explicit(&decibelState->volume, memory_order_relaxed)
+						: atomic_load_explicit(&gVolume_Master_Value, memory_order_relaxed);
 					*((Float32*)outData) = volume_to_decibel(*((Float32*)outData));
 					
 					//	report how much we wrote
@@ -4172,10 +4818,11 @@ static OSStatus	SystemAudioBridge_GetControlPropertyData(AudioServerPlugInDriver
 						*((Float32*)outData) = 1.0;
 					}
 					
-					//	Note that we square the scalar value before converting to dB so as to
-					//	provide a better curve for the slider
-					*((Float32*)outData) *= *((Float32*)outData);
-					*((Float32*)outData) = kVolume_MinDB + (*((Float32*)outData) * (kVolume_MaxDB - kVolume_MinDB));
+					// Keep the HAL conversion property exactly consistent with the
+					// scalar getter/setter exposed by the profile control.
+					*((Float32*)outData) = volume_to_decibel(
+						volume_from_scalar(*((Float32*)outData))
+					);
 					
 					//	report how much we wrote
 					*outDataSize = sizeof(Float32);
@@ -4195,11 +4842,10 @@ static OSStatus	SystemAudioBridge_GetControlPropertyData(AudioServerPlugInDriver
 						*((Float32*)outData) = kVolume_MaxDB;
 					}
 					
-					//	Note that we square the scalar value before converting to dB so as to
-					//	provide a better curve for the slider. We undo that here.
-					*((Float32*)outData) = *((Float32*)outData) - kVolume_MinDB;
-					*((Float32*)outData) /= kVolume_MaxDB - kVolume_MinDB;
-					*((Float32*)outData) = sqrtf(*((Float32*)outData));
+					// Inverse of kAudioLevelControlPropertyConvertScalarToDecibels.
+					*((Float32*)outData) = volume_to_scalar(
+						volume_from_decibel(*((Float32*)outData))
+					);
 					
 					//	report how much we wrote
 					*outDataSize = sizeof(Float32);
@@ -4232,7 +4878,7 @@ static OSStatus	SystemAudioBridge_GetControlPropertyData(AudioServerPlugInDriver
 				case kAudioObjectPropertyOwner:
 					//	The control's owner is the device object
 					FailWithAction(inDataSize < sizeof(AudioObjectID), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetControlPropertyData: not enough space for the return value of kAudioObjectPropertyOwner for the mute control");
-					*((AudioObjectID*)outData) = kObjectID_Device;
+					*((AudioObjectID*)outData) = control_owner_device(inObjectID);
 					*outDataSize = sizeof(AudioObjectID);
 					break;
 					
@@ -4244,7 +4890,7 @@ static OSStatus	SystemAudioBridge_GetControlPropertyData(AudioServerPlugInDriver
 				case kAudioControlPropertyScope:
 					//	This property returns the scope that the control is attached to.
 					FailWithAction(inDataSize < sizeof(AudioObjectPropertyScope), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetControlPropertyData: not enough space for the return value of kAudioControlPropertyScope for the mute control");
-					*((AudioObjectPropertyScope*)outData) = (inObjectID == kObjectID_Mute_Input_Master) ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput;
+					*((AudioObjectPropertyScope*)outData) = canonical_control_id(inObjectID) == kObjectID_Mute_Input_Master ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput;
 					*outDataSize = sizeof(AudioObjectPropertyScope);
 					break;
 
@@ -4258,11 +4904,12 @@ static OSStatus	SystemAudioBridge_GetControlPropertyData(AudioServerPlugInDriver
 				case kAudioBooleanControlPropertyValue:
 					//	This returns the value of the mute control where 0 means that mute is off
 					//	and audio can be heard and 1 means that mute is on and audio cannot be heard.
-					//	Note that we need to take the state lock to examine this value.
+					//	The media-key control path is intentionally lock-free.
 					FailWithAction(inDataSize < sizeof(UInt32), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetControlPropertyData: not enough space for the return value of kAudioBooleanControlPropertyValue for the mute control");
-					pthread_mutex_lock(&gPlugIn_StateMutex);
-					*((UInt32*)outData) = gMute_Master_Value ? 1 : 0;
-					pthread_mutex_unlock(&gPlugIn_StateMutex);
+					struct DeviceIOState* muteState = control_io_state(inObjectID);
+					*((UInt32*)outData) = is_profile_mute_id(inObjectID) && muteState != NULL
+						? (atomic_load_explicit(&muteState->mute, memory_order_relaxed) ? 1 : 0)
+						: (atomic_load_explicit(&gMute_Master_Value, memory_order_relaxed) ? 1 : 0);
 					*outDataSize = sizeof(UInt32);
 					break;
 
@@ -4292,7 +4939,7 @@ static OSStatus	SystemAudioBridge_GetControlPropertyData(AudioServerPlugInDriver
 				case kAudioObjectPropertyOwner:
 					//    The control's owner is the device object
 					FailWithAction(inDataSize < sizeof(AudioObjectID), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetControlPropertyData: not enough space for the return value of kAudioObjectPropertyOwner for the pitch control");
-					*((AudioObjectID*)outData) = kObjectID_Device;
+					*((AudioObjectID*)outData) = control_owner_device(inObjectID);
 					*outDataSize = sizeof(AudioObjectID);
 					break;
 
@@ -4350,7 +4997,7 @@ static OSStatus	SystemAudioBridge_GetControlPropertyData(AudioServerPlugInDriver
 				case kAudioObjectPropertyOwner:
 					//    The control's owner is the device object
 					FailWithAction(inDataSize < sizeof(AudioObjectID), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetControlPropertyData: not enough space for the return value of kAudioObjectPropertyOwner for the data source control");
-					*((AudioObjectID*)outData) = kObjectID_Device;
+					*((AudioObjectID*)outData) = control_owner_device(inObjectID);
 					*outDataSize = sizeof(AudioObjectID);
 					break;
 					
@@ -4455,6 +5102,8 @@ static OSStatus	SystemAudioBridge_SetControlPropertyData(AudioServerPlugInDriver
 	FailWithAction(inAddress == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetControlPropertyData: no address");
 	FailWithAction(outNumberPropertiesChanged == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetControlPropertyData: no place to return the number of properties that changed");
 	FailWithAction(outChangedAddresses == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetControlPropertyData: no place to return the properties that changed");
+	FailWithAction(inData == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetControlPropertyData: no data");
+	FailWithAction(!is_control_object(inObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_SetControlPropertyData: not a control object");
 	
 	//	initialize the returned number of changed properties
 	*outNumberPropertiesChanged = 0;
@@ -4462,7 +5111,7 @@ static OSStatus	SystemAudioBridge_SetControlPropertyData(AudioServerPlugInDriver
 	//	Note that for each object, this driver implements all the required properties plus a few
 	//	extras that are useful but not required. There is more detailed commentary about each
 	//	property in the SystemAudioBridge_GetControlPropertyData() method.
-	switch(inObjectID)
+	switch(canonical_control_id(inObjectID))
 	{
 		case kObjectID_Volume_Input_Master:
 		case kObjectID_Volume_Output_Master:
@@ -4481,19 +5130,23 @@ static OSStatus	SystemAudioBridge_SetControlPropertyData(AudioServerPlugInDriver
 					{
 						theNewVolume = 1.0;
 					}
-					pthread_mutex_lock(&gPlugIn_StateMutex);
-                    if(gVolume_Master_Value != theNewVolume)
+                    bool scalarMuteChanged = false;
+                    const bool scalarVolumeChanged = set_volume_control_state(
+                        inObjectID,
+                        theNewVolume,
+                        &scalarMuteChanged
+                    );
+                    if(scalarVolumeChanged)
                     {
-                        gVolume_Master_Value = theNewVolume;
                         *outNumberPropertiesChanged = 2;
                         outChangedAddresses[0].mSelector = kAudioLevelControlPropertyScalarValue;
-                        outChangedAddresses[0].mScope = (inObjectID == kObjectID_Volume_Output_Master) ? kAudioObjectPropertyScopeOutput : kAudioObjectPropertyScopeInput;
+                        outChangedAddresses[0].mScope = canonical_control_id(inObjectID) == kObjectID_Volume_Input_Master ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput;
                         outChangedAddresses[0].mElement = kAudioObjectPropertyElementMain;
                         outChangedAddresses[1].mSelector = kAudioLevelControlPropertyDecibelValue;
-                        outChangedAddresses[1].mScope = (inObjectID == kObjectID_Volume_Output_Master) ? kAudioObjectPropertyScopeOutput : kAudioObjectPropertyScopeInput;
+                        outChangedAddresses[1].mScope = outChangedAddresses[0].mScope;
                         outChangedAddresses[1].mElement = kAudioObjectPropertyElementMain;
                     }
-					pthread_mutex_unlock(&gPlugIn_StateMutex);
+                    if(scalarMuteChanged) { notify_mute_control_changed(inObjectID); }
 					break;
 				
 				case kAudioLevelControlPropertyDecibelValue:
@@ -4511,19 +5164,23 @@ static OSStatus	SystemAudioBridge_SetControlPropertyData(AudioServerPlugInDriver
 						theNewVolume = kVolume_MaxDB;
 					}
 					theNewVolume = volume_from_decibel(theNewVolume);
-					pthread_mutex_lock(&gPlugIn_StateMutex);
-                    if(gVolume_Master_Value != theNewVolume)
+                    bool decibelMuteChanged = false;
+                    const bool decibelVolumeChanged = set_volume_control_state(
+                        inObjectID,
+                        theNewVolume,
+                        &decibelMuteChanged
+                    );
+                    if(decibelVolumeChanged)
                     {
-                        gVolume_Master_Value = theNewVolume;
                         *outNumberPropertiesChanged = 2;
                         outChangedAddresses[0].mSelector = kAudioLevelControlPropertyScalarValue;
-                        outChangedAddresses[0].mScope = (inObjectID == kObjectID_Volume_Output_Master) ? kAudioObjectPropertyScopeOutput : kAudioObjectPropertyScopeInput;
+                        outChangedAddresses[0].mScope = canonical_control_id(inObjectID) == kObjectID_Volume_Input_Master ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput;
                         outChangedAddresses[0].mElement = kAudioObjectPropertyElementMain;
                         outChangedAddresses[1].mSelector = kAudioLevelControlPropertyDecibelValue;
-                        outChangedAddresses[1].mScope = (inObjectID == kObjectID_Volume_Output_Master) ? kAudioObjectPropertyScopeOutput : kAudioObjectPropertyScopeInput;
+                        outChangedAddresses[1].mScope = outChangedAddresses[0].mScope;
                         outChangedAddresses[1].mElement = kAudioObjectPropertyElementMain;
                     }
-					pthread_mutex_unlock(&gPlugIn_StateMutex);
+                    if(decibelMuteChanged) { notify_mute_control_changed(inObjectID); }
 					break;
 				
 				default:
@@ -4538,16 +5195,35 @@ static OSStatus	SystemAudioBridge_SetControlPropertyData(AudioServerPlugInDriver
 			{
 				case kAudioBooleanControlPropertyValue:
 					FailWithAction(inDataSize != sizeof(UInt32), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_SetControlPropertyData: wrong size for the data for kAudioBooleanControlPropertyValue");
-					pthread_mutex_lock(&gPlugIn_StateMutex);
-                    if(gMute_Master_Value != (*((const UInt32*)inData) != 0))
-                    {
-                        gMute_Master_Value = *((const UInt32*)inData) != 0;
-                        *outNumberPropertiesChanged = 1;
-                        outChangedAddresses[0].mSelector = kAudioBooleanControlPropertyValue;
-                        outChangedAddresses[0].mScope = (inObjectID == kObjectID_Mute_Output_Master) ? kAudioObjectPropertyScopeOutput : kAudioObjectPropertyScopeInput;
-                        outChangedAddresses[0].mElement = kAudioObjectPropertyElementMain;
-                    }
-					pthread_mutex_unlock(&gPlugIn_StateMutex);
+					struct DeviceIOState* muteState = control_io_state(inObjectID);
+					bool newMute = *((const UInt32*)inData) != 0;
+					bool previousMute = is_profile_mute_id(inObjectID) && muteState != NULL
+						? atomic_load_explicit(&muteState->mute, memory_order_relaxed)
+						: atomic_load_explicit(&gMute_Master_Value, memory_order_relaxed);
+					if(previousMute != newMute)
+					{
+						if(is_profile_mute_id(inObjectID) && muteState != NULL)
+						{
+							atomic_store_explicit(&muteState->mute, newMute, memory_order_relaxed);
+						}
+						else
+						{
+							atomic_store_explicit(&gMute_Master_Value, newMute, memory_order_relaxed);
+						}
+						const Float32 currentVolume =
+							is_profile_mute_id(inObjectID) && muteState != NULL
+								? atomic_load_explicit(&muteState->volume, memory_order_relaxed)
+								: atomic_load_explicit(&gVolume_Master_Value, memory_order_relaxed);
+						sabr_driver_transport_publish_control(
+							control_owner_device(inObjectID),
+							currentVolume,
+							newMute
+						);
+						*outNumberPropertiesChanged = 1;
+						outChangedAddresses[0].mSelector = kAudioBooleanControlPropertyValue;
+						outChangedAddresses[0].mScope = canonical_control_id(inObjectID) == kObjectID_Mute_Input_Master ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput;
+						outChangedAddresses[0].mElement = kAudioObjectPropertyElementMain;
+					}
 					break;
 				
 				default:
@@ -4576,7 +5252,8 @@ static OSStatus	SystemAudioBridge_SetControlPropertyData(AudioServerPlugInDriver
 					if(gPitch_Adjust != theNewPitch)
 					{
 						gPitch_Adjust = theNewPitch;
-						gDevice_AdjustedTicksPerFrame = gDevice_HostTicksPerFrame - gDevice_HostTicksPerFrame/100.0 * 2.0*(gPitch_Adjust - 0.5);
+							gDevice_AdjustedTicksPerFrame = gDevice_HostTicksPerFrame - gDevice_HostTicksPerFrame/100.0 * 2.0*(gPitch_Adjust - 0.5);
+							publish_timing_snapshot();
 						*outNumberPropertiesChanged = 1;
 						outChangedAddresses[0].mSelector = kAudioStereoPanControlPropertyValue;
 						outChangedAddresses[0].mScope = kAudioObjectPropertyScopeGlobal;
@@ -4604,7 +5281,8 @@ static OSStatus	SystemAudioBridge_SetControlPropertyData(AudioServerPlugInDriver
 					pthread_mutex_lock(&gPlugIn_StateMutex);
 					if(gClockSource_Value != theNewSource)
 					{
-						gClockSource_Value = theNewSource;
+							gClockSource_Value = theNewSource;
+							publish_timing_snapshot();
 						UInt64 changeAction = (theNewSource > 0) ? ChangeAction_EnablePitchControl : ChangeAction_DisablePitchControl;
 
 						*outNumberPropertiesChanged = 1;
@@ -4647,35 +5325,57 @@ static OSStatus	SystemAudioBridge_StartIO(AudioServerPlugInDriverRef inDriver, A
     
     DebugMsg("SystemAudioBridge_StartIO");
 	
-	#pragma unused(inClientID, inDeviceObjectID)
+	#pragma unused(inClientID)
 	
 	//	declare the local variables
 	OSStatus theAnswer = 0;
 	
 	//	check the arguments
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_StartIO: bad driver reference");
-	FailWithAction(!is_device_object(inDeviceObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_StartIO: bad device ID");
-    FailWithAction(inDeviceObjectID == kObjectID_Device && gDevice_IOIsRunning == UINT64_MAX, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_StartIO: overflow error.");
-    FailWithAction(is_profile_device_object(inDeviceObjectID) && gDevice2_IOIsRunning == UINT64_MAX, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_StartIO: overflow error.");
 
-	//	we need to hold the state lock
+	// Validate the live profile and mutate its count under the same lock.
 	pthread_mutex_lock(&gPlugIn_StateMutex);
-	
-    
-    if (inDeviceObjectID == kObjectID_Device) { gDevice_IOIsRunning += 1; }
-    if (is_profile_device_object(inDeviceObjectID)) { gDevice2_IOIsRunning += 1; }
-    
-    // allocate ring buffer
-    if ((gDevice_IOIsRunning || gDevice2_IOIsRunning) && gRingBuffer == NULL)
-    {
-        gDevice_NumberTimeStamps = 0;
-        gDevice_AnchorSampleTime = 0;
-        gDevice_AnchorHostTime = mach_absolute_time();
-        gDevice_PreviousTicks = 0;
-        gRingBuffer = calloc(kRing_Buffer_Frame_Size * kNumber_Of_Channels, sizeof(Float32));
+	const bool deviceIsLive = inDeviceObjectID == kObjectID_Device ||
+		(is_profile_device_id(inDeviceObjectID) &&
+		 gProfileDevice_UIDs[profile_device_index(inDeviceObjectID)] != NULL);
+	if(!deviceIsLive)
+	{
+		pthread_mutex_unlock(&gPlugIn_StateMutex);
+		theAnswer = kAudioHardwareBadObjectError;
+		goto Done;
+	}
+	struct DeviceIOState* state = device_io_state(inDeviceObjectID);
+	if(state == NULL || state->runningCount == UINT64_MAX)
+	{
+		pthread_mutex_unlock(&gPlugIn_StateMutex);
+		theAnswer = state == NULL
+			? kAudioHardwareBadObjectError
+			: kAudioHardwareIllegalOperationError;
+		goto Done;
+	}
+
+	if(state->runningCount == 0)
+	{
+		pthread_mutex_lock(&state->ioMutex);
+		state->numberTimeStamps = 0;
+		state->anchorHostTime = mach_absolute_time();
+		state->previousTicks = 0;
+		pthread_mutex_unlock(&state->ioMutex);
+#if kDevice_HasInput
+		state->lastOutputSampleTime = 0;
+		state->lastMixOutputSampleTime = -1;
+		state->isBufferClear = true;
+		state->ringBuffer = calloc(kRing_Buffer_Frame_Size * kNumber_Of_Channels, sizeof(Float32));
+		if(state->ringBuffer == NULL)
+		{
+			theAnswer = kAudioHardwareUnspecifiedError;
+			pthread_mutex_unlock(&gPlugIn_StateMutex);
+			goto Done;
+		}
+#endif
     }
-    
-    
+	state->runningCount += 1;
+
 	//	unlock the state lock
 	pthread_mutex_unlock(&gPlugIn_StateMutex);
 	
@@ -4688,30 +5388,43 @@ static OSStatus	SystemAudioBridge_StopIO(AudioServerPlugInDriverRef inDriver, Au
 	//	This call tells the device that the client has stopped IO. The driver can stop the hardware
 	//	once all clients have stopped.
 	
-	#pragma unused(inClientID, inDeviceObjectID)
+	#pragma unused(inClientID)
 	
 	//	declare the local variables
 	OSStatus theAnswer = 0;
 	
 	//	check the arguments
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_StopIO: bad driver reference");
-	FailWithAction(!is_device_object(inDeviceObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_StopIO: bad device ID");
-    FailWithAction(inDeviceObjectID == kObjectID_Device && gDevice_IOIsRunning == 0, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_StartIO: underflow error.");
-    FailWithAction(is_profile_device_object(inDeviceObjectID) && gDevice2_IOIsRunning == 0, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_StartIO: underflow error.");
 
-	//	we need to hold the state lock
+	// Validate the live profile and mutate its count under the same lock.
 	pthread_mutex_lock(&gPlugIn_StateMutex);
-	
-    
-    if (inDeviceObjectID == kObjectID_Device) { gDevice_IOIsRunning -= 1; }
-    if (is_profile_device_object(inDeviceObjectID)) { gDevice2_IOIsRunning -= 1; }
-    
-    // free the ring buffer
-    if (!gDevice_IOIsRunning && !gDevice2_IOIsRunning && gRingBuffer != NULL)
+	const bool deviceIsLive = inDeviceObjectID == kObjectID_Device ||
+		(is_profile_device_id(inDeviceObjectID) &&
+		 gProfileDevice_UIDs[profile_device_index(inDeviceObjectID)] != NULL);
+	if(!deviceIsLive)
+	{
+		pthread_mutex_unlock(&gPlugIn_StateMutex);
+		theAnswer = kAudioHardwareBadObjectError;
+		goto Done;
+	}
+	struct DeviceIOState* state = device_io_state(inDeviceObjectID);
+	if(state == NULL || state->runningCount == 0)
+	{
+		pthread_mutex_unlock(&gPlugIn_StateMutex);
+		theAnswer = state == NULL
+			? kAudioHardwareBadObjectError
+			: kAudioHardwareIllegalOperationError;
+		goto Done;
+	}
+	state->runningCount -= 1;
+
+#if kDevice_HasInput
+    if(state->runningCount == 0 && state->ringBuffer != NULL)
     {
-        free(gRingBuffer);
-        gRingBuffer = NULL;
+        free(state->ringBuffer);
+        state->ringBuffer = NULL;
     }
+#endif
 	
 	//	unlock the state lock
 	pthread_mutex_unlock(&gPlugIn_StateMutex);
@@ -4731,12 +5444,11 @@ static OSStatus	SystemAudioBridge_GetZeroTimeStamp(AudioServerPlugInDriverRef in
 	//	For this device, the zero time stamps' sample time increments every kDevice_RingBufferSize
 	//	frames and the host time increments by kDevice_RingBufferSize * gDevice_HostTicksPerFrame.
 	
-	#pragma unused(inClientID, inDeviceObjectID)
+	#pragma unused(inClientID)
 	
 	//	declare the local variables
 	OSStatus theAnswer = 0;
 	UInt64 theCurrentHostTime;
-	Float64 theHostTicksPerRingBuffer;
 	Float64 theAdjustedTicksPerRingBuffer;
 	Float64 theNextTickOffset;
 	UInt64 theNextHostTime;
@@ -4744,42 +5456,39 @@ static OSStatus	SystemAudioBridge_GetZeroTimeStamp(AudioServerPlugInDriverRef in
 	//	check the arguments
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetZeroTimeStamp: bad driver reference");
 	FailWithAction(!is_device_object(inDeviceObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetZeroTimeStamp: bad device ID");
+	FailWithAction(outSampleTime == NULL || outHostTime == NULL || outSeed == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetZeroTimeStamp: no place for return values");
+	struct DeviceIOState* state = device_io_state(inDeviceObjectID);
+	FailWithAction(state == NULL, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetZeroTimeStamp: missing device state");
 
 	//	we need to hold the locks
-	pthread_mutex_lock(&gDevice_IOMutex);
+	pthread_mutex_lock(&state->ioMutex);
 	
 	//	get the current host time
 	theCurrentHostTime = mach_absolute_time();
-	
 	//	calculate the next host time
-	theHostTicksPerRingBuffer = gDevice_HostTicksPerFrame * ((Float64)kDevice_RingBufferSize);
-    if (gClockSource_Value > 0) {
-        theAdjustedTicksPerRingBuffer = gDevice_AdjustedTicksPerFrame * ((Float64)kDevice_RingBufferSize);
-    }
-    else {
-        theAdjustedTicksPerRingBuffer = gDevice_HostTicksPerFrame * ((Float64)kDevice_RingBufferSize);
-    }
+	theAdjustedTicksPerRingBuffer = copy_timing_effective_ticks_per_frame() *
+		((Float64)kDevice_RingBufferSize);
     
-	theNextTickOffset = gDevice_PreviousTicks + theAdjustedTicksPerRingBuffer;
+	theNextTickOffset = state->previousTicks + theAdjustedTicksPerRingBuffer;
     
-	theNextHostTime = gDevice_AnchorHostTime + ((UInt64)theNextTickOffset);
+	theNextHostTime = state->anchorHostTime + ((UInt64)theNextTickOffset);
 	
 	//	go to the next time if the next host time is less than the current time
 	if(theNextHostTime <= theCurrentHostTime)
 	{
-		++gDevice_NumberTimeStamps;
-		gDevice_PreviousTicks = theNextTickOffset;
+		++state->numberTimeStamps;
+		state->previousTicks = theNextTickOffset;
 	}
 	
 	//	set the return values
-	*outSampleTime = gDevice_NumberTimeStamps * kDevice_RingBufferSize;
-	*outHostTime = gDevice_AnchorHostTime + gDevice_PreviousTicks;
+	*outSampleTime = state->numberTimeStamps * kDevice_RingBufferSize;
+	*outHostTime = state->anchorHostTime + state->previousTicks;
 	*outSeed = 1;
     
     // DebugMsg("SampleTime: %f \t HostTime: %llu", *outSampleTime, *outHostTime);
 	
 	//	unlock the state lock
-	pthread_mutex_unlock(&gDevice_IOMutex);
+	pthread_mutex_unlock(&state->ioMutex);
 	
 Done:
 	return theAnswer;
@@ -4806,7 +5515,7 @@ static OSStatus	SystemAudioBridge_WillDoIOOperation(AudioServerPlugInDriverRef i
 	{
 		#if kDevice_HasInput
 		case kAudioServerPlugInIOOperationReadInput:
-			willDo = true;
+			willDo = inDeviceObjectID == kObjectID_Device;
 			willDoInPlace = true;
 			break;
 		#endif
@@ -4854,7 +5563,7 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
 {
 	//	This is called to actually perform a given operation. 
 	
-	#pragma unused(ioSecondaryBuffer, inDeviceObjectID)
+	#pragma unused(ioSecondaryBuffer)
 	
 	//	declare the local variables
 	OSStatus theAnswer = 0;
@@ -4862,9 +5571,25 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
 	//	check the arguments
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: bad driver reference");
 	FailWithAction(!is_device_object(inDeviceObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: bad device ID");
-	FailWithAction((inStreamObjectID != kObjectID_Stream_Input) && (inStreamObjectID != kObjectID_Stream_Output), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: bad stream ID");
+	FailWithAction(!is_stream_object(inStreamObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: bad stream ID");
+	FailWithAction(stream_owner_device(inStreamObjectID) != inDeviceObjectID, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: stream does not belong to device");
+	Boolean isSupportedOperation = inOperationID == kAudioServerPlugInIOOperationMixOutput;
+#if kDevice_HasInput
+	isSupportedOperation = isSupportedOperation || inOperationID == kAudioServerPlugInIOOperationReadInput;
+#endif
+	if(!isSupportedOperation) { goto Done; }
+	FailWithAction(inOperationID == kAudioServerPlugInIOOperationMixOutput && inStreamObjectID == kObjectID_Stream_Input, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: MixOutput requires an output stream");
+#if kDevice_HasInput
+	FailWithAction(inOperationID == kAudioServerPlugInIOOperationReadInput && (inDeviceObjectID != kObjectID_Device || inStreamObjectID != kObjectID_Stream_Input), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: ReadInput requires the main input stream");
+#endif
+	FailWithAction(inIOCycleInfo == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_DoIOOperation: no IO cycle info");
+	FailWithAction(ioMainBuffer == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_DoIOOperation: no main buffer");
+	struct DeviceIOState* state = device_io_state(inDeviceObjectID);
+	FailWithAction(state == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_DoIOOperation: missing IO state");
+#if kDevice_HasInput
+	FailWithAction(state->ringBuffer == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_DoIOOperation: IO is not running");
 
-    // Calculate the ring buffer offsets and splits.
+	// Calculate the ring buffer offsets and splits.
     UInt64 mSampleTime = inOperationID == kAudioServerPlugInIOOperationReadInput ? inIOCycleInfo->mInputTime.mSampleTime : inIOCycleInfo->mOutputTime.mSampleTime;
     UInt32 ringBufferFrameLocationStart = mSampleTime % kRing_Buffer_Frame_Size;
     UInt32 firstPartFrameSize = kRing_Buffer_Frame_Size - ringBufferFrameLocationStart;
@@ -4879,79 +5604,91 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
         secondPartFrameSize = inIOBufferFrameSize - firstPartFrameSize;
     }
     
-    // Keep track of last outputSampleTime and the cleared buffer status.
-    static Float64 lastOutputSampleTime = 0;
-    static Float64 lastMixOutputSampleTime = -1;
-    static Boolean isBufferClear = true;
-    
     // From SystemAudioBridge to Application
     if(inOperationID == kAudioServerPlugInIOOperationReadInput)
     {
         // If mute is one let's just fill the buffer with zeros or if there's no apps outputting audio
-        if (gMute_Master_Value || lastOutputSampleTime - inIOBufferFrameSize < inIOCycleInfo->mInputTime.mSampleTime)
+        if (atomic_load_explicit(&gMute_Master_Value, memory_order_relaxed) || state->lastOutputSampleTime - inIOBufferFrameSize < inIOCycleInfo->mInputTime.mSampleTime)
         {
             // Clear the ioMainBuffer
             vDSP_vclr(ioMainBuffer, 1, inIOBufferFrameSize * kNumber_Of_Channels);
             
             // Clear the ring buffer.
-            if (!isBufferClear)
+            if (!state->isBufferClear)
             {
-                vDSP_vclr(gRingBuffer, 1, kRing_Buffer_Frame_Size * kNumber_Of_Channels);
-                isBufferClear = true;
+                vDSP_vclr(state->ringBuffer, 1, kRing_Buffer_Frame_Size * kNumber_Of_Channels);
+                state->isBufferClear = true;
             }
         }
         else
         {
             // Copy the buffers.
-            memcpy(ioMainBuffer, gRingBuffer + ringBufferFrameLocationStart * kNumber_Of_Channels, firstPartFrameSize * kNumber_Of_Channels * sizeof(Float32));
-            memcpy((Float32*)ioMainBuffer + firstPartFrameSize * kNumber_Of_Channels, gRingBuffer, secondPartFrameSize * kNumber_Of_Channels * sizeof(Float32));
+            memcpy(ioMainBuffer, state->ringBuffer + ringBufferFrameLocationStart * kNumber_Of_Channels, firstPartFrameSize * kNumber_Of_Channels * sizeof(Float32));
+            memcpy((Float32*)ioMainBuffer + firstPartFrameSize * kNumber_Of_Channels, state->ringBuffer, secondPartFrameSize * kNumber_Of_Channels * sizeof(Float32));
             
             // Finally we'll apply the output volume to the buffer.
 	    if(kEnableVolumeControl)
 	    {
-	 	vDSP_vsmul(ioMainBuffer, 1, &gVolume_Master_Value, ioMainBuffer, 1, inIOBufferFrameSize * kNumber_Of_Channels);
+			Float32 masterVolume = atomic_load_explicit(&gVolume_Master_Value, memory_order_relaxed);
+			vDSP_vsmul(ioMainBuffer, 1, &masterVolume, ioMainBuffer, 1, inIOBufferFrameSize * kNumber_Of_Channels);
 	    }
 
-        }
-    }
-    
-    // From Application to SystemAudioBridge
+		}
+	}
+#endif
+
+	// From Application to SystemAudioBridge
 	if(inOperationID == kAudioServerPlugInIOOperationMixOutput)
 	{
+		const Float64 timingSampleRate = copy_timing_sample_rate();
+		const bool currentSampleTimeIsValid =
+			(inIOCycleInfo->mCurrentTime.mFlags & kAudioTimeStampSampleTimeValid) != 0;
+		const bool outputSampleTimeIsValid =
+			(inIOCycleInfo->mOutputTime.mFlags & kAudioTimeStampSampleTimeValid) != 0;
+		const Float64 outputSampleTime = outputSampleTimeIsValid
+			? inIOCycleInfo->mOutputTime.mSampleTime
+			: (currentSampleTimeIsValid
+				? inIOCycleInfo->mCurrentTime.mSampleTime
+				: (Float64)(inIOCycleInfo->mIOCycleCounter * inIOBufferFrameSize));
         
-        // Overload error.
-        if (inIOCycleInfo->mCurrentTime.mSampleTime > inIOCycleInfo->mOutputTime.mSampleTime + inIOBufferFrameSize + kLatency_Frame_Size)
+		// Do not interpret an unset proxy timestamp as a missed deadline. The HAL
+		// explicitly marks which AudioTimeStamp fields are valid.
+		if (currentSampleTimeIsValid && outputSampleTimeIsValid &&
+			inIOCycleInfo->mCurrentTime.mSampleTime > outputSampleTime + inIOBufferFrameSize + kLatency_Frame_Size)
         {
-            DebugMsg("SystemAudioBridge overload error. kAudioServerPlugInIOOperationMixOutput was unable to complete operation before the deadline. Try increasing the buffer frame size.");
+#if DEBUG
+			atomic_store_explicit(&gDebugOverloadPending, true, memory_order_relaxed);
+#endif
             return kAudioHardwareUnspecifiedError;
         }
 
-        // MixOutput is called with one client's block. Clear the destination
+	#if kDevice_HasInput
+		// MixOutput is called with one client's block. Clear the destination
         // once per cycle, then accumulate every client for the legacy loopback
         // input. The private transport publishes the blocks separately below.
-        if (lastMixOutputSampleTime != inIOCycleInfo->mOutputTime.mSampleTime)
+        if (state->lastMixOutputSampleTime != outputSampleTime)
         {
             vDSP_vclr(
-                gRingBuffer + ringBufferFrameLocationStart * kNumber_Of_Channels,
+                state->ringBuffer + ringBufferFrameLocationStart * kNumber_Of_Channels,
                 1,
                 firstPartFrameSize * kNumber_Of_Channels
             );
             if (secondPartFrameSize > 0)
             {
                 vDSP_vclr(
-                    gRingBuffer,
+                    state->ringBuffer,
                     1,
                     secondPartFrameSize * kNumber_Of_Channels
-                );
-            }
-            lastMixOutputSampleTime = inIOCycleInfo->mOutputTime.mSampleTime;
+			);
+			}
+			state->lastMixOutputSampleTime = outputSampleTime;
         }
         vDSP_vadd(
             (const Float32*)ioMainBuffer,
             1,
-            gRingBuffer + ringBufferFrameLocationStart * kNumber_Of_Channels,
+            state->ringBuffer + ringBufferFrameLocationStart * kNumber_Of_Channels,
             1,
-            gRingBuffer + ringBufferFrameLocationStart * kNumber_Of_Channels,
+            state->ringBuffer + ringBufferFrameLocationStart * kNumber_Of_Channels,
             1,
             firstPartFrameSize * kNumber_Of_Channels
         );
@@ -4960,31 +5697,37 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
             vDSP_vadd(
                 (const Float32*)ioMainBuffer + firstPartFrameSize * kNumber_Of_Channels,
                 1,
-                gRingBuffer,
+                state->ringBuffer,
                 1,
-                gRingBuffer,
+                state->ringBuffer,
                 1,
                 secondPartFrameSize * kNumber_Of_Channels
-            );
-        }
+			);
+		}
+		#endif
 
         // Publish this client's interleaved block before Core Audio combines it
-        // with other applications. The companion can now apply that client's
-        // controls and perform the deterministic cycle mix before global DSP.
+        // with other applications. The profile volume is a control surface for
+        // media keys; the private transport remains full scale. CamiTune
+        // consumes the control snapshot and applies the physical device's
+        // measured transfer curve exactly once downstream.
         sabr_driver_transport_write(
             (const Float32*)ioMainBuffer,
             inIOBufferFrameSize,
             kNumber_Of_Channels,
             device_channel_layout_tag(),
-            gDevice_SampleRate,
+			timingSampleRate,
+            inDeviceObjectID,
             inClientID,
             inIOCycleInfo->mIOCycleCounter,
-            inIOCycleInfo->mOutputTime.mSampleTime
+			outputSampleTime
         );
         
         // Save the last output time.
-        lastOutputSampleTime = inIOCycleInfo->mOutputTime.mSampleTime + inIOBufferFrameSize;
-        isBufferClear = false;
+	#if kDevice_HasInput
+		state->lastOutputSampleTime = outputSampleTime + inIOBufferFrameSize;
+		state->isBufferClear = false;
+	#endif
     }
 
 Done:

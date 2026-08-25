@@ -22,11 +22,16 @@ struct PerAppAudioApplication: Identifiable, Hashable, Sendable {
 }
 
 struct PerAppDriverClient: Hashable, Sendable {
+    var deviceObjectID: UInt32 = 0
     var clientID: UInt32
     var processID: Int32
     var bundleID: String?
     var isActive: Bool
     var generation: UInt64
+
+    var transportKey: PerAppTransportClientKey {
+        PerAppTransportClientKey(deviceObjectID: deviceObjectID, clientID: clientID)
+    }
 
     var applicationKey: String {
         if let bundleID = PerAppAudioController.canonicalApplicationBundleID(bundleID) {
@@ -36,7 +41,13 @@ struct PerAppDriverClient: Hashable, Sendable {
     }
 }
 
+struct PerAppTransportClientKey: Hashable, Sendable {
+    var deviceObjectID: UInt32
+    var clientID: UInt32
+}
+
 struct PerAppAudioPacket: Sendable {
+    var deviceObjectID: UInt32
     var clientID: UInt32
     var cycleCounter: UInt64
     var sampleTime: Double
@@ -48,6 +59,7 @@ struct PerAppAudioPacket: Sendable {
     var sourceCapacityFrames: Int
 
     init(
+        deviceObjectID: UInt32 = 0,
         clientID: UInt32,
         cycleCounter: UInt64,
         sampleTime: Double,
@@ -58,6 +70,7 @@ struct PerAppAudioPacket: Sendable {
         sourceBufferedFrames: Int,
         sourceCapacityFrames: Int
     ) {
+        self.deviceObjectID = deviceObjectID
         self.clientID = clientID
         self.cycleCounter = cycleCounter
         self.sampleTime = sampleTime
@@ -73,6 +86,16 @@ struct PerAppAudioPacket: Sendable {
         self.sourceBufferedFrames = sourceBufferedFrames
         self.sourceCapacityFrames = sourceCapacityFrames
     }
+
+    var transportKey: PerAppTransportClientKey {
+        PerAppTransportClientKey(deviceObjectID: deviceObjectID, clientID: clientID)
+    }
+}
+
+enum PerAppMixFlushResult: Sendable {
+    case idle
+    case retryAfter(TimeInterval)
+    case flushed(PCMFrame)
 }
 
 /// Owns client identity, persisted per-application controls, per-client EQ
@@ -88,7 +111,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         var channelLayout: LPCMChannelLayout
         var sourceBufferedFrames: Int
         var sourceCapacityFrames: Int
-        var clientIDs: Set<UInt32>
+        var clientKeys: Set<PerAppTransportClientKey>
         var samples: [Float]
         var lastPacketDate: Date
     }
@@ -112,6 +135,11 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     private static let applicationActivityFloor = pow(10.0, -72.0 / 20.0)
     private static let meterDecayTime: TimeInterval = 0.8
     private static let publishInterval: TimeInterval = 0.1
+    // Keep two HAL cycles in flight so a client whose MixOutput callback
+    // completes slightly late cannot split one timeline cycle into two audible
+    // blocks. This costs roughly two device buffers of pre-DSP latency while
+    // making client add/remove activity harmless to the mixer.
+    private static let maximumPendingMixCycles = 2
 
     // Keep UI/control state separate from real-time-ish DSP runtime state.
     // MainActor code may take `stateLock`, but it must never wait on `audioLock`.
@@ -150,8 +178,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         label: "CamiTune.PerAppAudioPublication",
         qos: .userInteractive
     )
-    private var clientsByID: [UInt32: PerAppDriverClient] = [:]
-    private var identitiesByClientID: [UInt32: ApplicationIdentity] = [:]
+    private var clientsByKey: [PerAppTransportClientKey: PerAppDriverClient] = [:]
+    private var identitiesByClientKey: [PerAppTransportClientKey: ApplicationIdentity] = [:]
     private var runningApplicationsByID: [String: ApplicationIdentity] = [:]
     private var settingsByApplication: [String: PerAppAudioSettings]
     private var settingsRevisionByApplication: [String: UInt64] = [:]
@@ -163,13 +191,27 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     private var lastAudibleDateByApplication: [String: Date] = [:]
     private var lastPacketDateByApplication: [String: Date] = [:]
     private var lastMeterUpdateByApplication: [String: Date] = [:]
-    private var filterBanks: [UInt32: PerAppFilterBank] = [:]
+    private var filterBanks: [PerAppTransportClientKey: PerAppFilterBank] = [:]
+    private var gainsByClientKey: [PerAppTransportClientKey: Float] = [:]
     // Protected only by `headroomLock`. A cache miss is seeded with a cheap,
     // conservative scalar while the exact 600-point response is calculated on
     // `headroomQueue`.
     private var headroomScalars: [HeadroomKey: Float] = [:]
     private var pendingHeadroomKeys: Set<HeadroomKey> = []
-    private var pendingMix: PendingMix?
+    // Multiple clients can complete MixOutput out of order. Keep a tiny,
+    // ordered reorder window instead of assuming every block for one HAL cycle
+    // arrives contiguously.
+    private var pendingMixes: [PendingMix] = []
+    // Some macOS system sounds run in a second IO context whose cycle counter
+    // is unrelated to the already-playing program stream. Once detected, keep
+    // that client out of the cycle-keyed mixer for the lifetime of its driver
+    // registration; otherwise its faster counter eventually catches up and
+    // corrupts the program timeline near the end of the sound.
+    private var independentlyClockedClientGenerations: [
+        PerAppTransportClientKey: UInt64
+    ] = [:]
+    private var lastEmittedCycleCounter: UInt64?
+    private var lastEmittedSampleTime: Double?
     private var pendingPersistence: DispatchWorkItem?
     private var pendingHistoryPersistence: DispatchWorkItem?
     private var pendingRunningApplicationRefresh: DispatchWorkItem?
@@ -223,27 +265,34 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
     func updateClients(_ clients: [PerAppDriverClient]) {
         let nextClients = Dictionary(
-            clients.map { ($0.clientID, $0) },
+            clients.map { ($0.transportKey, $0) },
             uniquingKeysWith: { current, candidate in
                 current.generation >= candidate.generation ? current : candidate
             }
         )
         stateLock.lock()
-        let clientsChanged = clientsByID != nextClients
+        let clientsChanged = clientsByKey != nextClients
         guard clientsChanged else {
             stateLock.unlock()
             return
         }
-        clientsByID = nextClients
+        clientsByKey = nextClients
         identityResolutionRevision &+= 1
         let revision = identityResolutionRevision
         stateLock.unlock()
 
-        let activeClientIDs = Set(nextClients.keys)
+        let activeClientKeys = Set(nextClients.keys)
         audioMaintenanceQueue.async { [weak self] in
             guard let self else { return }
             self.audioLock.lock()
-            self.filterBanks = self.filterBanks.filter { activeClientIDs.contains($0.key) }
+            self.filterBanks = self.filterBanks.filter { activeClientKeys.contains($0.key) }
+            self.gainsByClientKey = self.gainsByClientKey.filter {
+                activeClientKeys.contains($0.key)
+            }
+            self.independentlyClockedClientGenerations =
+                self.independentlyClockedClientGenerations.filter {
+                    nextClients[$0.key]?.generation == $0.value
+                }
             self.audioLock.unlock()
         }
 
@@ -254,7 +303,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             let resolvedIdentities = Dictionary(
                 uniqueKeysWithValues: clients.compactMap { client in
                     Self.resolveApplicationIdentity(for: client).map {
-                        (client.clientID, $0)
+                        (client.transportKey, $0)
                     }
                 }
             )
@@ -265,12 +314,12 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                     self.stateLock.unlock()
                     return
                 }
-                self.identitiesByClientID = resolvedIdentities
+                self.identitiesByClientKey = resolvedIdentities
                 var settingsChanged = false
                 var audioHistoryChanged = false
                 var runtimeMigrations: [(from: String, to: String)] = []
                 for client in clients {
-                    guard let identity = resolvedIdentities[client.clientID] else { continue }
+                    guard let identity = resolvedIdentities[client.transportKey] else { continue }
                     let temporaryID = client.applicationKey
                     guard identity.id != temporaryID else { continue }
                     if self.settingsByApplication[identity.id] == nil,
@@ -424,25 +473,57 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     }
 
     func ingest(_ packet: PerAppAudioPacket) -> PCMFrame? {
+        var processed = packet.interleaved
+        return ingest(packet, processed: &processed)
+    }
+
+    /// Copies the transport's reusable C read buffer directly into the one
+    /// mutable array used for DSP/mixing. This avoids first allocating a
+    /// packet Array and then triggering a second copy-on-write allocation when
+    /// per-app processing mutates it.
+    func ingestTransportPacket(
+        _ metadata: PerAppAudioPacket,
+        samples: UnsafeBufferPointer<Float>,
+        sampleCount: Int
+    ) -> PCMFrame? {
+        guard sampleCount >= 0, sampleCount <= samples.count else { return nil }
+        var processed = Array<Float>(unsafeUninitializedCapacity: sampleCount) {
+            destination, initializedCount in
+            if sampleCount > 0 {
+                destination.baseAddress!.initialize(
+                    from: samples.baseAddress!,
+                    count: sampleCount
+                )
+            }
+            initializedCount = sampleCount
+        }
+        return ingest(metadata, processed: &processed)
+    }
+
+    private func ingest(
+        _ packet: PerAppAudioPacket,
+        processed: inout [Float]
+    ) -> PCMFrame? {
         guard packet.channelCount > 0,
               packet.sampleRate > 0,
-              packet.interleaved.count % packet.channelCount == 0 else { return nil }
+              processed.count % packet.channelCount == 0 else { return nil }
 
         // Snapshot UI/control state quickly. The expensive DSP section below is
         // protected by `audioLock`, which MainActor code never acquires.
         stateLock.lock()
-        let client = clientsByID[packet.clientID]
-        let identity = identitiesByClientID[packet.clientID]
+        let client = clientsByKey[packet.transportKey]
+        let identity = identitiesByClientKey[packet.transportKey]
         let applicationID = identity?.id
             ?? client?.applicationKey
-            ?? "client:\(packet.clientID)"
+            ?? "client:\(packet.deviceObjectID):\(packet.clientID)"
         let settings = settingsByApplication[applicationID] ?? PerAppAudioSettings()
         let settingsRevision = settingsRevisionByApplication[applicationID] ?? 0
+        let clientGeneration = client?.generation ?? 0
         let canPersistAudioHistory = identity?.bundleID?.isEmpty == false
             || client?.bundleID?.isEmpty == false
         stateLock.unlock()
 
-        let rawPeak = packet.interleaved.reduce(0.0) { max($0, Double(abs($1))) }
+        let rawPeak = processed.reduce(0.0) { max($0, Double(abs($1))) }
         let now = Date()
         // Resolve headroom before entering the DSP critical section. Cache
         // misses never calculate the full EQ response on the ingest thread:
@@ -460,43 +541,80 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }
 
         audioLock.lock()
-        let completed: PCMFrame?
-        if let pendingMix,
-           pendingMix.sampleTime != packet.sampleTime ||
-            pendingMix.channelCount != packet.channelCount ||
-            pendingMix.sampleRate != packet.sampleRate ||
-            pendingMix.channelLayout != packet.channelLayout ||
-            pendingMix.samples.count != packet.interleaved.count {
-            completed = frame(from: pendingMix)
-            self.pendingMix = nil
-        } else {
-            completed = nil
+
+        if independentlyClockedClientGenerations[packet.transportKey] != nil {
+            audioLock.unlock()
+            return nil
+        }
+
+        // The driver transport permits overlapping real-time writers. A late
+        // packet for a cycle that was already emitted must be discarded rather
+        // than rendered as a second copy of old timeline audio. Core Audio can
+        // also stop/restart IO and reset both clocks. A newly-started Core
+        // Audio context (notably loginwindow's volume-feedback sound) has its
+        // own low cycle counter while sharing the device's current sample
+        // timeline. Requiring both clocks to rewind prevents that transient
+        // context from repeatedly clearing queued program audio and DSP state.
+        if let lastCycle = lastEmittedCycleCounter,
+           !Self.cycleIsNewer(packet.cycleCounter, than: lastCycle) {
+            let backwardCycles = lastCycle &- packet.cycleCounter
+            let frameCount = max(1, processed.count / max(1, packet.channelCount))
+            let sampleRewind = lastEmittedSampleTime.map { lastSampleTime in
+                packet.sampleTime + Double(frameCount * 4) < lastSampleTime
+            } ?? false
+            let restartedTimeline = backwardCycles > 8 && sampleRewind
+
+            if restartedTimeline {
+                pendingMixes.removeAll(keepingCapacity: true)
+                independentlyClockedClientGenerations.removeAll(
+                    keepingCapacity: true
+                )
+                lastEmittedCycleCounter = nil
+                lastEmittedSampleTime = nil
+                // Stateful DSP from the previous IO epoch must not leak across
+                // a discontinuous device restart. Settings remain untouched.
+                filterBanks.removeAll(keepingCapacity: true)
+                gainsByClientKey.removeAll(keepingCapacity: true)
+            } else {
+                if backwardCycles > 8 && !sampleRewind {
+                    independentlyClockedClientGenerations[
+                        packet.transportKey
+                    ] = clientGeneration
+                }
+                let presentationLevel = levelsByApplication[applicationID] ?? 0
+                audioLock.unlock()
+                stateLock.lock()
+                presentationLevelsByApplication[applicationID] = presentationLevel
+                stateLock.unlock()
+                publishApplications()
+                return nil
+            }
         }
 
         lastPacketDateByApplication[applicationID] = now
         if rawPeak >= Self.applicationActivityFloor {
             lastAudibleDateByApplication[applicationID] = now
         }
-        var processed = packet.interleaved
-        if settings.isMuted {
-            processed = [Float](repeating: 0, count: processed.count)
-        } else {
-            if !settings.eqBypassed && !settings.equalizerBands.isEmpty {
-                var bank = filterBanks[packet.clientID] ?? PerAppFilterBank()
-                bank.process(
-                    &processed,
-                    channelCount: packet.channelCount,
-                    sampleRate: packet.sampleRate,
-                    bands: settings.equalizerBands,
-                    settingsRevision: settingsRevision
-                )
-                filterBanks[packet.clientID] = bank
-            }
-            let scalar = Float(settings.volume) * eqHeadroom
-            if scalar != 1 {
-                for index in processed.indices { processed[index] *= scalar }
-            }
+        if !settings.isMuted && !settings.eqBypassed && !settings.equalizerBands.isEmpty {
+            var bank = filterBanks[packet.transportKey] ?? PerAppFilterBank()
+            bank.process(
+                &processed,
+                channelCount: packet.channelCount,
+                sampleRate: packet.sampleRate,
+                bands: settings.equalizerBands,
+                settingsRevision: settingsRevision
+            )
+            filterBanks[packet.transportKey] = bank
         }
+        let targetGain: Float = settings.isMuted
+            ? 0
+            : Float(settings.volume) * eqHeadroom
+        applyGainRamp(
+            to: &processed,
+            channelCount: packet.channelCount,
+            clientKey: packet.transportKey,
+            targetGain: targetGain
+        )
         let outputPeak = processed.reduce(0.0) { max($0, Double(abs($1))) }
         let elapsed = now.timeIntervalSince(
             lastMeterUpdateByApplication[applicationID] ?? now
@@ -509,8 +627,37 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         )
         lastMeterUpdateByApplication[applicationID] = now
 
-        if self.pendingMix == nil {
-            self.pendingMix = PendingMix(
+        if let mixIndex = pendingMixes.firstIndex(where: {
+            $0.cycleCounter == packet.cycleCounter
+        }) {
+            // A single HAL cycle must have one stream format. If a malformed
+            // or reconfiguration packet disagrees, drop that packet instead of
+            // creating a duplicate block at the same timeline position.
+            let mix = pendingMixes[mixIndex]
+            if mix.channelCount == packet.channelCount,
+               mix.sampleRate == packet.sampleRate,
+               mix.channelLayout == packet.channelLayout,
+               mix.samples.count == processed.count {
+                for index in processed.indices {
+                    pendingMixes[mixIndex].samples[index] += processed[index]
+                }
+                pendingMixes[mixIndex].sourceBufferedFrames = max(
+                    pendingMixes[mixIndex].sourceBufferedFrames,
+                    packet.sourceBufferedFrames
+                )
+                pendingMixes[mixIndex].sourceCapacityFrames = min(
+                    pendingMixes[mixIndex].sourceCapacityFrames,
+                    packet.sourceCapacityFrames
+                )
+                pendingMixes[mixIndex].clientKeys.insert(packet.transportKey)
+                pendingMixes[mixIndex].sampleTime = min(
+                    pendingMixes[mixIndex].sampleTime,
+                    packet.sampleTime
+                )
+                pendingMixes[mixIndex].lastPacketDate = now
+            }
+        } else {
+            let newMix = PendingMix(
                 cycleCounter: packet.cycleCounter,
                 sampleTime: packet.sampleTime,
                 channelCount: packet.channelCount,
@@ -518,19 +665,25 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                 channelLayout: packet.channelLayout,
                 sourceBufferedFrames: packet.sourceBufferedFrames,
                 sourceCapacityFrames: packet.sourceCapacityFrames,
-                clientIDs: [packet.clientID],
+                clientKeys: [packet.transportKey],
                 samples: processed,
                 lastPacketDate: now
             )
+            let insertionIndex = pendingMixes.firstIndex {
+                Self.cycleIsNewer($0.cycleCounter, than: packet.cycleCounter)
+            } ?? pendingMixes.endIndex
+            pendingMixes.insert(newMix, at: insertionIndex)
+        }
+
+        // Never emit a cycle merely because the next cycle arrived. Retain a
+        // two-cycle reorder window so `N, N+1, late N` still produces exactly
+        // one mixed block for N. Once a third distinct cycle arrives, the
+        // oldest cycle is safe to commit.
+        let completed: PCMFrame?
+        if pendingMixes.count > Self.maximumPendingMixCycles {
+            completed = emitOldestPendingMixLocked()
         } else {
-            let count = min(self.pendingMix!.samples.count, processed.count)
-            for index in 0..<count { self.pendingMix!.samples[index] += processed[index] }
-            self.pendingMix!.sourceBufferedFrames = max(
-                self.pendingMix!.sourceBufferedFrames,
-                packet.sourceBufferedFrames
-            )
-            self.pendingMix!.clientIDs.insert(packet.clientID)
-            self.pendingMix!.lastPacketDate = now
+            completed = nil
         }
         let presentationLevel = levelsByApplication[applicationID] ?? 0
         audioLock.unlock()
@@ -551,10 +704,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         return completed
     }
 
-    func flushExpiredMix() -> PCMFrame? {
+    func flushExpiredMix() -> PerAppMixFlushResult {
         audioLock.lock()
         let now = Date()
-        guard let pendingMix else {
+        guard let pendingMix = pendingMixes.first else {
             decayLevelsLocked(now: now)
             let presentationLevels = levelsByApplication
             audioLock.unlock()
@@ -562,16 +715,24 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             presentationLevelsByApplication = presentationLevels
             stateLock.unlock()
             publishApplications()
-            return nil
+            return .idle
         }
         let frameDuration = Double(pendingMix.samples.count / pendingMix.channelCount)
             / pendingMix.sampleRate
-        guard now.timeIntervalSince(pendingMix.lastPacketDate) >= max(0.003, frameDuration) else {
+        // Give an overlapping client callback more than one nominal buffer to
+        // finish before declaring the cycle complete. Continuous streams are
+        // normally committed by the bounded two-cycle window above, so this
+        // timeout primarily handles idle/stopping clients.
+        let requiredDelay = max(0.004, frameDuration * 1.5)
+        let elapsed = now.timeIntervalSince(pendingMix.lastPacketDate)
+        guard elapsed >= requiredDelay else {
             audioLock.unlock()
-            return nil
+            return .retryAfter(max(0.0005, requiredDelay - elapsed))
         }
-        let completed = frame(from: pendingMix)
-        self.pendingMix = nil
+        guard let completed = emitOldestPendingMixLocked() else {
+            audioLock.unlock()
+            return .idle
+        }
         decayLevelsLocked(now: now)
         let presentationLevels = levelsByApplication
         audioLock.unlock()
@@ -579,7 +740,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         presentationLevelsByApplication = presentationLevels
         stateLock.unlock()
         publishApplications()
-        return completed
+        return .flushed(completed)
     }
 
     func resetRuntimeWithoutBlockingUI() async {
@@ -590,8 +751,12 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
     func resetRuntime() {
         audioLock.lock()
-        pendingMix = nil
+        pendingMixes.removeAll(keepingCapacity: true)
+        independentlyClockedClientGenerations.removeAll(keepingCapacity: true)
+        lastEmittedCycleCounter = nil
+        lastEmittedSampleTime = nil
         filterBanks.removeAll()
+        gainsByClientKey.removeAll()
         levelsByApplication.removeAll()
         lastAudibleDateByApplication.removeAll()
         lastPacketDateByApplication.removeAll()
@@ -658,8 +823,21 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         publishApplications(force: forcePublication)
     }
 
+    private static func cycleIsNewer(_ candidate: UInt64, than reference: UInt64) -> Bool {
+        let distance = candidate &- reference
+        return distance != 0 && distance < (UInt64(1) << 63)
+    }
+
+    private func emitOldestPendingMixLocked() -> PCMFrame? {
+        guard !pendingMixes.isEmpty else { return nil }
+        let mix = pendingMixes.removeFirst()
+        lastEmittedCycleCounter = mix.cycleCounter
+        lastEmittedSampleTime = mix.sampleTime
+        return frame(from: mix)
+    }
+
     private func frame(from mix: PendingMix) -> PCMFrame {
-        let activeClientCount = max(1, mix.clientIDs.count)
+        let activeClientCount = max(1, mix.clientKeys.count)
         return PCMFrame(
             interleaved: mix.samples,
             channelCount: mix.channelCount,
@@ -668,6 +846,42 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             sourceBufferedFrames: mix.sourceBufferedFrames / activeClientCount,
             sourceCapacityFrames: mix.sourceCapacityFrames
         )
+    }
+
+    /// Keep gain continuous at packet boundaries. Applying one scalar to an
+    /// entire block makes interactive volume changes sound like zipper noise.
+    private func applyGainRamp(
+        to samples: inout [Float],
+        channelCount: Int,
+        clientKey: PerAppTransportClientKey,
+        targetGain: Float
+    ) {
+        guard channelCount > 0, !samples.isEmpty else {
+            gainsByClientKey[clientKey] = targetGain
+            return
+        }
+        let frameCount = samples.count / channelCount
+        guard frameCount > 0 else {
+            gainsByClientKey[clientKey] = targetGain
+            return
+        }
+        let startingGain = gainsByClientKey[clientKey] ?? targetGain
+        if startingGain == targetGain {
+            if targetGain != 1 {
+                for index in samples.indices { samples[index] *= targetGain }
+            }
+        } else {
+            let gainStep = (targetGain - startingGain) / Float(frameCount)
+            var gain = startingGain
+            for frame in 0..<frameCount {
+                gain += gainStep
+                let base = frame * channelCount
+                for channel in 0..<channelCount {
+                    samples[base + channel] *= gain
+                }
+            }
+        }
+        gainsByClientKey[clientKey] = targetGain
     }
 
     private func decayLevelsLocked(now: Date) {
@@ -696,8 +910,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             return
         }
         lastPublishDate = now
-        let clients = Array(clientsByID.values)
-        let identities = identitiesByClientID
+        let clients = Array(clientsByKey.values)
+        let identities = identitiesByClientKey
         let runningApplications = runningApplicationsByID
         let settings = settingsByApplication
         let levels = presentationLevelsByApplication
@@ -715,7 +929,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                     || hasProducedAudio)
         }
         for client in clients where client.isActive {
-            guard let identity = identities[client.clientID] else { continue }
+            guard let identity = identities[client.transportKey] else { continue }
             let hasProducedAudio = knownAudioApplications.contains(identity.id)
             guard identity.isDockApplication || hasProducedAudio else { continue }
             guard !Self.isKnownNonAudioSystemApplication(bundleID: identity.bundleID)

@@ -84,6 +84,11 @@ title: "\(yamlEscape(graph.title))"
 devices:
   samplerate: \(graph.sampleRate)
   chunksize: \(graph.chunkSize)
+  # CamiTune's PCM writer owns the sample-continuous system-volume ramp.
+  # Camilla's RPC master stays at 0 dB during keyboard changes so media-key
+  # repeats never enter its control socket or rebuild the processing graph.
+  volume_ramp_time: 80.0
+  volume_limit: 0.0
   capture:
     type: Stdin
     channels: \(graph.channelCount)

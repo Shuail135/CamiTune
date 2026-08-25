@@ -173,7 +173,7 @@ struct AudioRuntimeStatusView: View {
 
     private var deliveryDetail: String {
         let route = activeStatus.route
-        return "\(route.bridgeUnderrunCount) underruns · \(route.camillaQueueRecoveries) recoveries"
+        return "\(route.bridgeConsumerOverrunCount) consumer overruns · \(route.bridgeMalformedPacketCount) malformed recoveries · \(route.camillaQueueRecoveries) queue recoveries"
     }
 
     private func percent(_ value: Double) -> String {

@@ -4,6 +4,7 @@
 #include <CoreAudio/CoreAudio.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <stdint.h>
+#include "SystemAudioBridgeTransport.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,11 +12,12 @@ extern "C" {
 
 typedef struct SABRClientTransport* SABRClientTransportRef;
 
-#define SABR_CLIENT_BUNDLE_ID_CAPACITY 256
+#define SABR_CLIENT_BUNDLE_ID_CAPACITY SABR_TRANSPORT_BUNDLE_ID_CAPACITY
 
 typedef struct SABRClientAudioPacketInfo {
     uint32_t clientID;
     int32_t processID;
+    uint32_t deviceObjectID;
     uint64_t cycleCounter;
     double sampleTime;
     uint32_t frameCount;
@@ -27,26 +29,26 @@ typedef struct SABRClientAudioPacketInfo {
 typedef struct SABRClientIdentity {
     uint32_t clientID;
     int32_t processID;
+    uint32_t deviceObjectID;
+    uint32_t identityFlags;
     Boolean isActive;
     uint64_t generation;
     char bundleID[SABR_CLIENT_BUNDLE_ID_CAPACITY];
 } SABRClientIdentity;
 
-typedef struct SABRClientTransportStatistics {
-    uint64_t writeFrame;
-    uint64_t readFrame;
-    uint64_t droppedFrames;
-    uint64_t underrunCount;
-    uint64_t sequence;
-    uint32_t activeChannels;
-    uint32_t activeChannelLayoutTag;
-    uint32_t frameCapacity;
-    double sampleRate;
-    uint64_t writePacket;
-    uint64_t readPacket;
-    uint64_t droppedPackets;
-    uint64_t clientGeneration;
-} SABRClientTransportStatistics;
+typedef SABRTransportStatistics SABRClientTransportStatistics;
+
+typedef struct SABRClientControlState {
+    uint64_t generation;
+    uint32_t deviceObjectID;
+    float linearGain;
+    Boolean muted;
+} SABRClientControlState;
+
+_Static_assert(
+    sizeof(((SABRClientIdentity*)0)->bundleID) == SABR_TRANSPORT_BUNDLE_ID_CAPACITY,
+    "Client bundle identifier capacity must match the transport ABI"
+);
 
 SABRClientTransportRef sabr_client_transport_create(
     uint32_t channelCapacity,
@@ -69,7 +71,7 @@ OSStatus sabr_client_set_profile_devices(
     CFArrayRef profiles
 );
 
-void sabr_client_transport_disconnect(
+OSStatus sabr_client_transport_disconnect(
     SABRClientTransportRef transport,
     AudioObjectID deviceObjectID
 );
@@ -97,6 +99,13 @@ uint32_t sabr_client_transport_copy_clients(
     uint32_t destinationCapacity
 );
 
+Boolean sabr_client_transport_copy_control_state(
+    SABRClientTransportRef transport,
+    SABRClientControlState* controlState
+);
+
+uint64_t sabr_client_transport_client_generation(SABRClientTransportRef transport);
+
 void sabr_client_transport_get_statistics(
     SABRClientTransportRef transport,
     SABRClientTransportStatistics* statistics
@@ -105,9 +114,12 @@ void sabr_client_transport_get_statistics(
 void sabr_client_transport_destroy(SABRClientTransportRef transport);
 
 uint32_t sabr_client_transport_max_channels(void);
+uint32_t sabr_client_transport_channel_count(AudioObjectID deviceObjectID);
 uint32_t sabr_client_transport_default_frame_capacity(void);
 uint32_t sabr_client_transport_max_clients(void);
 Boolean sabr_client_transport_is_supported(AudioObjectID deviceObjectID);
+Boolean sabr_client_transport_wait_for_notification(SABRClientTransportRef transport);
+void sabr_client_transport_signal(SABRClientTransportRef transport);
 
 #ifdef __cplusplus
 }

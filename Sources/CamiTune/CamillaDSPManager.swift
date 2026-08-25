@@ -99,11 +99,13 @@ final class CamillaDSPManager: ObservableObject {
                 try yaml.write(to: configURL, atomically: true, encoding: .utf8)
             }.value
             try await rpc.setConfig(yaml: yaml)
-            // Startup uses -20 dB as a safety guard. Once a valid graph is active,
-            // its derived response-processing headroom replaces that guard.
-            // Intentional User-preamp boost is monitored and optionally limited.
+            // Startup uses -20 dB as a safety guard. Normalize the Main fader
+            // only for the first valid graph. SystemVolumeBridge owns the live
+            // master afterward; later full graph replacements must not reset a
+            // user's keyboard volume or mute state to 0 dB/unmuted.
             if !hasAppliedConfig {
                 try await rpc.setVolume(0)
+                try await rpc.setMute(false)
                 hasAppliedConfig = true
             }
             lastError = nil

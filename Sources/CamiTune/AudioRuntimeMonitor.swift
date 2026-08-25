@@ -52,7 +52,11 @@ struct AudioRouteDiagnostics: Equatable, Sendable {
     var bridgeBufferedFrames: UInt64 = 0
     var bridgeCapacityFrames: UInt64 = 0
     var bridgeDroppedFrames: UInt64 = 0
-    var bridgeUnderrunCount: UInt64 = 0
+    var bridgeConsumerOverrunCount: UInt64 = 0
+    var bridgeStarvationCount: UInt64 = 0
+    var bridgeClientRegistryOverflowCount: UInt64 = 0
+    var bridgeClientUseCountSaturationCount: UInt64 = 0
+    var bridgeMalformedPacketCount: UInt64 = 0
     var sampleRate: Double = 0
     var activeChannels: UInt32 = 0
     var rateAdjustmentPPM: Double = 0
@@ -71,9 +75,13 @@ struct AudioRouteDiagnostics: Equatable, Sendable {
         bridgeBufferedFrames = transport.bufferedFrames
         bridgeCapacityFrames = UInt64(transport.ringCapacityFrames)
         bridgeDroppedFrames = transport.droppedFrames
-        bridgeUnderrunCount = transport.underrunCount
-        sampleRate = transport.sampleRate
-        activeChannels = transport.activeChannels
+        bridgeConsumerOverrunCount = transport.consumerOverrunCount
+        bridgeStarvationCount = transport.starvationCount
+        bridgeClientRegistryOverflowCount = transport.clientRegistryOverflowCount
+        bridgeClientUseCountSaturationCount = transport.clientUseCountSaturationCount
+        bridgeMalformedPacketCount = transport.malformedPacketCount
+        sampleRate = transport.latestSampleRate
+        activeChannels = transport.latestChannels
         rateAdjustmentPPM = transport.rateAdjustmentPPM
         rateMatchBufferedFrames = transport.rateMatchBufferedFrames
         camillaDroppedFrames = router.camillaDroppedFrames
@@ -205,7 +213,10 @@ struct AudioRuntimeStatus: Equatable, Sendable {
             return .fault
         }
         if !telemetryAvailable || clippingIsRecent || processingLoadPercent >= 85
-            || route.bridgeDroppedFrames > 0 || route.bridgeUnderrunCount > 0
+            || route.bridgeDroppedFrames > 0 || route.bridgeConsumerOverrunCount > 0
+            || route.bridgeClientRegistryOverflowCount > 0
+            || route.bridgeClientUseCountSaturationCount > 0
+            || route.bridgeMalformedPacketCount > 0
             || route.camillaQueueRecoveries > 0 {
             return .warning
         }

@@ -2,7 +2,7 @@
 
 System Audio Bridge is an output-only Core Audio HAL device for macOS 13 and
 later. It is DSP-agnostic: any companion application that implements the
-versioned transport can consume its PCM stream. Transport protocol version 3
+versioned transport can consume its PCM stream. Transport protocol version 5
 preserves Core Audio client ID, PID, bundle ID, lifecycle, cycle timing, and
 separate PCM blocks so the companion can apply per-application processing
 before mixing. Each packet also carries its Core Audio channel-layout tag so
@@ -73,7 +73,10 @@ The transport protocol provides:
 - an explicit channel-layout tag on every packet;
 - versioned direction, stream ID, and bus index fields;
 - monotonic 64-bit ring positions and observable drop/underrun counters;
-- standard build settings such as `SABR_CHANNELS=6`.
+- standard build settings such as `SABR_CHANNELS=6`;
+- a lock-free latest-value volume/mute control lane; the next PCM block applies
+  each change without waking the consumer, writing the physical endpoint, or
+  invoking live DSP volume RPCs.
 
 CamiTune accepts all three layouts and preserves the source roles through its
 transport, per-application mixer, metering, and analysis paths. Until the

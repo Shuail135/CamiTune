@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 struct PCMFrame: Sendable {
-    let interleaved: [Float]
+    var interleaved: [Float]
     let channelCount: Int
     let sampleRate: Double
     let channelLayout: LPCMChannelLayout
@@ -39,6 +39,38 @@ struct PCMFrame: Sendable {
     }
 }
 
+private final class SystemMasterGainControl: @unchecked Sendable {
+    struct Snapshot {
+        let revision: UInt64
+        let linearGain: Float
+        let muted: Bool
+        var effectiveGain: Float { muted ? 0 : linearGain }
+    }
+
+    private let lock = NSLock()
+    private var revision: UInt64 = 0
+    private var linearGain: Float = 1
+    private var muted = false
+
+    func set(linearGain: Float, muted: Bool) {
+        let clamped = linearGain.isFinite ? min(1, max(0, linearGain)) : 1
+        lock.lock()
+        if self.linearGain != clamped || self.muted != muted {
+            self.linearGain = clamped
+            self.muted = muted
+            revision &+= 1
+        }
+        lock.unlock()
+    }
+
+    func snapshot() -> Snapshot {
+        lock.lock()
+        let value = Snapshot(revision: revision, linearGain: linearGain, muted: muted)
+        lock.unlock()
+        return value
+    }
+}
+
 final class PCMRouter: @unchecked Sendable {
     typealias AnalyzerConsumer = (PCMFrame) -> Void
     typealias MeterConsumer = (PCMFrame) -> Void
@@ -53,6 +85,7 @@ final class PCMRouter: @unchecked Sendable {
     }
 
     private let state = NSLock()
+    private let systemMaster = SystemMasterGainControl()
     private var camillaBranch: CamillaPCMBranch?
     private var analyzerBranch: AnalyzerPCMBranch?
     private var meterBranch: MeterPCMBranch?
@@ -95,6 +128,7 @@ final class PCMRouter: @unchecked Sendable {
         stop()
         let camillaBranch = CamillaPCMBranch(
             handle: camillaSink,
+            systemMaster: systemMaster,
             spatialRenderingMode: spatialRenderingMode,
             recoveryHandler: { [weak self] droppedFrames in
                 self?.recordCamillaRecovery(droppedFrames: droppedFrames)
@@ -129,6 +163,13 @@ final class PCMRouter: @unchecked Sendable {
         self.meterBranch = meterBranch
         self.analyzerBranch = analyzerBranch
         state.unlock()
+    }
+
+    /// Update the system master without touching CamillaDSP's control socket or
+    /// CoreAudio's active physical endpoint. The PCM writer reads this target
+    /// once per block and ramps sample-continuously.
+    func setSystemMaster(linearGain: Float, muted: Bool) {
+        systemMaster.set(linearGain: linearGain, muted: muted)
     }
 
     func setSpatialRenderingMode(_ mode: SpatialRenderingMode) {
@@ -411,6 +452,7 @@ private final class CamillaPCMBranch: @unchecked Sendable {
     // Error) if write(contentsOf:) races with close() on that same object.
     // Keeping a separate descriptor gives the writer independent lifetime.
     private let handle: FileHandle?
+    private let systemMaster: SystemMasterGainControl
     private let recoveryHandler: (Int) -> Void
     private let failureHandler: () -> Void
     private let adjustmentHandler: (Double, Int) -> Void
@@ -430,9 +472,15 @@ private final class CamillaPCMBranch: @unchecked Sendable {
     private var lastSpatialPath: SpatialPath?
     private var spatialRenderingMode: SpatialRenderingMode
     private var needsSpatialReset = false
+    private var masterRevision: UInt64 = UInt64.max
+    private var currentMasterGain: Float = 1
+    private var targetMasterGain: Float = 1
+    private var masterRampFramesRemaining = 0
+    private var masterRampStep: Float = 0
 
     init(
         handle: FileHandle,
+        systemMaster: SystemMasterGainControl,
         spatialRenderingMode: SpatialRenderingMode,
         recoveryHandler: @escaping (Int) -> Void,
         failureHandler: @escaping () -> Void,
@@ -448,6 +496,11 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             self.handle = nil
         }
         self.spatialRenderingMode = spatialRenderingMode
+        self.systemMaster = systemMaster
+        let initialMaster = systemMaster.snapshot()
+        masterRevision = initialMaster.revision
+        currentMasterGain = initialMaster.effectiveGain
+        targetMasterGain = initialMaster.effectiveGain
         self.recoveryHandler = recoveryHandler
         self.failureHandler = failureHandler
         self.adjustmentHandler = adjustmentHandler
@@ -598,16 +651,29 @@ private final class CamillaPCMBranch: @unchecked Sendable {
                 recoveryHandler(frame.frameCount)
                 continue
             }
-            let bufferedFrames = frame.sourceBufferedFrames + queuedFrames
+            // Rate-match only the post-mix writer queue. The SABR frame ring
+            // stores one block per Core Audio client, so its raw frame occupancy
+            // is a storage metric, not timeline latency. A transient system
+            // client (for example volume-feedback audio) can multiply that raw
+            // count and previously drove a false resampling correction for
+            // seconds. The local mixed queue is already in timeline frames and
+            // is the correct clock-boundary backlog to control.
+            let bufferedFrames = frame.frameCount + queuedFrames
+            let localQueueCapacityFrames = max(frame.frameCount * 8, frame.frameCount)
             let adjustmentPPM = rateController.update(
                 bufferedFrames: bufferedFrames,
-                sourceCapacityFrames: frame.sourceCapacityFrames,
+                sourceCapacityFrames: localQueueCapacityFrames,
                 sampleRate: frame.sampleRate,
                 elapsedFrames: frame.frameCount
             )
             adjustmentHandler(adjustmentPPM, bufferedFrames)
-            let adjustedFrame = resampler.process(renderedFrame, adjustmentPPM: adjustmentPPM)
+            var adjustedFrame = resampler.process(renderedFrame, adjustmentPPM: adjustmentPPM)
             guard !adjustedFrame.interleaved.isEmpty else { continue }
+            applySystemMaster(
+                to: &adjustedFrame.interleaved,
+                channelCount: adjustedFrame.channelCount,
+                sampleRate: adjustedFrame.sampleRate
+            )
             do {
                 try adjustedFrame.interleaved.withUnsafeBytes { bytes in
                     try handle.write(contentsOf: Data(bytes))
@@ -624,4 +690,47 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             }
         }
     }
+
+    private func applySystemMaster(
+        to samples: inout [Float],
+        channelCount: Int,
+        sampleRate: Double
+    ) {
+        guard channelCount > 0, sampleRate > 0, !samples.isEmpty else { return }
+        let snapshot = systemMaster.snapshot()
+        if snapshot.revision != masterRevision {
+            masterRevision = snapshot.revision
+            targetMasterGain = snapshot.effectiveGain
+            // 8 ms is fast enough for a single keyboard tap to feel immediate,
+            // but still prevents a discontinuity at a PCM block boundary.
+            masterRampFramesRemaining = max(1, Int(sampleRate * 0.008))
+            masterRampStep = (targetMasterGain - currentMasterGain)
+                / Float(masterRampFramesRemaining)
+        }
+
+        let frameCount = samples.count / channelCount
+        guard frameCount > 0 else { return }
+        if masterRampFramesRemaining == 0 {
+            currentMasterGain = targetMasterGain
+            if currentMasterGain == 1 { return }
+            for index in samples.indices { samples[index] *= currentMasterGain }
+            return
+        }
+
+        for frame in 0..<frameCount {
+            if masterRampFramesRemaining > 0 {
+                currentMasterGain += masterRampStep
+                masterRampFramesRemaining -= 1
+                if masterRampFramesRemaining == 0 {
+                    currentMasterGain = targetMasterGain
+                }
+            }
+            let base = frame * channelCount
+            for channel in 0..<channelCount {
+                samples[base + channel] *= currentMasterGain
+            }
+        }
+    }
+
+
 }

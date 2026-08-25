@@ -58,6 +58,7 @@ DRIVER_INPUT_HASH="$({
     {
         find "$ROOT/Drivers/SystemAudioBridge/Driver" -type f -print
         find "$ROOT/Drivers/SystemAudioBridge/Shared" -type f -print
+        echo "$ROOT/Sources/SystemAudioBridgeC/include/SystemAudioBridgeTransport.h"
         echo "$ROOT/Drivers/SystemAudioBridge/build-driver.sh"
     } | LC_ALL=C sort | while IFS= read -r file; do
         /usr/bin/shasum -a 256 "$file"

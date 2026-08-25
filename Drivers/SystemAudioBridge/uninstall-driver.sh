@@ -11,7 +11,17 @@ TARGETS=(
 # Let CamiTune restore the physical output and destroy its temporary profile
 # selectors before the HAL bundle disappears.
 /usr/bin/osascript -e 'tell application id "local.camilla.app" to quit' 2>/dev/null || true
-/bin/sleep 1
+
+shutdown_poll_count=0
+shutdown_poll_limit=60
+while /usr/bin/pgrep -x CamiTune >/dev/null 2>&1; do
+    if (( shutdown_poll_count >= shutdown_poll_limit )); then
+        print -u2 "CamiTune did not exit within 15 seconds. The driver was not removed because audio transport cleanup may still be running. Quit CamiTune and try again."
+        exit 1
+    fi
+    /bin/sleep 0.25
+    (( shutdown_poll_count += 1 ))
+done
 
 installed_targets=()
 for target in "${TARGETS[@]}"; do

@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
 REPO_ROOT="${SCRIPT_DIR:h:h}"
-PACKAGE="${SABR_BUILD_ROOT:-$REPO_ROOT/build/driver}/CamillaAudio-${SABR_DRIVER_VERSION:-0.4.0}.pkg"
+PACKAGE="${SABR_BUILD_ROOT:-$REPO_ROOT/build/driver}/CamillaAudio-${SABR_DRIVER_VERSION:-0.7.8}.pkg"
 
 if [[ ! -f "$PACKAGE" ]]; then
     "$SCRIPT_DIR/package-driver.sh"
