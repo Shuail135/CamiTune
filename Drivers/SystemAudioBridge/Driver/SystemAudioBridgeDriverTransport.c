@@ -46,6 +46,24 @@ typedef struct SABRDriverClient {
 } SABRDriverClient;
 
 static SABRDriverClient gClients[SABR_TRANSPORT_CLIENT_CAPACITY];
+
+/*
+ * MixOutput is a real-time callback and cannot take gClientMutex. Keep a
+ * second, lock-free identity snapshot whose only job is attaching the owning
+ * process ID to each PCM packet. This snapshot is independent of the shared
+ * client roster publication: sabr_publish_clients() intentionally marks that
+ * roster transiently unavailable while copying it, which must never make live
+ * audio packets lose their application identity.
+ */
+typedef struct SABRRealtimeClientIdentity {
+    _Atomic uint64_t sequence;
+    _Atomic uint32_t state;
+    _Atomic uint32_t deviceObjectID;
+    _Atomic uint32_t clientID;
+    _Atomic int32_t processID;
+} SABRRealtimeClientIdentity;
+
+static SABRRealtimeClientIdentity gRealtimeClients[SABR_TRANSPORT_CLIENT_CAPACITY];
 static uint64_t gClientGeneration = 0;
 static uint64_t gClientRegistryOverflowCount = 0;
 static uint64_t gClientUseCountSaturationCount = 0;
@@ -194,17 +212,53 @@ static void sabr_publish_clients(SABRDriverMappedTransport* transport) {
     }
 }
 
+static void sabr_publish_realtime_client_locked(uint32_t index) {
+    if (index >= SABR_TRANSPORT_CLIENT_CAPACITY) { return; }
+    SABRRealtimeClientIdentity* destination = &gRealtimeClients[index];
+
+    /* Writers are serialized by gClientMutex. Publish the slot through a
+     * seqlock so MixOutput can never combine fields from registrations that
+     * reused the same bounded slot. Odd means write in progress; even means
+     * the whole identity tuple is stable. */
+    uint64_t sequence = atomic_load_explicit(&destination->sequence, memory_order_relaxed);
+    if ((sequence & 1u) != 0) { sequence += 1; }
+    atomic_store_explicit(&destination->sequence, sequence + 1, memory_order_release);
+
+    const Boolean occupied = gClients[index].occupied;
+    atomic_store_explicit(
+        &destination->state,
+        !occupied ? SABR_CLIENT_STATE_EMPTY
+            : (gClients[index].active ? SABR_CLIENT_STATE_ACTIVE : SABR_CLIENT_STATE_INACTIVE),
+        memory_order_relaxed
+    );
+    atomic_store_explicit(
+        &destination->deviceObjectID,
+        occupied ? gClients[index].deviceObjectID : kAudioObjectUnknown,
+        memory_order_relaxed
+    );
+    atomic_store_explicit(
+        &destination->clientID,
+        occupied ? gClients[index].clientID : 0,
+        memory_order_relaxed
+    );
+    atomic_store_explicit(
+        &destination->processID,
+        occupied ? gClients[index].processID : 0,
+        memory_order_relaxed
+    );
+    atomic_store_explicit(&destination->sequence, sequence + 2, memory_order_release);
+}
+
 static int32_t sabr_active_process_id(
-    const SABRDriverMappedTransport* transport,
     AudioObjectID deviceObjectID,
     uint32_t clientID
 ) {
     for (uint32_t index = 0; index < SABR_TRANSPORT_CLIENT_CAPACITY; ++index) {
-        const SABRTransportClient* client = &transport->clients[index];
-        if (atomic_load_explicit(&client->state, memory_order_acquire) !=
-            SABR_CLIENT_STATE_ACTIVE) {
-            continue;
-        }
+        const SABRRealtimeClientIdentity* client = &gRealtimeClients[index];
+        const uint64_t before = atomic_load_explicit(&client->sequence, memory_order_acquire);
+        if ((before & 1u) != 0) { continue; }
+
+        const uint32_t state = atomic_load_explicit(&client->state, memory_order_relaxed);
         const uint32_t candidateDevice = atomic_load_explicit(
             &client->deviceObjectID,
             memory_order_relaxed
@@ -217,9 +271,11 @@ static int32_t sabr_active_process_id(
             &client->processID,
             memory_order_relaxed
         );
-        if (candidateDevice == deviceObjectID && candidateClient == clientID &&
-            atomic_load_explicit(&client->state, memory_order_acquire) ==
-                SABR_CLIENT_STATE_ACTIVE) {
+        const uint64_t after = atomic_load_explicit(&client->sequence, memory_order_acquire);
+        if (before != after || (after & 1u) != 0) { continue; }
+
+        if (state == SABR_CLIENT_STATE_ACTIVE &&
+            candidateDevice == deviceObjectID && candidateClient == clientID) {
             return processID;
         }
     }
@@ -611,6 +667,9 @@ void sabr_driver_transport_add_client(
         /* The bounded shared registry never sacrifices an active identity. */
         gClientRegistryOverflowCount += 1;
     }
+    if (slot < SABR_TRANSPORT_CLIENT_CAPACITY) {
+        sabr_publish_realtime_client_locked(slot);
+    }
     pthread_mutex_unlock(&gClientMutex);
 
     SABRDriverMappedTransport* transport = sabr_acquire_transport();
@@ -635,6 +694,7 @@ void sabr_driver_transport_remove_client(AudioObjectID deviceObjectID, uint32_t 
             gClients[index].active = true;
             gClients[index].generation = gClientGeneration;
         }
+        sabr_publish_realtime_client_locked(index);
         break;
     }
     pthread_mutex_unlock(&gClientMutex);
@@ -896,7 +956,7 @@ void sabr_driver_transport_write(
     packet->sampleRateBits = sabr_double_to_bits(sampleRate);
     packet->clientID = clientID;
     packet->deviceObjectID = deviceObjectID;
-    packet->processID = sabr_active_process_id(transport, deviceObjectID, clientID);
+    packet->processID = sabr_active_process_id(deviceObjectID, clientID);
     packet->frameCount = frameCount;
     packet->channelCount = channelCount;
     packet->channelLayoutTag = channelLayoutTag;

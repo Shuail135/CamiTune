@@ -49,6 +49,7 @@ struct PerAppTransportClientKey: Hashable, Sendable {
 struct PerAppAudioPacket: Sendable {
     var deviceObjectID: UInt32
     var clientID: UInt32
+    var processID: Int32
     var cycleCounter: UInt64
     var sampleTime: Double
     var interleaved: [Float]
@@ -61,6 +62,7 @@ struct PerAppAudioPacket: Sendable {
     init(
         deviceObjectID: UInt32 = 0,
         clientID: UInt32,
+        processID: Int32 = 0,
         cycleCounter: UInt64,
         sampleTime: Double,
         interleaved: [Float],
@@ -72,6 +74,7 @@ struct PerAppAudioPacket: Sendable {
     ) {
         self.deviceObjectID = deviceObjectID
         self.clientID = clientID
+        self.processID = processID
         self.cycleCounter = cycleCounter
         self.sampleTime = sampleTime
         self.interleaved = interleaved
@@ -104,8 +107,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     @Published private(set) var applications: [PerAppAudioApplication] = []
 
     private struct PendingMix {
-        var cycleCounter: UInt64
-        var sampleTime: Double
+        var deviceObjectID: UInt32
+        var startSampleTime: Int64
         var channelCount: Int
         var sampleRate: Double
         var channelLayout: LPCMChannelLayout
@@ -113,7 +116,16 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         var sourceCapacityFrames: Int
         var clientKeys: Set<PerAppTransportClientKey>
         var samples: [Float]
+        var largestPacketFrames: Int
         var lastPacketDate: Date
+
+        var frameCount: Int {
+            channelCount > 0 ? samples.count / channelCount : 0
+        }
+
+        var endSampleTime: Int64 {
+            startSampleTime + Int64(frameCount)
+        }
     }
 
     private struct HeadroomKey: Hashable, Sendable {
@@ -135,11 +147,13 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     private static let applicationActivityFloor = pow(10.0, -72.0 / 20.0)
     private static let meterDecayTime: TimeInterval = 0.8
     private static let publishInterval: TimeInterval = 0.1
-    // Keep two HAL cycles in flight so a client whose MixOutput callback
-    // completes slightly late cannot split one timeline cycle into two audible
-    // blocks. This costs roughly two device buffers of pre-DSP latency while
-    // making client add/remove activity harmless to the mixer.
-    private static let maximumPendingMixCycles = 2
+    // Hold two observed packet lengths on the device sample timeline before
+    // committing audio. MixOutput callbacks from different applications can
+    // complete out of order and can use different IO buffer sizes. The device
+    // sample timestamp is the common clock; mIOCycleCounter is not.
+    private static let pendingMixHoldbackPackets = 2
+    private static let timelineRestartRewindMultiplier = 4
+    private static let timelineDiscontinuityMultiplier = 8
 
     // Keep UI/control state separate from real-time-ish DSP runtime state.
     // MainActor code may take `stateLock`, but it must never wait on `audioLock`.
@@ -179,7 +193,11 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         qos: .userInteractive
     )
     private var clientsByKey: [PerAppTransportClientKey: PerAppDriverClient] = [:]
+    private var uniqueClientKeyByProcessID: [Int32: PerAppTransportClientKey] = [:]
+    private var uniqueClientKeyByClientID: [UInt32: PerAppTransportClientKey] = [:]
+    private var applicationKeyByProcessID: [Int32: String] = [:]
     private var identitiesByClientKey: [PerAppTransportClientKey: ApplicationIdentity] = [:]
+    private var workspaceIdentitiesByProcessID: [Int32: ApplicationIdentity] = [:]
     private var runningApplicationsByID: [String: ApplicationIdentity] = [:]
     private var settingsByApplication: [String: PerAppAudioSettings]
     private var settingsRevisionByApplication: [String: UInt64] = [:]
@@ -198,20 +216,12 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     // `headroomQueue`.
     private var headroomScalars: [HeadroomKey: Float] = [:]
     private var pendingHeadroomKeys: Set<HeadroomKey> = []
-    // Multiple clients can complete MixOutput out of order. Keep a tiny,
-    // ordered reorder window instead of assuming every block for one HAL cycle
-    // arrives contiguously.
-    private var pendingMixes: [PendingMix] = []
-    // Some macOS system sounds run in a second IO context whose cycle counter
-    // is unrelated to the already-playing program stream. Once detected, keep
-    // that client out of the cycle-keyed mixer for the lifetime of its driver
-    // registration; otherwise its faster counter eventually catches up and
-    // corrupts the program timeline near the end of the sound.
-    private var independentlyClockedClientGenerations: [
-        PerAppTransportClientKey: UInt64
-    ] = [:]
-    private var lastEmittedCycleCounter: UInt64?
-    private var lastEmittedSampleTime: Double?
+    // Each driver endpoint owns an independent Core Audio sample timeline.
+    // A pending buffer is an overlap-add window: application blocks are placed
+    // at their output sample positions and summed before the safe prefix is
+    // handed to the global DSP path.
+    private var pendingMixesByDevice: [UInt32: PendingMix] = [:]
+    private var lastEmittedEndSampleTimeByDevice: [UInt32: Int64] = [:]
     private var pendingPersistence: DispatchWorkItem?
     private var pendingHistoryPersistence: DispatchWorkItem?
     private var pendingRunningApplicationRefresh: DispatchWorkItem?
@@ -270,6 +280,22 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                 current.generation >= candidate.generation ? current : candidate
             }
         )
+        let uniquePIDKeys = Self.uniqueClientKeys(
+            clients,
+            key: { $0.processID },
+            isUsable: { $0 > 0 }
+        )
+        let uniqueClientIDKeys = Self.uniqueClientKeys(
+            clients,
+            key: { $0.clientID },
+            isUsable: { _ in true }
+        )
+        let applicationKeysByPID = Dictionary(grouping: clients.filter { $0.processID > 0 }) {
+            $0.processID
+        }.compactMapValues { matches -> String? in
+            let applicationKeys = Set(matches.map(\.applicationKey))
+            return applicationKeys.count == 1 ? applicationKeys.first : nil
+        }
         stateLock.lock()
         let clientsChanged = clientsByKey != nextClients
         guard clientsChanged else {
@@ -277,6 +303,9 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             return
         }
         clientsByKey = nextClients
+        uniqueClientKeyByProcessID = uniquePIDKeys
+        uniqueClientKeyByClientID = uniqueClientIDKeys
+        applicationKeyByProcessID = applicationKeysByPID
         identityResolutionRevision &+= 1
         let revision = identityResolutionRevision
         stateLock.unlock()
@@ -289,10 +318,6 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             self.gainsByClientKey = self.gainsByClientKey.filter {
                 activeClientKeys.contains($0.key)
             }
-            self.independentlyClockedClientGenerations =
-                self.independentlyClockedClientGenerations.filter {
-                    nextClients[$0.key]?.generation == $0.value
-                }
             self.audioLock.unlock()
         }
 
@@ -506,28 +531,51 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     ) -> PCMFrame? {
         guard packet.channelCount > 0,
               packet.sampleRate > 0,
-              processed.count % packet.channelCount == 0 else { return nil }
+              packet.sampleRate.isFinite,
+              processed.count % packet.channelCount == 0,
+              let packetStartSampleTime = Self.integerSampleTime(packet.sampleTime) else {
+            return nil
+        }
+        let packetFrameCount = processed.count / packet.channelCount
+        guard packetFrameCount > 0 else { return nil }
 
-        // Snapshot UI/control state quickly. The expensive DSP section below is
-        // protected by `audioLock`, which MainActor code never acquires.
+        // The driver publishes the exact (device, client) identity, but its
+        // client-registry notification and PCM packet are independent real-time
+        // paths. During a registry refresh, use PID (then unique client ID) as a
+        // bounded fallback so the slider, meter, EQ and audio packet all resolve
+        // to the same application instead of silently falling back to unity.
         stateLock.lock()
-        let client = clientsByKey[packet.transportKey]
-        let identity = identitiesByClientKey[packet.transportKey]
+        let resolvedClientKey: PerAppTransportClientKey? = {
+            if clientsByKey[packet.transportKey] != nil { return packet.transportKey }
+            if packet.processID > 0,
+               let key = uniqueClientKeyByProcessID[packet.processID] {
+                return key
+            }
+            return uniqueClientKeyByClientID[packet.clientID]
+        }()
+        let client = resolvedClientKey.flatMap { clientsByKey[$0] }
+        let packetIdentity = packet.processID > 0
+            ? workspaceIdentitiesByProcessID[packet.processID]
+            : nil
+        let identity = resolvedClientKey.flatMap { identitiesByClientKey[$0] }
+            ?? packetIdentity
+        let dspClientKey = resolvedClientKey ?? packet.transportKey
+        let packetApplicationKey = packet.processID > 0
+            ? applicationKeyByProcessID[packet.processID]
+            : nil
         let applicationID = identity?.id
             ?? client?.applicationKey
+            ?? packetApplicationKey
+            ?? (packet.processID > 0 ? "pid:\(packet.processID)" : nil)
             ?? "client:\(packet.deviceObjectID):\(packet.clientID)"
         let settings = settingsByApplication[applicationID] ?? PerAppAudioSettings()
         let settingsRevision = settingsRevisionByApplication[applicationID] ?? 0
-        let clientGeneration = client?.generation ?? 0
         let canPersistAudioHistory = identity?.bundleID?.isEmpty == false
             || client?.bundleID?.isEmpty == false
         stateLock.unlock()
 
         let rawPeak = processed.reduce(0.0) { max($0, Double(abs($1))) }
         let now = Date()
-        // Resolve headroom before entering the DSP critical section. Cache
-        // misses never calculate the full EQ response on the ingest thread:
-        // they use an immediate conservative value and refine it asynchronously.
         let eqHeadroom: Float
         if settings.isMuted || settings.eqBypassed || settings.equalizerBands.isEmpty {
             eqHeadroom = 1
@@ -542,61 +590,25 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
         audioLock.lock()
 
-        if independentlyClockedClientGenerations[packet.transportKey] != nil {
-            audioLock.unlock()
-            return nil
-        }
-
-        // The driver transport permits overlapping real-time writers. A late
-        // packet for a cycle that was already emitted must be discarded rather
-        // than rendered as a second copy of old timeline audio. Core Audio can
-        // also stop/restart IO and reset both clocks. A newly-started Core
-        // Audio context (notably loginwindow's volume-feedback sound) has its
-        // own low cycle counter while sharing the device's current sample
-        // timeline. Requiring both clocks to rewind prevents that transient
-        // context from repeatedly clearing queued program audio and DSP state.
-        if let lastCycle = lastEmittedCycleCounter,
-           !Self.cycleIsNewer(packet.cycleCounter, than: lastCycle) {
-            let backwardCycles = lastCycle &- packet.cycleCounter
-            let frameCount = max(1, processed.count / max(1, packet.channelCount))
-            let sampleRewind = lastEmittedSampleTime.map { lastSampleTime in
-                packet.sampleTime + Double(frameCount * 4) < lastSampleTime
-            } ?? false
-            let restartedTimeline = backwardCycles > 8 && sampleRewind
-
-            if restartedTimeline {
-                pendingMixes.removeAll(keepingCapacity: true)
-                independentlyClockedClientGenerations.removeAll(
-                    keepingCapacity: true
-                )
-                lastEmittedCycleCounter = nil
-                lastEmittedSampleTime = nil
-                // Stateful DSP from the previous IO epoch must not leak across
-                // a discontinuous device restart. Settings remain untouched.
-                filterBanks.removeAll(keepingCapacity: true)
-                gainsByClientKey.removeAll(keepingCapacity: true)
-            } else {
-                if backwardCycles > 8 && !sampleRewind {
-                    independentlyClockedClientGenerations[
-                        packet.transportKey
-                    ] = clientGeneration
-                }
-                let presentationLevel = levelsByApplication[applicationID] ?? 0
-                audioLock.unlock()
-                stateLock.lock()
-                presentationLevelsByApplication[applicationID] = presentationLevel
-                stateLock.unlock()
-                publishApplications()
-                return nil
-            }
-        }
+        // mIOCycleCounter belongs to an IO thread and can restart when that
+        // thread resynchronizes. The output sample timestamp is the shared
+        // device clock, so only a real sample-timeline rewind starts a new
+        // epoch. This clears stale DSP history without ever blacklisting a
+        // client because its cycle ordinal changed.
+        prepareTimelineEpochLocked(
+            deviceObjectID: packet.deviceObjectID,
+            packetStartSampleTime: packetStartSampleTime,
+            packetFrameCount: packetFrameCount,
+            sampleRate: packet.sampleRate,
+            cycleCounter: packet.cycleCounter
+        )
 
         lastPacketDateByApplication[applicationID] = now
         if rawPeak >= Self.applicationActivityFloor {
             lastAudibleDateByApplication[applicationID] = now
         }
         if !settings.isMuted && !settings.eqBypassed && !settings.equalizerBands.isEmpty {
-            var bank = filterBanks[packet.transportKey] ?? PerAppFilterBank()
+            var bank = filterBanks[dspClientKey] ?? PerAppFilterBank()
             bank.process(
                 &processed,
                 channelCount: packet.channelCount,
@@ -604,7 +616,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                 bands: settings.equalizerBands,
                 settingsRevision: settingsRevision
             )
-            filterBanks[packet.transportKey] = bank
+            filterBanks[dspClientKey] = bank
         }
         let targetGain: Float = settings.isMuted
             ? 0
@@ -612,9 +624,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         applyGainRamp(
             to: &processed,
             channelCount: packet.channelCount,
-            clientKey: packet.transportKey,
+            clientKey: dspClientKey,
             targetGain: targetGain
         )
+
         let outputPeak = processed.reduce(0.0) { max($0, Double(abs($1))) }
         let elapsed = now.timeIntervalSince(
             lastMeterUpdateByApplication[applicationID] ?? now
@@ -627,64 +640,13 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         )
         lastMeterUpdateByApplication[applicationID] = now
 
-        if let mixIndex = pendingMixes.firstIndex(where: {
-            $0.cycleCounter == packet.cycleCounter
-        }) {
-            // A single HAL cycle must have one stream format. If a malformed
-            // or reconfiguration packet disagrees, drop that packet instead of
-            // creating a duplicate block at the same timeline position.
-            let mix = pendingMixes[mixIndex]
-            if mix.channelCount == packet.channelCount,
-               mix.sampleRate == packet.sampleRate,
-               mix.channelLayout == packet.channelLayout,
-               mix.samples.count == processed.count {
-                for index in processed.indices {
-                    pendingMixes[mixIndex].samples[index] += processed[index]
-                }
-                pendingMixes[mixIndex].sourceBufferedFrames = max(
-                    pendingMixes[mixIndex].sourceBufferedFrames,
-                    packet.sourceBufferedFrames
-                )
-                pendingMixes[mixIndex].sourceCapacityFrames = min(
-                    pendingMixes[mixIndex].sourceCapacityFrames,
-                    packet.sourceCapacityFrames
-                )
-                pendingMixes[mixIndex].clientKeys.insert(packet.transportKey)
-                pendingMixes[mixIndex].sampleTime = min(
-                    pendingMixes[mixIndex].sampleTime,
-                    packet.sampleTime
-                )
-                pendingMixes[mixIndex].lastPacketDate = now
-            }
-        } else {
-            let newMix = PendingMix(
-                cycleCounter: packet.cycleCounter,
-                sampleTime: packet.sampleTime,
-                channelCount: packet.channelCount,
-                sampleRate: packet.sampleRate,
-                channelLayout: packet.channelLayout,
-                sourceBufferedFrames: packet.sourceBufferedFrames,
-                sourceCapacityFrames: packet.sourceCapacityFrames,
-                clientKeys: [packet.transportKey],
-                samples: processed,
-                lastPacketDate: now
-            )
-            let insertionIndex = pendingMixes.firstIndex {
-                Self.cycleIsNewer($0.cycleCounter, than: packet.cycleCounter)
-            } ?? pendingMixes.endIndex
-            pendingMixes.insert(newMix, at: insertionIndex)
-        }
-
-        // Never emit a cycle merely because the next cycle arrived. Retain a
-        // two-cycle reorder window so `N, N+1, late N` still produces exactly
-        // one mixed block for N. Once a third distinct cycle arrives, the
-        // oldest cycle is safe to commit.
-        let completed: PCMFrame?
-        if pendingMixes.count > Self.maximumPendingMixCycles {
-            completed = emitOldestPendingMixLocked()
-        } else {
-            completed = nil
-        }
+        let completed = mixProcessedPacketLocked(
+            packet,
+            packetStartSampleTime: packetStartSampleTime,
+            samples: processed,
+            clientKey: dspClientKey,
+            now: now
+        )
         let presentationLevel = levelsByApplication[applicationID] ?? 0
         audioLock.unlock()
 
@@ -707,7 +669,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     func flushExpiredMix() -> PerAppMixFlushResult {
         audioLock.lock()
         let now = Date()
-        guard let pendingMix = pendingMixes.first else {
+        guard !pendingMixesByDevice.isEmpty else {
             decayLevelsLocked(now: now)
             let presentationLevels = levelsByApplication
             audioLock.unlock()
@@ -717,19 +679,28 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             publishApplications()
             return .idle
         }
-        let frameDuration = Double(pendingMix.samples.count / pendingMix.channelCount)
-            / pendingMix.sampleRate
-        // Give an overlapping client callback more than one nominal buffer to
-        // finish before declaring the cycle complete. Continuous streams are
-        // normally committed by the bounded two-cycle window above, so this
-        // timeout primarily handles idle/stopping clients.
-        let requiredDelay = max(0.004, frameDuration * 1.5)
-        let elapsed = now.timeIntervalSince(pendingMix.lastPacketDate)
-        guard elapsed >= requiredDelay else {
-            audioLock.unlock()
-            return .retryAfter(max(0.0005, requiredDelay - elapsed))
+
+        var selectedDevice: UInt32?
+        var selectedDeadline = Date.distantFuture
+        for (deviceObjectID, mix) in pendingMixesByDevice {
+            let packetDuration = Double(max(1, mix.largestPacketFrames)) / mix.sampleRate
+            let requiredDelay = max(0.004, packetDuration * 1.5)
+            let deadline = mix.lastPacketDate.addingTimeInterval(requiredDelay)
+            if deadline < selectedDeadline {
+                selectedDeadline = deadline
+                selectedDevice = deviceObjectID
+            }
         }
-        guard let completed = emitOldestPendingMixLocked() else {
+
+        guard let selectedDevice else {
+            audioLock.unlock()
+            return .idle
+        }
+        guard now >= selectedDeadline else {
+            audioLock.unlock()
+            return .retryAfter(max(0.0005, selectedDeadline.timeIntervalSince(now)))
+        }
+        guard let completed = emitAllPendingMixLocked(for: selectedDevice) else {
             audioLock.unlock()
             return .idle
         }
@@ -751,10 +722,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
     func resetRuntime() {
         audioLock.lock()
-        pendingMixes.removeAll(keepingCapacity: true)
-        independentlyClockedClientGenerations.removeAll(keepingCapacity: true)
-        lastEmittedCycleCounter = nil
-        lastEmittedSampleTime = nil
+        pendingMixesByDevice.removeAll(keepingCapacity: true)
+        lastEmittedEndSampleTimeByDevice.removeAll(keepingCapacity: true)
         filterBanks.removeAll()
         gainsByClientKey.removeAll()
         levelsByApplication.removeAll()
@@ -823,29 +792,261 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         publishApplications(force: forcePublication)
     }
 
-    private static func cycleIsNewer(_ candidate: UInt64, than reference: UInt64) -> Bool {
-        let distance = candidate &- reference
-        return distance != 0 && distance < (UInt64(1) << 63)
+    private static func uniqueClientKeys<Key: Hashable>(
+        _ clients: [PerAppDriverClient],
+        key: (PerAppDriverClient) -> Key,
+        isUsable: (Key) -> Bool
+    ) -> [Key: PerAppTransportClientKey] {
+        var result: [Key: PerAppTransportClientKey] = [:]
+        var ambiguous: Set<Key> = []
+        for client in clients {
+            let value = key(client)
+            guard isUsable(value), !ambiguous.contains(value) else { continue }
+            if let existing = result[value], existing != client.transportKey {
+                result.removeValue(forKey: value)
+                ambiguous.insert(value)
+            } else if result[value] == nil {
+                result[value] = client.transportKey
+            }
+        }
+        return result
     }
 
-    private func emitOldestPendingMixLocked() -> PCMFrame? {
-        guard !pendingMixes.isEmpty else { return nil }
-        let mix = pendingMixes.removeFirst()
-        lastEmittedCycleCounter = mix.cycleCounter
-        lastEmittedSampleTime = mix.sampleTime
-        return frame(from: mix)
+    private static func integerSampleTime(_ sampleTime: Double) -> Int64? {
+        guard sampleTime.isFinite else { return nil }
+        let rounded = sampleTime.rounded()
+        guard rounded >= Double(Int64.min), rounded <= Double(Int64.max) else {
+            return nil
+        }
+        return Int64(rounded)
     }
 
-    private func frame(from mix: PendingMix) -> PCMFrame {
+    private func prepareTimelineEpochLocked(
+        deviceObjectID: UInt32,
+        packetStartSampleTime: Int64,
+        packetFrameCount: Int,
+        sampleRate: Double,
+        cycleCounter: UInt64
+    ) {
+        guard packetFrameCount > 0 else { return }
+        let packetEnd = packetStartSampleTime + Int64(packetFrameCount)
+        let emittedEnd = lastEmittedEndSampleTimeByDevice[deviceObjectID]
+        let pendingEnd = pendingMixesByDevice[deviceObjectID]?.endSampleTime
+        guard let referenceEnd = [emittedEnd, pendingEnd].compactMap({ $0 }).max() else {
+            return
+        }
+
+        let nominalRewindFrames = max(
+            packetFrameCount * Self.timelineRestartRewindMultiplier,
+            Int(max(1, sampleRate) * 0.1)
+        )
+        let rewindFrames = referenceEnd - packetEnd
+        // A true IO restart normally recycles mIOCycleCounter near zero. Use
+        // that only as a restart hint after the device sample timeline itself
+        // has made a large backwards jump; never use it to order applications.
+        if rewindFrames > Int64(nominalRewindFrames), cycleCounter <= 16 {
+            resetDeviceTimelineLocked(deviceObjectID)
+        }
+    }
+
+    private func resetDeviceTimelineLocked(_ deviceObjectID: UInt32) {
+        pendingMixesByDevice.removeValue(forKey: deviceObjectID)
+        lastEmittedEndSampleTimeByDevice.removeValue(forKey: deviceObjectID)
+        filterBanks = filterBanks.filter { $0.key.deviceObjectID != deviceObjectID }
+        gainsByClientKey = gainsByClientKey.filter { $0.key.deviceObjectID != deviceObjectID }
+    }
+
+    private func mixProcessedPacketLocked(
+        _ packet: PerAppAudioPacket,
+        packetStartSampleTime: Int64,
+        samples: [Float],
+        clientKey: PerAppTransportClientKey,
+        now: Date
+    ) -> PCMFrame? {
+        let channelCount = packet.channelCount
+        var packetSamples = samples
+        var packetFrameCount = packetSamples.count / channelCount
+        var packetStart = packetStartSampleTime
+        guard packetFrameCount > 0 else { return nil }
+
+        // If a callback finishes after part of its timeline has already been
+        // committed, trim only that already-rendered prefix. A fully stale
+        // callback is ignored; the client is never permanently disabled.
+        if let emittedEnd = lastEmittedEndSampleTimeByDevice[packet.deviceObjectID],
+           packetStart < emittedEnd {
+            let staleFrames = min(
+                packetFrameCount,
+                Int(max(0, emittedEnd - packetStart))
+            )
+            if staleFrames >= packetFrameCount { return nil }
+            packetSamples.removeFirst(staleFrames * channelCount)
+            packetStart += Int64(staleFrames)
+            packetFrameCount -= staleFrames
+        }
+
+        if var mix = pendingMixesByDevice[packet.deviceObjectID] {
+            let formatMatches = mix.channelCount == channelCount
+                && abs(mix.sampleRate - packet.sampleRate) < 0.5
+                && mix.channelLayout == packet.channelLayout
+            if !formatMatches {
+                let completed = emitAllPendingMixLocked(for: packet.deviceObjectID)
+                pendingMixesByDevice[packet.deviceObjectID] = makePendingMix(
+                    packet,
+                    startSampleTime: packetStart,
+                    samples: packetSamples,
+                    clientKey: clientKey,
+                    now: now
+                )
+                return completed
+            }
+
+            let packetEnd = packetStart + Int64(packetFrameCount)
+            let maximumSpan = max(
+                mix.largestPacketFrames,
+                packetFrameCount
+            ) * Self.timelineDiscontinuityMultiplier
+
+            // A far-future timestamp means there was an idle/discontinuous
+            // interval, not a giant buffer of zero PCM that should be allocated.
+            if packetStart > mix.endSampleTime,
+               packetStart - mix.endSampleTime > Int64(maximumSpan) {
+                let completed = emitAllPendingMixLocked(for: packet.deviceObjectID)
+                pendingMixesByDevice[packet.deviceObjectID] = makePendingMix(
+                    packet,
+                    startSampleTime: packetStart,
+                    samples: packetSamples,
+                    clientKey: clientKey,
+                    now: now
+                )
+                return completed
+            }
+
+            // A very old packet that is entirely before the reorder window is
+            // stale. Do not let it rewind the live stream or reset another app.
+            if packetEnd < mix.startSampleTime,
+               mix.startSampleTime - packetEnd > Int64(maximumSpan) {
+                return nil
+            }
+
+            if packetStart < mix.startSampleTime {
+                let prependFrames = Int(mix.startSampleTime - packetStart)
+                mix.samples = [Float](
+                    repeating: 0,
+                    count: prependFrames * channelCount
+                ) + mix.samples
+                mix.startSampleTime = packetStart
+            }
+
+            let frameOffset = Int(packetStart - mix.startSampleTime)
+            let sampleOffset = frameOffset * channelCount
+            let requiredSamples = sampleOffset + packetSamples.count
+            if requiredSamples > mix.samples.count {
+                mix.samples.append(contentsOf: repeatElement(
+                    Float(0),
+                    count: requiredSamples - mix.samples.count
+                ))
+            }
+            for index in packetSamples.indices {
+                mix.samples[sampleOffset + index] += packetSamples[index]
+            }
+            mix.sourceBufferedFrames = max(
+                mix.sourceBufferedFrames,
+                packet.sourceBufferedFrames
+            )
+            mix.sourceCapacityFrames = min(
+                mix.sourceCapacityFrames,
+                packet.sourceCapacityFrames
+            )
+            mix.clientKeys.insert(clientKey)
+            mix.largestPacketFrames = max(mix.largestPacketFrames, packetFrameCount)
+            mix.lastPacketDate = now
+            pendingMixesByDevice[packet.deviceObjectID] = mix
+        } else {
+            pendingMixesByDevice[packet.deviceObjectID] = makePendingMix(
+                packet,
+                startSampleTime: packetStart,
+                samples: packetSamples,
+                clientKey: clientKey,
+                now: now
+            )
+        }
+
+        guard let pendingMix = pendingMixesByDevice[packet.deviceObjectID] else {
+            return nil
+        }
+        let holdbackFrames = max(
+            1,
+            pendingMix.largestPacketFrames * Self.pendingMixHoldbackPackets
+        )
+        let safeFrames = pendingMix.frameCount - holdbackFrames
+        guard safeFrames > 0 else { return nil }
+        return emitPendingPrefixLocked(
+            for: packet.deviceObjectID,
+            frameCount: safeFrames
+        )
+    }
+
+    private func makePendingMix(
+        _ packet: PerAppAudioPacket,
+        startSampleTime: Int64,
+        samples: [Float],
+        clientKey: PerAppTransportClientKey,
+        now: Date
+    ) -> PendingMix {
+        PendingMix(
+            deviceObjectID: packet.deviceObjectID,
+            startSampleTime: startSampleTime,
+            channelCount: packet.channelCount,
+            sampleRate: packet.sampleRate,
+            channelLayout: packet.channelLayout,
+            sourceBufferedFrames: packet.sourceBufferedFrames,
+            sourceCapacityFrames: packet.sourceCapacityFrames,
+            clientKeys: [clientKey],
+            samples: samples,
+            largestPacketFrames: max(1, samples.count / packet.channelCount),
+            lastPacketDate: now
+        )
+    }
+
+    private func emitAllPendingMixLocked(for deviceObjectID: UInt32) -> PCMFrame? {
+        guard let mix = pendingMixesByDevice[deviceObjectID] else { return nil }
+        return emitPendingPrefixLocked(
+            for: deviceObjectID,
+            frameCount: mix.frameCount
+        )
+    }
+
+    private func emitPendingPrefixLocked(
+        for deviceObjectID: UInt32,
+        frameCount: Int
+    ) -> PCMFrame? {
+        guard var mix = pendingMixesByDevice[deviceObjectID],
+              frameCount > 0,
+              frameCount <= mix.frameCount else {
+            return nil
+        }
+        let sampleCount = frameCount * mix.channelCount
+        let outputSamples = Array(mix.samples.prefix(sampleCount))
         let activeClientCount = max(1, mix.clientKeys.count)
-        return PCMFrame(
-            interleaved: mix.samples,
+        let output = PCMFrame(
+            interleaved: outputSamples,
             channelCount: mix.channelCount,
             sampleRate: mix.sampleRate,
             channelLayout: mix.channelLayout,
             sourceBufferedFrames: mix.sourceBufferedFrames / activeClientCount,
             sourceCapacityFrames: mix.sourceCapacityFrames
         )
+        let emittedEnd = mix.startSampleTime + Int64(frameCount)
+        lastEmittedEndSampleTimeByDevice[deviceObjectID] = emittedEnd
+
+        if frameCount == mix.frameCount {
+            pendingMixesByDevice.removeValue(forKey: deviceObjectID)
+        } else {
+            mix.samples.removeFirst(sampleCount)
+            mix.startSampleTime = emittedEnd
+            pendingMixesByDevice[deviceObjectID] = mix
+        }
+        return output
     }
 
     /// Keep gain continuous at packet boundaries. Applying one scalar to an
@@ -1024,8 +1225,9 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         guard monitorsRunningApplications else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            let running = NSWorkspace.shared.runningApplications
             let resolved = Dictionary(
-                NSWorkspace.shared.runningApplications.compactMap {
+                running.compactMap {
                     Self.resolveRunningApplicationIdentity($0).map { ($0.id, $0) }
                 },
                 uniquingKeysWith: { current, candidate in
@@ -1035,8 +1237,18 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                     return current.processID <= candidate.processID ? current : candidate
                 }
             )
+            let audioIdentities = Dictionary(
+                running.compactMap { runningApplication -> (Int32, ApplicationIdentity)? in
+                    guard let identity = Self.resolveAudioProcessIdentity(runningApplication) else {
+                        return nil
+                    }
+                    return (runningApplication.processIdentifier, identity)
+                },
+                uniquingKeysWith: { current, _ in current }
+            )
             self.stateLock.lock()
             self.runningApplicationsByID = resolved
+            self.workspaceIdentitiesByProcessID = audioIdentities
             self.pendingRunningApplicationRefresh = nil
             self.stateLock.unlock()
             self.publishApplications(force: true)
@@ -1159,6 +1371,69 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         "com.apple.stickies",
         "com.apple.systemprofiler"
     ]
+
+    /// Resolve the process that actually produced a PCM packet to its owning
+    /// application. Background/helper processes (Chrome, Electron, WebKit) may
+    /// have a prohibited activation policy even though their outer .app owns
+    /// the user-facing volume row, so packet attribution must not use the
+    /// visible-app filter.
+    private static func resolveAudioProcessIdentity(
+        _ running: NSRunningApplication
+    ) -> ApplicationIdentity? {
+        guard running.processIdentifier > 0,
+              running.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+              running.isTerminated == false else {
+            return nil
+        }
+
+        let reportedBundleID = running.bundleIdentifier
+        guard !isSystemAudioService(
+            bundleID: reportedBundleID,
+            displayName: running.localizedName
+        ) else { return nil }
+
+        let canonicalBundleID = canonicalApplicationBundleID(reportedBundleID)
+        let outerBundleURL = outermostApplicationURL(from: running.bundleURL)
+            ?? ((canonicalBundleID != reportedBundleID) ? canonicalBundleID.flatMap {
+                NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)
+            } : nil)
+        let applicationBundle = outerBundleURL.flatMap(Bundle.init(url:))
+        let bundleID = applicationBundle?.bundleIdentifier
+            ?? canonicalBundleID
+            ?? reportedBundleID
+        let ownURL = Bundle.main.bundleURL.standardizedFileURL
+        let ownBundleID = Bundle.main.bundleIdentifier
+        if outerBundleURL?.standardizedFileURL == ownURL
+            || (bundleID != nil && bundleID == ownBundleID) {
+            return nil
+        }
+        guard outerBundleURL != nil || bundleID?.isEmpty == false else { return nil }
+
+        let displayName = (applicationBundle?.object(
+            forInfoDictionaryKey: "CFBundleDisplayName"
+        ) as? String)
+            ?? (applicationBundle?.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? running.localizedName
+            ?? bundleID?.split(separator: ".").last.map(String.init)
+            ?? "Application"
+        guard !isSystemAudioService(
+            bundleID: bundleID,
+            displayName: displayName
+        ) else { return nil }
+
+        let id = bundleID
+            ?? outerBundleURL.map { "app:\($0.standardizedFileURL.path)" }
+            ?? "pid:\(running.processIdentifier)"
+        return ApplicationIdentity(
+            id: id,
+            bundleID: bundleID,
+            bundleURL: outerBundleURL,
+            processID: running.processIdentifier,
+            displayName: displayName,
+            isDockApplication: running.activationPolicy == .regular,
+            isAccessoryApplication: running.activationPolicy == .accessory
+        )
+    }
 
     private static func resolveRunningApplicationIdentity(
         _ running: NSRunningApplication

@@ -11,8 +11,8 @@ struct PhysicalVolumeTransferSnapshot: Sendable {
 
 @MainActor
 final class CoreAudioManager: ObservableObject {
-    // Driver 0.7.8 publishes media-key state through the lock-free SABR lane.
-    static let minimumPresentationDriverVersion = "0.7.8"
+    // Driver 0.7.9 publishes media-key state through the lock-free SABR lane.
+    static let minimumPresentationDriverVersion = "0.7.9"
 
     @Published private(set) var outputDevices: [AudioDeviceInfo] = []
     @Published private(set) var defaultOutputUID: String?
