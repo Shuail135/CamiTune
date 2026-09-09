@@ -17,7 +17,7 @@ concurrency:
 jobs:
   build:
     name: Build application
-    runs-on: macos-14
+    runs-on: macos-13
 
     steps:
       - name: Check out repository
