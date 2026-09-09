@@ -197,10 +197,22 @@ final class AppState: NSObject, ObservableObject {
             if self.coreAudio.hasCompletedInitialRefresh,
                !self.transitionInProgress,
                !self.isActive {
-                _ = try? await self.coreAudio.synchronizeProfileRoutingDevicesWithoutBlockingUI(
-                    profiles: self.profiles.profiles,
-                    activeProfileID: nil
-                )
+
+                let hasExistingProfileRoutingDevices =
+                    self.coreAudio.outputDevices.contains {
+                        ProfileRoutingDescriptor.isProfileRoutingUID($0.id)
+                    }
+
+                if !hasExistingProfileRoutingDevices {
+                    // Fresh coreaudiod/driver instance: no profile endpoints exist yet,
+                    // so publish the normal initial set.
+                    _ = try? await self.coreAudio
+                        .synchronizeProfileRoutingDevicesWithoutBlockingUI(
+                            profiles: self.profiles.profiles,
+                            activeProfileID: nil
+                        )
+                }
+
                 await self.monitorRouting()
             }
         }
@@ -1064,6 +1076,7 @@ final class AppState: NSObject, ObservableObject {
         invalidateLiveApplies: Bool = true
     ) async {
         if manual { manualDeactivationRevision &+= 1 }
+
         guard !transitionInProgress else {
             enqueueDeactivation(
                 manual: manual,
@@ -1072,10 +1085,12 @@ final class AppState: NSObject, ObservableObject {
             )
             return
         }
+
         if invalidateLiveApplies {
             latestApplyRequest &+= 1
             pendingLiveApply = nil
         }
+
         transitionInProgress = true
         defer { finishAudioTransition() }
 
@@ -1083,13 +1098,13 @@ final class AppState: NSObject, ObservableObject {
             profiles.profiles.first(where: { $0.id == id })?.outputDeviceUID
         }
 
-        await stopProcessingPipeline()
-
         var outputRestoreError: Error?
+
         if restoreOutput {
             let restore = previousDefaultUID.flatMap {
                 coreAudio.cachedDevice(uid: $0) != nil ? $0 : nil
             } ?? targetUID
+
             if let restore {
                 do {
                     try await coreAudio.setDefaultOutputAndWait(uid: restore)
@@ -1099,10 +1114,36 @@ final class AppState: NSObject, ObservableObject {
             }
         }
 
+        try? await Task.sleep(for: .milliseconds(150))
+
         try? await coreAudio.setSystemAudioBridgePresentationWithoutBlockingUI(
             name: "System Audio Bridge",
             visible: false
         )
+
+        var routingCleanupError: Error?
+
+        for attempt in 0..<10 {
+            do {
+                try await coreAudio.synchronizeProfileRoutingDevicesWithoutBlockingUI(
+                    profiles: profiles.profiles,
+                    activeProfileID: nil
+                )
+
+                routingCleanupError = nil
+                break
+            } catch {
+                routingCleanupError = error
+
+                guard attempt < 9 else {
+                    break
+                }
+
+                try? await Task.sleep(for: .milliseconds(75))
+            }
+        }
+
+        await stopProcessingPipeline()
 
         isActive = false
         activeSession = nil
@@ -1110,24 +1151,20 @@ final class AppState: NSObject, ObservableObject {
         activePhysicalOutputUID = nil
         activeRoutingUID = nil
         previousDefaultUID = nil
+
         if manual {
             suppressedAutoUID = targetUID
             automaticActivationRetry = nil
         }
-        var routingCleanupError: Error?
-        do {
-            try await coreAudio.synchronizeProfileRoutingDevicesWithoutBlockingUI(
-                profiles: profiles.profiles,
-                activeProfileID: nil
-            )
-        } catch {
-            routingCleanupError = error
-        }
+
         if let outputRestoreError {
-            errorMessage = "EQ stopped, but macOS could not switch back to the physical output: \(outputRestoreError.localizedDescription)"
+            errorMessage =
+                "EQ stopped, but macOS could not switch back to the physical output: \(outputRestoreError.localizedDescription)"
         } else if let routingCleanupError {
-            errorMessage = "EQ stopped, but its macOS audio device could not be updated: \(routingCleanupError.localizedDescription)"
+            errorMessage =
+                "EQ stopped, but its macOS audio device could not be updated: \(routingCleanupError.localizedDescription)"
         }
+
         notifications.deactivated()
     }
 
@@ -1291,32 +1328,43 @@ final class AppState: NSObject, ObservableObject {
     private func shutdownSynchronously() {
         monitorTimer?.invalidate()
         monitorTimer = nil
+
         profiles.flushPendingSaveSynchronously()
+
         meters.stop()
         driverTransport.stop()
         perAppAudio.resetRuntime()
         pcmRouter.stop()
         dsp.closeAudioInput()
         spectrum.stop()
+
         // Release Camilla's CoreAudio playback handle before restoring hardware
         // volume. The physical endpoint must never be volume-written while the
         // private DSP engine is rendering to it.
         dsp.forceStopAndWait()
         volumeBridge.stop()
+
         if let routingUID = activeRoutingUID,
            coreAudio.defaultOutputUID == routingUID {
-            let targetUID = activeProfileID.flatMap { id in profiles.profiles.first(where: { $0.id == id })?.outputDeviceUID }
+
+            let targetUID = activeProfileID.flatMap { id in
+                profiles.profiles.first(where: { $0.id == id })?.outputDeviceUID
+            }
+
             let restore = previousDefaultUID ?? targetUID
-            if let restore { try? coreAudio.setDefaultOutput(uid: restore) }
+
+            if let restore {
+                try? coreAudio.setDefaultOutput(uid: restore)
+            }
         }
+
         try? coreAudio.setSystemAudioBridgePresentation(
             name: "System Audio Bridge",
             visible: false
         )
-        let cleanupFallbackUID = activeProfileID.flatMap { id in
-            profiles.profiles.first(where: { $0.id == id })?.outputDeviceUID
-        } ?? previousDefaultUID
-        coreAudio.destroyAllProfileRoutingDevices(fallbackUID: cleanupFallbackUID)
+
+        // Dont call destroyAllProfileRoutingDevices() here.
+
         isActive = false
         activeSession = nil
         activeSampleRate = nil

@@ -1,8 +1,11 @@
-#ifndef SYSTEM_AUDIO_BRIDGE_DRIVER_TRANSPORT_H
-#define SYSTEM_AUDIO_BRIDGE_DRIVER_TRANSPORT_H
+#pragma once
+#ifndef SABR_SYSTEM_AUDIO_BRIDGE_DRIVER_TRANSPORT_H
+#define SABR_SYSTEM_AUDIO_BRIDGE_DRIVER_TRANSPORT_H
 
 #include <CoreAudio/AudioHardware.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <stdint.h>
+#include <sys/types.h>
 #include "../Shared/SystemAudioBridgeTransport.h"
 
 #ifdef __cplusplus
@@ -51,4 +54,4 @@ void sabr_driver_transport_get_configuration(SABRTransportConfiguration* configu
 }
 #endif
 
-#endif
+#endif /* SABR_SYSTEM_AUDIO_BRIDGE_DRIVER_TRANSPORT_H */

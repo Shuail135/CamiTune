@@ -7,6 +7,7 @@
 #include <math.h>
 #include <pthread.h>
 #include <sched.h>
+#include <signal.h>
 #include <semaphore.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -298,7 +299,11 @@ static Boolean sabr_dictionary_get_uint64(
     return true;
 }
 
-static OSStatus sabr_authorize_session(pid_t clientProcessID, uint64_t sessionToken) {
+static OSStatus sabr_authorize_session(
+    pid_t clientProcessID,
+    uint64_t sessionToken,
+    Boolean claimIfUnowned
+) {
     if (clientProcessID <= 0 || sessionToken == 0 || sessionToken > INT64_MAX) {
         return kAudioHardwareIllegalOperationError;
     }
@@ -316,7 +321,7 @@ static OSStatus sabr_authorize_session(pid_t clientProcessID, uint64_t sessionTo
             gSessionToken = 0;
         }
     }
-    if (result == noErr && gSessionOwnerProcessID == 0) {
+    if (result == noErr && gSessionOwnerProcessID == 0 && claimIfUnowned) {
         gSessionOwnerProcessID = clientProcessID;
         gSessionToken = sessionToken;
     }
@@ -456,7 +461,8 @@ OSStatus sabr_driver_transport_connect(
      */
     const OSStatus authorization = sabr_authorize_session(
         clientProcessID,
-        configuration->sessionToken
+        configuration->sessionToken,
+        true
     );
     if (authorization != noErr) {
         munmap(mapping, requiredBytes);
@@ -518,7 +524,7 @@ OSStatus sabr_driver_transport_authorize_property_list(
         abiVersion != SABR_TRANSPORT_ABI_VERSION) {
         return kAudioHardwareIllegalOperationError;
     }
-    return sabr_authorize_session(clientProcessID, sessionToken);
+    return sabr_authorize_session(clientProcessID, sessionToken, false);
 }
 
 OSStatus sabr_driver_transport_connect_property_list(
@@ -652,13 +658,7 @@ void sabr_driver_transport_add_client(
         if (!existing) { memset(client, 0, sizeof(*client)); }
         client->occupied = true;
         client->active = true;
-        if (!existing) {
-            client->useCount = 1;
-        } else if (client->useCount == UINT32_MAX) {
-            gClientUseCountSaturationCount += 1;
-        } else {
-            client->useCount += 1;
-        }
+        client->useCount = 1;
         client->clientID = clientID;
         client->processID = processID;
         client->deviceObjectID = deviceObjectID;
@@ -700,15 +700,8 @@ void sabr_driver_transport_remove_client(AudioObjectID deviceObjectID, uint32_t 
             gClients[index].clientID != clientID) {
             continue;
         }
-        if (gClients[index].useCount > 0) { gClients[index].useCount -= 1; }
         gClientGeneration += 1;
-        if (gClients[index].useCount == 0) {
-            /* Retention policy: reclaim immediately after the last reference. */
-            memset(&gClients[index], 0, sizeof(gClients[index]));
-        } else {
-            gClients[index].active = true;
-            gClients[index].generation = gClientGeneration;
-        }
+        memset(&gClients[index], 0, sizeof(gClients[index]));
         sabr_publish_realtime_client_locked(index);
         break;
     }

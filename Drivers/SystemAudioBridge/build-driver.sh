@@ -6,7 +6,7 @@ REPO_ROOT="${SCRIPT_DIR:h:h}"
 BUILD_ROOT="${SABR_BUILD_ROOT:-$REPO_ROOT/build/driver}"
 CHANNELS="${SABR_CHANNELS:-8}"
 MIN_MACOS="${SABR_MIN_MACOS:-13.0}"
-DRIVER_VERSION="${SABR_DRIVER_VERSION:-0.7.10}"
+DRIVER_VERSION="${SABR_DRIVER_VERSION:-0.7.12}"
 DRIVER="$BUILD_ROOT/CamillaAudio.driver"
 BINARY="$DRIVER/Contents/MacOS/CamillaAudio"
 
@@ -14,7 +14,6 @@ if [[ "$CHANNELS" != "2" && "$CHANNELS" != "6" && "$CHANNELS" != "8" ]]; then
     print -u2 "SABR_CHANNELS must be 2 (stereo), 6 (5.1), or 8 (7.1)."
     exit 1
 fi
-
 CLANG="$(/usr/bin/xcrun --sdk macosx --find clang)"
 ACTOOL="$(/usr/bin/xcrun --sdk macosx --find actool)"
 SDK="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
@@ -23,7 +22,6 @@ ICON_PARTIAL_INFO="$BUILD_ROOT/AppIcon-PartialInfo.plist"
 
 /bin/rm -rf "$DRIVER"
 /bin/mkdir -p "$DRIVER/Contents/MacOS" "$DRIVER/Contents/Resources"
-
 "$CLANG" \
     -std=gnu11 \
     -O2 \
@@ -52,7 +50,6 @@ ICON_PARTIAL_INFO="$BUILD_ROOT/AppIcon-PartialInfo.plist"
     -framework CoreAudio \
     -framework CoreFoundation \
     -o "$BINARY"
-
 /bin/cp "$SCRIPT_DIR/Driver/Info.plist" "$DRIVER/Contents/Info.plist"
 /bin/cp "$REPO_ROOT/LICENSE" "$DRIVER/Contents/Resources/"
 "$ACTOOL" "$ICON_CATALOG" \
@@ -72,7 +69,6 @@ fi
 /usr/bin/plutil -replace SystemAudioBridgeChannelCount -integer "$CHANNELS" "$DRIVER/Contents/Info.plist"
 /usr/bin/codesign --force --sign - "$DRIVER"
 /usr/bin/codesign --verify --strict "$DRIVER"
-
 if ! /usr/bin/nm -gj "$BINARY" | /usr/bin/grep -q '^_SystemAudioBridge_Create$'; then
     print -u2 "Driver factory symbol was not exported."
     exit 1

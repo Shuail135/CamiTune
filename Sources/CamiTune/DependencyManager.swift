@@ -313,10 +313,11 @@ final class DependencyManager: ObservableObject {
         setupInProgress = true
         defer { setupInProgress = false }
         setupMessage = "Setting up CamiTune dependencies…"
+
         await performCamillaDSPInstall()
-        if case .installed = audioDriverStatus {} else {
-            await performAudioDriverInstall()
-        }
+
+        await performAudioDriverInstall()
+
         await refreshWithoutBlockingUI()
         if case .installed = camillaDSPStatus, case .installed = audioDriverStatus {
             setupFailed = false
