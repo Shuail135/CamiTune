@@ -34,6 +34,7 @@ struct AutomaticActivationRetryState: Equatable, Sendable {
 @MainActor
 final class AppState: NSObject, ObservableObject {
     @Published private(set) var isActive = false
+    @Published private(set) var activeVolumeMode: SystemVolumeMode?
     @Published private(set) var activeSession: AudioRuntimeSession?
     @Published var errorMessage: String?
     @Published var validationMessage: String = ""
@@ -115,6 +116,7 @@ final class AppState: NSObject, ObservableObject {
     private var mainWindowPresentationActive = false
     private var profilePersistenceErrorObservation: AnyCancellable?
     private var coreAudioRoutingObservation: AnyCancellable?
+    private var immediateDefaultOutputObservation: AnyCancellable?
 
     override init() {
         let audio = CoreAudioManager()
@@ -131,6 +133,17 @@ final class AppState: NSObject, ObservableObject {
                 self?.errorMessage = message
             }
         UIRenderPerformance.startMonitoring()
+
+        immediateDefaultOutputObservation = audio.$defaultOutputUID
+            .removeDuplicates()
+            .sink { [weak self] uid in
+                guard let self, self.isActive, !self.transitionInProgress else { return }
+                if uid == self.activeRoutingUID {
+                    self.volumeBridge.resumeAfterExternalRouteReturn()
+                } else {
+                    self.volumeBridge.silenceForExternalRouteChange()
+                }
+            }
 
         coreAudioRoutingObservation = Publishers.CombineLatest(
             audio.$defaultOutputUID,
@@ -893,7 +906,7 @@ final class AppState: NSObject, ObservableObject {
             // writer snapshots this value in its initializer, which guarantees
             // that the first processed frame matches the physical endpoint's
             // original level instead of briefly starting at unity.
-            let volumeSession = await volumeBridge.start(
+            let volumeSession = try await volumeBridge.start(
                 routingDevice: routing,
                 physicalUID: output.id,
                 coreAudio: coreAudio,
@@ -908,8 +921,12 @@ final class AppState: NSObject, ObservableObject {
                         linearGain: linearGain,
                         muted: muted
                     )
+                },
+                onMirrorFailure: { [weak self] in
+                    self?.errorMessage = "The output volume could not be synchronized. Playback is muted until a volume change succeeds. Check the output connection."
                 }
             )
+            activeVolumeMode = volumeBridge.mode
             await pcmRouter.start(
                 camillaSink: try dsp.audioInputHandle(),
                 spatialRenderingMode: profile.spatialRenderingMode,
@@ -939,7 +956,7 @@ final class AppState: NSObject, ObservableObject {
                         pcmRouter: pcmRouter,
                         perAppAudio: perAppAudio,
                         masterControlConsumer: { scalar, muted in
-                            volumeSession?.apply(scalar: scalar, muted: muted)
+                            volumeSession.applyDriverSnapshot(scalar: scalar, muted: muted)
                         }
                     )
                     transportConnected = true
@@ -955,10 +972,10 @@ final class AppState: NSObject, ObservableObject {
                 throw transportError ?? AppError.missingRoutingDriver
             }
 
+            try await volumeBridge.prepareForActiveProcessing()
             if coreAudio.defaultOutputUID != routing.id {
                 try await coreAudio.setDefaultOutputAndWait(uid: routing.id)
             }
-            await volumeBridge.engageProcessingVolume()
 
             activeSession = runtimeSession
             activeSampleRate = profile.sampleRate
@@ -1100,6 +1117,9 @@ final class AppState: NSObject, ObservableObject {
 
         var outputRestoreError: Error?
 
+        await volumeBridge.beginOutputHandoff()
+        await stopProcessingPipeline()
+
         if restoreOutput {
             let restore = previousDefaultUID.flatMap {
                 coreAudio.cachedDevice(uid: $0) != nil ? $0 : nil
@@ -1142,8 +1162,6 @@ final class AppState: NSObject, ObservableObject {
                 try? await Task.sleep(for: .milliseconds(75))
             }
         }
-
-        await stopProcessingPipeline()
 
         isActive = false
         activeSession = nil
@@ -1213,10 +1231,10 @@ final class AppState: NSObject, ObservableObject {
         await spectrum.stopWithoutBlockingUI()
         await dsp.stop()
         dspController.resetRuntime()
-        // Only after Camilla has released the physical endpoint do we copy the
-        // user's latest profile volume/mute back to that device. This avoids
-        // active-render HAL volume writes, which can stall USB/Bluetooth output.
+        // Drain the final target and retire both listeners before another
+        // session can bind this physical output. Its volume is already mirrored.
         await volumeBridge.stopWithoutBlockingUI()
+        activeVolumeMode = nil
     }
 
     private func monitorRouting() async {
@@ -1338,11 +1356,10 @@ final class AppState: NSObject, ObservableObject {
         dsp.closeAudioInput()
         spectrum.stop()
 
-        // Release Camilla's CoreAudio playback handle before restoring hardware
-        // volume. The physical endpoint must never be volume-written while the
-        // private DSP engine is rendering to it.
+        // Release playback and drain the same hardware writer used at runtime.
         dsp.forceStopAndWait()
         volumeBridge.stop()
+        activeVolumeMode = nil
 
         if let routingUID = activeRoutingUID,
            coreAudio.defaultOutputUID == routingUID {

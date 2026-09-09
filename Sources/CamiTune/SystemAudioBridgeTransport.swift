@@ -383,8 +383,9 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             // Volume changes do not wake this thread by themselves. During
             // playback the next PCM packet observes the lock-free latest-value
             // lane; while idle the existing maintenance wake catches up. This
-            // keeps HAL property reads and physical-device writes completely
-            // outside the media-key path.
+            // keeps HAL property reads and physical-device writes off this PCM
+            // thread. Hardware mirroring observes the virtual HAL control on
+            // its own queue and does not replay this potentially older lane.
             var masterControl = SABRClientControlState()
             if sabr_client_transport_copy_control_state(
                     context.transport,

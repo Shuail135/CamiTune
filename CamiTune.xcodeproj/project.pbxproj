@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AB109A719BE042A098FE1003 = {isa = PBXBuildFile; fileRef = AB109A719BE042A098FE1004; };
+		AB109A719BE042A098FE1001 = {isa = PBXBuildFile; fileRef = AB109A719BE042A098FE1002; };
 		0062E4974A58EB2758A2CE55 = {
 			isa = PBXBuildFile;
 			fileRef = D713469F5B32ED43EDD0BC4A;
@@ -491,6 +493,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AB109A719BE042A098FE1004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalVolumeMirrorTests.swift; sourceTree = "<group>"; };
+		AB109A719BE042A098FE1002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalVolumeMirror.swift; sourceTree = "<group>"; };
 		002F0ED64C65B2D748394B8D = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
@@ -1444,6 +1448,7 @@
 			    17FB83A0849DEE9ACFFAB171,
 			    92EBDB5ABB5737E00E819D59,
 			    17BD1088BA5EBE5AEFC871E2,
+			    AB109A719BE042A098FE1002,
 			    4791E297AF25EFCA8AC9783E,
 			    BF488F0E1E816939FCAC0EE2,
 			    67B1EB01B195F34F0294962D,
@@ -1483,6 +1488,7 @@
 		EEFE21A1443933CA4DE017DA = {
 			isa = PBXGroup;
 			children = (
+			    AB109A719BE042A098FE1004,
 			    F2A8E1344C36C10E0DEA01E6,
 			    B2AE6B6ABE861570A5AEF10F,
 			    CEC720A0B907217B7464BF80,
@@ -1648,6 +1654,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			    AB109A719BE042A098FE1003,
 			    0ED50744FEC92A92D538EFC6,
 			    C9AF18BB6D5E5794291732CB,
 			    DA9A90764D4B050384240AFE,
@@ -1676,6 +1683,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			    AB109A719BE042A098FE1001,
 			    087A85F6C26B99E3E3C61059,
 			    5802CB74AF55627F307EC03B,
 			    7B13E9F7E8EF7D313E920F4A,

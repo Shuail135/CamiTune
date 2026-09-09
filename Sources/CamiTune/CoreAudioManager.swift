@@ -9,6 +9,15 @@ struct PhysicalVolumeTransferSnapshot: Sendable {
     let decibels: [Float32]
 }
 
+struct OutputVolumeCapabilities: Sendable, Equatable {
+    let volumeReadable: Bool
+    let volumeWritable: Bool
+    let muteReadable: Bool
+    let muteWritable: Bool
+
+    var supportsHardwareMirroring: Bool { volumeReadable && volumeWritable }
+}
+
 @MainActor
 final class CoreAudioManager: ObservableObject {
     // Driver 0.7.10 releases transport authorization on disconnect, allowing
@@ -816,6 +825,52 @@ final class CoreAudioManager: ObservableObject {
         }.value
     }
 
+    func outputVolumeCapabilitiesWithoutBlockingUI(
+        deviceID: AudioDeviceID
+    ) async -> OutputVolumeCapabilities {
+        await Task.detached(priority: .userInitiated) {
+            Self.outputVolumeCapabilities(deviceID: deviceID)
+        }.value
+    }
+
+    nonisolated static func outputVolumeCapabilities(
+        deviceID: AudioDeviceID
+    ) -> OutputVolumeCapabilities {
+        func capability(_ selector: AudioObjectPropertySelector) -> (Bool, Bool) {
+            var readable = false
+            var writable = false
+            for element: AudioObjectPropertyElement in [kAudioObjectPropertyElementMain, 1, 2] {
+                var address = AudioObjectPropertyAddress(
+                    mSelector: selector,
+                    mScope: kAudioDevicePropertyScopeOutput,
+                    mElement: element
+                )
+                guard AudioObjectHasProperty(deviceID, &address) else { continue }
+                readable = true
+                var settable: DarwinBoolean = false
+                if AudioObjectIsPropertySettable(deviceID, &address, &settable) == noErr,
+                   settable.boolValue {
+                    writable = true
+                }
+            }
+            return (readable, writable)
+        }
+        let volume = capability(kAudioDevicePropertyVolumeScalar)
+        let mute = capability(kAudioDevicePropertyMute)
+        return OutputVolumeCapabilities(
+            volumeReadable: volume.0, volumeWritable: volume.1,
+            muteReadable: mute.0, muteWritable: mute.1
+        )
+    }
+
+    /// Only call from a control queue, never from a PCM callback.
+    nonisolated static func volumeTarget(deviceID: AudioDeviceID) -> PhysicalVolumeTarget? {
+        guard let scalar = floatProperty(
+            deviceID: deviceID, selector: kAudioDevicePropertyVolumeScalar
+        ), scalar.isFinite else { return nil }
+        return PhysicalVolumeTarget(scalar: scalar, muted: isMuted(deviceID: deviceID) ?? false)
+    }
+
     /// Snapshots the physical endpoint's scalar->dB transfer function before
     /// playback begins. Runtime media-key handling can then use pure in-memory
     /// interpolation and never query the active hardware endpoint.
@@ -905,12 +960,13 @@ final class CoreAudioManager: ObservableObject {
         setMuted(uid: uid, muted: false)
     }
 
-    nonisolated private static func setVolume(
+    nonisolated static func setVolume(
         deviceID: AudioDeviceID,
         scalar: Float32
     ) throws {
         let value = max(0, min(1, scalar))
         var didSet = false
+        var writeError: OSStatus?
 
         for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
             var address = AudioObjectPropertyAddress(
@@ -943,18 +999,22 @@ final class CoreAudioManager: ObservableObject {
                 continue
             }
             var v = value
-            if AudioObjectSetPropertyData(
+            let status = AudioObjectSetPropertyData(
                 deviceID,
                 &address,
                 0,
                 nil,
                 UInt32(MemoryLayout<Float32>.size),
                 &v
-            ) == noErr {
+            )
+            if status == noErr {
                 didSet = true
                 if element == kAudioObjectPropertyElementMain { break }
+            } else {
+                writeError = status
             }
         }
+        if let writeError { throw AudioError.osStatus(writeError) }
         if !didSet { throw AudioError.volumeNotSettable }
     }
 
@@ -1075,7 +1135,12 @@ final class CoreAudioManager: ObservableObject {
         deviceID: AudioDeviceID,
         muted: Bool
     ) {
-        if isMuted(deviceID: deviceID) == muted { return }
+        try? setMuteChecked(deviceID: deviceID, muted: muted)
+    }
+
+    nonisolated static func setMuteChecked(deviceID: AudioDeviceID, muted: Bool) throws {
+        var didSet = false
+        var writeError: OSStatus?
         for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
             var address = AudioObjectPropertyAddress(
                 mSelector: kAudioDevicePropertyMute,
@@ -1090,7 +1155,15 @@ final class CoreAudioManager: ObservableObject {
                 &settable
             ) == noErr, settable.boolValue else { continue }
             var value: UInt32 = muted ? 1 : 0
-            _ = AudioObjectSetPropertyData(
+            var current: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            if AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &current) == noErr,
+               current == value {
+                didSet = true
+                if element == kAudioObjectPropertyElementMain { break }
+                continue
+            }
+            let status = AudioObjectSetPropertyData(
                 deviceID,
                 &address,
                 0,
@@ -1098,7 +1171,15 @@ final class CoreAudioManager: ObservableObject {
                 UInt32(MemoryLayout<UInt32>.size),
                 &value
             )
+            if status == noErr {
+                didSet = true
+                if element == kAudioObjectPropertyElementMain { break }
+            } else {
+                writeError = status
+            }
         }
+        if let writeError { throw AudioError.osStatus(writeError) }
+        if !didSet { throw AudioError.volumeNotSettable }
     }
 
     nonisolated private static func enumerateOutputDevices() -> [AudioDeviceInfo] {

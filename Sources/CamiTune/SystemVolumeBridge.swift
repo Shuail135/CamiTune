@@ -95,12 +95,9 @@ struct SystemVolumeTransferCurve: Sendable {
     }
 }
 
-/// Thread-safe endpoint for the driver's latest-value volume lane.
-///
-/// SystemAudioBridgeTransport invokes this directly from its PCM consumer
-/// before routing the next audio block. The only synchronous work is an
-/// in-memory curve lookup and a tiny target update in PCMRouter; HAL calls,
-/// MainActor work, disk IO, and CamillaDSP RPC never enter this path.
+/// Thread-safe session state. PCM callbacks use only in-memory targets; HAL
+/// work belongs to the serial control queue. UI notifications retain one latest
+/// snapshot, so a held key cannot build a backlog of MainActor tasks.
 final class SystemVolumeControlSession: @unchecked Sendable {
     struct Snapshot: Sendable {
         let scalar: Float32
@@ -108,95 +105,168 @@ final class SystemVolumeControlSession: @unchecked Sendable {
     }
 
     private let state = NSLock()
+    let mode: SystemVolumeMode
     private let transferCurve: SystemVolumeTransferCurve
     private let onVolume: @MainActor @Sendable (Double) -> Void
     private let onMasterGain: @Sendable (Float, Bool) -> Void
+    private var onPhysicalVolumeTarget: @Sendable (Float32, Bool) -> Void
     private var latestScalar: Float32
     private var latestMute: Bool
+    private var physicalReady: Bool
+    private var handoff = false
+    private var active = true
+    private var uiPending = false
 
     init(
         scalar: Float32,
         muted: Bool,
+        mode: SystemVolumeMode = .softwareOnly,
         transferCurve: SystemVolumeTransferCurve,
         onVolume: @escaping @MainActor @Sendable (Double) -> Void,
-        onMasterGain: @escaping @Sendable (Float, Bool) -> Void
+        onMasterGain: @escaping @Sendable (Float, Bool) -> Void,
+        onPhysicalVolumeTarget: @escaping @Sendable (Float32, Bool) -> Void = { _, _ in }
     ) {
         latestScalar = SystemVolumeTransferCurve.clampScalar(scalar)
         latestMute = muted
+        self.mode = mode
+        physicalReady = mode == .softwareOnly
         self.transferCurve = transferCurve
         self.onVolume = onVolume
         self.onMasterGain = onMasterGain
+        self.onPhysicalVolumeTarget = onPhysicalVolumeTarget
     }
 
-    /// Applies one complete driver snapshot. Repeated snapshots are ignored so
-    /// a busy PCM stream does no extra work between actual media-key changes.
-    func apply(scalar: Float32, muted: Bool) {
-        let clamped = SystemVolumeTransferCurve.clampScalar(scalar)
+    func attach(_ mirror: PhysicalVolumeMirror) {
         state.lock()
-        let changed = latestScalar != clamped || latestMute != muted
-        latestScalar = clamped
-        latestMute = muted
+        onPhysicalVolumeTarget = { [mirror] scalar, muted in
+            mirror.submit(scalar: scalar, muted: muted)
+        }
         state.unlock()
-        guard changed else { return }
+    }
 
-        publish(scalar: clamped, muted: muted)
+    /// Hardware mode uses the virtual HAL listener as its single input source.
+    /// The shared lane may lag a physical-to-virtual write or contain the volume
+    /// half of a volume/mute update; replaying it would undo a hardware button.
+    func applyDriverSnapshot(scalar: Float32, muted: Bool) {
+        guard mode == .softwareOnly else { return }
+        apply(scalar: scalar, muted: muted)
+    }
+
+    func apply(scalar: Float32, muted: Bool) {
+        state.lock()
+        defer { state.unlock() }
+        guard active else { return }
+        let scalar = SystemVolumeTransferCurve.clampScalar(scalar)
+        guard scalar != latestScalar || muted != latestMute else { return }
+        if mode == .hardwareMirrored, latestMute && !muted { physicalReady = false }
+        latestScalar = scalar
+        latestMute = muted
+        publishLocked(mirror: true)
+    }
+
+    func applyFromPhysical(_ target: PhysicalVolumeTarget) {
+        state.lock()
+        defer { state.unlock() }
+        guard active else { return }
+        latestScalar = target.scalar
+        latestMute = target.muted
+        physicalReady = true
+        publishLocked(mirror: false)
+    }
+
+    func physicalTargetApplied(_ target: PhysicalVolumeTarget, succeeded: Bool) {
+        state.lock()
+        defer { state.unlock() }
+        guard active else { return }
+        if !succeeded {
+            physicalReady = false
+        } else if target.matches(PhysicalVolumeTarget(scalar: latestScalar, muted: latestMute)) {
+            physicalReady = true
+        }
+        publishMasterLocked()
     }
 
     func publishCurrent() {
-        let value = snapshot()
-        publish(scalar: value.scalar, muted: value.muted)
+        state.lock()
+        defer { state.unlock() }
+        guard active else { return }
+        publishLocked(mirror: true)
+    }
+
+    func beginOutputHandoff() {
+        state.lock()
+        handoff = true
+        publishMasterLocked()
+        state.unlock()
+    }
+
+    func resumeAfterOutputHandoff() {
+        state.lock()
+        defer { state.unlock() }
+        guard active else { return }
+        handoff = false
+        publishMasterLocked()
+    }
+
+    func invalidate() {
+        state.lock()
+        active = false
+        handoff = true
+        publishMasterLocked()
+        onPhysicalVolumeTarget = { _, _ in }
+        state.unlock()
     }
 
     func snapshot() -> Snapshot {
         state.lock()
-        let value = Snapshot(scalar: latestScalar, muted: latestMute)
-        state.unlock()
-        return value
+        defer { state.unlock() }
+        return Snapshot(scalar: latestScalar, muted: latestMute)
     }
 
-    private func publish(scalar: Float32, muted: Bool) {
-        // Update the writer target first. UI/profile persistence is deliberately
-        // asynchronous and cannot delay the next audio block.
+    private func publishMasterLocked() {
         onMasterGain(
-            transferCurve.physicalLinearGain(for: scalar),
-            muted
+            mode == .hardwareMirrored ? 1 : transferCurve.physicalLinearGain(for: latestScalar),
+            latestMute || handoff || !physicalReady
         )
-        Task { @MainActor [onVolume] in
-            onVolume(Double(scalar))
+    }
+
+    private func publishLocked(mirror: Bool) {
+        // Keep target publication ordered with state changes from other threads.
+        // Neither callback may call back into this session or perform HAL IO.
+        publishMasterLocked()
+        if mirror, mode == .hardwareMirrored {
+            onPhysicalVolumeTarget(latestScalar, latestMute)
         }
+        guard !uiPending else { return }
+        uiPending = true
+        Task { @MainActor [weak self] in
+            guard let self, let scalar = self.takeUIValue() else { return }
+            self.onVolume(Double(scalar))
+        }
+    }
+
+    private func takeUIValue() -> Float32? {
+        state.lock()
+        defer { state.unlock() }
+        uiPending = false
+        return active ? latestScalar : nil
     }
 }
 
-/// Owns the macOS-facing system master while CamiTune is active.
-///
-/// The selected profile endpoint retains normal macOS volume and mute controls,
-/// while the private driver transport deliberately receives full-level PCM.
-/// Media-key state uses the lock-free shared-memory lane when the plug-in owns
-/// the control and a virtual-endpoint listener when Core Audio owns it server
-/// side. PCMRouter smoothly applies the physical endpoint's measured transfer
-/// curve exactly once. No live volume change is forwarded to the active
-/// physical endpoint.
-///
-/// The physical endpoint is normalized once, only after routing has moved away
-/// from it. After CamillaDSP releases the endpoint, the latest scalar and mute
-/// are copied back once so direct playback resumes at the same setting.
+/// The virtual endpoint owns system-volume state. Writable physical outputs
+/// enforce its attenuation; fixed outputs retain the measured software curve.
+/// A shared serial queue orders both directions of HAL synchronization.
 @MainActor
 final class SystemVolumeBridge {
     private weak var coreAudio: CoreAudioManager?
-    private var routingUID: String?
     private var physicalUID: String?
     private var routingID: AudioDeviceID?
-    private var physicalID: AudioDeviceID?
-    private var routingSupportsVolume = false
     private var controlSession: SystemVolumeControlSession?
-    private let routingControlQueue = DispatchQueue(
-        label: "CamiTune virtual volume control",
-        qos: .userInteractive
-    )
-    private var routingControlListener: AudioObjectPropertyListenerBlock?
-
+    private(set) var mode: SystemVolumeMode?
+    private var physicalVolumeMirror: PhysicalVolumeMirror?
+    private let controlQueue = DispatchQueue(label: "CamiTune volume control", qos: .userInitiated)
+    private var listeners: [ControlListener] = []
     private var sessionGeneration: UInt64 = 0
-    private var physicalWasNormalized = false
 
     @discardableResult
     func start(
@@ -204,355 +274,255 @@ final class SystemVolumeBridge {
         physicalUID: String,
         coreAudio: CoreAudioManager,
         onVolume: @escaping @MainActor @Sendable (Double) -> Void,
-        onMasterGain: @escaping @Sendable (Float, Bool) -> Void
-    ) async -> SystemVolumeControlSession? {
+        onMasterGain: @escaping @Sendable (Float, Bool) -> Void,
+        onMirrorFailure: @escaping @MainActor @Sendable () -> Void = {}
+    ) async throws -> SystemVolumeControlSession {
         await stopWithoutBlockingUI()
         sessionGeneration &+= 1
         let generation = sessionGeneration
-
-        self.coreAudio = coreAudio
-        self.routingUID = routingDevice.id
-        self.physicalUID = physicalUID
-        self.routingID = routingDevice.objectID
-        self.physicalID = await coreAudio.resolveDeviceWithoutBlockingUI(
-            uid: physicalUID
-        )?.objectID
-
-        guard let physicalID else { return nil }
-
-        // Before CamiTune takes over, the physical endpoint is authoritative.
-        // Seed the virtual control from it so both activation and later
-        // deactivation preserve the user's visible setting.
-        let volumeSnapshot = await coreAudio.volumeTransferSnapshotWithoutBlockingUI(
-            deviceID: physicalID
+        guard let physical = await coreAudio.resolveDeviceWithoutBlockingUI(uid: physicalUID) else {
+            throw CoreAudioManager.AudioError.deviceNotFound(physicalUID)
+        }
+        let capabilities = await coreAudio.outputVolumeCapabilitiesWithoutBlockingUI(
+            deviceID: physical.objectID
         )
-        let initialVolume = volumeSnapshot.scalar ?? 1
-        let initialMute = await coreAudio.isMutedWithoutBlockingUI(
-            deviceID: physicalID
-        ) ?? false
-        let volumeCurve = volumeSnapshot.decibels
-        guard generation == sessionGeneration else { return nil }
+        let selectedMode: SystemVolumeMode = capabilities.supportsHardwareMirroring
+            ? .hardwareMirrored : .softwareOnly
+        // Hardware mirroring does not need hundreds of transfer-curve HAL reads.
+        let snapshot: PhysicalVolumeTransferSnapshot
+        if selectedMode == .hardwareMirrored {
+            let scalar = await coreAudio.volumeWithoutBlockingUI(deviceID: physical.objectID)
+            guard let scalar, scalar.isFinite else { throw CoreAudioManager.AudioError.volumeNotSettable }
+            snapshot = PhysicalVolumeTransferSnapshot(scalar: scalar, decibels: [])
+        } else {
+            snapshot = await coreAudio.volumeTransferSnapshotWithoutBlockingUI(deviceID: physical.objectID)
+        }
+        let initialMute = await coreAudio.isMutedWithoutBlockingUI(deviceID: physical.objectID) ?? false
+        guard generation == sessionGeneration else { throw CancellationError() }
 
-        routingSupportsVolume = await coreAudio.volumeWithoutBlockingUI(
-            deviceID: routingDevice.objectID
-        ) != nil
-        guard generation == sessionGeneration else { return nil }
+        let initialScalar = snapshot.scalar ?? 1
+        // Seed before installing listeners or starting PCM. Never normalize the
+        // physical endpoint, including on failure or fixed-volume outputs.
+        try await coreAudio.setVolumeWithoutBlockingUI(deviceID: routingDevice.objectID, scalar: initialScalar)
+        await coreAudio.setMutedWithoutBlockingUI(deviceID: routingDevice.objectID, muted: initialMute)
+        guard generation == sessionGeneration else { throw CancellationError() }
 
         let session = SystemVolumeControlSession(
-            scalar: initialVolume,
-            muted: initialMute,
-            transferCurve: SystemVolumeTransferCurve(decibels: volumeCurve),
-            onVolume: onVolume,
-            onMasterGain: onMasterGain
+            scalar: initialScalar, muted: initialMute, mode: selectedMode,
+            transferCurve: SystemVolumeTransferCurve(decibels: snapshot.decibels),
+            onVolume: onVolume, onMasterGain: onMasterGain
         )
+        self.coreAudio = coreAudio
+        self.physicalUID = physicalUID
+        routingID = routingDevice.objectID
         controlSession = session
-
-        if routingSupportsVolume {
-            try? await coreAudio.setVolumeWithoutBlockingUI(
-                deviceID: routingDevice.objectID,
-                scalar: initialVolume
-            )
-            guard generation == sessionGeneration else { return nil }
-            await coreAudio.setMutedWithoutBlockingUI(
-                deviceID: routingDevice.objectID,
-                muted: initialMute
-            )
-            guard generation == sessionGeneration else { return nil }
-
-            // Core Audio can own a plug-in volume as a server-side control. In
-            // that mode its value changes without invoking the driver's setter,
-            // so the shared-memory control lane is only a fast path. Observe
-            // the virtual endpoint as the authoritative fallback; this listener
-            // never reads or writes the active physical device.
-            let controlDeviceID = routingDevice.objectID
-            let listener: AudioObjectPropertyListenerBlock = { [weak session] _, _ in
-                guard let session,
-                      let scalar = Self.routingVolume(deviceID: controlDeviceID) else {
-                    return
+        mode = selectedMode
+        let routingID = routingDevice.objectID
+        let physicalID = physical.objectID
+        let queue = controlQueue
+        let mirror: PhysicalVolumeMirror?
+        if selectedMode == .hardwareMirrored {
+            mirror = PhysicalVolumeMirror(
+                queue: queue, capabilities: capabilities,
+                operations: .init(
+                    read: { CoreAudioManager.volumeTarget(deviceID: physicalID) },
+                    setVolume: { try CoreAudioManager.setVolume(deviceID: physicalID, scalar: $0) },
+                    setMute: { try CoreAudioManager.setMuteChecked(deviceID: physicalID, muted: $0) }
+                ),
+                onApplied: { [weak session] target, succeeded in
+                    session?.physicalTargetApplied(target, succeeded: succeeded)
+                    if !succeeded {
+                        Task { @MainActor [weak self] in
+                            guard self?.sessionGeneration == generation else { return }
+                            onMirrorFailure()
+                        }
+                    }
+                },
+                onPhysicalChange: { [weak session] target in
+                    // Same queue as the virtual listener: it cannot observe a
+                    // half-updated scalar/mute pair or echo this back to hardware.
+                    do {
+                        try CoreAudioManager.setVolume(deviceID: routingID, scalar: target.scalar)
+                        try CoreAudioManager.setMuteChecked(deviceID: routingID, muted: target.muted)
+                        session?.applyFromPhysical(target)
+                    } catch {
+                        session?.physicalTargetApplied(target, succeeded: false)
+                        Task { @MainActor [weak self] in
+                            guard self?.sessionGeneration == generation else { return }
+                            onMirrorFailure()
+                        }
+                    }
                 }
-                let muted = Self.routingMute(deviceID: controlDeviceID)
-                    ?? session.snapshot().muted
-                session.apply(scalar: scalar, muted: muted)
-            }
-            if Self.addRoutingControlListener(
-                deviceID: controlDeviceID,
-                queue: routingControlQueue,
-                listener: listener
-            ) {
-                routingControlListener = listener
+            )
+        } else {
+            mirror = nil
+        }
+        physicalVolumeMirror = mirror
+        if let mirror { session.attach(mirror) }
+        let installed = await withCheckedContinuation { continuation in
+            queue.async {
+                var installed = Self.installListeners(deviceID: routingID, queue: queue) { [weak session] in
+                    guard let value = CoreAudioManager.volumeTarget(deviceID: routingID) else { return }
+                    session?.apply(scalar: value.scalar, muted: value.muted)
+                }
+                if let mirror {
+                    installed += Self.installListeners(deviceID: physicalID, queue: queue) { [weak mirror] in
+                        mirror?.physicalControlChanged()
+                    }
+                }
+                continuation.resume(returning: installed)
             }
         }
-
-        // PCMRouter may not have started its writer yet. Publishing now lets a
-        // newly constructed branch initialize at this exact gain rather than
-        // emitting its first buffer at unity and ramping down afterward.
+        listeners = installed
+        let routingVolumeInstalled = installed.contains(where: {
+            $0.deviceID == routingID && $0.address.mSelector == kAudioDevicePropertyVolumeScalar
+        })
+        let physicalVolumeInstalled = mirror == nil || installed.contains(where: {
+            $0.deviceID == physicalID && $0.address.mSelector == kAudioDevicePropertyVolumeScalar
+        })
+        guard routingVolumeInstalled && physicalVolumeInstalled else {
+            await stopWithoutBlockingUI()
+            throw CoreAudioManager.AudioError.volumeNotSettable
+        }
         session.publishCurrent()
         return session
     }
 
-    /// Called only after macOS has switched the default output to the profile.
-    /// The software target is already installed in PCMRouter before this one
-    /// setup write removes the hidden endpoint's hardware attenuation.
-    func engageProcessingVolume() async {
-        guard let coreAudio,
-              let physicalID,
-              let controlSession else { return }
-        let generation = sessionGeneration
-
-        controlSession.publishCurrent()
-        do {
-            try await coreAudio.setVolumeWithoutBlockingUI(
-                deviceID: physicalID,
-                scalar: 1
-            )
-            guard generation == sessionGeneration else { return }
-            physicalWasNormalized = true
-        } catch {
-            // Fixed-volume endpoints (HDMI and some digital outputs) already
-            // operate at unity, so the software master remains sufficient.
-            physicalWasNormalized = false
+    func prepareForActiveProcessing() async throws {
+        controlSession?.publishCurrent()
+        await physicalVolumeMirror?.flush()
+        if physicalVolumeMirror?.statistics.health == .unavailable {
+            throw CoreAudioManager.AudioError.volumeNotSettable
         }
-        await coreAudio.setMutedWithoutBlockingUI(
-            deviceID: physicalID,
-            muted: false
-        )
     }
 
-    /// Programmatic profile-volume changes use the same virtual control as
-    /// F11/F12. Apply the value locally as well so idle playback need not wait
-    /// for the transport's low-frequency maintenance wake.
+    /// Latch the outgoing PCM fade so a late media-key event cannot unmute it.
+    func silenceForExternalRouteChange() {
+        controlSession?.beginOutputHandoff()
+    }
+
+    func resumeAfterExternalRouteReturn() {
+        controlSession?.resumeAfterOutputHandoff()
+    }
+
+    func beginOutputHandoff() async {
+        controlSession?.beginOutputHandoff()
+        await captureLatestRoutingState()
+        await physicalVolumeMirror?.flush()
+        try? await Task.sleep(for: .milliseconds(12))
+    }
+
     func setVolume(_ scalar: Float32, physicalUID requestedUID: String) async -> Bool {
-        guard requestedUID == physicalUID,
-              routingSupportsVolume,
-              let coreAudio,
-              let routingID,
-              let controlSession else { return false }
+        guard requestedUID == physicalUID, let routingID, let session = controlSession else { return false }
         let clamped = SystemVolumeTransferCurve.clampScalar(scalar)
-        try? await coreAudio.setVolumeWithoutBlockingUI(
-            deviceID: routingID,
-            scalar: clamped
-        )
-        let muted = controlSession.snapshot().muted
-        controlSession.apply(scalar: clamped, muted: muted)
-        return true
+        return await withCheckedContinuation { continuation in
+            controlQueue.async {
+                do {
+                    try CoreAudioManager.setVolume(deviceID: routingID, scalar: clamped)
+                    session.apply(scalar: clamped, muted: session.snapshot().muted)
+                    continuation.resume(returning: true)
+                } catch {
+                    continuation.resume(returning: false)
+                }
+            }
+        }
     }
 
-    /// Restore only after CamillaDSP has released the physical endpoint. The
-    /// virtual listener is detached first, and there are no live physical-volume
-    /// writes to drain.
+    private func captureLatestRoutingState() async {
+        guard let routingID, let session = controlSession else { return }
+        await withCheckedContinuation { continuation in
+            controlQueue.async {
+                if let value = CoreAudioManager.volumeTarget(deviceID: routingID) {
+                    session.apply(scalar: value.scalar, muted: value.muted)
+                }
+                continuation.resume()
+            }
+        }
+    }
+
     func stopWithoutBlockingUI() async {
-        if let routingID, let listener = routingControlListener {
-            routingControlListener = nil
-            let queue = routingControlQueue
-            await Task.detached(priority: .utility) {
-                Self.removeRoutingControlListener(
-                    deviceID: routingID,
-                    queue: queue,
-                    listener: listener
-                )
-            }.value
-        }
-
-        // The transport intentionally coalesces controls to the next audio or
-        // maintenance wake. Take one final virtual-device snapshot so pressing
-        // a key immediately before deactivation cannot restore an older value.
-        if routingSupportsVolume,
-           let coreAudio,
-           let routingID,
-           let controlSession,
-           let scalar = await coreAudio.volumeWithoutBlockingUI(deviceID: routingID) {
-            let muted = await coreAudio.isMutedWithoutBlockingUI(
-                deviceID: routingID
-            ) ?? controlSession.snapshot().muted
-            controlSession.apply(scalar: scalar, muted: muted)
-        }
-        let restore = restorationSnapshot()
+        let listeners = self.listeners
+        let session = controlSession
+        let mirror = physicalVolumeMirror
+        let routingID = self.routingID
+        let queue = controlQueue
         invalidateState()
-
-        guard let restore else { return }
-        if restore.shouldRestoreVolume {
-            try? await restore.coreAudio.setVolumeWithoutBlockingUI(
-                deviceID: restore.physicalID,
-                scalar: restore.scalar
-            )
+        await withCheckedContinuation { continuation in
+            queue.async {
+                Self.finishSession(listeners: listeners, queue: queue, routingID: routingID, session: session, mirror: mirror)
+                continuation.resume()
+            }
         }
-        await restore.coreAudio.setMutedWithoutBlockingUI(
-            deviceID: restore.physicalID,
-            muted: restore.muted
-        )
     }
 
+    /// Application termination needs a synchronous barrier, still using the
+    /// same serial writer so an old HAL operation cannot undo the final state.
     func stop() {
-        if let routingID, let listener = routingControlListener {
-            routingControlListener = nil
-            Self.removeRoutingControlListener(
-                deviceID: routingID,
-                queue: routingControlQueue,
-                listener: listener
-            )
-        }
-        if routingSupportsVolume,
-           let coreAudio,
-           let routingUID,
-           let controlSession,
-           let scalar = coreAudio.volume(uid: routingUID) {
-            let muted = coreAudio.isMuted(uid: routingUID)
-                ?? controlSession.snapshot().muted
-            controlSession.apply(scalar: scalar, muted: muted)
-        }
-        let restore = restorationSnapshot()
+        let listeners = self.listeners
+        let session = controlSession
+        let mirror = physicalVolumeMirror
+        let routingID = self.routingID
+        let queue = controlQueue
         invalidateState()
-
-        guard let restore else { return }
-        if restore.shouldRestoreVolume {
-            try? restore.coreAudio.setVolume(
-                uid: restore.physicalUID,
-                scalar: restore.scalar
-            )
+        queue.sync {
+            Self.finishSession(listeners: listeners, queue: queue, routingID: routingID, session: session, mirror: mirror)
         }
-        restore.coreAudio.setMuted(
-            uid: restore.physicalUID,
-            muted: restore.muted
-        )
     }
 
-    private struct RestorationSnapshot {
-        let coreAudio: CoreAudioManager
-        let physicalUID: String
-        let physicalID: AudioDeviceID
-        let scalar: Float32
-        let muted: Bool
-        let shouldRestoreVolume: Bool
-    }
-
-    private func restorationSnapshot() -> RestorationSnapshot? {
-        guard let coreAudio,
-              let physicalUID,
-              let physicalID,
-              let controlSession else { return nil }
-        let control = controlSession.snapshot()
-        return RestorationSnapshot(
-            coreAudio: coreAudio,
-            physicalUID: physicalUID,
-            physicalID: physicalID,
-            scalar: control.scalar,
-            muted: control.muted,
-            shouldRestoreVolume: physicalWasNormalized
-        )
+    nonisolated private static func finishSession(
+        listeners: [ControlListener], queue: DispatchQueue, routingID: AudioDeviceID?,
+        session: SystemVolumeControlSession?, mirror: PhysicalVolumeMirror?
+    ) {
+        for listener in listeners {
+            var address = listener.address
+            AudioObjectRemovePropertyListenerBlock(listener.deviceID, &address, queue, listener.block)
+        }
+        if let routingID, let value = CoreAudioManager.volumeTarget(deviceID: routingID) {
+            session?.apply(scalar: value.scalar, muted: value.muted)
+        }
+        // Submission is synchronous, so this also drains a last button press
+        // that has not yet reached the driver's maintenance wake.
+        session?.publishCurrent()
+        session?.invalidate()
+        mirror?.stopOnControlQueue()
     }
 
     private func invalidateState() {
         sessionGeneration &+= 1
+        listeners = []
         routingID = nil
-        physicalID = nil
-        routingUID = nil
         physicalUID = nil
-        routingSupportsVolume = false
-        routingControlListener = nil
-        physicalWasNormalized = false
+        mode = nil
         controlSession = nil
+        physicalVolumeMirror = nil
         coreAudio = nil
     }
 
-    nonisolated private static func routingVolume(
-        deviceID: AudioDeviceID
-    ) -> Float32? {
-        var address = volumeAddress
-        var value: Float32 = 1
-        var size = UInt32(MemoryLayout<Float32>.size)
-        guard AudioObjectGetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            &size,
-            &value
-        ) == noErr else { return nil }
-        return SystemVolumeTransferCurve.clampScalar(value)
+    private struct ControlListener: @unchecked Sendable {
+        let deviceID: AudioDeviceID
+        let address: AudioObjectPropertyAddress
+        let block: AudioObjectPropertyListenerBlock
     }
 
-    nonisolated private static func routingMute(
-        deviceID: AudioDeviceID
-    ) -> Bool? {
-        var address = muteAddress
-        var value: UInt32 = 0
-        var size = UInt32(MemoryLayout<UInt32>.size)
-        guard AudioObjectGetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            &size,
-            &value
-        ) == noErr else { return nil }
-        return value != 0
-    }
-
-    nonisolated private static func addRoutingControlListener(
-        deviceID: AudioDeviceID,
-        queue: DispatchQueue,
-        listener: @escaping AudioObjectPropertyListenerBlock
-    ) -> Bool {
-        var volume = volumeAddress
-        guard AudioObjectAddPropertyListenerBlock(
-            deviceID,
-            &volume,
-            queue,
-            listener
-        ) == noErr else { return false }
-
-        var mute = muteAddress
-        guard AudioObjectAddPropertyListenerBlock(
-            deviceID,
-            &mute,
-            queue,
-            listener
-        ) == noErr else {
-            _ = AudioObjectRemovePropertyListenerBlock(
-                deviceID,
-                &volume,
-                queue,
-                listener
-            )
-            return false
+    nonisolated private static func installListeners(
+        deviceID: AudioDeviceID, queue: DispatchQueue,
+        onChange: @escaping @Sendable () -> Void
+    ) -> [ControlListener] {
+        var listeners: [ControlListener] = []
+        let block: AudioObjectPropertyListenerBlock = { _, _ in onChange() }
+        // Master-only devices, per-channel devices, and devices without mute
+        // each keep every listener that successfully installs.
+        for selector in [kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyMute] {
+            for element: AudioObjectPropertyElement in [kAudioObjectPropertyElementMain, 1, 2] {
+                var address = AudioObjectPropertyAddress(
+                    mSelector: selector, mScope: kAudioDevicePropertyScopeOutput, mElement: element
+                )
+                guard AudioObjectHasProperty(deviceID, &address) else { continue }
+                if AudioObjectAddPropertyListenerBlock(deviceID, &address, queue, block) == noErr {
+                    listeners.append(ControlListener(deviceID: deviceID, address: address, block: block))
+                }
+            }
         }
-        return true
-    }
-
-    nonisolated private static func removeRoutingControlListener(
-        deviceID: AudioDeviceID,
-        queue: DispatchQueue,
-        listener: @escaping AudioObjectPropertyListenerBlock
-    ) {
-        var volume = volumeAddress
-        var mute = muteAddress
-        _ = AudioObjectRemovePropertyListenerBlock(
-            deviceID,
-            &volume,
-            queue,
-            listener
-        )
-        _ = AudioObjectRemovePropertyListenerBlock(
-            deviceID,
-            &mute,
-            queue,
-            listener
-        )
-    }
-
-    nonisolated private static var volumeAddress: AudioObjectPropertyAddress {
-        AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyVolumeScalar,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-    }
-
-    nonisolated private static var muteAddress: AudioObjectPropertyAddress {
-        AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyMute,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
+        return listeners
     }
 }

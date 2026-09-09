@@ -1933,14 +1933,23 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         _ settings: PerAppAudioSettings,
         sampleRate: Double
     ) -> Float {
-        guard !settings.equalizerBands.isEmpty else { return 1 }
+        Float(pow(10, automaticSystemHeadroomDB(settings, sampleRate: sampleRate) / 20))
+    }
+
+    /// Shared by the audio path and the application EQ readout. Application
+    /// volume and mute do not affect the headroom reserved for EQ boosts.
+    static func automaticSystemHeadroomDB(
+        _ settings: PerAppAudioSettings,
+        sampleRate: Double
+    ) -> Double {
+        guard !settings.eqBypassed, !settings.equalizerBands.isEmpty else { return 0 }
         let response = EQResponseCalculator().calculate(
             parsed: ParsedEQ(bands: settings.equalizerBands),
             sampleRate: sampleRate,
             count: 600
         )
         let boost = max(0, response.map(\.gainDB).max() ?? 0)
-        return Float(pow(10, -boost / 20))
+        return boost > 0 ? -boost : 0
     }
 
     private func schedulePersistence(_ settings: [String: PerAppAudioSettings]) {

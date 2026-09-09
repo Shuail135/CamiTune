@@ -45,6 +45,14 @@ struct ProfileRoutingAndDeviceView: View {
                         }
                     }
                     Divider()
+                    if profileIsActive, state.activeVolumeMode == .softwareOnly {
+                        Label(
+                            "This output uses software volume. Apps playing directly to it bypass CamiTune’s volume control.",
+                            systemImage: "info.circle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
                     Text("Automatic activation").font(.headline)
                     Picker("How this profile starts", selection: automaticActivationBinding) {
                         Text("Physical output — when \(profile.outputDeviceName) is selected")

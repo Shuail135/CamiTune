@@ -123,6 +123,9 @@ struct PerAppAudioView: View {
                 PerApplicationEQControls(
                     applicationID: application.id,
                     settings: application.settings,
+                    sampleRate: Double(state.profiles.profiles.first {
+                        $0.id == state.activeProfileID
+                    }?.sampleRate ?? 48_000),
                     controller: controller
                 )
                 .equatable()
@@ -167,19 +170,33 @@ private struct PerApplicationIdentityHeader: View, Equatable {
 private struct PerApplicationEQControls: View, Equatable {
     let applicationID: String
     let settings: PerAppAudioSettings
+    let sampleRate: Double
     let controller: PerAppAudioController
     @StateObject private var inactiveSpectrum = SpectrumAnalyzer()
     @State private var editorProfileID = UUID()
     @State private var bands: [EQBand]
     @State private var gainIsEditing = false
+    @State private var automaticSystemHeadroomDB = 0.0
+
+    private struct HeadroomInput: Hashable {
+        let bands: [EQBand]
+        let enabled: Bool
+        let sampleRate: Double
+    }
+
+    private var headroomInput: HeadroomInput {
+        HeadroomInput(bands: bands, enabled: eqEnabled, sampleRate: sampleRate)
+    }
 
     init(
         applicationID: String,
         settings: PerAppAudioSettings,
+        sampleRate: Double,
         controller: PerAppAudioController
     ) {
         self.applicationID = applicationID
         self.settings = settings
+        self.sampleRate = sampleRate
         self.controller = controller
         _bands = State(initialValue: settings.equalizerBands.isEmpty
             ? EQDefaults.bands
@@ -188,6 +205,7 @@ private struct PerApplicationEQControls: View, Equatable {
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.applicationID == rhs.applicationID
+            && lhs.sampleRate == rhs.sampleRate
             && lhs.settings.eqBypassed == rhs.settings.eqBypassed
             && lhs.settings.equalizerBands == rhs.settings.equalizerBands
     }
@@ -218,6 +236,10 @@ private struct PerApplicationEQControls: View, Equatable {
                     )
                 )
             }
+
+            Text("Automatic system headroom: \(automaticSystemHeadroomDB, format: .number.precision(.fractionLength(2))) dB")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             if eqEnabled {
                 HStack(spacing: 8) {
@@ -273,6 +295,26 @@ private struct PerApplicationEQControls: View, Equatable {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+        .task(id: headroomInput) {
+            let input = headroomInput
+            guard input.enabled else {
+                automaticSystemHeadroomDB = 0
+                return
+            }
+            do {
+                try await Task.sleep(for: .milliseconds(120))
+            } catch {
+                return
+            }
+            let headroom = await Task.detached(priority: .utility) {
+                PerAppAudioController.automaticSystemHeadroomDB(
+                    PerAppAudioSettings(eqBypassed: false, equalizerBands: input.bands),
+                    sampleRate: input.sampleRate
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            automaticSystemHeadroomDB = headroom
         }
         .onChange(of: bands) { updated in
             guard updated != settings.equalizerBands else { return }
