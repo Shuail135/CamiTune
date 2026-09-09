@@ -11,8 +11,9 @@ struct PhysicalVolumeTransferSnapshot: Sendable {
 
 @MainActor
 final class CoreAudioManager: ObservableObject {
-    // Driver 0.7.9 publishes media-key state through the lock-free SABR lane.
-    static let minimumPresentationDriverVersion = "0.7.9"
+    // Driver 0.7.10 releases transport authorization on disconnect, allowing
+    // a new CamiTune process to reconnect to the long-lived driver service.
+    static let minimumPresentationDriverVersion = "0.7.10"
 
     @Published private(set) var outputDevices: [AudioDeviceInfo] = []
     @Published private(set) var defaultOutputUID: String?
@@ -721,36 +722,58 @@ final class CoreAudioManager: ObservableObject {
     }
 
     func setDefaultOutputAndWait(uid: String) async throws {
-        guard let device = await resolveDeviceWithoutBlockingUI(uid: uid) else {
+        let fallbackName = cachedDevice(uid: uid)?.name ?? uid
+        var lastError: Error = AudioError.deviceNotFound(uid)
+
+        // Publishing or hiding driver endpoints can rebuild HAL's object graph.
+        // Resolve the target UID afresh for every attempt so a cached AudioDeviceID
+        // cannot make an otherwise valid restore fail intermittently.
+        for attempt in 0..<3 {
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    guard let device = Self.deviceInfo(forUID: uid) else {
+                        throw AudioError.deviceNotFound(uid)
+                    }
+                    var id = AudioDeviceID(device.objectID)
+                    var address = AudioObjectPropertyAddress(
+                        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                        mScope: kAudioObjectPropertyScopeGlobal,
+                        mElement: kAudioObjectPropertyElementMain
+                    )
+                    let status = AudioObjectSetPropertyData(
+                        AudioObjectID(kAudioObjectSystemObject),
+                        &address,
+                        0,
+                        nil,
+                        UInt32(MemoryLayout<AudioDeviceID>.size),
+                        &id
+                    )
+                    guard status == noErr else { throw AudioError.osStatus(status) }
+                    for confirmationAttempt in 0..<40 {
+                        let current = Self.defaultOutputDevice().flatMap(Self.deviceUID)
+                        if current == uid { return }
+                        guard confirmationAttempt < 39 else {
+                            throw AudioError.defaultOutputDidNotApply(device.name)
+                        }
+                        try await Task.sleep(for: .milliseconds(25))
+                    }
+                }.value
+                if defaultOutputUID != uid { defaultOutputUID = uid }
+                return
+            } catch {
+                lastError = error
+                guard attempt < 2 else { break }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+
+        if case AudioError.deviceNotFound = lastError {
             throw AudioError.deviceNotFound(uid)
         }
-        let deviceName = device.name
-        try await Task.detached(priority: .userInitiated) {
-            var id = AudioDeviceID(device.objectID)
-            var address = AudioObjectPropertyAddress(
-                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            let status = AudioObjectSetPropertyData(
-                AudioObjectID(kAudioObjectSystemObject),
-                &address,
-                0,
-                nil,
-                UInt32(MemoryLayout<AudioDeviceID>.size),
-                &id
-            )
-            guard status == noErr else { throw AudioError.osStatus(status) }
-            for attempt in 0..<40 {
-                let current = Self.defaultOutputDevice().flatMap(Self.deviceUID)
-                if current == uid { return }
-                guard attempt < 39 else {
-                    throw AudioError.defaultOutputDidNotApply(deviceName)
-                }
-                try await Task.sleep(for: .milliseconds(25))
-            }
-        }.value
-        if defaultOutputUID != uid { defaultOutputUID = uid }
+        if case AudioError.defaultOutputDidNotApply = lastError {
+            throw AudioError.defaultOutputDidNotApply(fallbackName)
+        }
+        throw lastError
     }
 
     func setVolume(uid: String, scalar: Float32) throws {

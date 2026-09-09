@@ -6,7 +6,7 @@ import Foundation
 struct PerAppAudioSettings: Codable, Hashable, Sendable {
     var volume: Double = 1
     var isMuted = false
-    var eqBypassed = false
+    var eqBypassed = true
     var equalizerBands: [EQBand] = []
 }
 
@@ -144,6 +144,31 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         var isAccessoryApplication: Bool
     }
 
+    /// An audible packet is authoritative even when the driver's independently
+    /// published client registry is late or briefly empty. Retain the resolved
+    /// owner beside the exact DSP key so both publication and later packets keep
+    /// using the same application control during that gap.
+    private struct ObservedAudioSource {
+        var transportKey: PerAppTransportClientKey
+        var processID: Int32
+        var applicationID: String
+        var identity: ApplicationIdentity?
+    }
+
+    private struct ResolvedApplicationOwner {
+        var bundleID: String?
+        var bundleURL: URL?
+        var displayName: String
+        var processID: Int32
+        var activationPolicy: NSApplication.ActivationPolicy?
+
+        var stableID: String {
+            if let bundleID, !bundleID.isEmpty { return bundleID }
+            if let bundleURL { return "app:\(bundleURL.standardizedFileURL.path)" }
+            return "pid:\(processID)"
+        }
+    }
+
     private static let applicationActivityFloor = pow(10.0, -72.0 / 20.0)
     private static let meterDecayTime: TimeInterval = 0.8
     private static let publishInterval: TimeInterval = 0.1
@@ -154,6 +179,13 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     private static let pendingMixHoldbackPackets = 2
     private static let timelineRestartRewindMultiplier = 4
     private static let timelineDiscontinuityMultiplier = 8
+    private static let identityRetryDelays: [TimeInterval] = [0, 0.1, 0.25, 0.5, 1, 2]
+
+    private static func identityDebug(_ message: @autoclosure () -> String) {
+#if DEBUG
+        print("[PerAppIdentity] \(message())")
+#endif
+    }
 
     // Keep UI/control state separate from real-time-ish DSP runtime state.
     // MainActor code may take `stateLock`, but it must never wait on `audioLock`.
@@ -202,6 +234,12 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     private var settingsByApplication: [String: PerAppAudioSettings]
     private var settingsRevisionByApplication: [String: UInt64] = [:]
     private var knownAudioApplicationIDs: Set<String>
+    /// Runtime truth that PCM crossed the activity floor. These IDs may be
+    /// temporary and are therefore never written to the history file.
+    private var observedAudioIDs: Set<String> = []
+    private var observedAudioSourcesByKey: [
+        PerAppTransportClientKey: ObservedAudioSource
+    ] = [:]
     // Presentation levels are copied out of the audio runtime after processing so
     // SwiftUI publishing never needs to acquire `audioLock`.
     private var presentationLevelsByApplication: [String: Double] = [:]
@@ -225,6 +263,9 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     private var pendingPersistence: DispatchWorkItem?
     private var pendingHistoryPersistence: DispatchWorkItem?
     private var pendingRunningApplicationRefresh: DispatchWorkItem?
+    private var identityRetryWorkItem: DispatchWorkItem?
+    private var identityRetryExhaustedClientKeys: Set<PerAppTransportClientKey> = []
+    private var pendingThrottledPublication: DispatchWorkItem?
     // Accessed only on `publicationQueue`. Keeping these off `stateLock` means
     // the MainActor publication callback can never wait for controller state.
     private var pendingApplicationSnapshot: [PerAppAudioApplication]?
@@ -259,6 +300,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         pendingPersistence?.cancel()
         pendingHistoryPersistence?.cancel()
         pendingRunningApplicationRefresh?.cancel()
+        identityRetryWorkItem?.cancel()
+        pendingThrottledPublication?.cancel()
         let notificationCenter = NSWorkspace.shared.notificationCenter
         for observer in workspaceObservers {
             notificationCenter.removeObserver(observer)
@@ -303,12 +346,26 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             return
         }
         clientsByKey = nextClients
+        identitiesByClientKey = identitiesByClientKey.filter { key, identity in
+            nextClients[key]?.processID == identity.processID
+        }
         uniqueClientKeyByProcessID = uniquePIDKeys
         uniqueClientKeyByClientID = uniqueClientIDKeys
         applicationKeyByProcessID = applicationKeysByPID
         identityResolutionRevision &+= 1
         let revision = identityResolutionRevision
+        identityRetryWorkItem?.cancel()
+        identityRetryWorkItem = nil
+        identityRetryExhaustedClientKeys.removeAll()
         stateLock.unlock()
+
+        for client in nextClients.values {
+            Self.identityDebug(
+                "client device=\(client.deviceObjectID) client=\(client.clientID) "
+                    + "pid=\(client.processID) bundle=\(client.bundleID ?? "nil") "
+                    + "active=\(client.isActive) generation=\(client.generation)"
+            )
+        }
 
         let activeClientKeys = Set(nextClients.keys)
         audioMaintenanceQueue.async { [weak self] in
@@ -321,97 +378,209 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             self.audioLock.unlock()
         }
 
-        // Looking up NSRunningApplication, nested bundles, and application
-        // metadata can trigger Launch Services disk work. Never do that on the
-        // transport reader that is responsible for keeping audio flowing.
-        identityQueue.async {
-            let resolvedIdentities = Dictionary(
-                uniqueKeysWithValues: clients.compactMap { client in
-                    Self.resolveApplicationIdentity(for: client).map {
-                        (client.transportKey, $0)
+        scheduleIdentityResolution(
+            clients: Array(nextClients.values),
+            revision: revision,
+            attempt: 0
+        )
+    }
+
+    private func scheduleIdentityResolution(
+        clients: [PerAppDriverClient],
+        revision: UInt64,
+        attempt: Int
+    ) {
+        guard attempt < Self.identityRetryDelays.count else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let resolvedPairs: [(PerAppTransportClientKey, ApplicationIdentity)] =
+                clients.compactMap { client -> (PerAppTransportClientKey, ApplicationIdentity)? in
+                    guard let identity = Self.resolveApplicationIdentity(for: client) else {
+                        Self.identityDebug(
+                            "UNRESOLVED device=\(client.deviceObjectID) "
+                                + "client=\(client.clientID) pid=\(client.processID) "
+                                + "bundle=\(client.bundleID ?? "nil")"
+                        )
+                        return nil
                     }
+                    Self.identityDebug(
+                        "resolved pid=\(client.processID) -> id=\(identity.id) "
+                            + "name=\(identity.displayName) "
+                            + "url=\(identity.bundleURL?.path ?? "nil")"
+                    )
+                    return (client.transportKey, identity)
                 }
-            )
+            let resolved = Dictionary(uniqueKeysWithValues: resolvedPairs)
+            let unresolvedActiveKeys = Set(clients.compactMap { client -> PerAppTransportClientKey? in
+                guard client.isActive,
+                      Self.isIdentityResolutionCandidate(client) else { return nil }
+                guard let identity = resolved[client.transportKey],
+                      !Self.isEphemeralApplicationID(identity.id) else {
+                    return client.transportKey
+                }
+                return nil
+            })
+
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.stateLock.lock()
-                guard self.identityResolutionRevision == revision else {
-                    self.stateLock.unlock()
-                    return
+                let retry = self.applyResolvedIdentities(
+                    resolved,
+                    clients: clients,
+                    unresolvedActiveKeys: unresolvedActiveKeys,
+                    revision: revision,
+                    attempt: attempt
+                )
+                if retry {
+                    self.scheduleIdentityResolution(
+                        clients: clients,
+                        revision: revision,
+                        attempt: attempt + 1
+                    )
                 }
-                self.identitiesByClientKey = resolvedIdentities
-                var settingsChanged = false
-                var audioHistoryChanged = false
-                var runtimeMigrations: [(from: String, to: String)] = []
-                for client in clients {
-                    guard let identity = resolvedIdentities[client.transportKey] else { continue }
-                    let temporaryID = client.applicationKey
-                    guard identity.id != temporaryID else { continue }
-                    if self.settingsByApplication[identity.id] == nil,
-                       let legacy = self.settingsByApplication[temporaryID] {
-                        self.settingsByApplication[identity.id] = legacy
-                        self.settingsRevisionByApplication[identity.id] =
-                            self.settingsRevisionByApplication[temporaryID] ?? 0
-                        settingsChanged = true
+            }
+        }
+
+        stateLock.lock()
+        guard identityResolutionRevision == revision else {
+            stateLock.unlock()
+            return
+        }
+        identityRetryWorkItem?.cancel()
+        identityRetryWorkItem = work
+        stateLock.unlock()
+        identityQueue.asyncAfter(
+            deadline: .now() + Self.identityRetryDelays[attempt],
+            execute: work
+        )
+    }
+
+    private func applyResolvedIdentities(
+        _ resolved: [PerAppTransportClientKey: ApplicationIdentity],
+        clients: [PerAppDriverClient],
+        unresolvedActiveKeys: Set<PerAppTransportClientKey>,
+        revision: UInt64,
+        attempt: Int
+    ) -> Bool {
+        stateLock.lock()
+        guard identityResolutionRevision == revision else {
+            stateLock.unlock()
+            return false
+        }
+        identitiesByClientKey = resolved
+        let hasAnotherRetry = !unresolvedActiveKeys.isEmpty
+            && attempt + 1 < Self.identityRetryDelays.count
+        identityRetryExhaustedClientKeys = hasAnotherRetry ? [] : unresolvedActiveKeys
+        if !hasAnotherRetry { identityRetryWorkItem = nil }
+
+        var settingsChanged = false
+        var audioHistoryChanged = false
+        var runtimeMigrations: [(from: String, to: String)] = []
+        for client in clients {
+            guard let identity = resolved[client.transportKey] else { continue }
+            if var source = observedAudioSourcesByKey[client.transportKey],
+               source.processID <= 0 || source.processID == client.processID {
+                source.processID = identity.processID
+                source.applicationID = identity.id
+                source.identity = identity
+                observedAudioSourcesByKey[client.transportKey] = source
+            }
+            let temporaryIDs = Set([
+                client.applicationKey,
+                "pid:\(client.processID)",
+                "client:\(client.deviceObjectID):\(client.clientID)"
+            ]).filter { $0 != identity.id }
+
+            for temporaryID in temporaryIDs {
+                if let temporarySettings = settingsByApplication.removeValue(forKey: temporaryID) {
+                    if settingsByApplication[identity.id] == nil {
+                        settingsByApplication[identity.id] = temporarySettings
                     }
-                    if let temporaryLevel = self.presentationLevelsByApplication.removeValue(
+                    let temporaryRevision = settingsRevisionByApplication.removeValue(
                         forKey: temporaryID
+                    ) ?? 0
+                    settingsRevisionByApplication[identity.id] = max(
+                        settingsRevisionByApplication[identity.id] ?? 0,
+                        temporaryRevision
+                    )
+                    settingsChanged = true
+                }
+                if let temporaryLevel = presentationLevelsByApplication.removeValue(
+                    forKey: temporaryID
+                ) {
+                    presentationLevelsByApplication[identity.id] = max(
+                        presentationLevelsByApplication[identity.id] ?? 0,
+                        temporaryLevel
+                    )
+                }
+                if observedAudioIDs.remove(temporaryID) != nil {
+                    observedAudioIDs.insert(identity.id)
+                }
+                if knownAudioApplicationIDs.remove(temporaryID) != nil {
+                    if Self.isPersistentApplicationID(identity.id) {
+                        knownAudioApplicationIDs.insert(identity.id)
+                    }
+                    audioHistoryChanged = true
+                }
+                runtimeMigrations.append((temporaryID, identity.id))
+            }
+        }
+        let savedSettings = settingsByApplication
+        let savedAudioHistory = knownAudioApplicationIDs
+        stateLock.unlock()
+
+        if settingsChanged { schedulePersistence(savedSettings) }
+        if audioHistoryChanged { scheduleAudioHistoryPersistence(savedAudioHistory) }
+        if !runtimeMigrations.isEmpty {
+            audioMaintenanceQueue.async { [weak self] in
+                guard let self else { return }
+                self.audioLock.lock()
+                for migration in runtimeMigrations {
+                    if let temporaryLevel = self.levelsByApplication.removeValue(
+                        forKey: migration.from
                     ) {
-                        self.presentationLevelsByApplication[identity.id] = max(
-                            self.presentationLevelsByApplication[identity.id] ?? 0,
+                        self.levelsByApplication[migration.to] = max(
+                            self.levelsByApplication[migration.to] ?? 0,
                             temporaryLevel
                         )
                     }
-                    runtimeMigrations.append((temporaryID, identity.id))
-                    if self.knownAudioApplicationIDs.remove(temporaryID) != nil {
-                        self.knownAudioApplicationIDs.insert(identity.id)
-                        audioHistoryChanged = true
+                    Self.moveLatestDate(
+                        from: migration.from,
+                        to: migration.to,
+                        in: &self.lastAudibleDateByApplication
+                    )
+                    Self.moveLatestDate(
+                        from: migration.from,
+                        to: migration.to,
+                        in: &self.lastPacketDateByApplication
+                    )
+                    Self.moveLatestDate(
+                        from: migration.from,
+                        to: migration.to,
+                        in: &self.lastMeterUpdateByApplication
+                    )
+                }
+                self.audioLock.unlock()
+
+                self.headroomLock.lock()
+                for migration in runtimeMigrations {
+                    self.headroomScalars = self.headroomScalars.filter {
+                        $0.key.applicationID != migration.from
                     }
+                    self.pendingHeadroomKeys = Set(self.pendingHeadroomKeys.filter {
+                        $0.applicationID != migration.from
+                    })
                 }
-                let savedSettings = self.settingsByApplication
-                let savedAudioHistory = self.knownAudioApplicationIDs
-                self.stateLock.unlock()
-                if settingsChanged {
-                    self.schedulePersistence(savedSettings)
-                }
-                if audioHistoryChanged {
-                    self.scheduleAudioHistoryPersistence(savedAudioHistory)
-                }
-                if !runtimeMigrations.isEmpty {
-                    self.audioMaintenanceQueue.async { [weak self] in
-                        guard let self else { return }
-                        self.audioLock.lock()
-                        for migration in runtimeMigrations {
-                            if let temporaryLevel = self.levelsByApplication.removeValue(
-                                forKey: migration.from
-                            ) {
-                                self.levelsByApplication[migration.to] = max(
-                                    self.levelsByApplication[migration.to] ?? 0,
-                                    temporaryLevel
-                                )
-                            }
-                            Self.moveLatestDate(
-                                from: migration.from,
-                                to: migration.to,
-                                in: &self.lastAudibleDateByApplication
-                            )
-                            Self.moveLatestDate(
-                                from: migration.from,
-                                to: migration.to,
-                                in: &self.lastPacketDateByApplication
-                            )
-                            Self.moveLatestDate(
-                                from: migration.from,
-                                to: migration.to,
-                                in: &self.lastMeterUpdateByApplication
-                            )
-                        }
-                        self.audioLock.unlock()
-                    }
-                }
-                self.publishApplications(force: true)
+                self.headroomLock.unlock()
             }
         }
+        publishApplications(force: true)
+        return hasAnotherRetry
+    }
+
+    private static func isIdentityResolutionCandidate(_ client: PerAppDriverClient) -> Bool {
+        client.processID > 0
+            && client.processID != Int32(ProcessInfo.processInfo.processIdentifier)
+            && !isSystemAudioService(bundleID: client.bundleID)
     }
 
     func settings(for applicationID: String) -> PerAppAudioSettings {
@@ -423,7 +592,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     func hasProducedAudio(for applicationID: String) -> Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
-        return knownAudioApplicationIDs.contains(applicationID)
+        return observedAudioIDs.contains(applicationID)
+            || knownAudioApplicationIDs.contains(applicationID)
     }
 
     func setVolume(
@@ -557,21 +727,30 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         let packetIdentity = packet.processID > 0
             ? workspaceIdentitiesByProcessID[packet.processID]
             : nil
+        let dspClientKey = resolvedClientKey ?? packet.transportKey
+        let observedSourceCandidate = observedAudioSourcesByKey[dspClientKey]
+            ?? observedAudioSourcesByKey[packet.transportKey]
+        let currentProcessID = packet.processID > 0
+            ? packet.processID
+            : (client?.processID ?? 0)
+        let observedSource = observedSourceCandidate.flatMap { source in
+            currentProcessID <= 0 || source.processID <= 0
+                || source.processID == currentProcessID ? source : nil
+        }
         let identity = resolvedClientKey.flatMap { identitiesByClientKey[$0] }
             ?? packetIdentity
-        let dspClientKey = resolvedClientKey ?? packet.transportKey
+            ?? observedSource?.identity
         let packetApplicationKey = packet.processID > 0
             ? applicationKeyByProcessID[packet.processID]
             : nil
         let applicationID = identity?.id
+            ?? observedSource?.applicationID
             ?? client?.applicationKey
             ?? packetApplicationKey
             ?? (packet.processID > 0 ? "pid:\(packet.processID)" : nil)
             ?? "client:\(packet.deviceObjectID):\(packet.clientID)"
         let settings = settingsByApplication[applicationID] ?? PerAppAudioSettings()
         let settingsRevision = settingsRevisionByApplication[applicationID] ?? 0
-        let canPersistAudioHistory = identity?.bundleID?.isEmpty == false
-            || client?.bundleID?.isEmpty == false
         stateLock.unlock()
 
         let rawPeak = processed.reduce(0.0) { max($0, Double(abs($1))) }
@@ -653,10 +832,25 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         var audioHistoryToPersist: Set<String>?
         stateLock.lock()
         presentationLevelsByApplication[applicationID] = presentationLevel
-        if rawPeak >= Self.applicationActivityFloor,
-           canPersistAudioHistory,
-           knownAudioApplicationIDs.insert(applicationID).inserted {
-            audioHistoryToPersist = knownAudioApplicationIDs
+        if rawPeak >= Self.applicationActivityFloor {
+            observedAudioIDs.insert(applicationID)
+            let existingSource = observedAudioSourcesByKey[dspClientKey]
+            let sourceIdentity = identity
+                ?? (existingSource?.applicationID == applicationID
+                    ? existingSource?.identity
+                    : nil)
+            observedAudioSourcesByKey[dspClientKey] = ObservedAudioSource(
+                transportKey: dspClientKey,
+                processID: packet.processID > 0
+                    ? packet.processID
+                    : (client?.processID ?? existingSource?.processID ?? 0),
+                applicationID: applicationID,
+                identity: sourceIdentity
+            )
+            if Self.isPersistentApplicationID(applicationID),
+               knownAudioApplicationIDs.insert(applicationID).inserted {
+                audioHistoryToPersist = knownAudioApplicationIDs
+            }
         }
         stateLock.unlock()
         if let audioHistoryToPersist {
@@ -737,6 +931,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         headroomLock.unlock()
         stateLock.lock()
         presentationLevelsByApplication.removeAll()
+        observedAudioSourcesByKey.removeAll()
         stateLock.unlock()
         publishApplications(force: true)
     }
@@ -1107,37 +1302,94 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             return
         }
         if !force && now.timeIntervalSince(lastPublishDate) < Self.publishInterval {
+            scheduleTrailingPublicationLocked(
+                after: Self.publishInterval - now.timeIntervalSince(lastPublishDate)
+            )
             stateLock.unlock()
             return
+        }
+        if force {
+            pendingThrottledPublication?.cancel()
+            pendingThrottledPublication = nil
         }
         lastPublishDate = now
         let clients = Array(clientsByKey.values)
         let identities = identitiesByClientKey
+        let workspaceIdentities = workspaceIdentitiesByProcessID
         let runningApplications = runningApplicationsByID
         let settings = settingsByApplication
         let levels = presentationLevelsByApplication
         let knownAudioApplications = knownAudioApplicationIDs
+        let observedAudioApplications = observedAudioIDs
+        let observedAudioSources = Array(observedAudioSourcesByKey.values)
+        let exhaustedClientKeys = identityRetryExhaustedClientKeys
         stateLock.unlock()
 
-        var visibleIdentities = runningApplications.filter { _, identity in
-            let hasProducedAudio = knownAudioApplications.contains(identity.id)
-            return Self.shouldPresentApplication(
-                isDockApplication: identity.isDockApplication,
-                isAccessoryApplication: identity.isAccessoryApplication,
-                hasProducedAudio: hasProducedAudio
-            )
-                && (!Self.isKnownNonAudioSystemApplication(bundleID: identity.bundleID)
-                    || hasProducedAudio)
-        }
+        var visibleIdentities: [String: ApplicationIdentity] = [:]
+
+        // Core Audio clients are authoritative. Workspace metadata only fills
+        // ownership gaps; activation policy never vetoes observed audio.
         for client in clients where client.isActive {
-            guard let identity = identities[client.transportKey] else { continue }
-            let hasProducedAudio = knownAudioApplications.contains(identity.id)
-            guard identity.isDockApplication || hasProducedAudio else { continue }
-            guard !Self.isKnownNonAudioSystemApplication(bundleID: identity.bundleID)
-                    || hasProducedAudio else { continue }
-            if visibleIdentities[identity.id] == nil {
-                visibleIdentities[identity.id] = identity
+            guard let identity = identities[client.transportKey]
+                    ?? workspaceIdentities[client.processID] else { continue }
+            let hasAudioEvidence = observedAudioApplications.contains(identity.id)
+                || knownAudioApplications.contains(identity.id)
+            guard hasAudioEvidence else { continue }
+            guard !Self.isSystemAudioService(
+                bundleID: identity.bundleID,
+                displayName: identity.displayName
+            ) else { continue }
+            if Self.isEphemeralApplicationID(identity.id) {
+                guard exhaustedClientKeys.contains(client.transportKey),
+                      identity.displayName != "Application" else { continue }
             }
+            visibleIdentities[identity.id] = Self.preferredIdentity(
+                visibleIdentities[identity.id],
+                identity
+            )
+        }
+
+        // PCM packets and registry updates travel through independent channels.
+        // Do not make a real audio source disappear (or lose its control ID)
+        // merely because the registry snapshot arrived late or was transiently
+        // empty. The retained owner was resolved off the packet's exact DSP key.
+        for source in observedAudioSources {
+            guard let identity = identities[source.transportKey]
+                    ?? workspaceIdentities[source.processID]
+                    ?? source.identity
+                    ?? runningApplications[source.applicationID] else { continue }
+            guard observedAudioApplications.contains(source.applicationID)
+                    || observedAudioApplications.contains(identity.id)
+                    || knownAudioApplications.contains(source.applicationID)
+                    || knownAudioApplications.contains(identity.id) else { continue }
+            guard !Self.isSystemAudioService(
+                bundleID: identity.bundleID,
+                displayName: identity.displayName
+            ) else { continue }
+            if Self.isEphemeralApplicationID(identity.id) {
+                guard exhaustedClientKeys.contains(source.transportKey),
+                      identity.displayName != "Application" else { continue }
+            }
+            visibleIdentities[identity.id] = Self.preferredIdentity(
+                visibleIdentities[identity.id],
+                identity
+            )
+        }
+
+        // Keep an audio-proven running owner stable across short-lived helper
+        // restarts without reintroducing an idle Workspace application roster.
+        for (applicationID, identity) in runningApplications {
+            guard observedAudioApplications.contains(applicationID)
+                    || knownAudioApplications.contains(applicationID) else { continue }
+            guard !Self.isEphemeralApplicationID(applicationID),
+                  !Self.isSystemAudioService(
+                    bundleID: identity.bundleID,
+                    displayName: identity.displayName
+                  ) else { continue }
+            visibleIdentities[applicationID] = Self.preferredIdentity(
+                visibleIdentities[applicationID],
+                identity
+            )
         }
 
         let snapshot = visibleIdentities.map { applicationID, identity in
@@ -1147,6 +1399,9 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                 bundleURL: identity.bundleURL,
                 processID: identity.processID,
                 displayName: identity.displayName,
+                // Every published row is already backed by audio evidence.
+                // Keep it available across brief client-registry gaps so its
+                // meter and controls do not disappear from the UI.
                 isActive: true,
                 level: levels[applicationID] ?? 0,
                 settings: settings[applicationID] ?? PerAppAudioSettings()
@@ -1158,6 +1413,25 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }
 
         enqueueApplicationSnapshot(snapshot)
+    }
+
+    /// Coalesce packet-rate meter changes, but never discard the final value in
+    /// a burst. Without this trailing publication, a short sound arriving just
+    /// after another UI update could remain invisible indefinitely.
+    private func scheduleTrailingPublicationLocked(after delay: TimeInterval) {
+        guard pendingThrottledPublication == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.stateLock.lock()
+            self.pendingThrottledPublication = nil
+            self.stateLock.unlock()
+            self.publishApplications(force: true)
+        }
+        pendingThrottledPublication = work
+        publicationQueue.asyncAfter(
+            deadline: .now() + max(0, delay),
+            execute: work
+        )
     }
 
     private func enqueueApplicationSnapshot(_ snapshot: [PerAppAudioApplication]) {
@@ -1276,59 +1550,85 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     private static func resolveApplicationIdentity(
         for client: PerAppDriverClient
     ) -> ApplicationIdentity? {
-        guard client.processID > 0,
-              client.processID != Int32(ProcessInfo.processInfo.processIdentifier) else {
+        guard let owner = resolveOwningApplication(
+            processID: client.processID,
+            reportedBundleID: client.bundleID
+        ) else { return nil }
+        return makeApplicationIdentity(from: owner)
+    }
+
+    private static func resolveOwningApplication(
+        processID: Int32,
+        reportedBundleID: String?
+    ) -> ResolvedApplicationOwner? {
+        guard processID > 0,
+              processID != Int32(ProcessInfo.processInfo.processIdentifier),
+              !isSystemAudioService(bundleID: reportedBundleID) else {
             return nil
         }
-        guard !isSystemAudioService(bundleID: client.bundleID) else { return nil }
 
-        let processExists = Darwin.kill(client.processID, 0) == 0 || errno == EPERM
+        let processExists = Darwin.kill(processID, 0) == 0 || errno == EPERM
         let running = processExists
-            ? NSRunningApplication(processIdentifier: client.processID)
+            ? NSRunningApplication(processIdentifier: processID)
             : nil
         guard running?.isTerminated != true else { return nil }
 
-        let reportedBundleID = running?.bundleIdentifier ?? client.bundleID
-        let canonicalBundleID = canonicalApplicationBundleID(reportedBundleID)
-        let outerBundleURL = outermostApplicationURL(from: running?.bundleURL)
-            ?? ((canonicalBundleID != reportedBundleID) ? canonicalBundleID.flatMap {
-                NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)
-            } : nil)
-
-        let applicationBundle = outerBundleURL.flatMap(Bundle.init(url:))
-        let bundleID = applicationBundle?.bundleIdentifier
-            ?? canonicalBundleID
-            ?? reportedBundleID
-        let ownURL = Bundle.main.bundleURL.standardizedFileURL
-        let ownBundleID = Bundle.main.bundleIdentifier
-        if outerBundleURL?.standardizedFileURL == ownURL
-            || (bundleID != nil && bundleID == ownBundleID) {
-            return nil
+        let processBundleURL = running?.bundleURL
+        let outerBundleURL = outermostApplicationURL(from: processBundleURL)
+        let rawBundleID = running?.bundleIdentifier ?? reportedBundleID
+        let canonicalBundleID = canonicalApplicationBundleID(rawBundleID)
+        var ownerURL = outerBundleURL
+        if ownerURL == nil,
+           let canonicalBundleID,
+           canonicalBundleID != rawBundleID {
+            ownerURL = NSWorkspace.shared.urlForApplication(
+                withBundleIdentifier: canonicalBundleID
+            )
         }
-        guard outerBundleURL != nil || bundleID?.isEmpty == false else { return nil }
 
-        let displayName = (applicationBundle?.object(
+        let ownerBundle = ownerURL.flatMap(Bundle.init(url:))
+        let ownerBundleID = ownerBundle?.bundleIdentifier
+            ?? canonicalBundleID
+            ?? rawBundleID
+        let displayName = (ownerBundle?.object(
             forInfoDictionaryKey: "CFBundleDisplayName"
         ) as? String)
-            ?? (applicationBundle?.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? (ownerBundle?.object(forInfoDictionaryKey: "CFBundleName") as? String)
             ?? running?.localizedName
-            ?? bundleID?.split(separator: ".").last.map(String.init)
+            ?? ownerBundleID?.split(separator: ".").last.map(String.init)
             ?? "Application"
+
         guard !isSystemAudioService(
-            bundleID: bundleID,
+            bundleID: ownerBundleID,
             displayName: displayName
         ) else { return nil }
-        let id = bundleID
-            ?? outerBundleURL.map { "app:\($0.standardizedFileURL.path)" }
-            ?? "pid:\(client.processID)"
-        return ApplicationIdentity(
-            id: id,
-            bundleID: bundleID,
-            bundleURL: outerBundleURL,
-            processID: client.processID,
+
+        return ResolvedApplicationOwner(
+            bundleID: ownerBundleID,
+            bundleURL: ownerURL,
             displayName: displayName,
-            isDockApplication: running?.activationPolicy == .regular,
-            isAccessoryApplication: running?.activationPolicy == .accessory
+            processID: processID,
+            activationPolicy: running?.activationPolicy
+        )
+    }
+
+    private static func makeApplicationIdentity(
+        from owner: ResolvedApplicationOwner
+    ) -> ApplicationIdentity? {
+        let ownURL = Bundle.main.bundleURL.standardizedFileURL
+        let ownBundleID = Bundle.main.bundleIdentifier
+        if owner.bundleURL?.standardizedFileURL == ownURL
+            || (owner.bundleID != nil && owner.bundleID == ownBundleID) {
+            return nil
+        }
+        return ApplicationIdentity(
+            id: owner.stableID,
+            bundleID: owner.bundleID,
+            bundleURL: owner.bundleURL,
+            processID: owner.processID,
+            displayName: owner.displayName,
+            isDockApplication: owner.activationPolicy == .regular,
+            isAccessoryApplication: owner.activationPolicy == .accessory
         )
     }
 
@@ -1380,106 +1680,27 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     private static func resolveAudioProcessIdentity(
         _ running: NSRunningApplication
     ) -> ApplicationIdentity? {
-        guard running.processIdentifier > 0,
-              running.processIdentifier != ProcessInfo.processInfo.processIdentifier,
-              running.isTerminated == false else {
-            return nil
-        }
-
-        let reportedBundleID = running.bundleIdentifier
-        guard !isSystemAudioService(
-            bundleID: reportedBundleID,
-            displayName: running.localizedName
-        ) else { return nil }
-
-        let canonicalBundleID = canonicalApplicationBundleID(reportedBundleID)
-        let outerBundleURL = outermostApplicationURL(from: running.bundleURL)
-            ?? ((canonicalBundleID != reportedBundleID) ? canonicalBundleID.flatMap {
-                NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)
-            } : nil)
-        let applicationBundle = outerBundleURL.flatMap(Bundle.init(url:))
-        let bundleID = applicationBundle?.bundleIdentifier
-            ?? canonicalBundleID
-            ?? reportedBundleID
-        let ownURL = Bundle.main.bundleURL.standardizedFileURL
-        let ownBundleID = Bundle.main.bundleIdentifier
-        if outerBundleURL?.standardizedFileURL == ownURL
-            || (bundleID != nil && bundleID == ownBundleID) {
-            return nil
-        }
-        guard outerBundleURL != nil || bundleID?.isEmpty == false else { return nil }
-
-        let displayName = (applicationBundle?.object(
-            forInfoDictionaryKey: "CFBundleDisplayName"
-        ) as? String)
-            ?? (applicationBundle?.object(forInfoDictionaryKey: "CFBundleName") as? String)
-            ?? running.localizedName
-            ?? bundleID?.split(separator: ".").last.map(String.init)
-            ?? "Application"
-        guard !isSystemAudioService(
-            bundleID: bundleID,
-            displayName: displayName
-        ) else { return nil }
-
-        let id = bundleID
-            ?? outerBundleURL.map { "app:\($0.standardizedFileURL.path)" }
-            ?? "pid:\(running.processIdentifier)"
-        return ApplicationIdentity(
-            id: id,
-            bundleID: bundleID,
-            bundleURL: outerBundleURL,
-            processID: running.processIdentifier,
-            displayName: displayName,
-            isDockApplication: running.activationPolicy == .regular,
-            isAccessoryApplication: running.activationPolicy == .accessory
-        )
+        guard !running.isTerminated,
+              let owner = resolveOwningApplication(
+                processID: running.processIdentifier,
+                reportedBundleID: running.bundleIdentifier
+              ) else { return nil }
+        return makeApplicationIdentity(from: owner)
     }
 
     private static func resolveRunningApplicationIdentity(
         _ running: NSRunningApplication
     ) -> ApplicationIdentity? {
-        guard running.processIdentifier > 0,
-              running.processIdentifier != ProcessInfo.processInfo.processIdentifier,
-              running.isTerminated == false,
+        guard running.isTerminated == false,
               running.activationPolicy == .regular
                 || running.activationPolicy == .accessory else {
             return nil
         }
-
-        let reportedBundleID = running.bundleIdentifier
-        guard !isSystemAudioService(
-            bundleID: reportedBundleID,
-            displayName: running.localizedName
-        ) else { return nil }
-        let canonicalBundleID = canonicalApplicationBundleID(reportedBundleID)
-        let outerBundleURL = outermostApplicationURL(from: running.bundleURL)
-        let applicationBundle = outerBundleURL.flatMap(Bundle.init(url:))
-        let bundleID = applicationBundle?.bundleIdentifier
-            ?? canonicalBundleID
-            ?? reportedBundleID
-        let displayName = (applicationBundle?.object(
-            forInfoDictionaryKey: "CFBundleDisplayName"
-        ) as? String)
-            ?? (applicationBundle?.object(forInfoDictionaryKey: "CFBundleName") as? String)
-            ?? running.localizedName
-            ?? bundleID?.split(separator: ".").last.map(String.init)
-            ?? "Application"
-        guard !isSystemAudioService(
-            bundleID: bundleID,
-            displayName: displayName
-        ) else { return nil }
-        let id = bundleID
-            ?? outerBundleURL.map { "app:\($0.standardizedFileURL.path)" }
-            ?? "pid:\(running.processIdentifier)"
-        return ApplicationIdentity(
-            id: id,
-            bundleID: bundleID,
-            bundleURL: outerBundleURL,
+        guard let owner = resolveOwningApplication(
             processID: running.processIdentifier,
-            displayName: displayName,
-            isDockApplication: running.activationPolicy == .regular,
-            isAccessoryApplication: running.activationPolicy == .accessory
-        )
+            reportedBundleID: running.bundleIdentifier
+        ) else { return nil }
+        return makeApplicationIdentity(from: owner)
     }
 
     /// Core Audio hosts third-party AudioServerPlugIns in its own service
@@ -1515,10 +1736,11 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }), helperIndex > 0 else {
             return bundleID
         }
-        return components[..<helperIndex].joined(separator: ".")
+        let owner = components[..<helperIndex].joined(separator: ".")
+        return owner.isEmpty ? bundleID : owner
     }
 
-    private static func outermostApplicationURL(from bundleURL: URL?) -> URL? {
+    static func outermostApplicationURL(from bundleURL: URL?) -> URL? {
         guard var candidate = bundleURL?.standardizedFileURL else { return nil }
         var outermost: URL?
         while candidate.path != "/" {
@@ -1530,13 +1752,46 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         return outermost
     }
 
+    static func isNestedApplicationProcess(
+        processBundleURL: URL?,
+        ownerBundleURL: URL?
+    ) -> Bool {
+        guard let processBundleURL = processBundleURL?.standardizedFileURL,
+              let ownerBundleURL = ownerBundleURL?.standardizedFileURL else {
+            return false
+        }
+        return processBundleURL != ownerBundleURL
+            && processBundleURL.path.hasPrefix(ownerBundleURL.path + "/")
+    }
+
+    private static func preferredIdentity(
+        _ current: ApplicationIdentity?,
+        _ candidate: ApplicationIdentity
+    ) -> ApplicationIdentity {
+        guard let current else { return candidate }
+        if current.bundleURL == nil, candidate.bundleURL != nil { return candidate }
+        if !current.isDockApplication, candidate.isDockApplication { return candidate }
+        if current.displayName == "Application", candidate.displayName != "Application" {
+            return candidate
+        }
+        return current.processID <= candidate.processID ? current : candidate
+    }
+
+    static func isEphemeralApplicationID(_ id: String) -> Bool {
+        id.hasPrefix("pid:") || id.hasPrefix("client:")
+    }
+
+    static func isPersistentApplicationID(_ id: String) -> Bool {
+        !isEphemeralApplicationID(id)
+    }
+
     private static func loadSettings(from url: URL) -> [String: PerAppAudioSettings] {
         guard let data = try? Data(contentsOf: url),
               let settings = try? JSONDecoder().decode(
                 [String: PerAppAudioSettings].self,
                 from: data
               ) else { return [:] }
-        return settings
+        return settings.filter { isPersistentApplicationID($0.key) }
     }
 
     private static func loadAudioHistory(from url: URL) -> Set<String> {
@@ -1544,7 +1799,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
               let identifiers = try? JSONDecoder().decode([String].self, from: data) else {
             return []
         }
-        return Set(identifiers)
+        return Set(identifiers.filter(isPersistentApplicationID))
     }
 
     private func headroomScalarForIngest(
@@ -1714,7 +1969,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         _ settings: [String: PerAppAudioSettings],
         to settingsURL: URL
     ) {
-        guard let data = try? JSONEncoder().encode(settings) else { return }
+        let persistentSettings = settings.filter { isPersistentApplicationID($0.key) }
+        guard let data = try? JSONEncoder().encode(persistentSettings) else { return }
         try? FileManager.default.createDirectory(
             at: settingsURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -1726,7 +1982,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         _ identifiers: Set<String>,
         to historyURL: URL
     ) {
-        guard let data = try? JSONEncoder().encode(identifiers.sorted()) else { return }
+        let persistentIdentifiers = identifiers.filter(isPersistentApplicationID)
+        guard let data = try? JSONEncoder().encode(persistentIdentifiers.sorted()) else { return }
         try? FileManager.default.createDirectory(
             at: historyURL.deletingLastPathComponent(),
             withIntermediateDirectories: true

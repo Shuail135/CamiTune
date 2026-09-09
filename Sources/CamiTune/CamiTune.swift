@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Darwin
+import CoreImage
 
 @main
 struct CamiTuneMain: App {
@@ -63,12 +64,58 @@ private enum AppIcon {
     }()
 
     static let activeMenuBarImage: NSImage = {
-        menuBarImage(template: false)
+        menuBarImage(grayscale: false)
     }()
 
     static let inactiveMenuBarImage: NSImage = {
-        menuBarImage(template: true)
+        menuBarImage(grayscale: true)
     }()
+
+    private static func menuBarImage(grayscale: Bool) -> NSImage {
+        let size = NSSize(width: 18, height: 18)
+
+        let result = NSImage(size: size)
+        result.lockFocus()
+
+        image.draw(
+            in: NSRect(origin: .zero, size: size),
+            from: NSRect(origin: .zero, size: image.size),
+            operation: .sourceOver,
+            fraction: 1
+        )
+
+        result.unlockFocus()
+
+        guard grayscale,
+              let tiff = result.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let ciImage = CIImage(bitmapImageRep: bitmap),
+              let filter = CIFilter(name: "CIColorControls")
+        else {
+            result.isTemplate = false
+            return result
+        }
+
+        filter.setValue(ciImage, forKey: kCIInputImageKey)
+        filter.setValue(0.0, forKey: kCIInputSaturationKey)
+
+        guard let output = filter.outputImage else {
+            return result
+        }
+
+        let context = CIContext()
+        guard let cgImage = context.createCGImage(output, from: output.extent) else {
+            return result
+        }
+
+        let grayImage = NSImage(
+            cgImage: cgImage,
+            size: size
+        )
+
+        grayImage.isTemplate = false
+        return grayImage
+    }
 
     private static func menuBarImage(template: Bool) -> NSImage {
         let size = NSSize(width: 18, height: 18)

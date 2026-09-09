@@ -603,6 +603,21 @@ OSStatus sabr_driver_transport_connect_property_list(
 
 void sabr_driver_transport_disconnect(void) {
     sabr_replace_transport(NULL);
+
+    /*
+     * The driver service outlives the client application. A normal disconnect
+     * therefore has to retire both halves of the session: keeping the owner
+     * PID/token here makes the next app launch look like an attempted session
+     * hijack until coreaudiod itself is restarted.
+     *
+     * Production callers reach this function only after the disconnect
+     * property list has passed sabr_authorize_session(). Tests also use it as
+     * the driver-side teardown primitive.
+     */
+    pthread_mutex_lock(&gSessionMutex);
+    gSessionOwnerProcessID = 0;
+    gSessionToken = 0;
+    pthread_mutex_unlock(&gSessionMutex);
 }
 
 void sabr_driver_transport_add_client(

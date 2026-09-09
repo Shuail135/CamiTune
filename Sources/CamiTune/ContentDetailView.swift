@@ -14,7 +14,7 @@ struct ContentDetailView: View {
         } else if selection == "default-profiles" {
             DefaultProfilesView(state: state)
         } else if selection == "applications" {
-            PerAppAudioView(controller: state.perAppAudio)
+            PerAppAudioView(state: state)
         } else if let id = UUID(uuidString: selection),
                   let index = profileStore.profiles.firstIndex(where: { $0.id == id }) {
             ProfileEditorView(

@@ -70,6 +70,26 @@ final class AppState: NSObject, ObservableObject {
     private var suppressedAutoUID: String?
     private var automaticActivationRetry: AutomaticActivationRetryState?
     private var transitionInProgress = false
+    private struct PendingDeactivation {
+        var manual: Bool
+        var restoreOutput: Bool
+        var invalidateLiveApplies: Bool
+
+        mutating func merge(
+            manual: Bool,
+            restoreOutput: Bool,
+            invalidateLiveApplies: Bool
+        ) {
+            self.manual = self.manual || manual
+            self.restoreOutput = self.restoreOutput || restoreOutput
+            self.invalidateLiveApplies = self.invalidateLiveApplies || invalidateLiveApplies
+        }
+    }
+    private var pendingDeactivation: PendingDeactivation?
+    /// Lets compound stop/restart operations observe an explicit user stop that
+    /// arrived while their intermediate teardown was suspended.
+    private var manualDeactivationRevision: UInt64 = 0
+    private var activatingProfileID: UUID?
     private var activeSampleRate: Int?
     private var activeRoutingUID: String?
     /// The physical device actually owned by the running engine. Persisted
@@ -615,7 +635,11 @@ final class AppState: NSObject, ObservableObject {
               profile.isEnabled != enabled else { return }
 
         profiles.setProfileEnabled(profileID: id, enabled: enabled)
-        if !enabled, activeProfileID == id {
+        // activeProfileID is published only after activation completes. Track
+        // the profile currently acquiring the route so disabling it during
+        // startup queues a stop instead of letting a disabled profile go live.
+        let runtimeProfileID = activatingProfileID ?? activeProfileID
+        if !enabled, runtimeProfileID == id {
             await deactivate(manual: false)
         } else {
             // Move away from a disabled profile endpoint before removing it;
@@ -623,12 +647,21 @@ final class AppState: NSObject, ObservableObject {
             if !enabled,
                coreAudio.defaultOutputUID.flatMap(ProfileRoutingDescriptor.profileID(from:)) == id,
                coreAudio.cachedDevice(uid: profile.outputDeviceUID) != nil {
-                try? await coreAudio.setDefaultOutputAndWait(uid: profile.outputDeviceUID)
+                do {
+                    try await coreAudio.setDefaultOutputAndWait(uid: profile.outputDeviceUID)
+                } catch {
+                    errorMessage = "The profile was disabled, but macOS could not switch back to \(profile.outputDeviceName): \(error.localizedDescription)"
+                    return
+                }
             }
-            _ = try? await coreAudio.synchronizeProfileRoutingDevicesWithoutBlockingUI(
-                profiles: profiles.profiles,
-                activeProfileID: activeProfileID
-            )
+            do {
+                try await coreAudio.synchronizeProfileRoutingDevicesWithoutBlockingUI(
+                    profiles: profiles.profiles,
+                    activeProfileID: activeProfileID
+                )
+            } catch {
+                errorMessage = "The profile was disabled, but its macOS audio device could not be removed: \(error.localizedDescription)"
+            }
         }
         if enabled { await monitorRouting() }
     }
@@ -701,7 +734,9 @@ final class AppState: NSObject, ObservableObject {
         suppressedAutoUID = nil
 
         if requiresRestart {
+            let manualDeactivationRevision = self.manualDeactivationRevision
             await deactivate(manual: false)
+            guard manualDeactivationRevision == self.manualDeactivationRevision else { return }
             guard let persisted = profiles.profiles.first(where: { $0.id == profileID }) else {
                 return
             }
@@ -726,7 +761,11 @@ final class AppState: NSObject, ObservableObject {
     ) async {
         guard !transitionInProgress else { return }
         transitionInProgress = true
-        defer { transitionInProgress = false }
+        activatingProfileID = profile.id
+        defer {
+            activatingProfileID = nil
+            finishAudioTransition()
+        }
         if let startupConfigurationTask {
             startupConfigurationTask.cancel()
             await startupConfigurationTask.value
@@ -996,7 +1035,9 @@ final class AppState: NSObject, ObservableObject {
                 errorMessage = problem
                 return
             }
+            let manualDeactivationRevision = self.manualDeactivationRevision
             await deactivate(manual: false, invalidateLiveApplies: false)
+            guard manualDeactivationRevision == self.manualDeactivationRevision else { return }
             await activate(profile: profile)
             return
         }
@@ -1022,13 +1063,21 @@ final class AppState: NSObject, ObservableObject {
         restoreOutput: Bool = true,
         invalidateLiveApplies: Bool = true
     ) async {
-        guard !transitionInProgress else { return }
+        if manual { manualDeactivationRevision &+= 1 }
+        guard !transitionInProgress else {
+            enqueueDeactivation(
+                manual: manual,
+                restoreOutput: restoreOutput,
+                invalidateLiveApplies: invalidateLiveApplies
+            )
+            return
+        }
         if invalidateLiveApplies {
             latestApplyRequest &+= 1
             pendingLiveApply = nil
         }
         transitionInProgress = true
-        defer { transitionInProgress = false }
+        defer { finishAudioTransition() }
 
         let targetUID = activePhysicalOutputUID ?? activeProfileID.flatMap { id in
             profiles.profiles.first(where: { $0.id == id })?.outputDeviceUID
@@ -1036,11 +1085,18 @@ final class AppState: NSObject, ObservableObject {
 
         await stopProcessingPipeline()
 
+        var outputRestoreError: Error?
         if restoreOutput {
             let restore = previousDefaultUID.flatMap {
                 coreAudio.cachedDevice(uid: $0) != nil ? $0 : nil
             } ?? targetUID
-            if let restore { try? await coreAudio.setDefaultOutputAndWait(uid: restore) }
+            if let restore {
+                do {
+                    try await coreAudio.setDefaultOutputAndWait(uid: restore)
+                } catch {
+                    outputRestoreError = error
+                }
+            }
         }
 
         try? await coreAudio.setSystemAudioBridgePresentationWithoutBlockingUI(
@@ -1058,11 +1114,54 @@ final class AppState: NSObject, ObservableObject {
             suppressedAutoUID = targetUID
             automaticActivationRetry = nil
         }
-        _ = try? await coreAudio.synchronizeProfileRoutingDevicesWithoutBlockingUI(
-            profiles: profiles.profiles,
-            activeProfileID: nil
-        )
+        var routingCleanupError: Error?
+        do {
+            try await coreAudio.synchronizeProfileRoutingDevicesWithoutBlockingUI(
+                profiles: profiles.profiles,
+                activeProfileID: nil
+            )
+        } catch {
+            routingCleanupError = error
+        }
+        if let outputRestoreError {
+            errorMessage = "EQ stopped, but macOS could not switch back to the physical output: \(outputRestoreError.localizedDescription)"
+        } else if let routingCleanupError {
+            errorMessage = "EQ stopped, but its macOS audio device could not be updated: \(routingCleanupError.localizedDescription)"
+        }
         notifications.deactivated()
+    }
+
+    private func enqueueDeactivation(
+        manual: Bool,
+        restoreOutput: Bool,
+        invalidateLiveApplies: Bool
+    ) {
+        if pendingDeactivation != nil {
+            pendingDeactivation?.merge(
+                manual: manual,
+                restoreOutput: restoreOutput,
+                invalidateLiveApplies: invalidateLiveApplies
+            )
+        } else {
+            pendingDeactivation = PendingDeactivation(
+                manual: manual,
+                restoreOutput: restoreOutput,
+                invalidateLiveApplies: invalidateLiveApplies
+            )
+        }
+    }
+
+    private func finishAudioTransition() {
+        transitionInProgress = false
+        guard let pendingDeactivation else { return }
+        self.pendingDeactivation = nil
+        Task { @MainActor [weak self] in
+            await self?.deactivate(
+                manual: pendingDeactivation.manual,
+                restoreOutput: pendingDeactivation.restoreOutput,
+                invalidateLiveApplies: pendingDeactivation.invalidateLiveApplies
+            )
+        }
     }
 
     private func stopProcessingPipeline() async {
@@ -1102,7 +1201,9 @@ final class AppState: NSObject, ObservableObject {
                activeProfile.outputDeviceUID != activePhysicalOutputUID {
                 do {
                     let updated = try applyingSessionEQDrafts(to: activeProfile)
+                    let manualDeactivationRevision = self.manualDeactivationRevision
                     await deactivate(manual: false)
+                    guard manualDeactivationRevision == self.manualDeactivationRevision else { return }
                     await activate(profile: updated)
                 } catch {
                     errorMessage = error.localizedDescription

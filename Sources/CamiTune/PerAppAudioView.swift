@@ -2,7 +2,13 @@ import AppKit
 import SwiftUI
 
 struct PerAppAudioView: View {
+    @ObservedObject var state: AppState
     @ObservedObject var controller: PerAppAudioController
+
+    init(state: AppState) {
+        self.state = state
+        controller = state.perAppAudio
+    }
 
     private var activeApplications: [PerAppAudioApplication] {
         controller.applications.filter(\.isActive)
@@ -15,14 +21,18 @@ struct PerAppAudioView: View {
                 Text("Each application is processed and mixed independently before the active profile's global DSP.")
                     .foregroundStyle(.secondary)
 
+                if !state.isActive {
+                    inactiveRouteNotice
+                }
+
                 if activeApplications.isEmpty {
                     GroupBox {
                         VStack(spacing: 10) {
                             Image(systemName: "speaker.slash")
                                 .font(.largeTitle)
-                            Text("No eligible applications are running")
+                            Text("No application audio detected")
                                 .font(.headline)
-                            Text("Open a Dock app, or play audio once from a menu-bar app.")
+                            Text("Play audio in an application to add it here.")
                                 .font(.caption)
                         }
                         .foregroundStyle(.secondary)
@@ -31,6 +41,7 @@ struct PerAppAudioView: View {
                 } else {
                     ForEach(activeApplications) { application in
                         applicationCard(application)
+                            .disabled(!state.isActive)
                     }
                 }
             }
@@ -42,6 +53,29 @@ struct PerAppAudioView: View {
         }
         .onDisappear {
             controller.setMeterPresentationActive(false, source: "main")
+        }
+    }
+
+    private var selectedProfile: DeviceProfile? {
+        guard let profileID = state.profiles.selectedProfileID else { return nil }
+        return state.profiles.profiles.first { $0.id == profileID }
+    }
+
+    private var inactiveRouteNotice: some View {
+        GroupBox {
+            HStack(spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Activate a profile to control application audio")
+                        .font(.headline)
+                    Text("Per-app sensing, volume, and EQ operate on the active CamiTune audio route.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(6)
         }
     }
 
@@ -120,9 +154,11 @@ private struct PerApplicationIdentityHeader: View, Equatable {
             .frame(width: 36, height: 36)
         VStack(alignment: .leading, spacing: 2) {
             Text(application.displayName).font(.title3.bold())
-            Text(application.bundleID ?? "PID \(application.processID)")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            if let bundleID = application.bundleID {
+                Text(bundleID)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
         Spacer()
     }
@@ -132,11 +168,32 @@ private struct PerApplicationEQControls: View, Equatable {
     let applicationID: String
     let settings: PerAppAudioSettings
     let controller: PerAppAudioController
+    @StateObject private var inactiveSpectrum = SpectrumAnalyzer()
+    @State private var editorProfileID = UUID()
+    @State private var bands: [EQBand]
+    @State private var gainIsEditing = false
+
+    init(
+        applicationID: String,
+        settings: PerAppAudioSettings,
+        controller: PerAppAudioController
+    ) {
+        self.applicationID = applicationID
+        self.settings = settings
+        self.controller = controller
+        _bands = State(initialValue: settings.equalizerBands.isEmpty
+            ? EQDefaults.bands
+            : settings.equalizerBands)
+    }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.applicationID == rhs.applicationID
             && lhs.settings.eqBypassed == rhs.settings.eqBypassed
             && lhs.settings.equalizerBands == rhs.settings.equalizerBands
+    }
+
+    private var eqEnabled: Bool {
+        !settings.eqBypassed && !settings.equalizerBands.isEmpty
     }
 
     var body: some View {
@@ -145,97 +202,86 @@ private struct PerApplicationEQControls: View, Equatable {
                 Text("Per-application EQ").font(.headline)
                 Spacer()
                 Toggle(
-                    "Bypass EQ",
+                    "Enable EQ",
                     isOn: Binding(
-                        get: { settings.eqBypassed },
-                        set: { controller.setEQBypassed($0, for: applicationID) }
+                        get: { eqEnabled },
+                        set: { enabled in
+                            if enabled && settings.equalizerBands.isEmpty {
+                                bands = EQDefaults.bands
+                                controller.setEqualizerBands(
+                                    bands,
+                                    for: applicationID
+                                )
+                            }
+                            controller.setEQBypassed(!enabled, for: applicationID)
+                        }
                     )
                 )
-                Button("Reset EQ") {
-                    controller.setEqualizerBands([], for: applicationID)
-                }
-                .disabled(settings.equalizerBands.isEmpty)
             }
 
-            HStack(spacing: 18) {
-                PerApplicationSimpleEQSlider(
-                    applicationID: applicationID,
-                    settings: settings,
-                    controller: controller,
-                    control: .bass,
-                    title: "Bass"
-                )
-                PerApplicationSimpleEQSlider(
-                    applicationID: applicationID,
-                    settings: settings,
-                    controller: controller,
-                    control: .mids,
-                    title: "Mids"
-                )
-                PerApplicationSimpleEQSlider(
-                    applicationID: applicationID,
-                    settings: settings,
-                    controller: controller,
-                    control: .treble,
-                    title: "Treble"
-                )
-            }
-            .disabled(settings.eqBypassed)
-        }
-    }
-}
-
-private struct PerApplicationSimpleEQSlider: View {
-    let applicationID: String
-    let settings: PerAppAudioSettings
-    let controller: PerAppAudioController
-    let control: SimpleEQRange
-    let title: String
-    @State private var interactionValue: Double?
-
-    private var sourceBands: [EQBand] {
-        settings.equalizerBands.isEmpty ? EQDefaults.bands : settings.equalizerBands
-    }
-
-    private var displayedValue: Double {
-        interactionValue ?? SimpleEQControl.value(for: control, in: sourceBands) ?? 0
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(displayedValue, format: .number.precision(.fractionLength(1)))
-                    .monospacedDigit()
-                Text("dB").foregroundStyle(.secondary)
-            }
-            Slider(
-                value: Binding(
-                    get: { displayedValue },
-                    set: { newValue in
-                        interactionValue = newValue
-                        controller.setEqualizerBands(
-                            SimpleEQControl.setting(newValue, for: control, in: sourceBands),
-                            for: applicationID,
-                            interactionFinished: false
-                        )
+            if eqEnabled {
+                HStack(spacing: 8) {
+                    Text("Bands")
+                    Picker("Bands", selection: Binding(
+                        get: { bands.count },
+                        set: { count in
+                            bands = EQEditorSupport.resizedBands(bands, count: count)
+                        }
+                    )) {
+                        ForEach(1...20, id: \.self) { count in
+                            Text("\(count)").tag(count)
+                        }
                     }
-                ),
-                in: -12...12,
-                step: 0.5,
-                onEditingChanged: { editing in
-                    guard !editing, let finalValue = interactionValue else { return }
-                    controller.setEqualizerBands(
-                        SimpleEQControl.setting(finalValue, for: control, in: sourceBands),
-                        for: applicationID,
-                        interactionFinished: true
-                    )
-                    DispatchQueue.main.async { interactionValue = nil }
+                    .labelsHidden()
+                    .frame(width: 64)
+
+                    Spacer()
+                    Button("Reset Bands") { bands = EQDefaults.bands }
                 }
+
+                let columnWidth = 96.0
+                let contentWidth = GraphicEqualizerBands.requiredContentWidth(
+                    bandCount: bands.count,
+                    columnWidth: columnWidth
+                )
+                OverflowAwareHorizontalScrollView(
+                    contentWidth: contentWidth,
+                    height: 402
+                ) {
+                    GraphicEqualizerBands(
+                        bands: $bands,
+                        spectrum: inactiveSpectrum,
+                        profileID: editorProfileID,
+                        responsePoints: [],
+                        setKind: EQEditorSupport.setKind,
+                        columnWidth: columnWidth,
+                        showsSpectrumLevels: false,
+                        onGainEditingChanged: { editing in
+                            gainIsEditing = editing
+                            if !editing {
+                                controller.setEqualizerBands(
+                                    bands,
+                                    for: applicationID,
+                                    interactionFinished: true
+                                )
+                            }
+                        }
+                    )
+                }
+            } else {
+                Text("Enable EQ to edit this application's frequency bands.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onChange(of: bands) { updated in
+            guard updated != settings.equalizerBands else { return }
+            controller.setEqualizerBands(
+                updated,
+                for: applicationID,
+                interactionFinished: !gainIsEditing
             )
         }
-        .frame(maxWidth: .infinity)
     }
 }
 
@@ -327,10 +373,6 @@ enum PerAppIconCache {
         let resolved: NSImage
         if let bundleURL = application.bundleURL {
             resolved = NSWorkspace.shared.icon(forFile: bundleURL.path)
-        } else if let running = NSRunningApplication(
-            processIdentifier: application.processID
-        ), let icon = running.icon {
-            resolved = icon
         } else if let bundleID = application.bundleID,
                   let url = NSWorkspace.shared.urlForApplication(
                     withBundleIdentifier: bundleID
