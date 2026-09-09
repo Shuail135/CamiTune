@@ -16,15 +16,28 @@ concurrency:
 
 jobs:
   build:
-    name: Build application
-    runs-on: [self-hosted, macos]
+    name: Build application (macOS 13 compatible)
+
+    # GitHub-hosted macOS 13 runners were retired in December 2025.
+    # Build on a supported Apple-silicon runner and explicitly target Ventura.
+    runs-on: macos-15
+
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Show Xcode version
-        run: xcodebuild -version
+      - name: Select Xcode 16.4
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          echo "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
+          echo "Rust deployment target: $(rustc --print=deployment-target)"
 
       - name: Restore audio component cache
         uses: actions/cache@v5
@@ -34,7 +47,9 @@ jobs:
             build/camilladsp/build-key
             build/driver/CamillaAudio.driver
             build/driver/build-key
-          key: audio-components-${{ runner.os }}-${{ runner.arch }}-camilladsp-05e9cfcdf43c0dfe078ed3feb8af4c8bd701fd74-${{ hashFiles('Contributions/CamillaDSP/*.patch', 'Drivers/SystemAudioBridge/Driver/**', 'Drivers/SystemAudioBridge/Shared/**', 'Drivers/SystemAudioBridge/build-driver.sh') }}
+          # Include the Ventura deployment target/Xcode version so binaries
+          # previously built on a newer macOS runner can never be reused.
+          key: audio-components-${{ runner.os }}-${{ runner.arch }}-macos13-xcode16.4-${{ hashFiles('Contributions/CamillaDSP/*.patch', 'Drivers/SystemAudioBridge/Driver/**', 'Drivers/SystemAudioBridge/Shared/**', 'Drivers/SystemAudioBridge/build-driver.sh', 'Scripts/embed-audio-components.sh') }}
 
       - name: Validate release tag
         if: github.ref_type == 'tag'
@@ -50,7 +65,69 @@ jobs:
         shell: bash
         env:
           BUILD_NUMBER: ${{ github.run_number }}
+          MACOSX_DEPLOYMENT_TARGET: '13.0'
         run: ./build-app.sh
+
+      - name: Verify macOS 13 compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          app="dist/CamiTune.app"
+          executable="$app/Contents/MacOS/CamiTune"
+          camilladsp="$app/Contents/Resources/CamillaDSP/camilladsp"
+          driver="$app/Contents/Resources/Drivers/CamillaAudio.driver/Contents/MacOS/CamillaAudio"
+
+          check_minos() {
+            local binary="$1"
+            local label="$2"
+            local minos
+
+            test -x "$binary" || {
+              echo "::error::Missing executable for deployment-target check: $binary"
+              exit 1
+            }
+
+            minos="$(otool -l "$binary" | awk '
+              $1 == "cmd" && $2 == "LC_BUILD_VERSION" { build = 1; old = 0; next }
+              build && $1 == "minos" { print $2; exit }
+              $1 == "cmd" && $2 == "LC_VERSION_MIN_MACOSX" { old = 1; build = 0; next }
+              old && $1 == "version" { print $2; exit }
+            ')"
+
+            if [[ -z "$minos" ]]; then
+              echo "::error::Could not determine minimum macOS version for $label ($binary)."
+              exit 1
+            fi
+
+            echo "$label minimum macOS: $minos"
+
+            /usr/bin/python3 - "$label" "$minos" <<'PY'
+          import sys
+
+          label, version = sys.argv[1], sys.argv[2]
+          parts = version.split('.')
+          parsed = tuple(int(p) for p in parts[:3])
+          parsed += (0,) * (3 - len(parsed))
+
+          if parsed > (13, 0, 0):
+              print(f"::error::{label} requires macOS {version}; expected macOS 13.0 or earlier.")
+              raise SystemExit(1)
+          PY
+          }
+
+          test -d "$app" || { echo "::error::Missing $app"; exit 1; }
+
+          plist_minos="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")"
+          echo "App Info.plist minimum macOS: $plist_minos"
+          if [[ "$plist_minos" != "13.0" ]]; then
+            echo "::error::LSMinimumSystemVersion is $plist_minos; expected 13.0."
+            exit 1
+          fi
+
+          check_minos "$executable" "CamiTune"
+          check_minos "$camilladsp" "CamillaDSP"
+          check_minos "$driver" "System Audio Bridge"
 
       - name: Verify Release bundle
         if: github.ref_type == 'tag'
@@ -91,7 +168,6 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           archive="CamiTune-v${version}-app.zip"
-
           ditto -c -k --sequesterRsrc --keepParent dist/CamiTune.app "$archive"
           test -s "$archive" || { echo "::error::Release ZIP was not created."; exit 1; }
           shasum -a 256 "$archive" > SHA256SUMS
