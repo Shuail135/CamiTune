@@ -16,15 +16,12 @@ struct PerChannelProcessingView: View {
     }
 
     var editableChannels: [ChannelProcessing] {
-        // The current bridge/runtime is stereo. Keeping these as semantic channel
-        // records allows the same editor to expand when the runtime exposes a
-        // larger channel layout.
-        [
-            profile.processing.channels.first(where: { $0.index == 0 })
-                ?? ChannelProcessing(index: 0, role: .left),
-            profile.processing.channels.first(where: { $0.index == 1 })
-                ?? ChannelProcessing(index: 1, role: .right)
-        ]
+        (0..<max(1, min(32, profile.processingChannelCount))).map { index in
+            profile.processing.channels.first(where: { $0.index == index })
+                ?? ChannelProcessing(index: index, role: profile.usesReferenceSpeakers
+                    ? (profile.speakerTopology?.endpoints.first(where: { $0.id.channelIndex == index })?.role ?? .unknown)
+                    : (index == 0 ? .left : .right))
+        }
     }
 
     var selectedChannel: ChannelProcessing {

@@ -61,11 +61,11 @@ struct SpatialSourceRouter {
                 return (left: Float(1), right: Float(0))
             case .right:
                 return (left: Float(0), right: Float(1))
-            case .center:
+            case .center, .topCenter:
                 return (left: Float.squareRootOfOneHalf, right: Float.squareRootOfOneHalf)
-            case .leftSurround, .leftRearSurround:
+            case .leftSurround, .leftRearSurround, .topFrontLeft, .topMiddleLeft, .topRearLeft, .frontLeftCenter, .wideLeft:
                 return (left: Float.squareRootOfOneHalf, right: Float(0))
-            case .rightSurround, .rightRearSurround:
+            case .rightSurround, .rightRearSurround, .topFrontRight, .topMiddleRight, .topRearRight, .frontRightCenter, .wideRight:
                 return (left: Float(0), right: Float.squareRootOfOneHalf)
             case .lowFrequencyEffects:
                 // Do not send an unfiltered LFE channel directly to small

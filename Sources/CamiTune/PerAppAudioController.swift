@@ -224,6 +224,19 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         label: "CamiTune.PerAppAudioPublication",
         qos: .userInteractive
     )
+    private struct SourceDetector {
+        var processID: Int32
+        var generation: UInt64
+        var detector = EffectiveLayoutDetector()
+    }
+    // DSP state stays under audioLock; lightweight snapshots use stateLock.
+    private var sourceDetectors: [PerAppTransportClientKey: SourceDetector] = [:]
+    private var publishedSourceDiagnostics: [PerAppTransportClientKey: SpatialInputDiagnostics] = [:]
+    var spatialInputDiagnostics: [PerAppTransportClientKey: SpatialInputDiagnostics] {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return publishedSourceDiagnostics
+    }
+
     private var clientsByKey: [PerAppTransportClientKey: PerAppDriverClient] = [:]
     private var uniqueClientKeyByProcessID: [Int32: PerAppTransportClientKey] = [:]
     private var uniqueClientKeyByClientID: [UInt32: PerAppTransportClientKey] = [:]
@@ -345,6 +358,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             stateLock.unlock()
             return
         }
+        publishedSourceDiagnostics = publishedSourceDiagnostics.filter { nextClients[$0.key] != nil }
         clientsByKey = nextClients
         identitiesByClientKey = identitiesByClientKey.filter { key, identity in
             nextClients[key]?.processID == identity.processID
@@ -371,6 +385,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         audioMaintenanceQueue.async { [weak self] in
             guard let self else { return }
             self.audioLock.lock()
+            self.sourceDetectors = self.sourceDetectors.filter { activeClientKeys.contains($0.key) }
             self.filterBanks = self.filterBanks.filter { activeClientKeys.contains($0.key) }
             self.gainsByClientKey = self.gainsByClientKey.filter {
                 activeClientKeys.contains($0.key)
@@ -699,7 +714,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         _ packet: PerAppAudioPacket,
         processed: inout [Float]
     ) -> PCMFrame? {
-        guard packet.channelCount > 0,
+        guard (1...32).contains(packet.channelCount),
+              packet.channelLayout.channelCount == packet.channelCount,
               packet.sampleRate > 0,
               packet.sampleRate.isFinite,
               processed.count % packet.channelCount == 0,
@@ -782,6 +798,17 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             cycleCounter: packet.cycleCounter
         )
 
+        if sourceDetectors[dspClientKey]?.processID != currentProcessID ||
+            sourceDetectors[dspClientKey]?.generation != UInt64(client?.generation ?? 0) {
+            if sourceDetectors.count >= 256, let oldest = sourceDetectors.keys.first {
+                sourceDetectors.removeValue(forKey: oldest)
+            }
+            sourceDetectors[dspClientKey] = SourceDetector(processID: currentProcessID, generation: UInt64(client?.generation ?? 0))
+        }
+        sourceDetectors[dspClientKey]?.detector.ingest(PCMFrame(interleaved: processed,
+            channelCount: packet.channelCount, sampleRate: packet.sampleRate, channelLayout: packet.channelLayout),
+            sampleTime: packetStartSampleTime)
+        let sourceDiagnostics = sourceDetectors[dspClientKey]?.detector.diagnostics
         lastPacketDateByApplication[applicationID] = now
         if rawPeak >= Self.applicationActivityFloor {
             lastAudibleDateByApplication[applicationID] = now
@@ -831,6 +858,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
         var audioHistoryToPersist: Set<String>?
         stateLock.lock()
+        if publishedSourceDiagnostics.count >= 256, let oldest = publishedSourceDiagnostics.keys.first {
+            publishedSourceDiagnostics.removeValue(forKey: oldest)
+        }
+        publishedSourceDiagnostics[dspClientKey] = sourceDiagnostics
         presentationLevelsByApplication[applicationID] = presentationLevel
         if rawPeak >= Self.applicationActivityFloor {
             observedAudioIDs.insert(applicationID)
@@ -915,9 +946,11 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     }
 
     func resetRuntime() {
+        stateLock.lock(); publishedSourceDiagnostics.removeAll(); stateLock.unlock()
         audioLock.lock()
         pendingMixesByDevice.removeAll(keepingCapacity: true)
         lastEmittedEndSampleTimeByDevice.removeAll(keepingCapacity: true)
+        sourceDetectors.removeAll()
         filterBanks.removeAll()
         gainsByClientKey.removeAll()
         levelsByApplication.removeAll()
@@ -1047,6 +1080,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     private func resetDeviceTimelineLocked(_ deviceObjectID: UInt32) {
         pendingMixesByDevice.removeValue(forKey: deviceObjectID)
         lastEmittedEndSampleTimeByDevice.removeValue(forKey: deviceObjectID)
+        sourceDetectors = sourceDetectors.filter { $0.key.deviceObjectID != deviceObjectID }
         filterBanks = filterBanks.filter { $0.key.deviceObjectID != deviceObjectID }
         gainsByClientKey = gainsByClientKey.filter { $0.key.deviceObjectID != deviceObjectID }
     }

@@ -270,6 +270,9 @@ final class CoreAudioManager: ObservableObject {
               let channelCount = dictionary["SystemAudioBridgeChannelCount"] as? Int else {
             return nil
         }
+        if let tag = dictionary["SystemAudioBridgeChannelLayoutTag"] as? UInt32 {
+            return LPCMChannelLayout(coreAudioTag: tag, channelCount: channelCount)
+        }
         return LPCMChannelLayout.canonical(forChannelCount: channelCount)
     }
 

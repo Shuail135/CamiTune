@@ -108,6 +108,7 @@ final class PCMRouter: @unchecked Sendable {
         spatialContentMode: SpatialContentMode = .automatic,
         spatialSettings: SpatialRenderSettings = SpatialRenderSettings(),
         spatialOutput: SpatialOutputKind = .speakers,
+        referenceTopology: SpeakerTopology? = nil,
         meterConsumer: MeterConsumer? = nil,
         analyzerConsumer: AnalyzerConsumer? = nil
     ) async {
@@ -119,6 +120,7 @@ final class PCMRouter: @unchecked Sendable {
                 spatialContentMode: spatialContentMode,
                 spatialSettings: spatialSettings,
                 spatialOutput: spatialOutput,
+            referenceTopology: referenceTopology,
                 meterConsumer: meterConsumer,
                 analyzerConsumer: analyzerConsumer
             )
@@ -134,6 +136,7 @@ final class PCMRouter: @unchecked Sendable {
         spatialContentMode: SpatialContentMode,
         spatialSettings: SpatialRenderSettings,
         spatialOutput: SpatialOutputKind,
+        referenceTopology: SpeakerTopology?,
         meterConsumer: MeterConsumer?,
         analyzerConsumer: AnalyzerConsumer?
     ) {
@@ -146,6 +149,7 @@ final class PCMRouter: @unchecked Sendable {
             spatialContentMode: spatialContentMode,
             spatialSettings: spatialSettings,
             spatialOutput: spatialOutput,
+            referenceTopology: referenceTopology,
             recoveryHandler: { [weak self] droppedFrames in
                 self?.recordCamillaRecovery(droppedFrames: droppedFrames)
             },
@@ -201,6 +205,11 @@ final class PCMRouter: @unchecked Sendable {
         let branch = camillaBranch
         state.unlock()
         branch?.setSpatialSettings(settings, output: output)
+    }
+
+    var referenceSpeakerDiagnostics: ReferenceSpeakerDiagnostics? {
+        state.lock(); let branch = camillaBranch; state.unlock()
+        return branch?.referenceDiagnostics
     }
 
     var spatialRenderDiagnostics: SpatialRenderDiagnostics? {
@@ -554,6 +563,10 @@ private final class CamillaPCMBranch: @unchecked Sendable {
     private var contentEstimateDate = Date.distantPast
     private var needsContentReset = false
     private let spatialEngine = SpatialAudioEngine()
+    private var referenceRenderer: ReferenceSpeakerRenderer?
+    private let referenceTopology: SpeakerTopology?
+    private let expectedOutputChannelCount: Int
+    private var publishedReferenceDiagnostics: ReferenceSpeakerDiagnostics?
     private var publishedRenderDiagnostics: SpatialRenderDiagnostics?
     private var renderSettings: SpatialRenderSettings
     private var renderOutput: SpatialOutputKind
@@ -581,6 +594,7 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         spatialContentMode: SpatialContentMode,
         spatialSettings: SpatialRenderSettings,
         spatialOutput: SpatialOutputKind,
+        referenceTopology: SpeakerTopology?,
         recoveryHandler: @escaping (Int) -> Void,
         failureHandler: @escaping () -> Void,
         adjustmentHandler: @escaping (Double, Int) -> Void
@@ -600,6 +614,9 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         self.renderSettings = spatialSettings
         if spatialRenderingMode == .frontStage || spatialRenderingMode == .virtualSurround { self.renderSettings.enabled = true }
         self.renderOutput = spatialOutput
+        self.referenceTopology = referenceTopology
+        self.expectedOutputChannelCount = referenceTopology?.declaredChannelCount ?? 2
+        self.referenceRenderer = referenceTopology.flatMap { try? ReferenceSpeakerRenderer(topology: $0) }
         self.systemMaster = systemMaster
         let initialMaster = systemMaster.snapshot()
         masterRevision = initialMaster.revision
@@ -608,6 +625,11 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         self.recoveryHandler = recoveryHandler
         self.failureHandler = failureHandler
         self.adjustmentHandler = adjustmentHandler
+    }
+
+    var referenceDiagnostics: ReferenceSpeakerDiagnostics? {
+        condition.lock(); defer { condition.unlock() }
+        return publishedReferenceDiagnostics
     }
 
     var renderDiagnostics: SpatialRenderDiagnostics? {
@@ -695,6 +717,14 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         condition.lock()
         defer { condition.unlock() }
         guard calibrationID == id, !stopping, !workerFinished else { return false }
+        if let physical = clip.physicalOutput {
+            guard physical.deviceUID == referenceTopology?.deviceUID,
+                  clip.sampleRate == referenceTopology?.sampleRate,
+                  clip.channelCount == expectedOutputChannelCount,
+                  referenceTopology?.endpoints.contains(where: { $0.id == physical && $0.connectionState != .disabledByUser }) == true else { return false }
+        } else if referenceTopology != nil && clip.isAcousticMeasurement {
+            return false
+        }
         calibrationTuning = tuning.validated
         calibrationPlayback = SpatialCalibrationPlayback(clip: clip, completion: completion)
         nextCalibrationFrameDate = Date()
@@ -792,6 +822,7 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             }
             let isCalibrationSample = calibrationPlayback != nil
             let isAcousticMeasurement = calibrationPlayback?.clip.isAcousticMeasurement ?? false
+            let physicalOutput = calibrationPlayback?.clip.physicalOutput
             let isChannelAudition = calibrationPlayback?.clip.isVirtualAudition ?? false
             var calibrationCompletion: (@Sendable () -> Void)?
             let nextFrame: PCMFrame?
@@ -842,19 +873,32 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             contentEstimateDate = Date()
             condition.unlock()
             if shouldResetRateMatcher {
-                spatialEngine.reset(); rateController.reset(); resampler.reset()
+                spatialEngine.reset(); referenceRenderer?.reset(); rateController.reset(); resampler.reset()
             }
-            if shouldResetSpatialRenderer { spatialEngine.reset() }
+            if shouldResetSpatialRenderer { spatialEngine.reset(); referenceRenderer?.reset() }
             lastSourceFormat = frame.sourceFormat
-            // Old mode values remain decodable, but production audio now uses
-            // only the two physical-output renderers. Acoustic sweeps bypass them.
-            let renderedFrame = spatialRenderingMode == .standard
-                ? sourceRouter.stereoFallback(for: frame)
-                : spatialEngine.render(frame: frame, settings: renderSettings, detectedOutput: renderOutput)
+            // The immutable physical route and backend share one channel count.
+            // Legacy profiles retain their existing stereo rendering policy.
+            let renderedFrame: PCMFrame?
+            if let physicalOutput {
+                // Physical audition/measurement is already mapped. Never feed it
+                // through the scene renderer or stereo downmixer.
+                renderedFrame = physicalOutput.deviceUID == referenceTopology?.deviceUID
+                    && frame.channelCount == expectedOutputChannelCount ? frame : nil
+            } else if referenceTopology != nil {
+                if let scene = try? ChannelBasedSceneProvider().makeScene(from: frame) {
+                    renderedFrame = try? referenceRenderer?.render(scene)
+                } else { renderedFrame = nil }
+            } else {
+                renderedFrame = spatialRenderingMode == .standard
+                    ? sourceRouter.stereoFallback(for: frame)
+                    : spatialEngine.render(frame: frame, settings: renderSettings, detectedOutput: renderOutput)
+            }
             condition.lock()
+            publishedReferenceDiagnostics = referenceRenderer?.diagnostics
             publishedRenderDiagnostics = spatialRenderingMode == .spatialAudio ? spatialEngine.diagnostics : nil
             condition.unlock()
-            guard let renderedFrame else {
+            guard let renderedFrame, renderedFrame.channelCount == expectedOutputChannelCount else {
                 recoveryHandler(frame.frameCount)
                 continue
             }

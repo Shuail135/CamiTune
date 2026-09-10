@@ -348,6 +348,17 @@ enum ChannelRole: String, Codable, Hashable, Sendable, CaseIterable {
     case rightSurround
     case leftRearSurround
     case rightRearSurround
+    case topFrontLeft
+    case topFrontRight
+    case topMiddleLeft
+    case topMiddleRight
+    case topRearLeft
+    case topRearRight
+    case topCenter
+    case frontLeftCenter
+    case frontRightCenter
+    case wideLeft
+    case wideRight
     case unknown
 }
 

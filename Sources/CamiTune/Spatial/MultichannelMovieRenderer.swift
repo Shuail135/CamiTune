@@ -89,7 +89,7 @@ final class MultichannelMovieRenderer {
                 case .rightSurround: sideRight += sample
                 case .leftRearSurround: rearLeft += sample
                 case .rightRearSurround: rearRight += sample
-                case .unknown: break
+                default: break
                 }
             }
 

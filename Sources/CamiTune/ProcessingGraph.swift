@@ -108,11 +108,19 @@ struct ProcessingGraphBuilder {
     }
 
     func build(profile: DeviceProfile) throws -> ProcessingGraph {
+        if let topology = try profile.validatedReferenceTopology(), topology.declaredChannelCount != channelCount {
+            throw ProcessingGraphError.invalidChannelCount
+        }
         guard profile.sampleRate > 0 else { throw ProcessingGraphError.invalidSampleRate }
         guard profile.chunkSize > 0 else { throw ProcessingGraphError.invalidChunkSize }
         guard channelCount > 0 else { throw ProcessingGraphError.invalidChannelCount }
 
-        let processing = try profile.resolvedProcessing()
+        var processing = try profile.resolvedProcessing()
+        if profile.usesReferenceSpeakers {
+            // Legacy L/R room measurements have no physical topology identity.
+            // Preserve them in the profile but never apply them to a new map.
+            processing.global.stages.removeAll { $0.id == SpatialRoomCorrection.stageID }
+        }
         guard processing.schemaVersion == ProcessingProfile.currentSchemaVersion else {
             throw ProcessingGraphError.unsupportedSchemaVersion(processing.schemaVersion)
         }
@@ -149,6 +157,7 @@ struct ProcessingGraphBuilder {
 
         var usedChannelIndexes = Set<Int>()
         for channel in processing.channels.sorted(by: { $0.index < $1.index }) {
+            if profile.usesReferenceSpeakers && channel.index >= channelCount && channel.chain.stages.isEmpty { continue }
             guard (0..<channelCount).contains(channel.index) else {
                 throw ProcessingGraphError.channelOutOfRange(channel.index, channelCount)
             }

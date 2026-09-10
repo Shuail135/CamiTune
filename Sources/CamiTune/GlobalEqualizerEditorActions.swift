@@ -278,7 +278,7 @@ extension GlobalEqualizerEditorView {
                 return
             }
             let headroom = await Task.detached(priority: .utility) {
-                (try? ProcessingGraphBuilder().build(profile: candidate)
+                (try? ProcessingGraphBuilder(channelCount: candidate.processingChannelCount).build(profile: candidate)
                     .automaticHeadroomDB) ?? 0
             }.value
             guard !Task.isCancelled, profile.id == profileID else { return }
@@ -292,7 +292,7 @@ extension GlobalEqualizerEditorView {
             candidate = try state.applyingSessionEQDrafts(to: candidate)
             candidate.processing.setDeviceCorrection(nil)
             candidate.setGlobalEqualizer(preampDB: 0, bands: filters)
-            return try ProcessingGraphBuilder().build(profile: candidate).automaticHeadroomDB
+            return try ProcessingGraphBuilder(channelCount: candidate.processingChannelCount).build(profile: candidate).automaticHeadroomDB
         } catch {
             return 0
         }

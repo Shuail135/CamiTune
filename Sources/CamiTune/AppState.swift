@@ -239,7 +239,7 @@ final class AppState: NSObject, ObservableObject {
         do {
             let (graph, parsed) = try await Task.detached(priority: .userInitiated) {
                 (
-                    try ProcessingGraphBuilder().build(profile: profile),
+                    try ProcessingGraphBuilder(channelCount: profile.processingChannelCount).build(profile: profile),
                     try profile.resolvedProcessing().globalEqualizer
                 )
             }.value
@@ -269,11 +269,13 @@ final class AppState: NSObject, ObservableObject {
         }
     }
 
+    private var activeReferenceTopology: SpeakerTopology?
+
     private func buildGraphWithoutBlockingUI(
         profile: DeviceProfile
     ) async throws -> ProcessingGraph {
         try await Task.detached(priority: .userInitiated) {
-            try ProcessingGraphBuilder().build(profile: profile)
+            try ProcessingGraphBuilder(channelCount: profile.processingChannelCount).build(profile: profile)
         }.value
     }
 
@@ -825,6 +827,13 @@ final class AppState: NSObject, ObservableObject {
                 throw AppError.outputMissing(profile.outputDeviceName)
             }
             guard !output.isRoutingDevice else { throw AppError.invalidTarget }
+            let referenceTopology = try profile.validatedReferenceTopology()
+            if let referenceTopology {
+                let discovered = try await Task.detached(priority: .userInitiated) {
+                    try SpeakerTopologyProbe().probe(output)
+                }.value
+                try referenceTopology.validateHardware(discovered)
+            }
             guard let graph = await validate(profile: profile) else { return }
             let sampleRate = Double(profile.sampleRate)
             guard await coreAudio.supportsSampleRateWithoutBlockingUI(
@@ -847,11 +856,13 @@ final class AppState: NSObject, ObservableObject {
                 let alreadyOwnsRequestedRuntime = activeProfileID == profile.id
                     && activePhysicalOutputUID == profile.outputDeviceUID
                     && activeSampleRate == profile.sampleRate
+                    && activeReferenceTopology == referenceTopology
                 guard !alreadyOwnsRequestedRuntime else { return }
                 await stopProcessingPipeline()
                 isActive = false
                 activeSession = nil
                 activeSampleRate = nil
+            activeReferenceTopology = nil
                 activePhysicalOutputUID = nil
             }
 
@@ -938,6 +949,7 @@ final class AppState: NSObject, ObservableObject {
                 spatialContentMode: profile.spatialContentMode,
                 spatialSettings: profile.effectiveSpatialSettings,
                 spatialOutput: profile.spatialSettings.resolvedOutput(deviceName: output.name),
+                referenceTopology: referenceTopology,
                 meterConsumer: meters.pcmConsumer(for: runtimeSession),
                 analyzerConsumer: { [weak spectrum] frame in
                     spectrum?.ingest(
@@ -948,6 +960,7 @@ final class AppState: NSObject, ObservableObject {
                     )
                 }
             )
+            activeReferenceTopology = referenceTopology
             pcmRouter.setVirtualSurroundLayout(profile.virtualSurroundLayout)
             var transportConnected = false
             var transportError: Error?
@@ -1023,6 +1036,7 @@ final class AppState: NSObject, ObservableObject {
             isActive = false
             activeSession = nil
             activeSampleRate = nil
+            activeReferenceTopology = nil
             activePhysicalOutputUID = nil
             activeRoutingUID = nil
             try? await coreAudio.setSystemAudioBridgePresentationWithoutBlockingUI(
@@ -1042,7 +1056,7 @@ final class AppState: NSObject, ObservableObject {
               let rate = activeSampleRate,
               coreAudio.defaultOutputUID == activeRoutingUID,
               let profile = profiles.profiles.first(where: { $0.id == profileID }),
-              profile.effectiveSpatialRenderingMode == .spatialAudio,
+              (profile.effectiveSpatialRenderingMode == .spatialAudio || profile.usesReferenceSpeakers),
               profile.outputDeviceUID == activePhysicalOutputUID else { return nil }
         let context = SpatialCalibrationContext(
             id: UUID(), runtimeSessionID: session.id, profileID: profileID,
@@ -1238,7 +1252,7 @@ final class AppState: NSObject, ObservableObject {
         let profile = pending.profile
         let request = pending.request
         guard isActive, activeProfileID == profile.id else { return }
-        if activeSampleRate != profile.sampleRate {
+        if activeSampleRate != profile.sampleRate || activeReferenceTopology != (profile.usesReferenceSpeakers ? profile.speakerTopology : nil) {
             if let problem = await processingSampleRateProblemWithoutBlockingUI(
                 rate: profile.sampleRate,
                 outputUID: profile.outputDeviceUID
@@ -1353,6 +1367,7 @@ final class AppState: NSObject, ObservableObject {
         isActive = false
         activeSession = nil
         activeSampleRate = nil
+        activeReferenceTopology = nil
         activePhysicalOutputUID = nil
         activeRoutingUID = nil
         previousDefaultUID = nil
@@ -1574,6 +1589,7 @@ final class AppState: NSObject, ObservableObject {
         isActive = false
         activeSession = nil
         activeSampleRate = nil
+        activeReferenceTopology = nil
         activePhysicalOutputUID = nil
         activeRoutingUID = nil
         previousDefaultUID = nil

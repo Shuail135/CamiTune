@@ -4,6 +4,7 @@ import SwiftUI
 struct SpatialAudioEditorView: View {
     @ObservedObject var state: AppState
     @Binding var profile: DeviceProfile
+    @State private var showingSpeakerSystem = false
     @State private var channelContext: SpatialCalibrationContext?
     @State private var creatingPosition = false
     @State private var microphoneContext: SpatialCalibrationContext?
@@ -15,6 +16,9 @@ struct SpatialAudioEditorView: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
+                if profile.usesReferenceSpeakers {
+                    Text("Reference speaker playback").font(.headline)
+                } else {
                 Group {
                     HStack {
                         Toggle("Spatial Audio", isOn: Binding(
@@ -39,6 +43,13 @@ struct SpatialAudioEditorView: View {
                         }
                     }
                 }.disabled(state.spatialCalibrationContext != nil)
+                }
+                HStack {
+                    Button("Speaker system…") { showingSpeakerSystem = true }
+                    if profile.usesReferenceSpeakers {
+                        Text("Reference · \(profile.processingChannelCount) outputs").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 DisclosureGroup("Advanced & calibration") {
                     VStack(alignment: .leading, spacing: 10) {
                         Group {
@@ -104,11 +115,12 @@ struct SpatialAudioEditorView: View {
                                 calibrationError = channelContext == nil ? "Activate Spatial Audio on this output first." : nil
                             }.disabled(!active || !profile.spatialSettings.enabled)
                             if let calibrationError { Text(calibrationError).font(.caption).foregroundStyle(.orange) }
-                        }.disabled(state.spatialCalibrationContext != nil)
+                        }.disabled(state.spatialCalibrationContext != nil || profile.usesReferenceSpeakers)
                     }.padding(.top, 6)
                 }.font(.callout)
             }.padding(4)
         }
+        .sheet(isPresented: $showingSpeakerSystem) { SpeakerSystemView(state: state, profile: $profile) }
         .sheet(item: $seatingContext) { context in
             SpatialSeatingCalibrationView(state: state, profile: $profile, context: context, newPosition: creatingPosition)
                 .id(context.id)

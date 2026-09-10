@@ -7,6 +7,24 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		6E230EE1DB6F0ECCA260B06E = {isa = PBXBuildFile; fileRef = 3BB3CD1B243E9D023FB1E9C3; };
+		728B17019F77D3D62CB27FBC = {isa = PBXBuildFile; fileRef = 5A2E1F952D18506134163551; };
+		03873F6A543C0FC7E3B5F27F = {isa = PBXBuildFile; fileRef = 412254C9FCC8F1B095E341C9; };
+		2DBE10AACB842FA4770E398C = {isa = PBXBuildFile; fileRef = 38CC719DC88135DBDCEF0A80; };
+		E66876429BA9C91C7EA92BAD = {isa = PBXBuildFile; fileRef = 3F9FD71C6CD44FAF98677C35; };
+		C4D3B43F1EDEDEAB76D6094D = {isa = PBXBuildFile; fileRef = BA8C33326DE49D7DE7378C40; };
+		C0569044922206EAF897B43F = {isa = PBXBuildFile; fileRef = FB2672C5306A4A9AD0960219; };
+		08D5EE3A08897A2560928956 = {isa = PBXBuildFile; fileRef = DA3D7277FF919E238DA7B483; };
+		2A7264C9989ECD0167283B81 = {isa = PBXBuildFile; fileRef = 93F292239E2881FC65B374DB; };
+		AEB5057153288C947AAD5996 = {isa = PBXBuildFile; fileRef = ADD9225ACDE30A7C5F0E22D9; };
+		27ED9ABDBCEE938E05585E06 = {isa = PBXBuildFile; fileRef = 8793652710319F894A7F836B; };
+		16E47513AA99C560116D6F57 = {isa = PBXBuildFile; fileRef = 7D63D366F0E3D6C7A7D539A2; };
+		CA3200000000000000000402 = {isa = PBXBuildFile; fileRef = CA3200000000000000000302; };
+		CA3200000000000000000401 = {isa = PBXBuildFile; fileRef = CA3200000000000000000301; };
+		CA3200000000000000000204 = {isa = PBXBuildFile; fileRef = CA3200000000000000000104; };
+		CA3200000000000000000203 = {isa = PBXBuildFile; fileRef = CA3200000000000000000103; };
+		CA3200000000000000000202 = {isa = PBXBuildFile; fileRef = CA3200000000000000000102; };
+		CA3200000000000000000201 = {isa = PBXBuildFile; fileRef = CA3200000000000000000101; };
 		CA119B900000000000000001 = {isa = PBXBuildFile; fileRef = CA119B900000000000000011; };
 		98F1B04221D097DE32257EB7 = {isa = PBXBuildFile; fileRef = 3F55C60FB215D2D7357B67B6; };
 		ED6A249F4F2EFA9666989753 = {isa = PBXBuildFile; fileRef = 21675E9304ED2A6AA84438EE; };
@@ -527,6 +545,24 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		3BB3CD1B243E9D023FB1E9C3 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Tests/CamiTuneTests/SpeakerTopologyProbeTests.swift"; sourceTree = SOURCE_ROOT; };
+		5A2E1F952D18506134163551 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Tests/CamiTuneTests/SpatialInputDetectionTests.swift"; sourceTree = SOURCE_ROOT; };
+		412254C9FCC8F1B095E341C9 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Tests/CamiTuneTests/ReferenceSpeakerTests.swift"; sourceTree = SOURCE_ROOT; };
+		38CC719DC88135DBDCEF0A80 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Tests/CamiTuneTests/PhysicalSpeakerPlaybackTests.swift"; sourceTree = SOURCE_ROOT; };
+		3F9FD71C6CD44FAF98677C35 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/UI/SpeakerSystemView.swift"; sourceTree = SOURCE_ROOT; };
+		BA8C33326DE49D7DE7378C40 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/SpeakerRenderer/VBAPSolver.swift"; sourceTree = SOURCE_ROOT; };
+		FB2672C5306A4A9AD0960219 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/SpeakerRenderer/ReferenceSpeakerRenderer.swift"; sourceTree = SOURCE_ROOT; };
+		DA3D7277FF919E238DA7B483 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/Speaker/StandardSpeakerPositions.swift"; sourceTree = SOURCE_ROOT; };
+		93F292239E2881FC65B374DB = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/Speaker/SpeakerTopologyResolver.swift"; sourceTree = SOURCE_ROOT; };
+		ADD9225ACDE30A7C5F0E22D9 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/Speaker/SpeakerTopologyProbe.swift"; sourceTree = SOURCE_ROOT; };
+		8793652710319F894A7F836B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/Scene/SpatialScene.swift"; sourceTree = SOURCE_ROOT; };
+		7D63D366F0E3D6C7A7D539A2 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/Input/EffectiveLayoutDetector.swift"; sourceTree = SOURCE_ROOT; };
+		CA3200000000000000000302 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultichannelReadinessTests.swift; sourceTree = "<group>"; };
+		CA3200000000000000000301 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeakerTopologyTests.swift; sourceTree = "<group>"; };
+		CA3200000000000000000104 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speaker/SpeakerTopology.swift"; sourceTree = "<group>"; };
+		CA3200000000000000000103 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speaker/SpeakerEndpoint.swift"; sourceTree = "<group>"; };
+		CA3200000000000000000102 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speaker/SpatialPosition.swift"; sourceTree = "<group>"; };
+		CA3200000000000000000101 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speaker/PhysicalOutputID.swift"; sourceTree = "<group>"; };
 		CA119B900000000000000011 = {isa = PBXFileReference; lastKnownFileType = folder; path = Sources/CamiTune/SpatialAssets; sourceTree = SOURCE_ROOT; };
 		3F55C60FB215D2D7357B67B6 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SpatialChannelCheckView.swift"; sourceTree = "<group>"; };
 		21675E9304ED2A6AA84438EE = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Headphones/VirtualSpeakerBinauralizer.swift"; sourceTree = "<group>"; };
@@ -1415,6 +1451,18 @@
 			isa = PBXGroup;
 			children = (
 				CA119B900000000000000011,
+				CA3200000000000000000101,
+				CA3200000000000000000102,
+				CA3200000000000000000103,
+				CA3200000000000000000104,
+				7D63D366F0E3D6C7A7D539A2,
+				8793652710319F894A7F836B,
+				ADD9225ACDE30A7C5F0E22D9,
+				93F292239E2881FC65B374DB,
+				DA3D7277FF919E238DA7B483,
+				FB2672C5306A4A9AD0960219,
+				BA8C33326DE49D7DE7378C40,
+				3F9FD71C6CD44FAF98677C35,
 				3F55C60FB215D2D7357B67B6,
 				21675E9304ED2A6AA84438EE,
 				B365846B28087A0692856BBF,
@@ -1584,6 +1632,12 @@
 		EEFE21A1443933CA4DE017DA = {
 			isa = PBXGroup;
 			children = (
+			    CA3200000000000000000301,
+			    CA3200000000000000000302,
+				38CC719DC88135DBDCEF0A80,
+				412254C9FCC8F1B095E341C9,
+				5A2E1F952D18506134163551,
+				3BB3CD1B243E9D023FB1E9C3,
 			    CA114B400000000000000014,
                 CA115B500000000000000015,
                 CA116B600000000000000012,
@@ -1755,6 +1809,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			    CA3200000000000000000401,
+			    CA3200000000000000000402,
+				2DBE10AACB842FA4770E398C,
+				03873F6A543C0FC7E3B5F27F,
+				728B17019F77D3D62CB27FBC,
+				6E230EE1DB6F0ECCA260B06E,
 			    CA114B400000000000000004,
                 CA115B500000000000000005,
                 CA116B600000000000000002,
@@ -1788,6 +1848,18 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CA3200000000000000000201,
+				CA3200000000000000000202,
+				CA3200000000000000000203,
+				CA3200000000000000000204,
+				16E47513AA99C560116D6F57,
+				27ED9ABDBCEE938E05585E06,
+				AEB5057153288C947AAD5996,
+				2A7264C9989ECD0167283B81,
+				08D5EE3A08897A2560928956,
+				C0569044922206EAF897B43F,
+				C4D3B43F1EDEDEAB76D6094D,
+				E66876429BA9C91C7EA92BAD,
 				98F1B04221D097DE32257EB7,
 				ED6A249F4F2EFA9666989753,
 				F59C47E32FA4422B4EA97A34,

@@ -1310,13 +1310,21 @@ static bool is_valid_sample_rate(Float64 sample_rate)
 
 static AudioChannelLayoutTag device_channel_layout_tag(void)
 {
+    _Static_assert(kNumber_Of_Channels >= 1 && kNumber_Of_Channels <= SABR_TRANSPORT_MAX_CHANNELS,
+                   "System Audio Bridge supports 1 through 32 channels");
+#ifdef SABR_CHANNEL_LAYOUT_TAG
+    _Static_assert((SABR_CHANNEL_LAYOUT_TAG & 0xFFFF) == kNumber_Of_Channels,
+                   "Channel layout and stream count must agree");
+    return SABR_CHANNEL_LAYOUT_TAG;
+#else
     switch(kNumber_Of_Channels)
     {
         case 2: return kAudioChannelLayoutTag_Stereo;
         case 6: return kAudioChannelLayoutTag_MPEG_5_1_A;
         case 8: return kAudioChannelLayoutTag_MPEG_7_1_C;
-        default: return kAudioChannelLayoutTag_Unknown;
+        default: return kAudioChannelLayoutTag_DiscreteInOrder | kNumber_Of_Channels;
     }
+#endif
 }
 
 #pragma mark Factory

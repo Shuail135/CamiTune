@@ -8,9 +8,44 @@ struct SpatialCalibrationClip: Sendable {
     let samples: [Float]
     let sampleRate: Double
     let isAcousticMeasurement: Bool
+    var physicalOutput: PhysicalOutputID? = nil
+    var physicalLayout: LPCMChannelLayout? = nil
+    var channelCount: Int { physicalLayout?.channelCount ?? 2 }
     var virtualSpeakerRole: ChannelRole? = nil
     var virtualSurroundDemo = false
     var isVirtualAudition: Bool { virtualSpeakerRole != nil || virtualSurroundDemo }
+
+    /// Bounded, finite, tapered physical-channel probe. Prepared off the audio worker.
+    init?(physicalOutput: PhysicalOutputID, topology: SpeakerTopology) {
+        guard (try? topology.validate()) != nil, physicalOutput.deviceUID == topology.deviceUID,
+              let endpoint = topology.endpoints.first(where: { $0.id == physicalOutput }),
+              endpoint.connectionState != .disabledByUser,
+              (8000...192000).contains(topology.sampleRate) else { return nil }
+        sampleRate = topology.sampleRate
+        isAcousticMeasurement = true
+        self.physicalOutput = physicalOutput
+        var roles = [ChannelRole](repeating: .unknown, count: topology.declaredChannelCount)
+        for endpoint in topology.endpoints { roles[endpoint.id.channelIndex] = endpoint.role }
+        physicalLayout = LPCMChannelLayout(coreAudioTag: 0, roles: roles)
+        let count = topology.declaredChannelCount
+        let frames = Int(sampleRate * 1.5)
+        let fade = max(1, Int(sampleRate * 0.05))
+        var result = [Float](repeating: 0, count: frames * count)
+        var random: UInt32 = 0x43414D49
+        var high: Float = 0, low: Float = 0
+        let isSub = endpoint.isSubwooferLike || endpoint.layer == .subwoofer
+        let upper = Float(1 - exp(-2 * Double.pi * (isSub ? 100 : 4000) / sampleRate))
+        let lower = Float(1 - exp(-2 * Double.pi * (isSub ? 40 : 300) / sampleRate))
+        for i in 0..<frames {
+            random = 1664525 &* random &+ 1013904223
+            let white = Float(random) / Float(UInt32.max) * 2 - 1
+            high += upper * (white - high)
+            low += lower * (high - low)
+            let envelope = min(1, Float(min(i, frames-1-i)) / Float(fade))
+            result[i * count + physicalOutput.channelIndex] = max(-0.025, min(0.025, (high-low) * 0.02)) * envelope
+        }
+        samples = result
+    }
 
     /// Broadband, tapered noise excites the pinna cues missing from a low chime.
     /// Generate off the UI/audio workers before handing the prepared clip to PCM.
@@ -133,14 +168,15 @@ struct SpatialCalibrationPlayback {
     mutating func requestStop() {
         guard stopAt == nil else { return }
         fadeStart = cursor
-        let fadeEnd = cursor + max(2, Int(clip.sampleRate * 0.025) * 2)
+        let fadeEnd = cursor + max(2, Int(clip.sampleRate * 0.025) * clip.channelCount)
         stopAt = !clip.isVirtualAudition ? min(clip.samples.count, fadeEnd) : fadeEnd
     }
 
     mutating func nextFrame() -> PCMFrame? {
         guard !isFinished else { return nil }
         let start = cursor
-        let end = min(stopAt ?? (!clip.isVirtualAudition ? clip.samples.count : cursor + 1024), cursor + 1024)
+        let blockSamples = 512 * clip.channelCount
+        let end = min(stopAt ?? (!clip.isVirtualAudition ? clip.samples.count : cursor + blockSamples), cursor + blockSamples)
         var samples = (cursor..<end).map { clip.samples[$0 % clip.samples.count] }
         if clip.isVirtualAudition {
             let fadeFrames = max(1, Int(clip.sampleRate * 0.12))
@@ -151,12 +187,12 @@ struct SpatialCalibrationPlayback {
             }
         }
         if let fadeStart, let stopAt {
-            let frames = max(1, (stopAt - fadeStart) / 2 - 1)
-            for index in stride(from: 0, to: samples.count, by: 2) {
-                let remaining = max(0, (stopAt - cursor - index) / 2 - 1)
+            let count = clip.channelCount
+            let frames = max(1, (stopAt - fadeStart) / count - 1)
+            for index in stride(from: 0, to: samples.count, by: count) {
+                let remaining = max(0, (stopAt - cursor - index) / count - 1)
                 let gain = min(1, Float(remaining) / Float(frames))
-                samples[index] *= gain
-                samples[index + 1] *= gain
+                for channel in 0..<count { samples[index + channel] *= gain }
             }
         }
         cursor = end
@@ -194,7 +230,7 @@ struct SpatialCalibrationPlayback {
             for i in 0..<(samples.count / 2) { bed[i * 8 + channel] = samples[i * 2] }
             return PCMFrame(interleaved: bed, channelCount: 8, sampleRate: clip.sampleRate, channelLayout: .sevenPointOne)
         }
-        return PCMFrame(interleaved: samples, channelCount: 2, sampleRate: clip.sampleRate)
+        return PCMFrame(interleaved: samples, channelCount: clip.channelCount, sampleRate: clip.sampleRate, channelLayout: clip.physicalLayout)
     }
 }
 

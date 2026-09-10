@@ -357,7 +357,7 @@ struct CamillaConfigBuilder {
             bands: parsed.bands
         )
         do {
-            let graph = try ProcessingGraphBuilder().build(profile: migrated)
+            let graph = try ProcessingGraphBuilder(channelCount: migrated.processingChannelCount).build(profile: migrated)
             return CamillaDSPCompiler().compile(graph).yaml
         } catch {
             assertionFailure("Invalid processing graph: \(error.localizedDescription)")

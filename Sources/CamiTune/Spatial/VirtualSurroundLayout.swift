@@ -29,7 +29,7 @@ struct VirtualSurroundLayout: Codable, Hashable, Sendable {
         case .leftRearSurround: degrees = -145
         case .rightRearSurround: degrees = 145
         case .lowFrequencyEffects: return .init(x: 0.70, y: -0.45)
-        case .unknown: return .init(x: 0, y: 0)
+        default: return .init(x: 0, y: 0)
         }
         let radians = degrees * .pi / 180
         return .init(x: Float(sin(radians)) * 0.8, y: -Float(cos(radians)) * 0.8)
@@ -45,7 +45,7 @@ struct VirtualSurroundLayout: Codable, Hashable, Sendable {
         case .leftRearSurround: return "RL"
         case .rightRearSurround: return "RR"
         case .lowFrequencyEffects: return "LFE"
-        case .unknown: return "?"
+        default: return role.shortName
         }
     }
 }

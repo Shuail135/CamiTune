@@ -71,7 +71,7 @@ if [[ -d "$DRIVER_CACHE" && "$CURRENT_DRIVER_KEY" == "$DRIVER_BUILD_KEY" ]]; the
     echo "CamiTune: reusing cached System Audio Bridge driver."
 else
     echo "CamiTune: building System Audio Bridge driver…"
-    SABR_CHANNELS=8 SABR_MIN_MACOS="$MIN_MACOS" "$ROOT/Drivers/SystemAudioBridge/build-driver.sh"
+    SABR_CHANNELS=8 SABR_LAYOUT=7.1 SABR_MIN_MACOS="$MIN_MACOS" "$ROOT/Drivers/SystemAudioBridge/build-driver.sh"
     echo "$DRIVER_BUILD_KEY" > "$DRIVER_STAMP"
 fi
 

@@ -51,6 +51,23 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     var chunkSize: Int = 1024
     var spatialRenderingMode: SpatialRenderingMode = .standard
     var spatialSettings = SpatialRenderSettings()
+    var speakerTopology: SpeakerTopology?
+    var usesReferenceSpeakers = false
+
+    var processingChannelCount: Int {
+        usesReferenceSpeakers ? (speakerTopology?.declaredChannelCount ?? 2) : 2
+    }
+
+    func validatedReferenceTopology() throws -> SpeakerTopology? {
+        guard usesReferenceSpeakers else { return nil }
+        guard let topology = speakerTopology, topology.deviceUID == outputDeviceUID else {
+            throw SpeakerTopologyError.invalidDeviceUID
+        }
+        try topology.validate()
+        guard topology.sampleRate == Double(sampleRate) else { throw SpeakerTopologyError.invalidSampleRate }
+        return topology
+    }
+
     var effectiveSpatialSettings: SpatialRenderSettings {
         var settings = spatialSettings
         if settings.seating?.outputDeviceUID != outputDeviceUID { settings.seating = nil }
@@ -209,7 +226,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         case autoActivateWhenProfileDeviceSelected
         case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize
         case spatialRenderingMode, spatialContentMode, spatialListenerProfile, spatialAcousticProfile, equalizerAPOText, processing
-        case virtualSurroundLayout, spatialSettings
+        case virtualSurroundLayout, spatialSettings, speakerTopology, usesReferenceSpeakers
     }
 
     private enum LegacyCodingKeys: String, CodingKey {
@@ -246,6 +263,11 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
             SpatialRenderingMode.self,
             forKey: .spatialRenderingMode
         ) ?? .standard
+        speakerTopology = try? values.decodeIfPresent(SpeakerTopology.self, forKey: .speakerTopology)
+        if let topology = speakerTopology, (try? topology.validate()) == nil { speakerTopology = nil }
+        usesReferenceSpeakers = (try? values.decodeIfPresent(Bool.self, forKey: .usesReferenceSpeakers)) ?? false
+        // Preserve intent on stale device/rate mappings; activation surfaces the
+        // mismatch rather than silently playing with an old physical map.
         spatialSettings = try values.decodeIfPresent(SpatialRenderSettings.self, forKey: .spatialSettings)
             ?? .migrated(from: spatialRenderingMode)
         if spatialRenderingMode == .frontStage || spatialRenderingMode == .virtualSurround {
@@ -294,6 +316,8 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         try values.encode(chunkSize, forKey: .chunkSize)
         try values.encode(spatialRenderingMode, forKey: .spatialRenderingMode)
         try values.encode(spatialSettings, forKey: .spatialSettings)
+        try values.encodeIfPresent(speakerTopology, forKey: .speakerTopology)
+        try values.encode(usesReferenceSpeakers, forKey: .usesReferenceSpeakers)
         try values.encodeIfPresent(spatialListenerProfile, forKey: .spatialListenerProfile)
         try values.encodeIfPresent(spatialAcousticProfile, forKey: .spatialAcousticProfile)
         try values.encode(spatialContentMode, forKey: .spatialContentMode)
