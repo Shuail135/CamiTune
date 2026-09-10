@@ -99,9 +99,10 @@ struct SystemVolumeTransferCurve: Sendable {
 /// work belongs to the serial control queue. UI notifications retain one latest
 /// snapshot, so a held key cannot build a backlog of MainActor tasks.
 final class SystemVolumeControlSession: @unchecked Sendable {
-    struct Snapshot: Sendable {
+    struct Snapshot: Sendable, Equatable {
         let scalar: Float32
         let muted: Bool
+        var revision: UInt64 = 0
     }
 
     private let state = NSLock()
@@ -112,6 +113,7 @@ final class SystemVolumeControlSession: @unchecked Sendable {
     private var onPhysicalVolumeTarget: @Sendable (Float32, Bool) -> Void
     private var latestScalar: Float32
     private var latestMute: Bool
+    private var revision: UInt64 = 0
     private var physicalReady: Bool
     private var handoff = false
     private var active = true
@@ -158,6 +160,7 @@ final class SystemVolumeControlSession: @unchecked Sendable {
         guard active else { return }
         let scalar = SystemVolumeTransferCurve.clampScalar(scalar)
         guard scalar != latestScalar || muted != latestMute else { return }
+        revision &+= 1
         if mode == .hardwareMirrored, latestMute && !muted { physicalReady = false }
         latestScalar = scalar
         latestMute = muted
@@ -168,6 +171,7 @@ final class SystemVolumeControlSession: @unchecked Sendable {
         state.lock()
         defer { state.unlock() }
         guard active else { return }
+        if latestScalar != target.scalar || latestMute != target.muted { revision &+= 1 }
         latestScalar = target.scalar
         latestMute = target.muted
         physicalReady = true
@@ -220,7 +224,7 @@ final class SystemVolumeControlSession: @unchecked Sendable {
     func snapshot() -> Snapshot {
         state.lock()
         defer { state.unlock() }
-        return Snapshot(scalar: latestScalar, muted: latestMute)
+        return Snapshot(scalar: latestScalar, muted: latestMute, revision: revision)
     }
 
     private func publishMasterLocked() {
@@ -258,6 +262,7 @@ final class SystemVolumeControlSession: @unchecked Sendable {
 /// A shared serial queue orders both directions of HAL synchronization.
 @MainActor
 final class SystemVolumeBridge {
+    var measurementSnapshot: SystemVolumeControlSession.Snapshot? { controlSession?.snapshot() }
     private weak var coreAudio: CoreAudioManager?
     private var physicalUID: String?
     private var routingID: AudioDeviceID?

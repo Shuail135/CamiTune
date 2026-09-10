@@ -7,6 +7,17 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        CA116B600000000000000001 = {isa = PBXBuildFile; fileRef = CA116B600000000000000011; };
+        CA116B600000000000000002 = {isa = PBXBuildFile; fileRef = CA116B600000000000000012; };
+        CA115B500000000000000005 = {isa = PBXBuildFile; fileRef = CA115B500000000000000015; };
+        CA115B500000000000000001 = {isa = PBXBuildFile; fileRef = CA115B500000000000000011; };
+        CA115B500000000000000002 = {isa = PBXBuildFile; fileRef = CA115B500000000000000012; };
+        CA115B500000000000000003 = {isa = PBXBuildFile; fileRef = CA115B500000000000000013; };
+        CA115B500000000000000004 = {isa = PBXBuildFile; fileRef = CA115B500000000000000014; };
+		CA114B400000000000000004 = {isa = PBXBuildFile; fileRef = CA114B400000000000000014; };
+		CA114B400000000000000001 = {isa = PBXBuildFile; fileRef = CA114B400000000000000011; };
+		CA114B400000000000000002 = {isa = PBXBuildFile; fileRef = CA114B400000000000000012; };
+		CA114B400000000000000003 = {isa = PBXBuildFile; fileRef = CA114B400000000000000013; };
 		AB109A719BE042A098FE1003 = {isa = PBXBuildFile; fileRef = AB109A719BE042A098FE1004; };
 		AB109A719BE042A098FE1001 = {isa = PBXBuildFile; fileRef = AB109A719BE042A098FE1002; };
 		0062E4974A58EB2758A2CE55 = {
@@ -493,6 +504,17 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+        CA116B600000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialContentPolicy.swift; sourceTree = "<group>"; };
+        CA116B600000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialContentPolicyTests.swift; sourceTree = "<group>"; };
+        CA115B500000000000000015 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialAcousticMeasurementTests.swift; sourceTree = "<group>"; };
+        CA115B500000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialAcousticMeasurement.swift; sourceTree = "<group>"; };
+        CA115B500000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AcousticSweepAnalyzer.swift; sourceTree = "<group>"; };
+        CA115B500000000000000013 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialMicrophoneCapture.swift; sourceTree = "<group>"; };
+        CA115B500000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialMicrophoneCalibrationView.swift; sourceTree = "<group>"; };
+		CA114B400000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialPerceptualCalibrationTests.swift; sourceTree = "<group>"; };
+		CA114B400000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialListenerProfile.swift; sourceTree = "<group>"; };
+		CA114B400000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialCalibrationAudio.swift; sourceTree = "<group>"; };
+		CA114B400000000000000013 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialPerceptualCalibrationView.swift; sourceTree = "<group>"; };
 		AB109A719BE042A098FE1004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalVolumeMirrorTests.swift; sourceTree = "<group>"; };
 		AB109A719BE042A098FE1002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalVolumeMirror.swift; sourceTree = "<group>"; };
 		002F0ED64C65B2D748394B8D = {
@@ -1348,6 +1370,14 @@
 		BF488F0E1E816939FCAC0EE2 = {
 			isa = PBXGroup;
 			children = (
+			    CA114B400000000000000011,
+                CA115B500000000000000011,
+                CA116B600000000000000011,
+                CA115B500000000000000012,
+                CA115B500000000000000013,
+                CA115B500000000000000014,
+			    CA114B400000000000000012,
+			    CA114B400000000000000013,
 			    6154D02D5D2B4B73FAEA68D8,
 			    C4F08F5868133AD6AA724DEC,
 			    C393C80F0A6351A34B95F79A,
@@ -1488,6 +1518,9 @@
 		EEFE21A1443933CA4DE017DA = {
 			isa = PBXGroup;
 			children = (
+			    CA114B400000000000000014,
+                CA115B500000000000000015,
+                CA116B600000000000000012,
 			    AB109A719BE042A098FE1004,
 			    F2A8E1344C36C10E0DEA01E6,
 			    B2AE6B6ABE861570A5AEF10F,
@@ -1654,6 +1687,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			    CA114B400000000000000004,
+                CA115B500000000000000005,
+                CA116B600000000000000002,
 			    AB109A719BE042A098FE1003,
 			    0ED50744FEC92A92D538EFC6,
 			    C9AF18BB6D5E5794291732CB,
@@ -1683,6 +1719,14 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			    CA114B400000000000000001,
+                CA115B500000000000000001,
+                CA116B600000000000000001,
+                CA115B500000000000000002,
+                CA115B500000000000000003,
+                CA115B500000000000000004,
+			    CA114B400000000000000002,
+			    CA114B400000000000000003,
 			    AB109A719BE042A098FE1001,
 			    087A85F6C26B99E3E3C61059,
 			    5802CB74AF55627F307EC03B,

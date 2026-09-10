@@ -72,8 +72,10 @@ struct VirtualSourceRenderer {
         )
         let centerGain = 1 + (0.08 * intent.centerAnchor)
         let anchoredMid = mid * centerGain
-        var outputLeft = anchoredMid + (side * sideGain)
-        var outputRight = anchoredMid - (side * sideGain)
+        let centerLeftGain = 1 - max(0, intent.centerBalance)
+        let centerRightGain = 1 + min(0, intent.centerBalance)
+        var outputLeft = anchoredMid * centerLeftGain + (side * sideGain)
+        var outputRight = anchoredMid * centerRightGain - (side * sideGain)
 
         guard !delayLine.isEmpty else { return (outputLeft, outputRight) }
         let near = delayLine[readIndex(delay: nearDelaySamples)]
@@ -100,8 +102,8 @@ struct VirtualSourceRenderer {
             * reflectionIntent
             * safeScale
         let reflection = reflectionLowpass * reflectionGain
-        outputLeft += reflection
-        outputRight += reflection
+        outputLeft += reflection * centerLeftGain
+        outputRight += reflection * centerRightGain
         return (outputLeft, outputRight)
     }
 

@@ -45,7 +45,8 @@ struct SpatialParameterSmoother {
             localizationPrecision: approach(current.localizationPrecision, target.localizationPrecision, coefficient),
             centerExternalization: approach(current.centerExternalization, target.centerExternalization, coefficient),
             crosstalkControl: approach(current.crosstalkControl, target.crosstalkControl, coefficient),
-            timbreCompensation: approach(current.timbreCompensation, target.timbreCompensation, coefficient)
+            timbreCompensation: approach(current.timbreCompensation, target.timbreCompensation, coefficient),
+            centerBalance: approach(current.centerBalance, target.centerBalance, coefficient)
         )
         return current
     }

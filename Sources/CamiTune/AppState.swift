@@ -36,6 +36,7 @@ final class AppState: NSObject, ObservableObject {
     @Published private(set) var isActive = false
     @Published private(set) var activeVolumeMode: SystemVolumeMode?
     @Published private(set) var activeSession: AudioRuntimeSession?
+    @Published private(set) var spatialCalibrationContext: SpatialCalibrationContext?
     @Published var errorMessage: String?
     @Published var validationMessage: String = ""
     @Published var warnings: [String] = []
@@ -142,6 +143,9 @@ final class AppState: NSObject, ObservableObject {
                     self.volumeBridge.resumeAfterExternalRouteReturn()
                 } else {
                     self.volumeBridge.silenceForExternalRouteChange()
+                    if let context = self.spatialCalibrationContext {
+                        self.endSpatialCalibration(id: context.id)
+                    }
                 }
             }
 
@@ -930,6 +934,8 @@ final class AppState: NSObject, ObservableObject {
             await pcmRouter.start(
                 camillaSink: try dsp.audioInputHandle(),
                 spatialRenderingMode: profile.spatialRenderingMode,
+                spatialListenerTuning: profile.spatialListenerTuning,
+                spatialContentMode: profile.spatialContentMode,
                 meterConsumer: meters.pcmConsumer(for: runtimeSession),
                 analyzerConsumer: { [weak spectrum] frame in
                     spectrum?.ingest(
@@ -1027,6 +1033,105 @@ final class AppState: NSObject, ObservableObject {
         }
     }
 
+    func beginSpatialCalibration(profileID: UUID) -> SpatialCalibrationContext? {
+        guard isActive, !transitionInProgress, spatialCalibrationContext == nil,
+              let session = activeSession, session.profileID == profileID,
+              let rate = activeSampleRate,
+              coreAudio.defaultOutputUID == activeRoutingUID,
+              let profile = profiles.profiles.first(where: { $0.id == profileID }),
+              profile.spatialRenderingMode == .frontStage,
+              profile.outputDeviceUID == activePhysicalOutputUID else { return nil }
+        let context = SpatialCalibrationContext(
+            id: UUID(), runtimeSessionID: session.id, profileID: profileID,
+            outputDeviceUID: profile.outputDeviceUID, sampleRate: Double(rate)
+        )
+        // Spatial mode is a local PCM setting. Do not let a pending graph RPC
+        // leave the first audition in the previously selected Standard mode.
+        pcmRouter.setSpatialRenderingMode(.frontStage)
+        guard pcmRouter.beginSpatialCalibration(id: context.id, tuning: profile.spatialListenerTuning) else {
+            return nil
+        }
+        spatialCalibrationContext = context
+        return context
+    }
+
+    func playSpatialCalibration(
+        context: SpatialCalibrationContext, clip: SpatialCalibrationClip,
+        tuning: SpatialListenerTuning, completion: @escaping @Sendable () -> Void
+    ) -> Bool {
+        guard spatialCalibrationContext == context, activeSession?.id == context.runtimeSessionID,
+              isActive, !transitionInProgress, activePhysicalOutputUID == context.outputDeviceUID,
+              coreAudio.defaultOutputUID == activeRoutingUID,
+              Double(activeSampleRate ?? 0) == clip.sampleRate else { return false }
+        return pcmRouter.playSpatialCalibration(
+            id: context.id, clip: clip, tuning: tuning, completion: completion
+        )
+    }
+
+    func saveSpatialCalibration(
+        context: SpatialCalibrationContext, name: String, result: SpatialPerceptualCalibration
+    ) -> Bool {
+        guard result.isComplete, spatialCalibrationContext == context,
+              activeSession?.id == context.runtimeSessionID, !transitionInProgress,
+              coreAudio.defaultOutputUID == activeRoutingUID,
+              var profile = profiles.profiles.first(where: { $0.id == context.profileID }),
+              profile.outputDeviceUID == context.outputDeviceUID else { return false }
+        let name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        profile.spatialListenerProfile = SpatialListenerProfile(
+            name: name.isEmpty ? "My listening position" : name,
+            outputDeviceUID: context.outputDeviceUID, savedAt: Date(),
+            position: result.position, tuning: result.tuning.validated,
+            completedComparisons: result.comparisonIndex
+        )
+        profiles.update(profile)
+        pcmRouter.setSpatialListenerTuning(profile.spatialListenerTuning)
+        endSpatialCalibration(id: context.id)
+        return true
+    }
+
+    func clearSpatialCalibration(profileID: UUID) {
+        guard spatialCalibrationContext == nil,
+              var profile = profiles.profiles.first(where: { $0.id == profileID }) else { return }
+        profile.spatialListenerProfile = nil
+        profiles.update(profile)
+        if activeProfileID == profileID { pcmRouter.setSpatialListenerTuning(profile.spatialListenerTuning) }
+    }
+
+    func holdSpatialMeasurement(context: SpatialCalibrationContext, enabled: Bool) {
+        guard spatialCalibrationContext == context else { return }
+        pcmRouter.holdSpatialMeasurement(id: context.id, enabled: enabled)
+    }
+
+    var acousticVolumeSnapshot: SystemVolumeControlSession.Snapshot? { volumeBridge.measurementSnapshot }
+
+    func acousticMeasurementIsCurrent(context: SpatialCalibrationContext, processing: ProcessingProfile) -> Bool {
+        spatialCalibrationContext == context && isActive && !transitionInProgress
+            && activeSession?.id == context.runtimeSessionID
+            && coreAudio.defaultOutputUID == activeRoutingUID
+            && profiles.profiles.first(where: { $0.id == context.profileID })?.processing == processing
+    }
+
+    func saveAcousticCalibration(context: SpatialCalibrationContext, measurement: SpatialAcousticProfile) -> Bool {
+        guard spatialCalibrationContext == context, isActive, !transitionInProgress,
+              activeSession?.id == context.runtimeSessionID,
+              coreAudio.defaultOutputUID == activeRoutingUID,
+              var profile = profiles.profiles.first(where: { $0.id == context.profileID }),
+              measurement.applies(to: profile),
+              measurement.positions.contains(where: { $0.position == .listeningPosition }) else { return false }
+        profile.spatialAcousticProfile = measurement
+        profile.spatialListenerProfile = nil
+        profiles.update(profile)
+        pcmRouter.setSpatialListenerTuning(profile.spatialListenerTuning)
+        endSpatialCalibration(id: context.id)
+        return true
+    }
+
+    func endSpatialCalibration(id: UUID) {
+        guard spatialCalibrationContext?.id == id else { return }
+        pcmRouter.endSpatialCalibration(id: id)
+        spatialCalibrationContext = nil
+    }
+
     func apply(profile: DeviceProfile) async {
         latestApplyRequest &+= 1
         pendingLiveApply = PendingLiveApply(
@@ -1079,7 +1184,10 @@ final class AppState: NSObject, ObservableObject {
             let graph = try await buildGraphWithoutBlockingUI(profile: profile)
             try await dspController.applyGraph(graph)
             guard request == latestApplyRequest else { return }
-            pcmRouter.setSpatialRenderingMode(profile.spatialRenderingMode)
+            let currentProfile = profiles.profiles.first { $0.id == profile.id } ?? profile
+            pcmRouter.setSpatialRenderingMode(currentProfile.spatialRenderingMode)
+            pcmRouter.setSpatialListenerTuning(currentProfile.spatialListenerTuning)
+            pcmRouter.setSpatialContentMode(currentProfile.spatialContentMode)
             clearTransientError()
         } catch {
             guard request == latestApplyRequest else { return }
@@ -1220,6 +1328,7 @@ final class AppState: NSObject, ObservableObject {
     }
 
     private func stopProcessingPipeline() async {
+        if let context = spatialCalibrationContext { endSpatialCalibration(id: context.id) }
         meters.stop()
         await driverTransport.stopWithoutBlockingUI()
         await perAppAudio.resetRuntimeWithoutBlockingUI()
@@ -1344,6 +1453,7 @@ final class AppState: NSObject, ObservableObject {
     }
 
     private func shutdownSynchronously() {
+        if let context = spatialCalibrationContext { endSpatialCalibration(id: context.id) }
         monitorTimer?.invalidate()
         monitorTimer = nil
 

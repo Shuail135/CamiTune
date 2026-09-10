@@ -104,6 +104,8 @@ final class PCMRouter: @unchecked Sendable {
     func start(
         camillaSink: FileHandle,
         spatialRenderingMode: SpatialRenderingMode = .standard,
+        spatialListenerTuning: SpatialListenerTuning = .neutral,
+        spatialContentMode: SpatialContentMode = .automatic,
         meterConsumer: MeterConsumer? = nil,
         analyzerConsumer: AnalyzerConsumer? = nil
     ) async {
@@ -111,6 +113,8 @@ final class PCMRouter: @unchecked Sendable {
             startSynchronously(
                 camillaSink: camillaSink,
                 spatialRenderingMode: spatialRenderingMode,
+                spatialListenerTuning: spatialListenerTuning,
+                spatialContentMode: spatialContentMode,
                 meterConsumer: meterConsumer,
                 analyzerConsumer: analyzerConsumer
             )
@@ -122,6 +126,8 @@ final class PCMRouter: @unchecked Sendable {
     private func startSynchronously(
         camillaSink: FileHandle,
         spatialRenderingMode: SpatialRenderingMode,
+        spatialListenerTuning: SpatialListenerTuning,
+        spatialContentMode: SpatialContentMode,
         meterConsumer: MeterConsumer?,
         analyzerConsumer: AnalyzerConsumer?
     ) {
@@ -130,6 +136,8 @@ final class PCMRouter: @unchecked Sendable {
             handle: camillaSink,
             systemMaster: systemMaster,
             spatialRenderingMode: spatialRenderingMode,
+            spatialListenerTuning: spatialListenerTuning,
+            spatialContentMode: spatialContentMode,
             recoveryHandler: { [weak self] droppedFrames in
                 self?.recordCamillaRecovery(droppedFrames: droppedFrames)
             },
@@ -193,6 +201,59 @@ final class PCMRouter: @unchecked Sendable {
         camillaBranch?.enqueue(frame)
         meterBranch?.enqueue(frame)
         analyzerBranch?.enqueue(frame)
+    }
+
+    func setSpatialListenerTuning(_ tuning: SpatialListenerTuning) {
+        state.lock()
+        defer { state.unlock() }
+        camillaBranch?.setSpatialListenerTuning(tuning)
+    }
+
+    func setSpatialContentMode(_ mode: SpatialContentMode) {
+        state.lock()
+        defer { state.unlock() }
+        camillaBranch?.setSpatialContentMode(mode)
+    }
+
+    var spatialContentEstimate: SpatialContentEstimate {
+        state.lock()
+        defer { state.unlock() }
+        return camillaBranch?.contentEstimate ?? .unknown
+    }
+
+    func beginSpatialCalibration(id: UUID, tuning: SpatialListenerTuning) -> Bool {
+        state.lock()
+        defer { state.unlock() }
+        return camillaBranch?.beginSpatialCalibration(id: id, tuning: tuning) ?? false
+    }
+
+    func playSpatialCalibration(
+        id: UUID, clip: SpatialCalibrationClip, tuning: SpatialListenerTuning,
+        completion: @escaping @Sendable () -> Void
+    ) -> Bool {
+        state.lock()
+        defer { state.unlock() }
+        return camillaBranch?.playSpatialCalibration(
+            id: id, clip: clip, tuning: tuning, completion: completion
+        ) ?? false
+    }
+
+    func stopSpatialCalibrationSample(id: UUID) {
+        state.lock()
+        defer { state.unlock() }
+        camillaBranch?.stopSpatialCalibrationSample(id: id)
+    }
+
+    func holdSpatialMeasurement(id: UUID, enabled: Bool) {
+        state.lock()
+        defer { state.unlock() }
+        camillaBranch?.holdSpatialMeasurement(id: id, enabled: enabled)
+    }
+
+    func endSpatialCalibration(id: UUID) {
+        state.lock()
+        defer { state.unlock() }
+        camillaBranch?.endSpatialCalibration(id: id)
     }
 
     /// Normal runtime shutdown path. The synchronous stop remains available for
@@ -466,11 +527,22 @@ private final class CamillaPCMBranch: @unchecked Sendable {
     private var resampler = AdaptivePCMResampler()
     private let sourceRouter = SpatialSourceRouter()
     private let spatialPolicy = SpatialPolicy()
+    private var contentAnalyzer = SpatialContentAnalyzer()
+    private var spatialContentMode: SpatialContentMode
+    private var publishedContentEstimate = SpatialContentEstimate.unknown
+    private var contentEstimateDate = Date.distantPast
+    private var needsContentReset = false
     private let frontStageRenderer = FrontStageRenderer()
     private let multichannelMovieRenderer = MultichannelMovieRenderer()
     private var lastSourceFormat: SpatialSourceFormat?
     private var lastSpatialPath: SpatialPath?
     private var spatialRenderingMode: SpatialRenderingMode
+    private var spatialListenerTuning: SpatialListenerTuning
+    private var calibrationID: UUID?
+    private var calibrationTuning: SpatialListenerTuning?
+    private var calibrationPlayback: SpatialCalibrationPlayback?
+    private var measurementHold = false
+    private var nextCalibrationFrameDate = Date()
     private var needsSpatialReset = false
     private var masterRevision: UInt64 = UInt64.max
     private var currentMasterGain: Float = 1
@@ -482,6 +554,8 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         handle: FileHandle,
         systemMaster: SystemMasterGainControl,
         spatialRenderingMode: SpatialRenderingMode,
+        spatialListenerTuning: SpatialListenerTuning,
+        spatialContentMode: SpatialContentMode,
         recoveryHandler: @escaping (Int) -> Void,
         failureHandler: @escaping () -> Void,
         adjustmentHandler: @escaping (Double, Int) -> Void
@@ -496,6 +570,8 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             self.handle = nil
         }
         self.spatialRenderingMode = spatialRenderingMode
+        self.spatialListenerTuning = spatialListenerTuning.validated
+        self.spatialContentMode = spatialContentMode
         self.systemMaster = systemMaster
         let initialMaster = systemMaster.snapshot()
         masterRevision = initialMaster.revision
@@ -533,9 +609,74 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         thread.start()
     }
 
+    func setSpatialListenerTuning(_ tuning: SpatialListenerTuning) {
+        condition.lock()
+        spatialListenerTuning = tuning.validated
+        condition.unlock()
+    }
+
+    func beginSpatialCalibration(id: UUID, tuning: SpatialListenerTuning) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        guard !stopping, !workerFinished, calibrationID == nil else { return false }
+        calibrationID = id
+        needsContentReset = true
+        calibrationTuning = tuning.validated
+        return true
+    }
+
+    var contentEstimate: SpatialContentEstimate {
+        condition.lock()
+        defer { condition.unlock() }
+        return Date().timeIntervalSince(contentEstimateDate) < 1 ? publishedContentEstimate : .unknown
+    }
+
+    func setSpatialContentMode(_ mode: SpatialContentMode) {
+        condition.lock()
+        defer { condition.unlock() }
+        guard spatialContentMode != mode else { return }
+        spatialContentMode = mode
+        needsContentReset = true
+    }
+
+    func playSpatialCalibration(
+        id: UUID, clip: SpatialCalibrationClip, tuning: SpatialListenerTuning,
+        completion: @escaping @Sendable () -> Void
+    ) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        guard calibrationID == id, !stopping, !workerFinished else { return false }
+        calibrationTuning = tuning.validated
+        calibrationPlayback = SpatialCalibrationPlayback(clip: clip, completion: completion)
+        nextCalibrationFrameDate = Date()
+        queue.clear()
+        needsRateMatcherReset = true
+        condition.signal()
+        return true
+    }
+
+    func stopSpatialCalibrationSample(id: UUID) {
+        condition.lock()
+        defer { condition.unlock() }
+        guard calibrationID == id else { return }
+        calibrationPlayback?.requestStop()
+        condition.signal()
+    }
+
+    func endSpatialCalibration(id: UUID) {
+        condition.lock()
+        defer { condition.unlock() }
+        guard calibrationID == id else { return }
+        calibrationID = nil
+        measurementHold = false
+        calibrationTuning = nil
+        calibrationPlayback?.requestStop()
+        condition.signal()
+    }
+
     func enqueue(_ frame: PCMFrame) {
         condition.lock()
-        guard !stopping else {
+        guard !stopping, calibrationPlayback == nil, !measurementHold else {
             condition.unlock()
             return
         }
@@ -546,9 +687,20 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         if droppedFrames > 0 { recoveryHandler(droppedFrames) }
     }
 
+    func holdSpatialMeasurement(id: UUID, enabled: Bool) {
+        condition.lock()
+        defer { condition.unlock() }
+        guard calibrationID == id else { return }
+        measurementHold = enabled
+        if enabled { queue.clear(); needsRateMatcherReset = true }
+    }
+
     func stop() {
         condition.lock()
         stopping = true
+        calibrationID = nil
+        calibrationTuning = nil
+        calibrationPlayback = nil
         queue.clear()
         condition.broadcast()
         let deadline = Date().addingTimeInterval(0.5)
@@ -577,23 +729,64 @@ private final class CamillaPCMBranch: @unchecked Sendable {
 
         while true {
             condition.lock()
-            while queue.isEmpty && !stopping { condition.wait() }
+            while queue.isEmpty && calibrationPlayback == nil && !stopping { condition.wait() }
             if stopping {
                 workerFinished = true
                 condition.broadcast()
                 condition.unlock()
                 return
             }
-            guard let frame = queue.removeFirst() else {
+            if calibrationPlayback != nil, Date() < nextCalibrationFrameDate {
+                condition.wait(until: nextCalibrationFrameDate)
+                condition.unlock()
+                continue
+            }
+            let isCalibrationSample = calibrationPlayback != nil
+            let isAcousticMeasurement = calibrationPlayback?.clip.isAcousticMeasurement ?? false
+            var calibrationCompletion: (@Sendable () -> Void)?
+            let nextFrame: PCMFrame?
+            if var playback = calibrationPlayback {
+                nextFrame = playback.nextFrame()
+                if playback.isFinished {
+                    calibrationCompletion = playback.completion
+                    calibrationPlayback = nil
+                } else {
+                    calibrationPlayback = playback
+                }
+                let duration = Double(nextFrame?.frameCount ?? 0) / playback.clip.sampleRate
+                nextCalibrationFrameDate = max(nextCalibrationFrameDate, Date().addingTimeInterval(-0.05))
+                    .addingTimeInterval(duration)
+            } else {
+                nextFrame = queue.removeFirst()
+            }
+            guard let frame = nextFrame else {
                 condition.unlock()
                 continue
             }
             let queuedFrames = queue.queuedFrames
             let shouldResetRateMatcher = needsRateMatcherReset
             let shouldResetSpatialRenderer = needsSpatialReset
-            let spatialRenderingMode = self.spatialRenderingMode
+            // Keep the two physical sweep channels independent. The existing
+            // downstream output EQ and system master remain in the path.
+            let spatialRenderingMode: SpatialRenderingMode = isAcousticMeasurement ? .standard : self.spatialRenderingMode
+            let listenerTuning = calibrationTuning ?? spatialListenerTuning
+            let contentMode = spatialContentMode
+            let isCalibrating = calibrationID != nil || isCalibrationSample
+            let shouldAnalyzeContent = spatialRenderingMode == .frontStage && calibrationID == nil
+                && !isCalibrationSample && contentMode != .fixed && contentMode != .musicSafe
+            let shouldResetContent = needsContentReset || Date().timeIntervalSince(contentEstimateDate) > 1
+            needsContentReset = false
             needsRateMatcherReset = false
             needsSpatialReset = false
+            condition.unlock()
+            if shouldResetContent || shouldResetRateMatcher || shouldResetSpatialRenderer || lastSourceFormat != frame.sourceFormat {
+                contentAnalyzer.reset()
+            }
+            if shouldAnalyzeContent { contentAnalyzer.ingest(frame) }
+            else { contentAnalyzer.reset() }
+            condition.lock()
+            publishedContentEstimate = contentAnalyzer.estimate
+            contentEstimateDate = Date()
             condition.unlock()
             if shouldResetRateMatcher {
                 rateController.reset()
@@ -613,7 +806,17 @@ private final class CamillaPCMBranch: @unchecked Sendable {
                 multichannelMovieRenderer.reset()
                 lastSpatialPath = nil
             }
-            let decision = spatialPolicy.decision(
+            var policy = spatialPolicy
+            if contentMode == .movieVideo && shouldAnalyzeContent { policy.stereoIntent = .frontStageMovie }
+            policy.stereoIntent = listenerTuning.applying(to: policy.stereoIntent)
+            policy.movieIntent = listenerTuning.applying(to: policy.movieIntent)
+            if !isCalibrating {
+                policy.stereoIntent = AdaptiveSpatialContentPolicy.intent(base: policy.stereoIntent,
+                    mode: contentMode, estimate: contentAnalyzer.estimate, multichannel: false)
+                policy.movieIntent = AdaptiveSpatialContentPolicy.intent(base: policy.movieIntent,
+                    mode: contentMode, estimate: contentAnalyzer.estimate, multichannel: true)
+            }
+            let decision = policy.decision(
                 for: frame,
                 mode: spatialRenderingMode
             )
@@ -660,14 +863,15 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             // is the correct clock-boundary backlog to control.
             let bufferedFrames = frame.frameCount + queuedFrames
             let localQueueCapacityFrames = max(frame.frameCount * 8, frame.frameCount)
-            let adjustmentPPM = rateController.update(
+            let adjustmentPPM = isCalibrationSample ? 0 : rateController.update(
                 bufferedFrames: bufferedFrames,
                 sourceCapacityFrames: localQueueCapacityFrames,
                 sampleRate: frame.sampleRate,
                 elapsedFrames: frame.frameCount
             )
             adjustmentHandler(adjustmentPPM, bufferedFrames)
-            var adjustedFrame = resampler.process(renderedFrame, adjustmentPPM: adjustmentPPM)
+            var adjustedFrame = isCalibrationSample
+                ? renderedFrame : resampler.process(renderedFrame, adjustmentPPM: adjustmentPPM)
             guard !adjustedFrame.interleaved.isEmpty else { continue }
             applySystemMaster(
                 to: &adjustedFrame.interleaved,
@@ -678,6 +882,7 @@ private final class CamillaPCMBranch: @unchecked Sendable {
                 try adjustedFrame.interleaved.withUnsafeBytes { bytes in
                     try handle.write(contentsOf: Data(bytes))
                 }
+                calibrationCompletion?()
             } catch {
                 condition.lock()
                 stopping = true

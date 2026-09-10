@@ -50,6 +50,14 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     var sampleRate: Int = 48_000
     var chunkSize: Int = 1024
     var spatialRenderingMode: SpatialRenderingMode = .standard
+    var spatialContentMode: SpatialContentMode = .automatic
+    var spatialListenerProfile: SpatialListenerProfile?
+    var spatialAcousticProfile: SpatialAcousticProfile?
+
+    var spatialListenerTuning: SpatialListenerTuning {
+        spatialListenerProfile?.tuning(for: outputDeviceUID)
+            ?? (spatialAcousticProfile?.applies(to: self) == true ? spatialAcousticProfile!.suggestedTuning : .neutral)
+    }
     var processing: ProcessingProfile
     private var unmigratedEqualizerAPOText: String?
 
@@ -178,7 +186,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         case id, name, outputDevice, outputDeviceUID, outputDeviceName, isEnabled
         case autoActivateWhenProfileDeviceSelected
         case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize
-        case spatialRenderingMode, equalizerAPOText, processing
+        case spatialRenderingMode, spatialContentMode, spatialListenerProfile, spatialAcousticProfile, equalizerAPOText, processing
     }
 
     private enum LegacyCodingKeys: String, CodingKey {
@@ -215,6 +223,13 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
             SpatialRenderingMode.self,
             forKey: .spatialRenderingMode
         ) ?? .standard
+        // A damaged or newer optional calibration must not make an otherwise
+        // usable output/EQ profile unreadable.
+        spatialListenerProfile = try? values.decodeIfPresent(
+            SpatialListenerProfile.self, forKey: .spatialListenerProfile
+        )
+        spatialAcousticProfile = try? values.decodeIfPresent(SpatialAcousticProfile.self, forKey: .spatialAcousticProfile)
+        spatialContentMode = (try? values.decodeIfPresent(SpatialContentMode.self, forKey: .spatialContentMode)) ?? .automatic
         let legacyText = try values.decodeIfPresent(String.self, forKey: .equalizerAPOText)
             ?? Self.defaultEqualizerAPOText
         if let decodedProcessing = try values.decodeIfPresent(ProcessingProfile.self, forKey: .processing) {
@@ -241,6 +256,9 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         try values.encode(sampleRate, forKey: .sampleRate)
         try values.encode(chunkSize, forKey: .chunkSize)
         try values.encode(spatialRenderingMode, forKey: .spatialRenderingMode)
+        try values.encodeIfPresent(spatialListenerProfile, forKey: .spatialListenerProfile)
+        try values.encodeIfPresent(spatialAcousticProfile, forKey: .spatialAcousticProfile)
+        try values.encode(spatialContentMode, forKey: .spatialContentMode)
         // Do not let a placeholder graph overwrite an invalid legacy document.
         // Keeping it unmigrated means the editor can still surface and repair it.
         if unmigratedEqualizerAPOText == nil {

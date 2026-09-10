@@ -27,6 +27,7 @@ final class MultichannelMovieRenderer {
     private var headroomReleaseCoefficient = Float.zero
     private var limiterGain = Float(1)
     private var limiterReleaseCoefficient = Float.zero
+    private var smoother = SpatialParameterSmoother()
 
     private(set) var diagnostics: MultichannelMovieRenderDiagnostics = .neutral
 
@@ -38,6 +39,7 @@ final class MultichannelMovieRenderer {
         lfeLowpass = 0
         headroomGain = 1
         limiterGain = 1
+        smoother.reset()
         diagnostics = .neutral
     }
 
@@ -55,16 +57,17 @@ final class MultichannelMovieRenderer {
         }
         prepare(sampleRate: frame.sampleRate)
 
-        let intent = requestedIntent.clamped
+        let targetIntent = requestedIntent.clamped
         let activity = roleActivity(in: frame)
         let targetHeadroom = automaticHeadroom(
             activeRoles: activity,
-            intent: intent
+            intent: targetIntent
         )
         var output = [Float]()
         output.reserveCapacity(frame.frameCount * 2)
 
         for frameIndex in 0..<frame.frameCount {
+            let intent = smoother.next(target: targetIntent, sampleRate: frame.sampleRate)
             let offset = frameIndex * frame.channelCount
             var frontLeft = Float.zero
             var frontRight = Float.zero

@@ -1,8 +1,8 @@
 import Foundation
 
-/// Safe physical constants used by the Prototype-2 renderer. Later microphone
-/// and perceptual calibration milestones can replace these values without
-/// changing the realtime renderer's public intent model.
+/// Safe physical constants used by the renderer. Perceptual calibration adjusts
+/// intent through SpatialListenerProfile; measured acoustic constants belong
+/// to the later microphone-assisted calibration milestone.
 struct SpatialCalibrationProfile: Hashable, Sendable {
     var crosstalkDelayMicroseconds: Float
     var crosstalkMaximumCancellation: Float

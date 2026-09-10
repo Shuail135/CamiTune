@@ -27,6 +27,7 @@ struct SpatialRenderIntent: Hashable, Sendable {
     var centerExternalization: Float
     var crosstalkControl: Float
     var timbreCompensation: Float
+    var centerBalance: Float
 
     init(
         frontStageStrength: Float,
@@ -37,7 +38,8 @@ struct SpatialRenderIntent: Hashable, Sendable {
         localizationPrecision: Float,
         centerExternalization: Float = 0,
         crosstalkControl: Float = 0,
-        timbreCompensation: Float = 0
+        timbreCompensation: Float = 0,
+        centerBalance: Float = 0
     ) {
         self.frontStageStrength = frontStageStrength
         self.stageWidth = stageWidth
@@ -48,6 +50,7 @@ struct SpatialRenderIntent: Hashable, Sendable {
         self.centerExternalization = centerExternalization
         self.crosstalkControl = crosstalkControl
         self.timbreCompensation = timbreCompensation
+        self.centerBalance = centerBalance
     }
 
     static let neutral = SpatialRenderIntent(
@@ -59,9 +62,8 @@ struct SpatialRenderIntent: Hashable, Sendable {
         localizationPrecision: 0
     )
 
-    /// Conservative fixed policy for Prototype 2. Adaptive movie/music
-    /// semantics arrive in Prototype 6; this policy deliberately does not try
-    /// to infer content type yet.
+    /// Fixed calibration/reference policy. Prototype 6 applies bounded
+    /// content adjustments separately on the PCM writer worker.
     static let frontStageStereo = SpatialRenderIntent(
         frontStageStrength: 0.72,
         stageWidth: 0.48,
@@ -96,7 +98,8 @@ struct SpatialRenderIntent: Hashable, Sendable {
             localizationPrecision: Self.unit(localizationPrecision),
             centerExternalization: Self.unit(centerExternalization),
             crosstalkControl: Self.unit(crosstalkControl),
-            timbreCompensation: Self.unit(timbreCompensation)
+            timbreCompensation: Self.unit(timbreCompensation),
+            centerBalance: centerBalance.isFinite ? max(-0.18, min(0.18, centerBalance)) : 0
         )
     }
 
