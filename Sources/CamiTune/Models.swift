@@ -51,6 +51,7 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     var chunkSize: Int = 1024
     var spatialRenderingMode: SpatialRenderingMode = .standard
     var spatialContentMode: SpatialContentMode = .automatic
+    var virtualSurroundLayout: VirtualSurroundLayout = .standard
     var spatialListenerProfile: SpatialListenerProfile?
     var spatialAcousticProfile: SpatialAcousticProfile?
 
@@ -187,6 +188,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         case autoActivateWhenProfileDeviceSelected
         case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize
         case spatialRenderingMode, spatialContentMode, spatialListenerProfile, spatialAcousticProfile, equalizerAPOText, processing
+        case virtualSurroundLayout
     }
 
     private enum LegacyCodingKeys: String, CodingKey {
@@ -230,6 +232,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         )
         spatialAcousticProfile = try? values.decodeIfPresent(SpatialAcousticProfile.self, forKey: .spatialAcousticProfile)
         spatialContentMode = (try? values.decodeIfPresent(SpatialContentMode.self, forKey: .spatialContentMode)) ?? .automatic
+        virtualSurroundLayout = (try? values.decodeIfPresent(VirtualSurroundLayout.self, forKey: .virtualSurroundLayout)) ?? .standard
         let legacyText = try values.decodeIfPresent(String.self, forKey: .equalizerAPOText)
             ?? Self.defaultEqualizerAPOText
         if let decodedProcessing = try values.decodeIfPresent(ProcessingProfile.self, forKey: .processing) {
@@ -259,6 +262,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         try values.encodeIfPresent(spatialListenerProfile, forKey: .spatialListenerProfile)
         try values.encodeIfPresent(spatialAcousticProfile, forKey: .spatialAcousticProfile)
         try values.encode(spatialContentMode, forKey: .spatialContentMode)
+        try values.encode(virtualSurroundLayout, forKey: .virtualSurroundLayout)
         // Do not let a placeholder graph overwrite an invalid legacy document.
         // Keeping it unmigrated means the editor can still surface and repair it.
         if unmigratedEqualizerAPOText == nil {

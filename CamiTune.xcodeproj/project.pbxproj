@@ -7,6 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        CA118B800000000000000001 = {isa = PBXBuildFile; fileRef = CA118B800000000000000011; };
+        CA117B700000000000000001 = {isa = PBXBuildFile; fileRef = CA117B700000000000000011; };
+        CA117B700000000000000002 = {isa = PBXBuildFile; fileRef = CA117B700000000000000012; };
+        CA117B700000000000000003 = {isa = PBXBuildFile; fileRef = CA117B700000000000000013; };
+        CA117B700000000000000004 = {isa = PBXBuildFile; fileRef = CA117B700000000000000014; };
         CA116B600000000000000001 = {isa = PBXBuildFile; fileRef = CA116B600000000000000011; };
         CA116B600000000000000002 = {isa = PBXBuildFile; fileRef = CA116B600000000000000012; };
         CA115B500000000000000005 = {isa = PBXBuildFile; fileRef = CA115B500000000000000015; };
@@ -504,6 +509,11 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+        CA118B800000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialRoomCorrection.swift; sourceTree = "<group>"; };
+        CA117B700000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSurroundLayout.swift; sourceTree = "<group>"; };
+        CA117B700000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSurroundRenderer.swift; sourceTree = "<group>"; };
+        CA117B700000000000000013 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSurroundEditorView.swift; sourceTree = "<group>"; };
+        CA117B700000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSurroundTests.swift; sourceTree = "<group>"; };
         CA116B600000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialContentPolicy.swift; sourceTree = "<group>"; };
         CA116B600000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialContentPolicyTests.swift; sourceTree = "<group>"; };
         CA115B500000000000000015 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialAcousticMeasurementTests.swift; sourceTree = "<group>"; };
@@ -1373,6 +1383,10 @@
 			    CA114B400000000000000011,
                 CA115B500000000000000011,
                 CA116B600000000000000011,
+                CA118B800000000000000011,
+                CA117B700000000000000011,
+                CA117B700000000000000012,
+                CA117B700000000000000013,
                 CA115B500000000000000012,
                 CA115B500000000000000013,
                 CA115B500000000000000014,
@@ -1521,6 +1535,7 @@
 			    CA114B400000000000000014,
                 CA115B500000000000000015,
                 CA116B600000000000000012,
+                CA117B700000000000000014,
 			    AB109A719BE042A098FE1004,
 			    F2A8E1344C36C10E0DEA01E6,
 			    B2AE6B6ABE861570A5AEF10F,
@@ -1690,6 +1705,7 @@
 			    CA114B400000000000000004,
                 CA115B500000000000000005,
                 CA116B600000000000000002,
+                CA117B700000000000000004,
 			    AB109A719BE042A098FE1003,
 			    0ED50744FEC92A92D538EFC6,
 			    C9AF18BB6D5E5794291732CB,
@@ -1722,6 +1738,10 @@
 			    CA114B400000000000000001,
                 CA115B500000000000000001,
                 CA116B600000000000000001,
+                CA118B800000000000000001,
+                CA117B700000000000000001,
+                CA117B700000000000000002,
+                CA117B700000000000000003,
                 CA115B500000000000000002,
                 CA115B500000000000000003,
                 CA115B500000000000000004,

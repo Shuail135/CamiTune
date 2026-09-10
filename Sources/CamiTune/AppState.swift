@@ -946,6 +946,7 @@ final class AppState: NSObject, ObservableObject {
                     )
                 }
             )
+            pcmRouter.setVirtualSurroundLayout(profile.virtualSurroundLayout)
             var transportConnected = false
             var transportError: Error?
             for attempt in 0..<3 {
@@ -1033,13 +1034,13 @@ final class AppState: NSObject, ObservableObject {
         }
     }
 
-    func beginSpatialCalibration(profileID: UUID) -> SpatialCalibrationContext? {
-        guard isActive, !transitionInProgress, spatialCalibrationContext == nil,
+    func beginSpatialCalibration(profileID: UUID, virtualSurround: Bool = false) -> SpatialCalibrationContext? {
+        guard isActive, !transitionInProgress, liveApplyWorker == nil, spatialCalibrationContext == nil,
               let session = activeSession, session.profileID == profileID,
               let rate = activeSampleRate,
               coreAudio.defaultOutputUID == activeRoutingUID,
               let profile = profiles.profiles.first(where: { $0.id == profileID }),
-              profile.spatialRenderingMode == .frontStage,
+              profile.spatialRenderingMode == (virtualSurround ? .virtualSurround : .frontStage),
               profile.outputDeviceUID == activePhysicalOutputUID else { return nil }
         let context = SpatialCalibrationContext(
             id: UUID(), runtimeSessionID: session.id, profileID: profileID,
@@ -1047,7 +1048,8 @@ final class AppState: NSObject, ObservableObject {
         )
         // Spatial mode is a local PCM setting. Do not let a pending graph RPC
         // leave the first audition in the previously selected Standard mode.
-        pcmRouter.setSpatialRenderingMode(.frontStage)
+        pcmRouter.setSpatialRenderingMode(virtualSurround ? .virtualSurround : .frontStage)
+        if virtualSurround { pcmRouter.setVirtualSurroundLayout(profile.virtualSurroundLayout) }
         guard pcmRouter.beginSpatialCalibration(id: context.id, tuning: profile.spatialListenerTuning) else {
             return nil
         }
@@ -1105,7 +1107,7 @@ final class AppState: NSObject, ObservableObject {
     var acousticVolumeSnapshot: SystemVolumeControlSession.Snapshot? { volumeBridge.measurementSnapshot }
 
     func acousticMeasurementIsCurrent(context: SpatialCalibrationContext, processing: ProcessingProfile) -> Bool {
-        spatialCalibrationContext == context && isActive && !transitionInProgress
+        spatialCalibrationContext == context && isActive && !transitionInProgress && liveApplyWorker == nil
             && activeSession?.id == context.runtimeSessionID
             && coreAudio.defaultOutputUID == activeRoutingUID
             && profiles.profiles.first(where: { $0.id == context.profileID })?.processing == processing
@@ -1130,6 +1132,32 @@ final class AppState: NSObject, ObservableObject {
         guard spatialCalibrationContext?.id == id else { return }
         pcmRouter.endSpatialCalibration(id: id)
         spatialCalibrationContext = nil
+    }
+
+    func saveRoomCorrection(context: SpatialCalibrationContext, measurement: SpatialAcousticProfile) async -> Bool {
+        guard acousticMeasurementIsCurrent(context: context, processing: measurement.processing),
+              var profile = profiles.profiles.first(where: { $0.id == context.profileID }),
+              profile.spatialRenderingMode == .virtualSurround, measurement.applies(to: profile),
+              !SpatialRoomCorrection.isApplied(to: profile.processing) else { return false }
+        let bands = SpatialRoomCorrection.bands(for: measurement)
+        guard !bands.isEmpty else { return false }
+        profile.processing.global.stages.append(ProcessingStage(id: SpatialRoomCorrection.stageID,
+            processor: .equalizer(EqualizerProcessor(bands: bands))))
+        profile.spatialAcousticProfile = measurement
+        profiles.update(profile)
+        // Save before ending the token; normal profile apply preserves all
+        // preexisting EQ/limiter stages and uses the serialized graph worker.
+        endSpatialCalibration(id: context.id)
+        await apply(profile: profile)
+        return true
+    }
+
+    func removeRoomCorrection(profileID: UUID) async {
+        guard spatialCalibrationContext == nil,
+              var profile = profiles.profiles.first(where: { $0.id == profileID }) else { return }
+        profile.processing.global.stages.removeAll { $0.id == SpatialRoomCorrection.stageID }
+        profiles.update(profile)
+        if activeProfileID == profileID { await apply(profile: profile) }
     }
 
     func apply(profile: DeviceProfile) async {
@@ -1188,6 +1216,7 @@ final class AppState: NSObject, ObservableObject {
             pcmRouter.setSpatialRenderingMode(currentProfile.spatialRenderingMode)
             pcmRouter.setSpatialListenerTuning(currentProfile.spatialListenerTuning)
             pcmRouter.setSpatialContentMode(currentProfile.spatialContentMode)
+            pcmRouter.setVirtualSurroundLayout(currentProfile.virtualSurroundLayout)
             clearTransientError()
         } catch {
             guard request == latestApplyRequest else { return }

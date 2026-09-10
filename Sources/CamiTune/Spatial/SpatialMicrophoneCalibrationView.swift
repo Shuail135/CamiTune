@@ -6,6 +6,7 @@ struct SpatialMicrophoneCalibrationView: View {
     @ObservedObject var state: AppState
     let context: SpatialCalibrationContext
     let profile: DeviceProfile
+    var roomCorrection = false
     @Environment(\.dismiss) private var dismiss
     @State private var microphones = SpatialMicrophoneCapture.microphones
     @State private var microphoneID = ""
@@ -17,9 +18,15 @@ struct SpatialMicrophoneCalibrationView: View {
     @State private var status = "Ready"
     @State private var error: String?
     @State private var measuredVolume: SystemVolumeControlSession.Snapshot?
+    @State private var externalRecording = false
+    @State private var importingRecording = false
+    @State private var trimSeconds = 0.0
 
     private var result: SpatialAcousticProfile? {
-        guard let microphone = microphones.first(where: { $0.id == microphoneID }),
+        let microphone = externalRecording
+            ? MeasurementMicrophone(id: "external-recording", name: "Imported recorder (unverified processing)", isBuiltIn: false)
+            : microphones.first(where: { $0.id == microphoneID })
+        guard let microphone,
               let measuredVolume, measurements.contains(where: { $0.position == .listeningPosition }) else { return nil }
         return SpatialAcousticProfile(outputDeviceUID: context.outputDeviceUID, processing: profile.processing,
             sampleRate: Int(context.sampleRate), measuredAt: Date(), microphone: microphone,
@@ -28,13 +35,30 @@ struct SpatialMicrophoneCalibrationView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Measure Front Stage").font(.title2.bold())
-            Text("Use speakers, not headphones. Put the microphone at your listening position and keep the room quiet. Two quiet sweeps play at your current volume; start with a comfortable low volume. Do not change volume or EQ during measurement.")
-            Text("This measures the current output chain, including active EQ. Raw microphone audio stays on this Mac and is discarded after analysis. Unknown and built-in microphones are supported with reduced confidence; no automatic tonal EQ is applied.")
+            Text(roomCorrection ? "Virtual 7.1 — Room measurement" : "Measure Front Stage").font(.title2.bold())
+            Text("Place the microphone at your normal HEAD POSITION, at ear height—not beside the speakers. Keep its position and orientation fixed and the room quiet. Use speakers, not headphones. Two physical-speaker sweeps play at your current volume; start at a comfortable low volume. Do not change volume or EQ during measurement.")
+            Text(roomCorrection
+                 ? "This measures the current speaker/room/EQ chain. Proposed correction only reduces shared low-frequency peaks; it never boosts room nulls. Unknown microphones receive weaker correction. This is not full-band room inversion or a measurement of seven physical speakers."
+                 : "This measures the current output chain, including active EQ. Raw microphone audio stays on this Mac and is discarded after analysis. Unknown and built-in microphones are supported with reduced confidence; no automatic tonal EQ is applied.")
                 .font(.caption).foregroundStyle(.secondary)
+            if roomCorrection {
+                Picker("Measurement method", selection: $externalRecording) {
+                    Text("Connected microphone").tag(false)
+                    Text("Other device → import recording").tag(true)
+                }.pickerStyle(.segmented).disabled(task != nil || measuredVolume != nil)
+            }
+            if !externalRecording {
             Picker("Microphone", selection: $microphoneID) {
                 ForEach(microphones) { Text($0.name).tag($0.id) }
             }.disabled(task != nil || !measurements.isEmpty)
+            } else {
+                Text("Put the other device's microphone at your head position. Record lossless mono WAV/AIFF, with automatic gain, noise reduction and voice enhancement OFF. Start recording, then press Play sweeps. Transfer that complete recording back to this Mac. Do not use music or a recording from another session.")
+                    .font(.caption)
+                TextField("Trim leading seconds", value: $trimSeconds, format: .number)
+                    .disabled(task != nil)
+                Text("Trim only the lead-in: retain at least 0.2 seconds of quiet before the first sweep, and put that sweep within the first 2 seconds. Both sweeps must remain intact. Mono files only; maximum 120 seconds/100 MB, with 16 seconds analyzed after trimming.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             HStack {
                 Button("Import microphone calibration…") { importing = true }
                     .disabled(task != nil || !measurements.isEmpty)
@@ -46,10 +70,16 @@ struct SpatialMicrophoneCalibrationView: View {
             Text("Optional: repeat with the same microphone at each ear position, keeping its orientation and output volume unchanged. Both ear measurements are needed for the four speaker-to-ear paths.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
-                Button(task == nil ? "Play sweeps and measure" : "Measuring…") { measure() }
-                    .disabled(task != nil || microphoneID.isEmpty)
+                Button(task == nil ? (externalRecording ? "Play sweeps for recorder" : "Play sweeps and measure") : "Measuring…") {
+                    if externalRecording { playForRecorder() } else { measure() }
+                }
+                    .disabled(task != nil || (!externalRecording && microphoneID.isEmpty))
+                if externalRecording {
+                    Button("Import recording…") { importingRecording = true }
+                        .disabled(task != nil || measuredVolume == nil)
+                }
                 Text(status).font(.caption)
-                if !measurements.isEmpty {
+                if !measurements.isEmpty || measuredVolume != nil {
                     Button("Reset measurements") { measurements = []; measuredVolume = nil; status = "Ready" }
                         .disabled(task != nil)
                 }
@@ -67,20 +97,38 @@ struct SpatialMicrophoneCalibrationView: View {
                 }.font(.caption)
             }
             if let result { Text("Measurement confidence: \(result.confidence.label)").font(.callout.bold()) }
+            if roomCorrection, let result {
+                let bands = SpatialRoomCorrection.bands(for: result)
+                Text(bands.isEmpty ? "No reliable shared peaks require correction. Nothing will be applied."
+                     : "Proposed room EQ: " + bands.map { String(format: "%.0f Hz: %.1f dB", $0.frequency, $0.gain ?? 0) }.joined(separator: " · "))
+                    .font(.caption)
+            }
             if let error { Text(error).foregroundStyle(.orange).font(.caption) }
             Divider()
             HStack {
                 Button("Cancel") { task?.cancel(); state.endSpatialCalibration(id: context.id); dismiss() }
                 Spacer()
-                Button("Save measured tuning") {
+                Button(roomCorrection ? "Apply proposed room correction" : "Save measured tuning") {
+                    if roomCorrection {
+                        guard let result, state.acousticVolumeSnapshot == measuredVolume else {
+                            error = AcousticMeasurementError.routeChanged.localizedDescription; return
+                        }
+                        task = Task {
+                            let saved = await state.saveRoomCorrection(context: context, measurement: result)
+                            task = nil
+                            if saved { dismiss() } else { error = "The profile changed or a correction is already present. Reopen measurement and try again." }
+                        }
+                        return
+                    }
                     guard let result, state.acousticVolumeSnapshot == measuredVolume,
                           state.saveAcousticCalibration(context: context, measurement: result) else {
                         error = AcousticMeasurementError.routeChanged.localizedDescription; return
                     }
                     dismiss()
-                }.disabled(task != nil || result == nil)
+                }.disabled(task != nil || result == nil || (roomCorrection && result.map { SpatialRoomCorrection.bands(for: $0).isEmpty } == true))
             }
-            Text("Saving replaces earlier listener tuning. You can then use “Calibrate listening position…” to refine this measured starting point with A/B listening.")
+            Text(roomCorrection ? "Apply adds a separate, removable room-EQ stage without replacing your existing EQ. Remove it before measuring again; corrections never stack. Raw recordings are processed locally and not saved by CamiTune."
+                 : "Saving replaces earlier listener tuning. You can then use “Calibrate listening position…” to refine this measured starting point with A/B listening.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(24).frame(width: 660)
@@ -99,6 +147,71 @@ struct SpatialMicrophoneCalibrationView: View {
                 }
                 curve = try MicrophoneCalibrationCurve.parse(String(contentsOf: url), name: url.lastPathComponent)
             } catch { self.error = error.localizedDescription }
+        }
+        .fileImporter(isPresented: $importingRecording, allowedContentTypes: [.wav, .aiff]) { selection in
+            do { importRecording(try selection.get()) }
+            catch { self.error = error.localizedDescription }
+        }
+    }
+
+    private func playForRecorder() {
+        error = nil
+        task = Task {
+            state.holdSpatialMeasurement(context: context, enabled: true)
+            defer { state.holdSpatialMeasurement(context: context, enabled: false); task = nil }
+            do {
+                guard let volume = state.acousticVolumeSnapshot, !volume.muted, volume.scalar > 0,
+                      measuredVolume == nil || measuredVolume == volume else { throw AcousticMeasurementError.routeChanged }
+                let sweep = try AcousticSweep(sampleRate: context.sampleRate)
+                guard state.playSpatialCalibration(context: context, clip: sweep.clip, tuning: .neutral, completion: {}) else {
+                    throw AcousticMeasurementError.routeChanged
+                }
+                status = "Recording on your other device…"
+                for _ in 0..<95 {
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                    guard state.acousticMeasurementIsCurrent(context: context, processing: profile.processing),
+                          state.acousticVolumeSnapshot == volume else { throw AcousticMeasurementError.routeChanged }
+                }
+                measuredVolume = volume
+                status = "Stop the recorder, then import its file."
+            } catch {
+                state.pcmRouter.stopSpatialCalibrationSample(id: context.id)
+                if !(error is CancellationError) { self.error = error.localizedDescription }
+                status = "Stopped"
+            }
+        }
+    }
+
+    private func importRecording(_ url: URL) {
+        task = Task {
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() }; task = nil }
+            do {
+                guard state.acousticVolumeSnapshot == measuredVolume,
+                      state.acousticMeasurementIsCurrent(context: context, processing: profile.processing) else {
+                    throw AcousticMeasurementError.routeChanged
+                }
+                let sweep = try AcousticSweep(sampleRate: context.sampleRate)
+                let trim = trimSeconds, selectedPosition = position, calibration = curve
+                status = "Analyzing imported recording…"
+                let analysis = Task.detached(priority: .utility) {
+                    let recording = try SpatialRoomCorrection.readRecording(url: url, trimSeconds: trim)
+                    try Task.checkCancellation()
+                    return try AcousticSweepAnalyzer().analyze(recording: recording, sweep: sweep,
+                        position: selectedPosition, calibration: calibration)
+                }
+                let measurement = try await withTaskCancellationHandler { try await analysis.value }
+                    onCancel: { analysis.cancel() }
+                try Task.checkCancellation()
+                guard state.acousticMeasurementIsCurrent(context: context, processing: profile.processing),
+                      state.acousticVolumeSnapshot == measuredVolume else { throw AcousticMeasurementError.routeChanged }
+                measurements.removeAll { $0.position == selectedPosition }
+                measurements.append(measurement)
+                status = "Imported measurement complete"
+            } catch {
+                if !(error is CancellationError) { self.error = error.localizedDescription }
+                status = "Import failed — check mono format and leading trim."
+            }
         }
     }
 

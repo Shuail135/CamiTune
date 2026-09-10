@@ -8,6 +8,31 @@ struct SpatialCalibrationClip: Sendable {
     let samples: [Float]
     let sampleRate: Double
     let isAcousticMeasurement: Bool
+    var virtualSpeakerRole: ChannelRole? = nil
+    var virtualSurroundDemo = false
+    var isVirtualAudition: Bool { virtualSpeakerRole != nil || virtualSurroundDemo }
+
+    init?(virtualSpeaker role: ChannelRole, sampleRate: Double) {
+        guard VirtualSurroundLayout.roles.contains(role), sampleRate.isFinite,
+              (8_000...192_000).contains(sampleRate) else { return nil }
+        self.sampleRate = sampleRate
+        isAcousticMeasurement = false
+        virtualSpeakerRole = role
+        var result: [Float] = []
+        result.reserveCapacity(Int(sampleRate * 8) * 2)
+        for i in 0..<Int(sampleRate * 8) {
+            let time = Double(i) / sampleRate
+            // Integer-frequency harmonics repeat seamlessly over eight seconds.
+            // No random texture, pulsing, or automatic spatial motion.
+            let chime = Float(0.55 * sin(2 * Double.pi * 440 * time)
+                + 0.25 * sin(2 * Double.pi * 880 * time)
+                + 0.10 * sin(2 * Double.pi * 1320 * time))
+            let source = role == .lowFrequencyEffects ? Float(sin(2 * Double.pi * 70 * time)) : chime
+            let sample = source * 0.10
+            result.append(sample); result.append(sample)
+        }
+        samples = result
+    }
 
     init?(monoSpeech: [Float], speechSampleRate: Double, sampleRate: Double) {
         guard speechSampleRate.isFinite, (8_000...384_000).contains(speechSampleRate),
@@ -75,18 +100,31 @@ struct SpatialCalibrationPlayback {
         self.completion = completion
     }
 
-    var isFinished: Bool { cursor >= (stopAt ?? clip.samples.count) }
+    var isFinished: Bool {
+        if let stopAt { return cursor >= stopAt }
+        return !clip.isVirtualAudition && cursor >= clip.samples.count
+    }
 
     mutating func requestStop() {
         guard stopAt == nil else { return }
         fadeStart = cursor
-        stopAt = min(clip.samples.count, cursor + max(2, Int(clip.sampleRate * 0.025) * 2))
+        let fadeEnd = cursor + max(2, Int(clip.sampleRate * 0.025) * 2)
+        stopAt = !clip.isVirtualAudition ? min(clip.samples.count, fadeEnd) : fadeEnd
     }
 
     mutating func nextFrame() -> PCMFrame? {
         guard !isFinished else { return nil }
-        let end = min(stopAt ?? clip.samples.count, cursor + 512 * 2)
-        var samples = Array(clip.samples[cursor..<end])
+        let start = cursor
+        let end = min(stopAt ?? (!clip.isVirtualAudition ? clip.samples.count : cursor + 1024), cursor + 1024)
+        var samples = (cursor..<end).map { clip.samples[$0 % clip.samples.count] }
+        if clip.isVirtualAudition {
+            let fadeFrames = max(1, Int(clip.sampleRate * 0.12))
+            for index in stride(from: 0, to: samples.count, by: 2) {
+                let gain = min(1, Float((cursor + index) / 2) / Float(fadeFrames))
+                samples[index] *= gain
+                samples[index + 1] *= gain
+            }
+        }
         if let fadeStart, let stopAt {
             let frames = max(1, (stopAt - fadeStart) / 2 - 1)
             for index in stride(from: 0, to: samples.count, by: 2) {
@@ -97,6 +135,40 @@ struct SpatialCalibrationPlayback {
             }
         }
         cursor = end
+        if clip.virtualSurroundDemo {
+            var bed = [Float](repeating: 0, count: samples.count / 2 * 8)
+            let roles = VirtualSurroundLayout.roles
+            for i in 0..<(samples.count / 2) {
+                let time = Double(start / 2 + i) / clip.sampleRate
+                let phase = time.truncatingRemainder(dividingBy: 24)
+                let stage = min(8, Int(phase / 2))
+                let local = stage < 8 ? phase - Double(stage) * 2 : phase - 16
+                let duration = stage < 8 ? 2.0 : 8.0
+                let envelope = Float(max(0, min(1, min(local / 0.08, (duration - local) / 0.08))))
+                for (channel, role) in LPCMChannelLayout.sevenPointOne.roles.enumerated() {
+                    guard stage == 8 || roles[stage] == role else { continue }
+                    // Distinct harmonics in the ensemble make the bed richer;
+                    // the bass channel stays bounded and low-frequency only.
+                    let frequency = role == .lowFrequencyEffects ? 70.0 : 220 + Double(channel) * 55
+                    let value = Float(sin(2 * Double.pi * frequency * time)) * 0.08
+                    // Recover the already computed start/stop fade from the
+                    // timeline, not by dividing a possibly zero tone sample.
+                    var fade = min(1, Float(start / 2 + i) / Float(max(1, Int(clip.sampleRate * 0.12))))
+                    if let fadeStart, let stopAt {
+                        fade *= min(1, Float(max(0, (stopAt - start - i * 2) / 2 - 1))
+                            / Float(max(1, (stopAt - fadeStart) / 2 - 1)))
+                    }
+                    bed[i * 8 + channel] = value * envelope * fade * (stage == 8 ? 0.45 : 1)
+                }
+            }
+            return PCMFrame(interleaved: bed, channelCount: 8, sampleRate: clip.sampleRate, channelLayout: .sevenPointOne)
+        }
+        if let role = clip.virtualSpeakerRole,
+           let channel = LPCMChannelLayout.sevenPointOne.roles.firstIndex(of: role) {
+            var bed = [Float](repeating: 0, count: samples.count / 2 * 8)
+            for i in 0..<(samples.count / 2) { bed[i * 8 + channel] = samples[i * 2] }
+            return PCMFrame(interleaved: bed, channelCount: 8, sampleRate: clip.sampleRate, channelLayout: .sevenPointOne)
+        }
         return PCMFrame(interleaved: samples, channelCount: 2, sampleRate: clip.sampleRate)
     }
 }

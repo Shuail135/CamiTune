@@ -7,6 +7,7 @@ struct FrontStageEditorView: View {
     @State private var calibrationContext: SpatialCalibrationContext?
     @State private var microphoneContext: SpatialCalibrationContext?
     @State private var calibrationError: String?
+    @State private var showingSurroundCalibration = false
 
     private var profileIsActive: Bool {
         state.isActive && state.activeProfileID == profile.id
@@ -20,13 +21,13 @@ struct FrontStageEditorView: View {
                         heading
                         Spacer()
                         modePicker
-                            .frame(width: 230)
+                            .frame(width: 340)
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
                         heading
                         modePicker
-                            .frame(maxWidth: 300)
+                            .frame(maxWidth: 340)
                     }
                 }
 
@@ -83,6 +84,25 @@ struct FrontStageEditorView: View {
                         calibrationError = microphoneContext == nil ? "Activate this profile on its selected output before measuring." : nil
                     }.disabled(!profileIsActive || state.spatialCalibrationContext != nil)
                     if let calibrationError { Text(calibrationError).font(.caption).foregroundStyle(.orange) }
+                } else if profile.spatialRenderingMode == .virtualSurround {
+                    Toggle("Automatically convert audio to virtual 7.1", isOn: Binding(
+                        get: { profile.virtualSurroundLayout.upmixStereo },
+                        set: { enabled in
+                            profile.virtualSurroundLayout.upmixStereo = enabled
+                            if profileIsActive { state.pcmRouter.setVirtualSurroundLayout(profile.virtualSurroundLayout) }
+                        }))
+                    Picker("Conversion mode", selection: contentModeBinding) {
+                        ForEach(SpatialContentMode.allCases) { Text($0.label).tag($0) }
+                    }.disabled(!profile.virtualSurroundLayout.upmixStereo || state.spatialCalibrationContext != nil)
+                    Text("Automatic adapts stereo conversion; Movie / Video adds more ambience; Music-safe is restrained; Fixed uses a constant mix. Supported multichannel audio preserves its channels and bypasses conversion.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Virtual 7.1 uses your saved channel-direction adjustments. Open calibration to hear each channel against a fixed 7.1 reference.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Calibrate Virtual 7.1…") { showingSurroundCalibration = true }
+                        .disabled(!profileIsActive || state.spatialCalibrationContext != nil)
+                    if !profileIsActive {
+                        Text("Activate this profile to hear the virtual speaker positions.").font(.caption).foregroundStyle(.secondary)
+                    }
                 } else {
                     Text("Standard adds no spatial processing: stereo remains unchanged and multichannel audio uses the conservative role-aware fallback.")
                         .font(.caption)
@@ -97,6 +117,17 @@ struct FrontStageEditorView: View {
         }
         .sheet(item: $microphoneContext) { context in
             SpatialMicrophoneCalibrationView(state: state, context: context, profile: profile).id(context.id)
+        }
+        .sheet(isPresented: $showingSurroundCalibration) {
+            ScrollView {
+                VirtualSurroundEditorView(state: state, profileID: profile.id, layout: Binding(
+                    get: { profile.virtualSurroundLayout },
+                    set: { layout in
+                        profile.virtualSurroundLayout = layout
+                        if profileIsActive { state.pcmRouter.setVirtualSurroundLayout(layout) }
+                    }))
+                    .padding(24)
+            }.frame(width: 680, height: 740)
         }
     }
 
@@ -117,6 +148,7 @@ struct FrontStageEditorView: View {
         }
         .labelsHidden()
         .pickerStyle(.segmented)
+        .disabled(state.spatialCalibrationContext != nil)
     }
 
     private var modeBinding: Binding<SpatialRenderingMode> {

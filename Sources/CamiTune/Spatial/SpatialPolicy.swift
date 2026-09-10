@@ -3,6 +3,7 @@ import Foundation
 enum SpatialRenderingMode: String, Codable, Hashable, Sendable, CaseIterable, Identifiable {
     case standard
     case frontStage
+    case virtualSurround
 
     var id: String { rawValue }
 
@@ -10,6 +11,7 @@ enum SpatialRenderingMode: String, Codable, Hashable, Sendable, CaseIterable, Id
         switch self {
         case .standard: return "Standard"
         case .frontStage: return "Front Stage"
+        case .virtualSurround: return "Virtual 7.1"
         }
     }
 }
