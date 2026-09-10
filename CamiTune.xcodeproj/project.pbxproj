@@ -7,10 +7,31 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CA119B900000000000000001 = {isa = PBXBuildFile; fileRef = CA119B900000000000000011; };
+		98F1B04221D097DE32257EB7 = {isa = PBXBuildFile; fileRef = 3F55C60FB215D2D7357B67B6; };
+		ED6A249F4F2EFA9666989753 = {isa = PBXBuildFile; fileRef = 21675E9304ED2A6AA84438EE; };
+		F59C47E32FA4422B4EA97A34 = {isa = PBXBuildFile; fileRef = B365846B28087A0692856BBF; };
+		E784866DF02BE1B95F156D45 = {isa = PBXBuildFile; fileRef = 41204B470ED142696FC00B72; };
+		D47275A799CC59AB9CECE186 = {isa = PBXBuildFile; fileRef = DB6FA792520461A8A254D85D; };
+		55A73285A0879925E4E44ED9 = {isa = PBXBuildFile; fileRef = 74B8F63750AAACE8767EC7F7; };
+		7B7B769DDD2CE747DADEE7BD = {isa = PBXBuildFile; fileRef = FDE7BB300CF334A26EFAA2DC; };
+		D1244D3128CEAE6664AE9A86 = {isa = PBXBuildFile; fileRef = AEC06FA3E528EF2AF0C343A8; };
+		6B5FD6FD181F0513BAE1071E = {isa = PBXBuildFile; fileRef = C164B4B1A1FF3A9919ACA648; };
+		8F1E5DD009C5F4A3C2A11D92 = {isa = PBXBuildFile; fileRef = 8E810D2F76142E2872AE917B; };
+		11810D2A45B604DB2954306E = {isa = PBXBuildFile; fileRef = 0A5C95504FB080A0067FF1EA; };
+		CADAB5229C0D374ADB5FD2F4 = {isa = PBXBuildFile; fileRef = 1CEEA9AD208CC63C0D105AAB; };
+		4254C2D6B6D79DA2A7159A55 = {isa = PBXBuildFile; fileRef = 7071FC95C5507CFE112FBE3E; };
+		1654233E92A2CD17F3495AF7 = {isa = PBXBuildFile; fileRef = 5D04D480DDD2FE10F5310C32; };
+		A94C1FDDFF5A8E454D71D3F4 = {isa = PBXBuildFile; fileRef = E99EE877ED2190A49D40EAFD; };
+		7FCFA418D171E66C73222BD6 = {isa = PBXBuildFile; fileRef = 1150B923491588732A57776A; };
+		C11FF9DA9524780ECE8EAC47 = {isa = PBXBuildFile; fileRef = 2B23ACE2C13E8CAEC6E6E100; };
+		6C3962DA4B04B9D6DEEBFCE4 = {isa = PBXBuildFile; fileRef = 2E32FDC537715DE75E2AA55F; };
+		88252F214F9E3637A1D2E9E0 = {isa = PBXBuildFile; fileRef = ECDAD64B7971715A7C3E8264; };
+		3AEBCC5F09FFB466C6149F72 = {isa = PBXBuildFile; fileRef = FE397D86A6B82EB70DF6F0DE; };
         CA118B800000000000000001 = {isa = PBXBuildFile; fileRef = CA118B800000000000000011; };
         CA117B700000000000000001 = {isa = PBXBuildFile; fileRef = CA117B700000000000000011; };
         CA117B700000000000000002 = {isa = PBXBuildFile; fileRef = CA117B700000000000000012; };
-        CA117B700000000000000003 = {isa = PBXBuildFile; fileRef = CA117B700000000000000013; };
+
         CA117B700000000000000004 = {isa = PBXBuildFile; fileRef = CA117B700000000000000014; };
         CA116B600000000000000001 = {isa = PBXBuildFile; fileRef = CA116B600000000000000011; };
         CA116B600000000000000002 = {isa = PBXBuildFile; fileRef = CA116B600000000000000012; };
@@ -22,7 +43,7 @@
 		CA114B400000000000000004 = {isa = PBXBuildFile; fileRef = CA114B400000000000000014; };
 		CA114B400000000000000001 = {isa = PBXBuildFile; fileRef = CA114B400000000000000011; };
 		CA114B400000000000000002 = {isa = PBXBuildFile; fileRef = CA114B400000000000000012; };
-		CA114B400000000000000003 = {isa = PBXBuildFile; fileRef = CA114B400000000000000013; };
+
 		AB109A719BE042A098FE1003 = {isa = PBXBuildFile; fileRef = AB109A719BE042A098FE1004; };
 		AB109A719BE042A098FE1001 = {isa = PBXBuildFile; fileRef = AB109A719BE042A098FE1002; };
 		0062E4974A58EB2758A2CE55 = {
@@ -282,10 +303,7 @@
 			isa = PBXBuildFile;
 			fileRef = 85B34B5E386DEC4F74486B40;
 		};
-		BB3254BB4EFEC70D2C9AEC7C = {
-			isa = PBXBuildFile;
-			fileRef = C4F08F5868133AD6AA724DEC;
-		};
+
 		C1A89AB5587776BCF42367A4 = {
 			isa = PBXBuildFile;
 			fileRef = EB9BFFE97A7196669F80ADE0;
@@ -509,10 +527,31 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CA119B900000000000000011 = {isa = PBXFileReference; lastKnownFileType = folder; path = Sources/CamiTune/SpatialAssets; sourceTree = SOURCE_ROOT; };
+		3F55C60FB215D2D7357B67B6 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SpatialChannelCheckView.swift"; sourceTree = "<group>"; };
+		21675E9304ED2A6AA84438EE = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Headphones/VirtualSpeakerBinauralizer.swift"; sourceTree = "<group>"; };
+		B365846B28087A0692856BBF = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Headphones/BundledHRTFDatabase.swift"; sourceTree = "<group>"; };
+		41204B470ED142696FC00B72 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SpatialSeatingCalibrationView.swift"; sourceTree = "<group>"; };
+		DB6FA792520461A8A254D85D = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Headphones/HRTFDatabase.swift"; sourceTree = "<group>"; };
+		74B8F63750AAACE8767EC7F7 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Headphones/BinauralConvolver.swift"; sourceTree = "<group>"; };
+		FDE7BB300CF334A26EFAA2DC = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/SpatialSeatingCalibration.swift"; sourceTree = "<group>"; };
+		AEC06FA3E528EF2AF0C343A8 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/SpatialFilterCrossfader.swift"; sourceTree = "<group>"; };
+		C164B4B1A1FF3A9919ACA648 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SpatialAudioEditorView.swift"; sourceTree = "<group>"; };
+		8E810D2F76142E2872AE917B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speakers/StereoDecorrelator.swift"; sourceTree = "<group>"; };
+		0A5C95504FB080A0067FF1EA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speakers/StereoAmbienceExtractor.swift"; sourceTree = "<group>"; };
+		1CEEA9AD208CC63C0D105AAB = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speakers/SpeakerSpatialRenderer.swift"; sourceTree = "<group>"; };
+		7071FC95C5507CFE112FBE3E = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speakers/MovieDownmixer.swift"; sourceTree = "<group>"; };
+		5D04D480DDD2FE10F5310C32 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speakers/FrequencyDependentWidth.swift"; sourceTree = "<group>"; };
+		E99EE877ED2190A49D40EAFD = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Layout/SemanticChannelMapper.swift"; sourceTree = "<group>"; };
+		1150B923491588732A57776A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Headphones/HeadphoneSpatialRenderer.swift"; sourceTree = "<group>"; };
+		2B23ACE2C13E8CAEC6E6E100 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/SpatialSafety.swift"; sourceTree = "<group>"; };
+		2E32FDC537715DE75E2AA55F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/SpatialRenderSettings.swift"; sourceTree = "<group>"; };
+		ECDAD64B7971715A7C3E8264 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/SpatialRenderContext.swift"; sourceTree = "<group>"; };
+		FE397D86A6B82EB70DF6F0DE = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/SpatialAudioEngine.swift"; sourceTree = "<group>"; };
         CA118B800000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialRoomCorrection.swift; sourceTree = "<group>"; };
         CA117B700000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSurroundLayout.swift; sourceTree = "<group>"; };
         CA117B700000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSurroundRenderer.swift; sourceTree = "<group>"; };
-        CA117B700000000000000013 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSurroundEditorView.swift; sourceTree = "<group>"; };
+
         CA117B700000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSurroundTests.swift; sourceTree = "<group>"; };
         CA116B600000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialContentPolicy.swift; sourceTree = "<group>"; };
         CA116B600000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialContentPolicyTests.swift; sourceTree = "<group>"; };
@@ -524,7 +563,7 @@
 		CA114B400000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialPerceptualCalibrationTests.swift; sourceTree = "<group>"; };
 		CA114B400000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialListenerProfile.swift; sourceTree = "<group>"; };
 		CA114B400000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialCalibrationAudio.swift; sourceTree = "<group>"; };
-		CA114B400000000000000013 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialPerceptualCalibrationView.swift; sourceTree = "<group>"; };
+
 		AB109A719BE042A098FE1004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalVolumeMirrorTests.swift; sourceTree = "<group>"; };
 		AB109A719BE042A098FE1002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalVolumeMirror.swift; sourceTree = "<group>"; };
 		002F0ED64C65B2D748394B8D = {
@@ -973,12 +1012,7 @@
 			path = FrontStageRenderer.swift;
 			sourceTree = "<group>";
 		};
-		C4F08F5868133AD6AA724DEC = {
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			path = FrontStageEditorView.swift;
-			sourceTree = "<group>";
-		};
+
 		C587195BCEF3DC3C18C19663 = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
@@ -1380,20 +1414,38 @@
 		BF488F0E1E816939FCAC0EE2 = {
 			isa = PBXGroup;
 			children = (
+				CA119B900000000000000011,
+				3F55C60FB215D2D7357B67B6,
+				21675E9304ED2A6AA84438EE,
+				B365846B28087A0692856BBF,
+				41204B470ED142696FC00B72,
+				DB6FA792520461A8A254D85D,
+				74B8F63750AAACE8767EC7F7,
+				FDE7BB300CF334A26EFAA2DC,
+				AEC06FA3E528EF2AF0C343A8,
+				C164B4B1A1FF3A9919ACA648,
+				8E810D2F76142E2872AE917B,
+				0A5C95504FB080A0067FF1EA,
+				1CEEA9AD208CC63C0D105AAB,
+				7071FC95C5507CFE112FBE3E,
+				5D04D480DDD2FE10F5310C32,
+				E99EE877ED2190A49D40EAFD,
+				1150B923491588732A57776A,
+				2B23ACE2C13E8CAEC6E6E100,
+				2E32FDC537715DE75E2AA55F,
+				ECDAD64B7971715A7C3E8264,
+				FE397D86A6B82EB70DF6F0DE,
 			    CA114B400000000000000011,
                 CA115B500000000000000011,
                 CA116B600000000000000011,
                 CA118B800000000000000011,
                 CA117B700000000000000011,
                 CA117B700000000000000012,
-                CA117B700000000000000013,
                 CA115B500000000000000012,
                 CA115B500000000000000013,
                 CA115B500000000000000014,
 			    CA114B400000000000000012,
-			    CA114B400000000000000013,
 			    6154D02D5D2B4B73FAEA68D8,
-			    C4F08F5868133AD6AA724DEC,
 			    C393C80F0A6351A34B95F79A,
 			    52ABD1D3F5BC5C1E0E208365,
 			    91F9868CC1008E967B573580,
@@ -1666,6 +1718,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CA119B900000000000000001,
 			    0062E4974A58EB2758A2CE55,
 			    7CE88B8CE13150BBE1A42C9F,
 			    775A2740F97C52ECC2C51113,
@@ -1735,18 +1788,36 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				98F1B04221D097DE32257EB7,
+				ED6A249F4F2EFA9666989753,
+				F59C47E32FA4422B4EA97A34,
+				E784866DF02BE1B95F156D45,
+				D47275A799CC59AB9CECE186,
+				55A73285A0879925E4E44ED9,
+				7B7B769DDD2CE747DADEE7BD,
+				D1244D3128CEAE6664AE9A86,
+				6B5FD6FD181F0513BAE1071E,
+				8F1E5DD009C5F4A3C2A11D92,
+				11810D2A45B604DB2954306E,
+				CADAB5229C0D374ADB5FD2F4,
+				4254C2D6B6D79DA2A7159A55,
+				1654233E92A2CD17F3495AF7,
+				A94C1FDDFF5A8E454D71D3F4,
+				7FCFA418D171E66C73222BD6,
+				C11FF9DA9524780ECE8EAC47,
+				6C3962DA4B04B9D6DEEBFCE4,
+				88252F214F9E3637A1D2E9E0,
+				3AEBCC5F09FFB466C6149F72,
 			    CA114B400000000000000001,
                 CA115B500000000000000001,
                 CA116B600000000000000001,
                 CA118B800000000000000001,
                 CA117B700000000000000001,
                 CA117B700000000000000002,
-                CA117B700000000000000003,
                 CA115B500000000000000002,
                 CA115B500000000000000003,
                 CA115B500000000000000004,
 			    CA114B400000000000000002,
-			    CA114B400000000000000003,
 			    AB109A719BE042A098FE1001,
 			    087A85F6C26B99E3E3C61059,
 			    5802CB74AF55627F307EC03B,
@@ -1819,7 +1890,6 @@
 			    6E748E6F25E048DFB8F9A8FB,
 			    8997C43FCE53A94BD6A09027,
 			    4F46291C9C388B617853C93C,
-			    BB3254BB4EFEC70D2C9AEC7C,
 			    A07CDF21B959E4B5B9F0D601,
 			    AD28B41EB8446A514BB3863B,
 			    6301C43CCA0E7DB4B88A3563,

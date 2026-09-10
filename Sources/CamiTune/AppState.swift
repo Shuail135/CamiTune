@@ -933,9 +933,11 @@ final class AppState: NSObject, ObservableObject {
             activeVolumeMode = volumeBridge.mode
             await pcmRouter.start(
                 camillaSink: try dsp.audioInputHandle(),
-                spatialRenderingMode: profile.spatialRenderingMode,
+                spatialRenderingMode: profile.effectiveSpatialRenderingMode,
                 spatialListenerTuning: profile.spatialListenerTuning,
                 spatialContentMode: profile.spatialContentMode,
+                spatialSettings: profile.effectiveSpatialSettings,
+                spatialOutput: profile.spatialSettings.resolvedOutput(deviceName: output.name),
                 meterConsumer: meters.pcmConsumer(for: runtimeSession),
                 analyzerConsumer: { [weak spectrum] frame in
                     spectrum?.ingest(
@@ -1034,13 +1036,13 @@ final class AppState: NSObject, ObservableObject {
         }
     }
 
-    func beginSpatialCalibration(profileID: UUID, virtualSurround: Bool = false) -> SpatialCalibrationContext? {
+    func beginSpatialCalibration(profileID: UUID, virtualSurround: Bool = false, spatialAudio: Bool = false) -> SpatialCalibrationContext? {
         guard isActive, !transitionInProgress, liveApplyWorker == nil, spatialCalibrationContext == nil,
               let session = activeSession, session.profileID == profileID,
               let rate = activeSampleRate,
               coreAudio.defaultOutputUID == activeRoutingUID,
               let profile = profiles.profiles.first(where: { $0.id == profileID }),
-              profile.spatialRenderingMode == (virtualSurround ? .virtualSurround : .frontStage),
+              profile.effectiveSpatialRenderingMode == .spatialAudio,
               profile.outputDeviceUID == activePhysicalOutputUID else { return nil }
         let context = SpatialCalibrationContext(
             id: UUID(), runtimeSessionID: session.id, profileID: profileID,
@@ -1048,7 +1050,8 @@ final class AppState: NSObject, ObservableObject {
         )
         // Spatial mode is a local PCM setting. Do not let a pending graph RPC
         // leave the first audition in the previously selected Standard mode.
-        pcmRouter.setSpatialRenderingMode(virtualSurround ? .virtualSurround : .frontStage)
+        pcmRouter.setSpatialRenderingMode(profile.effectiveSpatialRenderingMode)
+        pcmRouter.setSpatialSettings(profile.effectiveSpatialSettings, output: profile.spatialSettings.resolvedOutput(deviceName: profile.outputDeviceName))
         if virtualSurround { pcmRouter.setVirtualSurroundLayout(profile.virtualSurroundLayout) }
         guard pcmRouter.beginSpatialCalibration(id: context.id, tuning: profile.spatialListenerTuning) else {
             return nil
@@ -1134,15 +1137,60 @@ final class AppState: NSObject, ObservableObject {
         spatialCalibrationContext = nil
     }
 
+    func selectListeningPosition(profileID: UUID, positionID: UUID?, delete: Bool = false) async {
+        guard spatialCalibrationContext == nil,
+              var profile = profiles.profiles.first(where: { $0.id == profileID }) else { return }
+        if delete, let positionID {
+            profile.spatialSettings.listeningPositions.removeAll { $0.id == positionID }
+            if profile.spatialSettings.selectedPositionID == positionID { profile.spatialSettings.selectedPositionID = nil }
+        } else {
+            guard positionID == nil || profile.spatialSettings.listeningPositions.contains(where: {
+                $0.id == positionID && $0.outputDeviceUID == profile.outputDeviceUID
+            }) else { return }
+            profile.spatialSettings.selectedPositionID = positionID
+        }
+        profile.synchronizeListeningPositionCorrection()
+        profiles.update(profile)
+        if activeProfileID == profileID { await apply(profile: profile) }
+    }
+
+    func saveListeningPosition(context: SpatialCalibrationContext, position: SpatialSeatingCalibration) async -> Bool {
+        guard spatialCalibrationContext == context, activeSession?.id == context.runtimeSessionID,
+              !transitionInProgress, activePhysicalOutputUID == context.outputDeviceUID,
+              var profile = profiles.profiles.first(where: { $0.id == context.profileID }),
+              profile.outputDeviceUID == position.outputDeviceUID,
+              profile.outputDeviceUID == context.outputDeviceUID else { return false }
+        profile.spatialSettings.seating = position
+        profile.synchronizeListeningPositionCorrection()
+        profiles.update(profile)
+        endSpatialCalibration(id: context.id)
+        await apply(profile: profile)
+        return true
+    }
+
     func saveRoomCorrection(context: SpatialCalibrationContext, measurement: SpatialAcousticProfile) async -> Bool {
         guard acousticMeasurementIsCurrent(context: context, processing: measurement.processing),
               var profile = profiles.profiles.first(where: { $0.id == context.profileID }),
-              profile.spatialRenderingMode == .virtualSurround, measurement.applies(to: profile),
+              [.virtualSurround, .spatialAudio].contains(profile.effectiveSpatialRenderingMode),
+              (profile.effectiveSpatialRenderingMode != .spatialAudio
+                || profile.spatialSettings.resolvedOutput(deviceName: profile.outputDeviceName) == .speakers),
+              measurement.applies(to: profile),
               !SpatialRoomCorrection.isApplied(to: profile.processing) else { return false }
         let bands = SpatialRoomCorrection.bands(for: measurement)
-        guard !bands.isEmpty else { return false }
-        profile.processing.global.stages.append(ProcessingStage(id: SpatialRoomCorrection.stageID,
-            processor: .equalizer(EqualizerProcessor(bands: bands))))
+        var seat = profile.effectiveSpatialSettings.seating
+            ?? SpatialSeatingCalibration(outputDeviceUID: profile.outputDeviceUID, name: "Measured listening position")
+        seat.roomCorrectionBands = bands
+        seat.measuredAt = measurement.measuredAt
+        seat.microphoneName = measurement.microphone.name
+        seat.measurementConfidence = measurement.confidence
+        if measurement.confidence != .limited,
+           let center = measurement.positions.first(where: { $0.position == .listeningPosition }) {
+            seat.measuredArrivalDifferenceMS = center.rightMinusLeftArrivalMilliseconds
+            seat.measuredLevelDifferenceDB = center.rightMinusLeftLevelDB
+            seat.useMeasuredAlignment = true
+        }
+        profile.spatialSettings.seating = seat
+        profile.synchronizeListeningPositionCorrection()
         profile.spatialAcousticProfile = measurement
         profiles.update(profile)
         // Save before ending the token; normal profile apply preserves all
@@ -1155,6 +1203,7 @@ final class AppState: NSObject, ObservableObject {
     func removeRoomCorrection(profileID: UUID) async {
         guard spatialCalibrationContext == nil,
               var profile = profiles.profiles.first(where: { $0.id == profileID }) else { return }
+        profile.spatialSettings.seating?.roomCorrectionBands = []
         profile.processing.global.stages.removeAll { $0.id == SpatialRoomCorrection.stageID }
         profiles.update(profile)
         if activeProfileID == profileID { await apply(profile: profile) }
@@ -1213,7 +1262,8 @@ final class AppState: NSObject, ObservableObject {
             try await dspController.applyGraph(graph)
             guard request == latestApplyRequest else { return }
             let currentProfile = profiles.profiles.first { $0.id == profile.id } ?? profile
-            pcmRouter.setSpatialRenderingMode(currentProfile.spatialRenderingMode)
+            pcmRouter.setSpatialRenderingMode(currentProfile.effectiveSpatialRenderingMode)
+            pcmRouter.setSpatialSettings(currentProfile.effectiveSpatialSettings, output: currentProfile.spatialSettings.resolvedOutput(deviceName: currentProfile.outputDeviceName))
             pcmRouter.setSpatialListenerTuning(currentProfile.spatialListenerTuning)
             pcmRouter.setSpatialContentMode(currentProfile.spatialContentMode)
             pcmRouter.setVirtualSurroundLayout(currentProfile.virtualSurroundLayout)

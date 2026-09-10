@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "id": "sadie-ii-d1-ku100",
+  "name": "SADIE II KU100",
+  "authors": [
+    "Cal Armstrong",
+    "Lewis Thresh",
+    "Gavin Kearney"
+  ],
+  "copyright": "Copyright 2018, University of York",
+  "license": "Apache-2.0",
+  "source": "https://zenodo.org/records/10886409",
+  "sourceVersion": "2-1",
+  "archiveURL": "https://zenodo.org/records/10886409/files/D1_HRIR_SOFA.zip?download=1",
+  "sourceFile": "D1_HRIR_SOFA/D1_48K_24bit_256tap_FIR_SOFA.sofa",
+  "sourceSHA256": "9af7cb19531e52fb7ae8ec92621e6ab62b1d5fe584b3742be36699a0ddb0ccd4",
+  "sourceLicense": "Copyright 2018, University of York, Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+  "sourceMetadata": {
+    "Conventions": "SOFA",
+    "Version": "2.1",
+    "SOFAConventions": "SimpleFreeFieldHRIR",
+    "SOFAConventionsVersion": "1.0",
+    "APIName": "SOFA Toolbox for Matlab/Octave",
+    "APIVersion": "2.2.0",
+    "ApplicationName": "MATLAB",
+    "ApplicationVersion": "2023a",
+    "AuthorContact": "gavin.kearney@york.ac.uk",
+    "Comment": "8802 source positions. KU100 subject. Measurement utlized Genelec 8010 Loudspeakers and 24s overlapped swept sine technique. Reciever microphones were KU100 built in mics via RME Fireface 400 Preamps. Filters were low frequency extended, diffuse field equalized and windowed. (approx.) Linear phase HRIRs.",
+    "DataType": "FIR",
+    "History": "Measurement, Low Frequency Extension, Diffuse Field Equalization, Windowing, Diffuse Field Equalization",
+    "License": "Copyright 2018, University of York, Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+    "Organization": "AudioLab, Department of Electronic Engineering, University of York, United Kingdom.",
+    "References": "https://doi.org/10.3390/app8112029",
+    "RoomType": "free field",
+    "Origin": "Overlapped Exponential Swept Sine Wave Measuremnt",
+    "DateCreated": "2019-08-01 13:21:05",
+    "DateModified": "2024-02-08 11:16:46",
+    "Title": "D1 HRIRs",
+    "DatabaseName": "SADIE II",
+    "ListenerShortName": "D1",
+    "NCProperties": "version=1|netcdflibversion=4.6.1|hdf5libversion=1.8.12",
+    "_NCProperties": "version=2,netcdf=4.8.1,hdf5=1.10.8"
+  },
+  "citation": "Armstrong, C.; Thresh, L.; Murphy, D.; Kearney, G. (2018). A Perceptual Evaluation of Individual and Non-Individual HRTFs: A Case Study of the SADIE II Database. Applied Sciences 8(11), 2029. https://doi.org/10.3390/app8112029",
+  "modifications": [
+    "Selected seven nearest measured horizontal directions; SOFA positive-left angles mapped to CamiTune negative-left angles.",
+    "Applied a single frontal broadband energy normalization shared by all ears and directions.",
+    "Polyphase Kaiser-window resampling with transfer-gain normalization for six sample rates.",
+    "Converted to contiguous little-endian float32 in rate/direction/ear/sample order."
+  ],
+  "commonGain": 1.3506467647807348,
+  "file": "sadie-d1.f32",
+  "sha256": "35ca5e6296e13309229d53883dec7719475cef597fd70cc65d94c146e64b1a0e",
+  "directions": [
+    {
+      "role": "left",
+      "azimuthDegrees": -30,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        30.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 760
+    },
+    {
+      "role": "right",
+      "azimuthDegrees": 30,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        330.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8064
+    },
+    {
+      "role": "center",
+      "azimuthDegrees": 0,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        0.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 12
+    },
+    {
+      "role": "leftSurround",
+      "azimuthDegrees": -105,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        105.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2569
+    },
+    {
+      "role": "rightSurround",
+      "azimuthDegrees": 105,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        255.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6254
+    },
+    {
+      "role": "leftRearSurround",
+      "azimuthDegrees": -145,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        145.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3521
+    },
+    {
+      "role": "rightRearSurround",
+      "azimuthDegrees": 145,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        215.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5303
+    }
+  ],
+  "rates": [
+    {
+      "sampleRate": 44100,
+      "frameCount": 236,
+      "byteOffset": 0,
+      "referenceDelayFrames": 96
+    },
+    {
+      "sampleRate": 48000,
+      "frameCount": 256,
+      "byteOffset": 13216,
+      "referenceDelayFrames": 104
+    },
+    {
+      "sampleRate": 88200,
+      "frameCount": 471,
+      "byteOffset": 27552,
+      "referenceDelayFrames": 191
+    },
+    {
+      "sampleRate": 96000,
+      "frameCount": 512,
+      "byteOffset": 53928,
+      "referenceDelayFrames": 208
+    },
+    {
+      "sampleRate": 176400,
+      "frameCount": 941,
+      "byteOffset": 82600,
+      "referenceDelayFrames": 382
+    },
+    {
+      "sampleRate": 192000,
+      "frameCount": 1024,
+      "byteOffset": 135296,
+      "referenceDelayFrames": 416
+    }
+  ]
+}

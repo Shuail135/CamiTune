@@ -77,7 +77,7 @@ struct ProfileEditorView: View {
                     graphModel: graphModel
                 )
 
-                FrontStageEditorView(
+                SpatialAudioEditorView(
                     state: state,
                     profile: $profile
                 )

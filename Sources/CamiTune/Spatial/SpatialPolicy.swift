@@ -2,6 +2,7 @@ import Foundation
 
 enum SpatialRenderingMode: String, Codable, Hashable, Sendable, CaseIterable, Identifiable {
     case standard
+    case spatialAudio
     case frontStage
     case virtualSurround
 
@@ -9,6 +10,7 @@ enum SpatialRenderingMode: String, Codable, Hashable, Sendable, CaseIterable, Id
 
     var displayName: String {
         switch self {
+        case .spatialAudio: return "Spatial Audio"
         case .standard: return "Standard"
         case .frontStage: return "Front Stage"
         case .virtualSurround: return "Virtual 7.1"

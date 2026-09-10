@@ -12,6 +12,31 @@ struct SpatialCalibrationClip: Sendable {
     var virtualSurroundDemo = false
     var isVirtualAudition: Bool { virtualSpeakerRole != nil || virtualSurroundDemo }
 
+    /// Broadband, tapered noise excites the pinna cues missing from a low chime.
+    /// Generate off the UI/audio workers before handing the prepared clip to PCM.
+    init?(spatialCheck role: ChannelRole, sampleRate: Double) {
+        guard VirtualSurroundLayout.roles.contains(role), sampleRate.isFinite,
+              (8000...192000).contains(sampleRate) else { return nil }
+        self.sampleRate = sampleRate; isAcousticMeasurement = false; virtualSpeakerRole = role
+        var random: UInt32 = 0x53414449
+        var low: Float = 0, high: Float = 0
+        let lowCoefficient = Float(1 - exp(-2 * Double.pi * 200 / sampleRate))
+        let highCoefficient = Float(1 - exp(-2 * Double.pi * min(12000, sampleRate * 0.4) / sampleRate))
+        let frames = Int(sampleRate * 4)
+        var result = [Float](repeating: 0, count: frames * 2)
+        for i in 0..<frames {
+            random = 1664525 &* random &+ 1013904223
+            let white = Float(random) / Float(UInt32.max) * 2 - 1
+            high += highCoefficient * (white - high)
+            low += lowCoefficient * (high - low)
+            let phase = Double(i).truncatingRemainder(dividingBy: sampleRate) / sampleRate
+            let envelope = Float(min(1, max(0, min(phase / 0.06, (0.7 - phase) / 0.06))))
+            let x = (high - low) * envelope * 0.05
+            result[2 * i] = x; result[2 * i + 1] = x
+        }
+        samples = result
+    }
+
     init?(virtualSpeaker role: ChannelRole, sampleRate: Double) {
         guard VirtualSurroundLayout.roles.contains(role), sampleRate.isFinite,
               (8_000...192_000).contains(sampleRate) else { return nil }

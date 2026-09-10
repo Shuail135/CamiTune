@@ -18,7 +18,8 @@ var packageTargets: [Target] = [
         path: "Sources/CamiTune",
         resources: [
             .copy("icon.png"),
-            .copy("DeviceCorrectionTargets")
+            .copy("DeviceCorrectionTargets"),
+            .copy("SpatialAssets")
         ]
     )
 ]

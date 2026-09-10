@@ -35,7 +35,7 @@ struct SpatialMicrophoneCalibrationView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(roomCorrection ? "Virtual 7.1 — Room measurement" : "Measure Front Stage").font(.title2.bold())
+            Text(roomCorrection ? "Speaker room measurement" : "Measure Front Stage").font(.title2.bold())
             Text("Place the microphone at your normal HEAD POSITION, at ear height—not beside the speakers. Keep its position and orientation fixed and the room quiet. Use speakers, not headphones. Two physical-speaker sweeps play at your current volume; start at a comfortable low volume. Do not change volume or EQ during measurement.")
             Text(roomCorrection
                  ? "This measures the current speaker/room/EQ chain. Proposed correction only reduces shared low-frequency peaks; it never boosts room nulls. Unknown microphones receive weaker correction. This is not full-band room inversion or a measurement of seven physical speakers."
@@ -99,7 +99,7 @@ struct SpatialMicrophoneCalibrationView: View {
             if let result { Text("Measurement confidence: \(result.confidence.label)").font(.callout.bold()) }
             if roomCorrection, let result {
                 let bands = SpatialRoomCorrection.bands(for: result)
-                Text(bands.isEmpty ? "No reliable shared peaks require correction. Nothing will be applied."
+                Text(bands.isEmpty ? "No reliable shared peaks require EQ. You can still save the measurement."
                      : "Proposed room EQ: " + bands.map { String(format: "%.0f Hz: %.1f dB", $0.frequency, $0.gain ?? 0) }.joined(separator: " · "))
                     .font(.caption)
             }
@@ -108,7 +108,7 @@ struct SpatialMicrophoneCalibrationView: View {
             HStack {
                 Button("Cancel") { task?.cancel(); state.endSpatialCalibration(id: context.id); dismiss() }
                 Spacer()
-                Button(roomCorrection ? "Apply proposed room correction" : "Save measured tuning") {
+                Button(roomCorrection ? "Save measured position" : "Save measured tuning") {
                     if roomCorrection {
                         guard let result, state.acousticVolumeSnapshot == measuredVolume else {
                             error = AcousticMeasurementError.routeChanged.localizedDescription; return
@@ -125,9 +125,9 @@ struct SpatialMicrophoneCalibrationView: View {
                         error = AcousticMeasurementError.routeChanged.localizedDescription; return
                     }
                     dismiss()
-                }.disabled(task != nil || result == nil || (roomCorrection && result.map { SpatialRoomCorrection.bands(for: $0).isEmpty } == true))
+                }.disabled(task != nil || result == nil)
             }
-            Text(roomCorrection ? "Apply adds a separate, removable room-EQ stage without replacing your existing EQ. Remove it before measuring again; corrections never stack. Raw recordings are processed locally and not saved by CamiTune."
+            Text(roomCorrection ? "Saving keeps the measurement with this listening position and adds any proposed room EQ without replacing your own EQ. Remove it before measuring again; corrections never stack. Raw recordings are processed locally and not saved by CamiTune."
                  : "Saving replaces earlier listener tuning. You can then use “Calibrate listening position…” to refine this measured starting point with A/B listening.")
                 .font(.caption).foregroundStyle(.secondary)
         }

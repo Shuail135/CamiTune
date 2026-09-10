@@ -106,6 +106,8 @@ final class PCMRouter: @unchecked Sendable {
         spatialRenderingMode: SpatialRenderingMode = .standard,
         spatialListenerTuning: SpatialListenerTuning = .neutral,
         spatialContentMode: SpatialContentMode = .automatic,
+        spatialSettings: SpatialRenderSettings = SpatialRenderSettings(),
+        spatialOutput: SpatialOutputKind = .speakers,
         meterConsumer: MeterConsumer? = nil,
         analyzerConsumer: AnalyzerConsumer? = nil
     ) async {
@@ -115,6 +117,8 @@ final class PCMRouter: @unchecked Sendable {
                 spatialRenderingMode: spatialRenderingMode,
                 spatialListenerTuning: spatialListenerTuning,
                 spatialContentMode: spatialContentMode,
+                spatialSettings: spatialSettings,
+                spatialOutput: spatialOutput,
                 meterConsumer: meterConsumer,
                 analyzerConsumer: analyzerConsumer
             )
@@ -128,6 +132,8 @@ final class PCMRouter: @unchecked Sendable {
         spatialRenderingMode: SpatialRenderingMode,
         spatialListenerTuning: SpatialListenerTuning,
         spatialContentMode: SpatialContentMode,
+        spatialSettings: SpatialRenderSettings,
+        spatialOutput: SpatialOutputKind,
         meterConsumer: MeterConsumer?,
         analyzerConsumer: AnalyzerConsumer?
     ) {
@@ -138,6 +144,8 @@ final class PCMRouter: @unchecked Sendable {
             spatialRenderingMode: spatialRenderingMode,
             spatialListenerTuning: spatialListenerTuning,
             spatialContentMode: spatialContentMode,
+            spatialSettings: spatialSettings,
+            spatialOutput: spatialOutput,
             recoveryHandler: { [weak self] droppedFrames in
                 self?.recordCamillaRecovery(droppedFrames: droppedFrames)
             },
@@ -186,6 +194,20 @@ final class PCMRouter: @unchecked Sendable {
         let camillaBranch = self.camillaBranch
         state.unlock()
         camillaBranch?.setSpatialRenderingMode(mode)
+    }
+
+    func setSpatialSettings(_ settings: SpatialRenderSettings, output: SpatialOutputKind) {
+        state.lock()
+        let branch = camillaBranch
+        state.unlock()
+        branch?.setSpatialSettings(settings, output: output)
+    }
+
+    var spatialRenderDiagnostics: SpatialRenderDiagnostics? {
+        state.lock()
+        let branch = camillaBranch
+        state.unlock()
+        return branch?.renderDiagnostics
     }
 
     func route(_ frame: PCMFrame) {
@@ -508,13 +530,6 @@ struct LowLatencyPCMQueue {
 }
 
 private final class CamillaPCMBranch: @unchecked Sendable {
-    private enum SpatialPath: Equatable {
-        case standard
-        case stereo
-        case multichannelMovie
-        case virtualSurround
-    }
-
     // Own a duplicate of CamillaDSP stdin instead of retaining the manager's
     // FileHandle object. Foundation FileHandle raises NSException (not a Swift
     // Error) if write(contentsOf:) races with close() on that same object.
@@ -533,18 +548,17 @@ private final class CamillaPCMBranch: @unchecked Sendable {
     private var rateController = AdaptiveRateController()
     private var resampler = AdaptivePCMResampler()
     private let sourceRouter = SpatialSourceRouter()
-    private let spatialPolicy = SpatialPolicy()
     private var contentAnalyzer = SpatialContentAnalyzer()
     private var spatialContentMode: SpatialContentMode
     private var publishedContentEstimate = SpatialContentEstimate.unknown
     private var contentEstimateDate = Date.distantPast
     private var needsContentReset = false
-    private let frontStageRenderer = FrontStageRenderer()
-    private let multichannelMovieRenderer = MultichannelMovieRenderer()
-    private let virtualSurroundRenderer = VirtualSurroundRenderer()
+    private let spatialEngine = SpatialAudioEngine()
+    private var publishedRenderDiagnostics: SpatialRenderDiagnostics?
+    private var renderSettings: SpatialRenderSettings
+    private var renderOutput: SpatialOutputKind
     private var virtualSurroundLayout = VirtualSurroundLayout.standard
     private var lastSourceFormat: SpatialSourceFormat?
-    private var lastSpatialPath: SpatialPath?
     private var spatialRenderingMode: SpatialRenderingMode
     private var spatialListenerTuning: SpatialListenerTuning
     private var calibrationID: UUID?
@@ -565,6 +579,8 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         spatialRenderingMode: SpatialRenderingMode,
         spatialListenerTuning: SpatialListenerTuning,
         spatialContentMode: SpatialContentMode,
+        spatialSettings: SpatialRenderSettings,
+        spatialOutput: SpatialOutputKind,
         recoveryHandler: @escaping (Int) -> Void,
         failureHandler: @escaping () -> Void,
         adjustmentHandler: @escaping (Double, Int) -> Void
@@ -578,9 +594,12 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         } else {
             self.handle = nil
         }
-        self.spatialRenderingMode = spatialRenderingMode
+        self.spatialRenderingMode = spatialRenderingMode == .standard ? .standard : .spatialAudio
         self.spatialListenerTuning = spatialListenerTuning.validated
         self.spatialContentMode = spatialContentMode
+        self.renderSettings = spatialSettings
+        if spatialRenderingMode == .frontStage || spatialRenderingMode == .virtualSurround { self.renderSettings.enabled = true }
+        self.renderOutput = spatialOutput
         self.systemMaster = systemMaster
         let initialMaster = systemMaster.snapshot()
         masterRevision = initialMaster.revision
@@ -591,10 +610,25 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         self.adjustmentHandler = adjustmentHandler
     }
 
+    var renderDiagnostics: SpatialRenderDiagnostics? {
+        condition.lock()
+        defer { condition.unlock() }
+        return publishedRenderDiagnostics
+    }
+
+    func setSpatialSettings(_ settings: SpatialRenderSettings, output: SpatialOutputKind) {
+        condition.lock()
+        renderSettings = settings
+        renderOutput = output
+        condition.unlock()
+    }
+
     func setSpatialRenderingMode(_ mode: SpatialRenderingMode) {
         condition.lock()
-        if spatialRenderingMode != mode {
-            spatialRenderingMode = mode
+        let normalized: SpatialRenderingMode = mode == .standard ? .standard : .spatialAudio
+        if mode == .frontStage || mode == .virtualSurround { renderSettings.enabled = true }
+        if spatialRenderingMode != normalized {
+            spatialRenderingMode = normalized
             needsSpatialReset = true
         }
         condition.unlock()
@@ -758,6 +792,7 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             }
             let isCalibrationSample = calibrationPlayback != nil
             let isAcousticMeasurement = calibrationPlayback?.clip.isAcousticMeasurement ?? false
+            let isChannelAudition = calibrationPlayback?.clip.isVirtualAudition ?? false
             var calibrationCompletion: (@Sendable () -> Void)?
             let nextFrame: PCMFrame?
             if var playback = calibrationPlayback {
@@ -784,14 +819,14 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             // Keep the two physical sweep channels independent. The existing
             // downstream output EQ and system master remain in the path.
             let spatialRenderingMode: SpatialRenderingMode = isAcousticMeasurement ? .standard : self.spatialRenderingMode
-            let listenerTuning = calibrationTuning ?? spatialListenerTuning
-            let contentMode = spatialContentMode
-            let surroundLayout = virtualSurroundLayout
-            let isCalibrating = calibrationID != nil || isCalibrationSample
-            let shouldAnalyzeContent = (spatialRenderingMode == .frontStage
-                || (spatialRenderingMode == .virtualSurround && surroundLayout.upmixStereo)) && calibrationID == nil
-                && frame.channelCount <= 2
-                && !isCalibrationSample && contentMode != .fixed && contentMode != .musicSafe
+            var renderSettings = self.renderSettings
+            if isChannelAudition {
+                renderSettings.contentSelection = .cinema
+                renderSettings.cinema.amount = 1
+            }
+            let renderOutput = self.renderOutput
+            let shouldAnalyzeContent = spatialRenderingMode != .standard && renderSettings.enabled
+                && calibrationID == nil && !isCalibrationSample
             let shouldResetContent = needsContentReset || Date().timeIntervalSince(contentEstimateDate) > 1
             needsContentReset = false
             needsRateMatcherReset = false
@@ -807,77 +842,18 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             contentEstimateDate = Date()
             condition.unlock()
             if shouldResetRateMatcher {
-                rateController.reset()
-                resampler.reset()
-                virtualSurroundRenderer.reset()
-                frontStageRenderer.reset()
-                multichannelMovieRenderer.reset()
+                spatialEngine.reset(); rateController.reset(); resampler.reset()
             }
-            if shouldResetSpatialRenderer {
-                virtualSurroundRenderer.reset()
-                frontStageRenderer.reset()
-                multichannelMovieRenderer.reset()
-                lastSpatialPath = nil
-            }
-            let sourceFormat = frame.sourceFormat
-            if lastSourceFormat != sourceFormat {
-                virtualSurroundRenderer.reset()
-                lastSourceFormat = sourceFormat
-                frontStageRenderer.reset()
-                multichannelMovieRenderer.reset()
-                lastSpatialPath = nil
-            }
-            var policy = spatialPolicy
-            if contentMode == .movieVideo && shouldAnalyzeContent { policy.stereoIntent = .frontStageMovie }
-            policy.stereoIntent = listenerTuning.applying(to: policy.stereoIntent)
-            policy.movieIntent = listenerTuning.applying(to: policy.movieIntent)
-            if !isCalibrating && frame.channelCount <= 2 {
-                policy.stereoIntent = AdaptiveSpatialContentPolicy.intent(base: policy.stereoIntent,
-                    mode: contentMode, estimate: contentAnalyzer.estimate, multichannel: false)
-                policy.movieIntent = AdaptiveSpatialContentPolicy.intent(base: policy.movieIntent,
-                    mode: contentMode, estimate: contentAnalyzer.estimate, multichannel: true)
-            }
-            let decision = policy.decision(
-                for: frame,
-                mode: spatialRenderingMode
-            )
-            let spatialPath: SpatialPath
-            if spatialRenderingMode == .virtualSurround {
-                spatialPath = .virtualSurround
-            } else { switch decision {
-            case .standard: spatialPath = .standard
-            case .stereo: spatialPath = .stereo
-            case .multichannelMovie: spatialPath = .multichannelMovie
-            } }
-            if lastSpatialPath != spatialPath {
-                virtualSurroundRenderer.reset()
-                // A fixed 7.1 endpoint can alternate between stereo-only and
-                // discrete payloads. Clear delayed surround/reflection state
-                // so no samples from the previous semantic path reappear.
-                frontStageRenderer.reset()
-                multichannelMovieRenderer.reset()
-                lastSpatialPath = spatialPath
-            }
-            let renderedFrame: PCMFrame?
-            if spatialRenderingMode == .virtualSurround {
-                renderedFrame = virtualSurroundRenderer.render(frame: frame, layout: surroundLayout,
-                    contentMode: isCalibrating ? .fixed : contentMode, estimate: contentAnalyzer.estimate)
-                    ?? sourceRouter.stereoFallback(for: frame)
-            } else { switch decision {
-            case .standard:
-                renderedFrame = sourceRouter.stereoFallback(for: frame)
-            case .stereo(let intent):
-                renderedFrame = sourceRouter.stereoFallback(for: frame).flatMap {
-                    frontStageRenderer.render(frame: $0, intent: intent)
-                }
-            case .multichannelMovie(let intent):
-                renderedFrame = multichannelMovieRenderer.render(
-                    frame: frame,
-                    intent: intent
-                ).flatMap {
-                    frontStageRenderer.render(frame: $0, intent: intent)
-                } ?? sourceRouter.stereoFallback(for: frame)
-            } }
+            if shouldResetSpatialRenderer { spatialEngine.reset() }
+            lastSourceFormat = frame.sourceFormat
+            // Old mode values remain decodable, but production audio now uses
+            // only the two physical-output renderers. Acoustic sweeps bypass them.
+            let renderedFrame = spatialRenderingMode == .standard
+                ? sourceRouter.stereoFallback(for: frame)
+                : spatialEngine.render(frame: frame, settings: renderSettings, detectedOutput: renderOutput)
+            condition.lock()
+            publishedRenderDiagnostics = spatialRenderingMode == .spatialAudio ? spatialEngine.diagnostics : nil
+            condition.unlock()
             guard let renderedFrame else {
                 recoveryHandler(frame.frameCount)
                 continue

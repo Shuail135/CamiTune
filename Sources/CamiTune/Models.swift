@@ -50,10 +50,30 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     var sampleRate: Int = 48_000
     var chunkSize: Int = 1024
     var spatialRenderingMode: SpatialRenderingMode = .standard
+    var spatialSettings = SpatialRenderSettings()
+    var effectiveSpatialSettings: SpatialRenderSettings {
+        var settings = spatialSettings
+        if settings.seating?.outputDeviceUID != outputDeviceUID { settings.seating = nil }
+        return settings
+    }
+    var effectiveSpatialRenderingMode: SpatialRenderingMode {
+        spatialSettings.enabled || spatialRenderingMode != .standard ? .spatialAudio : .standard
+    }
     var spatialContentMode: SpatialContentMode = .automatic
     var virtualSurroundLayout: VirtualSurroundLayout = .standard
     var spatialListenerProfile: SpatialListenerProfile?
     var spatialAcousticProfile: SpatialAcousticProfile?
+
+    /// Only the managed room-correction stage follows the selected seat. User EQ,
+    /// device correction and limiter stages retain their identity and settings.
+    mutating func synchronizeListeningPositionCorrection() {
+        let bands = effectiveSpatialSettings.seating?.roomCorrectionBands ?? []
+        processing.global.stages.removeAll { $0.id == SpatialRoomCorrection.stageID }
+        if !bands.isEmpty {
+            processing.global.stages.append(ProcessingStage(id: SpatialRoomCorrection.stageID,
+                processor: .equalizer(EqualizerProcessor(bands: bands))))
+        }
+    }
 
     var spatialListenerTuning: SpatialListenerTuning {
         spatialListenerProfile?.tuning(for: outputDeviceUID)
@@ -87,6 +107,7 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         self.sampleRate = sampleRate
         self.chunkSize = chunkSize
         self.spatialRenderingMode = spatialRenderingMode
+        self.spatialSettings = .migrated(from: spatialRenderingMode)
         if let processing {
             self.processing = processing
             self.unmigratedEqualizerAPOText = nil
@@ -188,7 +209,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         case autoActivateWhenProfileDeviceSelected
         case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize
         case spatialRenderingMode, spatialContentMode, spatialListenerProfile, spatialAcousticProfile, equalizerAPOText, processing
-        case virtualSurroundLayout
+        case virtualSurroundLayout, spatialSettings
     }
 
     private enum LegacyCodingKeys: String, CodingKey {
@@ -225,6 +246,11 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
             SpatialRenderingMode.self,
             forKey: .spatialRenderingMode
         ) ?? .standard
+        spatialSettings = try values.decodeIfPresent(SpatialRenderSettings.self, forKey: .spatialSettings)
+            ?? .migrated(from: spatialRenderingMode)
+        if spatialRenderingMode == .frontStage || spatialRenderingMode == .virtualSurround {
+            spatialSettings.enabled = true
+        }
         // A damaged or newer optional calibration must not make an otherwise
         // usable output/EQ profile unreadable.
         spatialListenerProfile = try? values.decodeIfPresent(
@@ -245,6 +271,14 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
             processing = .defaultStereo
             unmigratedEqualizerAPOText = legacyText
         }
+        if let stage = processing.global.stages.first(where: { $0.id == SpatialRoomCorrection.stageID }),
+           case .equalizer(let eq) = stage.processor,
+           spatialSettings.seating?.roomCorrectionBands.isEmpty != false {
+            var seat = spatialSettings.seating ?? SpatialSeatingCalibration(outputDeviceUID: outputDeviceUID,
+                name: spatialListenerProfile?.name ?? "Existing room calibration")
+            seat.roomCorrectionBands = eq.bands
+            spatialSettings.seating = seat
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -259,6 +293,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         try values.encode(sampleRate, forKey: .sampleRate)
         try values.encode(chunkSize, forKey: .chunkSize)
         try values.encode(spatialRenderingMode, forKey: .spatialRenderingMode)
+        try values.encode(spatialSettings, forKey: .spatialSettings)
         try values.encodeIfPresent(spatialListenerProfile, forKey: .spatialListenerProfile)
         try values.encodeIfPresent(spatialAcousticProfile, forKey: .spatialAcousticProfile)
         try values.encode(spatialContentMode, forKey: .spatialContentMode)
