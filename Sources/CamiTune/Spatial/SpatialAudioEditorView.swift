@@ -16,33 +16,37 @@ struct SpatialAudioEditorView: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
-                if profile.usesReferenceSpeakers {
-                    Text("Reference speaker playback").font(.headline)
-                } else {
-                Group {
+                Text("Playback").font(.title3.bold())
+                Picker("Playback mode", selection: playbackMode) {
+                    ForEach(profile.availablePlaybackModes, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(state.spatialCalibrationContext != nil)
+                Text(playbackModeDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if profile.playbackMode == .spatialRender {
                     HStack {
-                        Toggle("Spatial Audio", isOn: Binding(
-                            get: { profile.spatialSettings.enabled },
-                            set: { profile.spatialRenderingMode = .spatialAudio; profile.spatialSettings.enabled = $0 }))
-                            .font(.headline)
+                        Text("Presentation").font(.callout)
+                        Text("Focused").font(.caption).foregroundStyle(.secondary)
+                        Slider(value: amount, in: 0...1)
+                            .accessibilityLabel("Spatial presentation")
+                        Text("Expansive").font(.caption).foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("Content").font(.callout)
                         Spacer()
-                        if profile.spatialSettings.enabled {
-                            Picker("Content", selection: $profile.spatialSettings.contentSelection) {
-                                Text("Automatic").tag(SpatialContentSelection.automatic)
-                                Text("Music").tag(SpatialContentSelection.music)
-                                Text("Cinema").tag(SpatialContentSelection.cinema)
-                            }.labelsHidden().frame(width: 130)
+                        Picker("Content", selection: $profile.spatialSettings.contentSelection) {
+                            Text("Automatic").tag(SpatialContentSelection.automatic)
+                            Text("Music").tag(SpatialContentSelection.music)
+                            Text("Cinema").tag(SpatialContentSelection.cinema)
                         }
+                        .labelsHidden()
+                        .frame(width: 130)
                     }
-                    if profile.spatialSettings.enabled {
-                        HStack {
-                            Text("Space").font(.callout)
-                            Slider(value: amount, in: 0...1)
-                                .accessibilityLabel("Spatial amount")
-                            Text("Immersive").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }.disabled(state.spatialCalibrationContext != nil)
                 }
                 HStack {
                     Button("Speaker system…") { showingSpeakerSystem = true }
@@ -50,7 +54,8 @@ struct SpatialAudioEditorView: View {
                         Text("Reference · \(profile.processingChannelCount) outputs").font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                DisclosureGroup("Advanced & calibration") {
+                if profile.playbackMode == .spatialRender {
+                    DisclosureGroup("Advanced & calibration") {
                     VStack(alignment: .leading, spacing: 10) {
                         Group {
                             Picker("Output", selection: $profile.spatialSettings.outputSelection) {
@@ -117,7 +122,8 @@ struct SpatialAudioEditorView: View {
                             if let calibrationError { Text(calibrationError).font(.caption).foregroundStyle(.orange) }
                         }.disabled(state.spatialCalibrationContext != nil || profile.usesReferenceSpeakers)
                     }.padding(.top, 6)
-                }.font(.callout)
+                    }.font(.callout)
+                }
             }.padding(4)
         }
         .sheet(isPresented: $showingSpeakerSystem) { SpeakerSystemView(state: state, profile: $profile) }
@@ -134,12 +140,29 @@ struct SpatialAudioEditorView: View {
                 .id(context.id)
         }
         .onChange(of: profile.spatialSettings) { _ in
-            if !profile.spatialSettings.enabled && profile.spatialRenderingMode != .spatialAudio { return }
-            profile.spatialRenderingMode = .spatialAudio
+            guard profile.playbackMode == .spatialRender else { return }
             guard active, state.spatialCalibrationContext == nil else { return }
             state.pcmRouter.setSpatialSettings(profile.effectiveSpatialSettings,
                 output: profile.spatialSettings.resolvedOutput(deviceName: profile.outputDeviceName))
             state.pcmRouter.setSpatialRenderingMode(.spatialAudio)
+        }
+        .onChange(of: profile.playbackMode) { _ in
+            guard active, state.spatialCalibrationContext == nil else { return }
+            let updated = profile
+            Task { await state.apply(profile: updated) }
+        }
+    }
+    private var playbackMode: Binding<PlaybackMode> {
+        Binding(get: { profile.playbackMode }, set: { profile.setPlaybackMode($0) })
+    }
+    private var playbackModeDescription: String {
+        switch profile.playbackMode {
+        case .normal:
+            return "No spatial remapping. Equalizer, device correction, room correction, and protection can still run."
+        case .referencePlayback:
+            return "Preserves source positions through the configured speaker map without creating surround or height content."
+        case .spatialRender:
+            return "Adapts the source presentation to this output using bounded spatial processing."
         }
     }
     private var selectedPosition: Binding<UUID?> {

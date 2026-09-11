@@ -53,6 +53,20 @@ enum ProfileEndpointKind: String, Codable, CaseIterable, Sendable {
     }
 }
 
+enum PlaybackMode: String, Codable, CaseIterable, Hashable, Sendable {
+    case normal
+    case referencePlayback
+    case spatialRender
+
+    var displayName: String {
+        switch self {
+        case .normal: return "Normal"
+        case .referencePlayback: return "Reference Playback"
+        case .spatialRender: return "Spatial Render"
+        }
+    }
+}
+
 struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     var id: UUID = UUID()
     var name: String
@@ -65,10 +79,40 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     var outputVolumeScalar: Double = 0.0625
     var sampleRate: Int = 48_000
     var chunkSize: Int = 1024
+    var playbackMode: PlaybackMode = .normal
     var spatialRenderingMode: SpatialRenderingMode = .standard
     var spatialSettings = SpatialRenderSettings()
     var speakerTopology: SpeakerTopology?
-    var usesReferenceSpeakers = false
+    var usesReferenceSpeakers: Bool {
+        get { playbackMode == .referencePlayback }
+        set {
+            if newValue { setPlaybackMode(.referencePlayback) }
+            else if playbackMode == .referencePlayback { setPlaybackMode(.normal) }
+        }
+    }
+
+    var availablePlaybackModes: [PlaybackMode] {
+        var modes: [PlaybackMode]
+        switch endpointKind {
+        case .headphones, .iem:
+            modes = [.normal, .spatialRender]
+        case .speakers:
+            modes = speakerTopology == nil
+                ? [.normal, .spatialRender]
+                : [.normal, .referencePlayback, .spatialRender]
+        case .audioInterface, .custom:
+            // These require an endpoint assignment before enabling a renderer.
+            modes = [.normal]
+        }
+        if !modes.contains(playbackMode) { modes.append(playbackMode) }
+        return modes
+    }
+
+    mutating func setPlaybackMode(_ mode: PlaybackMode) {
+        playbackMode = mode
+        spatialSettings.enabled = mode == .spatialRender
+        spatialRenderingMode = mode == .spatialRender ? .spatialAudio : .standard
+    }
 
     var processingChannelCount: Int {
         usesReferenceSpeakers ? (speakerTopology?.declaredChannelCount ?? 2) : 2
@@ -90,7 +134,7 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         return settings
     }
     var effectiveSpatialRenderingMode: SpatialRenderingMode {
-        spatialSettings.enabled || spatialRenderingMode != .standard ? .spatialAudio : .standard
+        playbackMode == .spatialRender ? .spatialAudio : .standard
     }
     var spatialContentMode: SpatialContentMode = .automatic
     var virtualSurroundLayout: VirtualSurroundLayout = .standard
@@ -141,6 +185,7 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         self.chunkSize = chunkSize
         self.spatialRenderingMode = spatialRenderingMode
         self.spatialSettings = .migrated(from: spatialRenderingMode)
+        self.playbackMode = spatialRenderingMode == .standard ? .normal : .spatialRender
         if let processing {
             self.processing = processing
             self.unmigratedEqualizerAPOText = nil
@@ -240,7 +285,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
     private enum CodingKeys: String, CodingKey {
         case id, name, outputDevice, outputDeviceUID, outputDeviceName, isEnabled, endpointKind
         case autoActivateWhenProfileDeviceSelected
-        case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize
+        case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize, playbackMode
         case spatialRenderingMode, spatialContentMode, spatialListenerProfile, spatialAcousticProfile, equalizerAPOText, processing
         case virtualSurroundLayout, spatialSettings, speakerTopology, usesReferenceSpeakers
     }
@@ -282,7 +327,8 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         ) ?? .standard
         speakerTopology = try? values.decodeIfPresent(SpeakerTopology.self, forKey: .speakerTopology)
         if let topology = speakerTopology, (try? topology.validate()) == nil { speakerTopology = nil }
-        usesReferenceSpeakers = (try? values.decodeIfPresent(Bool.self, forKey: .usesReferenceSpeakers)) ?? false
+        let legacyUsesReferenceSpeakers =
+            (try? values.decodeIfPresent(Bool.self, forKey: .usesReferenceSpeakers)) ?? false
         // Preserve intent on stale device/rate mappings; activation surfaces the
         // mismatch rather than silently playing with an old physical map.
         spatialSettings = try values.decodeIfPresent(SpatialRenderSettings.self, forKey: .spatialSettings)
@@ -290,6 +336,17 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         if spatialRenderingMode == .frontStage || spatialRenderingMode == .virtualSurround {
             spatialSettings.enabled = true
         }
+        if let decodedMode = try values.decodeIfPresent(PlaybackMode.self, forKey: .playbackMode) {
+            playbackMode = decodedMode
+        } else if legacyUsesReferenceSpeakers {
+            playbackMode = .referencePlayback
+        } else if spatialSettings.enabled || spatialRenderingMode != .standard {
+            playbackMode = .spatialRender
+        } else {
+            playbackMode = .normal
+        }
+        spatialSettings.enabled = playbackMode == .spatialRender
+        spatialRenderingMode = playbackMode == .spatialRender ? .spatialAudio : .standard
         // A damaged or newer optional calibration must not make an otherwise
         // usable output/EQ profile unreadable.
         spatialListenerProfile = try? values.decodeIfPresent(
@@ -332,6 +389,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         try values.encode(outputVolumeScalar, forKey: .outputVolumeScalar)
         try values.encode(sampleRate, forKey: .sampleRate)
         try values.encode(chunkSize, forKey: .chunkSize)
+        try values.encode(playbackMode, forKey: .playbackMode)
         try values.encode(spatialRenderingMode, forKey: .spatialRenderingMode)
         try values.encode(spatialSettings, forKey: .spatialSettings)
         try values.encodeIfPresent(speakerTopology, forKey: .speakerTopology)

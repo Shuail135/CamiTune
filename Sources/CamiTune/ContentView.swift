@@ -1,28 +1,45 @@
 import SwiftUI
 import Foundation
 
+enum SidebarDestination: Hashable, Sendable {
+    case setup, applications, settings, profile(UUID)
+
+    var storageValue: String {
+        switch self {
+        case .setup: return "setup"
+        case .applications: return "applications"
+        case .settings: return "settings"
+        case .profile(let id): return id.uuidString
+        }
+    }
+
+    static func restore(_ saved: String?, profileIDs: Set<UUID>, fallbackProfileID: UUID?) -> Self {
+        switch saved {
+        case "setup": return .setup
+        case "applications": return .applications
+        case "settings", "global-settings", "default-profiles": return .settings
+        default:
+            if let saved, let id = UUID(uuidString: saved), profileIDs.contains(id) { return .profile(id) }
+            if let fallbackProfileID, profileIDs.contains(fallbackProfileID) { return .profile(fallbackProfileID) }
+            return .setup
+        }
+    }
+}
+
 @MainActor
 struct ContentView: View {
     let state: AppState
 
-    @State private var selection: String
+    @State private var selection: SidebarDestination
     @State private var showingOutputPicker = false
     @State private var pendingOutputUID: String?
 
     init(state: AppState) {
         self.state = state
         let saved = UserDefaults.standard.string(forKey: "lastSidebarSelection")
-        let restored: String
-        if let saved,
-           saved == "setup" || saved == "default-profiles" || saved == "applications" {
-            restored = saved
-        } else if let saved,
-                  let id = UUID(uuidString: saved),
-                  state.profiles.profiles.contains(where: { $0.id == id }) {
-            restored = saved
-        } else {
-            restored = state.profiles.selectedProfileID?.uuidString ?? "setup"
-        }
+        let restored = SidebarDestination.restore(saved,
+            profileIDs: Set(state.profiles.profiles.map(\.id)),
+            fallbackProfileID: state.profiles.selectedProfileID)
         self._selection = State(initialValue: restored)
     }
 
@@ -44,8 +61,8 @@ struct ContentView: View {
         }
         .frame(minWidth: 800, minHeight: 620)
         .onChange(of: selection) { newSelection in
-            UserDefaults.standard.set(newSelection, forKey: "lastSidebarSelection")
-            if let id = UUID(uuidString: newSelection) {
+            UserDefaults.standard.set(newSelection.storageValue, forKey: "lastSidebarSelection")
+            if case .profile(let id) = newSelection {
                 state.profiles.selectedProfileID = id
             }
         }
@@ -83,7 +100,7 @@ struct ContentView: View {
                   $0.id == pendingOutputUID
               }) else { return }
         let profileID = state.addProfile(for: device)
-        selection = profileID?.uuidString ?? "setup"
+        selection = profileID.map(SidebarDestination.profile) ?? .setup
         showingOutputPicker = false
         self.pendingOutputUID = nil
     }

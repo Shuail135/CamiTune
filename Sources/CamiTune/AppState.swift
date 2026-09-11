@@ -661,6 +661,42 @@ final class AppState: NSObject, ObservableObject {
         }
     }
 
+    /// Delete only the folder membership explicitly shown in the confirmation.
+    func deleteProfileFolder(id: UUID, confirmedProfileIDs: Set<UUID>) async -> Bool {
+        func stillMatchesConfirmation() -> Bool {
+            profiles.folders.contains { $0.id == id }
+                && Set(profiles.profiles(in: id).map(\.id)) == confirmedProfileIDs
+        }
+        guard stillMatchesConfirmation() else {
+            errorMessage = "The folder contents changed. Review the folder and confirm deletion again."
+            return false
+        }
+        // Remove eligibility before waiting on a startup or route transition.
+        // The existing disable path also restores a selected profile endpoint.
+        for profileID in confirmedProfileIDs {
+            await setProfileEnabled(id: profileID, enabled: false)
+        }
+        while transitionInProgress {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        if let activeProfileID, confirmedProfileIDs.contains(activeProfileID) {
+            await deactivate(manual: true)
+        }
+        guard stillMatchesConfirmation() else {
+            errorMessage = "The folder contents changed. Review the folder and confirm deletion again."
+            return false
+        }
+        profiles.deleteFolder(id: id)
+        do {
+            try await coreAudio.synchronizeProfileRoutingDevicesWithoutBlockingUI(
+                profiles: profiles.profiles, activeProfileID: activeProfileID
+            )
+        } catch {
+            errorMessage = "The folder was deleted, but its macOS audio devices could not be updated: \(error.localizedDescription)"
+        }
+        return true
+    }
+
     func setProfileEnabled(id: UUID, enabled: Bool) async {
         guard let profile = profiles.profiles.first(where: { $0.id == id }),
               profile.isEnabled != enabled else { return }

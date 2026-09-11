@@ -2,7 +2,7 @@ import SwiftUI
 import Foundation
 
 @MainActor
-struct DefaultProfilesView: View {
+struct SettingsView: View {
     let state: AppState
     @ObservedObject private var profileStore: ProfileStore
     @ObservedObject private var coreAudio: CoreAudioManager
@@ -15,7 +15,8 @@ struct DefaultProfilesView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Default Profiles").font(.largeTitle.bold())
+            Text("Settings").font(.largeTitle.bold())
+            Text("Profiles & Activation").font(.title2.bold())
             Text("Choose the profile that starts when each physical output is selected in macOS. Only one profile can be the hardware default; other profiles can still use their profile-named audio devices.")
                 .foregroundStyle(.secondary)
 

@@ -8,16 +8,16 @@ struct SpeakerSystemView: View {
     @State private var draft: SpeakerTopology?
     @State private var selected: PhysicalOutputID?
     @State private var group: SpeakerLayer = .floor
-    @State private var reference = false
     @State private var busy = false
     @State private var message: String?
     @State private var context: SpatialCalibrationContext?
     @State private var playing: PhysicalOutputID?
     @State private var request = UUID()
 
-    private var saved: Bool { draft == profile.speakerTopology && reference == profile.usesReferenceSpeakers }
+    private var saved: Bool { draft == profile.speakerTopology }
     private var canTest: Bool {
-        saved && reference && state.isActive && state.activeProfileID == profile.id && !busy
+        saved && profile.playbackMode == .referencePlayback
+            && state.isActive && state.activeProfileID == profile.id && !busy
     }
     private var visibleEndpoints: [SpeakerEndpoint] {
         guard let draft else { return [] }
@@ -46,11 +46,9 @@ struct SpeakerSystemView: View {
                 if let index = draft.endpoints.firstIndex(where: { $0.id == selected }) {
                     endpointEditor(index: index)
                 }
-                Toggle("Use mapped outputs for Reference playback", isOn: $reference)
-                    .disabled(playing != nil)
                 Text("Reference preserves source channels. Stereo stays in the front pair. Unknown source channels and LFE without a subwoofer stay silent.")
                     .font(.caption).foregroundStyle(.secondary)
-                if reference {
+                if profile.playbackMode == .referencePlayback {
                     Text("Save and activate this profile, then test each output to confirm the channel order. Connected speakers need a role or a position before they can reproduce a scene.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -88,7 +86,7 @@ struct SpeakerSystemView: View {
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
             }
         }.padding(24).frame(width: 660)
-        .onAppear { draft = profile.speakerTopology; reference = profile.usesReferenceSpeakers }
+        .onAppear { draft = profile.speakerTopology }
         .onDisappear { stop() }
         .onChange(of: state.spatialCalibrationContext?.id) { id in
             if let context, id != context.id { request = UUID(); playing = nil; self.context = nil }
@@ -216,7 +214,7 @@ struct SpeakerSystemView: View {
             try value.validate()
             value.updatedAt = Date()
             draft = value
-            profile.speakerTopology = value; profile.usesReferenceSpeakers = reference
+            profile.speakerTopology = value
             state.profiles.update(profile)
             let updated = profile
             Task { await state.apply(profile: updated) }

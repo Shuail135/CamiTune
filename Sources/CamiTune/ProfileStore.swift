@@ -245,9 +245,22 @@ final class ProfileStore: ObservableObject {
             base: name, existingNames: folders.filter { $0.id != id }.map(\.name))
     }
 
-    /// Removing organization never removes a profile or changes its route.
+    /// The caller confirms the contents and stops any affected runtime first.
     func deleteFolder(id: UUID) {
-        folders.removeAll { $0.id == id }
+        guard folders.contains(where: { $0.id == id }) else { return }
+        let deletedIDs = Set(profiles(in: id).map(\.id))
+        performBatchUpdate {
+            physicalDeviceDefaults.removeAll { deletedIDs.contains($0.profileID) }
+            profiles.removeAll { deletedIDs.contains($0.id) }
+            var remaining = folders.filter { $0.id != id }
+            for index in remaining.indices {
+                remaining[index].profileIDs.removeAll { deletedIDs.contains($0) }
+            }
+            folders = remaining
+        }
+        if let selectedProfileID, deletedIDs.contains(selectedProfileID) {
+            self.selectedProfileID = profiles.first?.id
+        }
     }
 
     func assignProfile(id: UUID, toFolder folderID: UUID?) {

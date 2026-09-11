@@ -1184,7 +1184,7 @@
 		5BFEA9F39DF864A79D51513D = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = DefaultProfilesView.swift;
+			path = GlobalSettingsView.swift;
 			sourceTree = "<group>";
 		};
 		C31607BD1549E8258CE7BACC = {
