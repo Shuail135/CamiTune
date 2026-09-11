@@ -27,6 +27,7 @@ struct ProfileRoutingAndDeviceView: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Routing & device behavior").font(.title3.bold())
+                    endpointKindPicker
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 12) {
                             systemRouteSummary
@@ -113,6 +114,19 @@ struct ProfileRoutingAndDeviceView: View {
                         .foregroundStyle(.secondary)
                 }.padding(6)
             }
+    }
+
+    private var endpointKindPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Picker("Device / use type", selection: $profile.endpointKind) {
+                ForEach(ProfileEndpointKind.allCases, id: \.self) { kind in
+                    Text(kind.displayName).tag(kind)
+                }
+            }
+            Text("Describe what you use with this output. This label does not change playback processing or assign interface channels.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var systemRouteSummary: some View {

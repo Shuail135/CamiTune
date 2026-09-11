@@ -39,10 +39,26 @@ struct PhysicalDeviceDefaultProfile: Identifiable, Codable, Hashable, Sendable {
     var id: String { physicalDevice.uid }
 }
 
+enum ProfileEndpointKind: String, Codable, CaseIterable, Sendable {
+    case headphones, iem, speakers, audioInterface, custom
+
+    var displayName: String {
+        switch self {
+        case .headphones: return "Headphones"
+        case .iem: return "IEM"
+        case .speakers: return "Speakers"
+        case .audioInterface: return "Audio Interface"
+        case .custom: return "Custom / Unspecified"
+        }
+    }
+}
+
 struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     var id: UUID = UUID()
     var name: String
     var outputDevice: PhysicalOutputIdentity
+    /// User-described use, independent of hardware identity and DSP selection.
+    var endpointKind: ProfileEndpointKind = .custom
     var isEnabled: Bool = true
     var autoActivateWhenProfileDeviceSelected: Bool = false
     var lockOutputVolume: Bool = false
@@ -222,7 +238,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
 """
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, outputDevice, outputDeviceUID, outputDeviceName, isEnabled
+        case id, name, outputDevice, outputDeviceUID, outputDeviceName, isEnabled, endpointKind
         case autoActivateWhenProfileDeviceSelected
         case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize
         case spatialRenderingMode, spatialContentMode, spatialListenerProfile, spatialAcousticProfile, equalizerAPOText, processing
@@ -248,6 +264,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
             )
         }
         isEnabled = try values.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        endpointKind = try values.decodeIfPresent(ProfileEndpointKind.self, forKey: .endpointKind) ?? .custom
         autoActivateWhenProfileDeviceSelected = try values.decodeIfPresent(
             Bool.self,
             forKey: .autoActivateWhenProfileDeviceSelected
@@ -308,6 +325,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         try values.encode(id, forKey: .id)
         try values.encode(name, forKey: .name)
         try values.encode(outputDevice, forKey: .outputDevice)
+        try values.encode(endpointKind, forKey: .endpointKind)
         try values.encode(isEnabled, forKey: .isEnabled)
         try values.encode(autoActivateWhenProfileDeviceSelected, forKey: .autoActivateWhenProfileDeviceSelected)
         try values.encode(lockOutputVolume, forKey: .lockOutputVolume)

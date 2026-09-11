@@ -39,12 +39,21 @@ enum ProfileNamePolicy {
     }
 }
 
+struct ProfileFolder: Identifiable, Codable, Equatable, Sendable {
+    var id = UUID()
+    var name: String
+    var profileIDs: [UUID] = []
+}
+
 @MainActor
 final class ProfileStore: ObservableObject {
     @Published var profiles: [DeviceProfile] = [] {
         didSet { save() }
     }
     @Published private(set) var physicalDeviceDefaults: [PhysicalDeviceDefaultProfile] = [] {
+        didSet { save() }
+    }
+    @Published private(set) var folders: [ProfileFolder] = [] {
         didSet { save() }
     }
     @Published var selectedProfileID: UUID? {
@@ -75,6 +84,7 @@ final class ProfileStore: ObservableObject {
         load()
         sanitizeProfiles()
         sanitizePhysicalDeviceDefaults()
+        sanitizeFolders()
         if let raw = userDefaults.string(forKey: "selectedProfileID"),
            let id = UUID(uuidString: raw),
            profiles.contains(where: { $0.id == id }) {
@@ -195,8 +205,125 @@ final class ProfileStore: ObservableObject {
         performBatchUpdate {
             physicalDeviceDefaults.removeAll { $0.profileID == id }
             profiles.removeAll { $0.id == id }
+            for index in folders.indices { folders[index].profileIDs.removeAll { $0 == id } }
         }
         if selectedProfileID == id { selectedProfileID = profiles.first?.id }
+    }
+
+    /// Uses the original list's insertion offset, as supplied by sidebar dragging.
+    /// Presentation order only: route identities and automatic defaults stay intact.
+    func moveProfiles(fromOffsets source: IndexSet, toOffset destination: Int) {
+        guard !source.isEmpty,
+              source.allSatisfy({ profiles.indices.contains($0) }),
+              (0...profiles.count).contains(destination) else { return }
+        let moved = source.map { profiles[$0] }
+        var updated = profiles.enumerated().filter { !source.contains($0.offset) }.map(\.element)
+        let insertion = destination - source.filter { $0 < destination }.count
+        updated.insert(contentsOf: moved, at: insertion)
+        guard updated != profiles else { return }
+        profiles = updated
+    }
+
+    func folderID(for profileID: UUID) -> UUID? {
+        folders.first { $0.profileIDs.contains(profileID) }?.id
+    }
+
+    func profiles(in folderID: UUID?) -> [DeviceProfile] {
+        profiles.filter { self.folderID(for: $0.id) == folderID }
+    }
+
+    @discardableResult
+    func addFolder(name: String) -> UUID {
+        let folder = ProfileFolder(name: ProfileNamePolicy.uniqueName(base: name, existingNames: folders.map(\.name)))
+        folders.append(folder)
+        return folder.id
+    }
+
+    func renameFolder(id: UUID, name: String) {
+        guard let index = folders.firstIndex(where: { $0.id == id }) else { return }
+        folders[index].name = ProfileNamePolicy.uniqueName(
+            base: name, existingNames: folders.filter { $0.id != id }.map(\.name))
+    }
+
+    /// Removing organization never removes a profile or changes its route.
+    func deleteFolder(id: UUID) {
+        folders.removeAll { $0.id == id }
+    }
+
+    func assignProfile(id: UUID, toFolder folderID: UUID?) {
+        assignProfiles(ids: [id], toFolder: folderID)
+    }
+
+    func assignProfiles(ids: Set<UUID>, toFolder folderID: UUID?) {
+        guard folderID == nil || folders.contains(where: { $0.id == folderID }) else { return }
+        let orderedIDs = profiles.map(\.id).filter { ids.contains($0) }
+        guard !orderedIDs.isEmpty else { return }
+        let validIDs = Set(orderedIDs)
+        var updated = folders
+        for index in updated.indices {
+            updated[index].profileIDs.removeAll { validIDs.contains($0) }
+            if updated[index].id == folderID { updated[index].profileIDs.append(contentsOf: orderedIDs) }
+        }
+        folders = updated
+    }
+
+    @discardableResult
+    func groupProfiles(ids: Set<UUID>, name: String) -> UUID {
+        var folderID: UUID!
+        performBatchUpdate {
+            folderID = addFolder(name: name)
+            assignProfiles(ids: ids, toFolder: folderID)
+        }
+        return folderID
+    }
+
+    /// A drag can both change membership and insert at a visible row boundary.
+    func dropProfiles(ids: Set<UUID>, into folderID: UUID?, at destination: Int? = nil) {
+        guard folderID == nil || folders.contains(where: { $0.id == folderID }) else { return }
+        let visible = profiles(in: folderID)
+        let offset = destination ?? visible.count
+        guard (0...visible.count).contains(offset) else { return }
+        let moved = profiles.filter { ids.contains($0.id) }
+        guard !moved.isEmpty else { return }
+        var ordered = visible.filter { !ids.contains($0.id) }
+        let insertion = offset - visible.prefix(offset).filter { ids.contains($0.id) }.count
+        ordered.insert(contentsOf: moved, at: insertion)
+        performBatchUpdate {
+            assignProfiles(ids: ids, toFolder: folderID)
+            let slots = profiles.indices.filter { self.folderID(for: profiles[$0].id) == folderID }
+            var updated = profiles
+            for (slot, profile) in zip(slots, ordered) { updated[slot] = profile }
+            if updated != profiles { profiles = updated }
+        }
+    }
+
+    func moveProfiles(in folderID: UUID?, fromOffsets source: IndexSet, toOffset destination: Int) {
+        let visible = profiles(in: folderID)
+        guard !source.isEmpty, source.allSatisfy({ visible.indices.contains($0) }),
+              (0...visible.count).contains(destination) else { return }
+        let moved = source.map { visible[$0] }
+        var ordered = visible.enumerated().filter { !source.contains($0.offset) }.map(\.element)
+        ordered.insert(contentsOf: moved, at: destination - source.filter { $0 < destination }.count)
+        let slots = profiles.indices.filter { self.folderID(for: profiles[$0].id) == folderID }
+        var updated = profiles
+        for (slot, profile) in zip(slots, ordered) { updated[slot] = profile }
+        if updated != profiles { profiles = updated }
+    }
+
+    private func sanitizeFolders() {
+        var folderIDs = Set<UUID>()
+        var claimedProfiles = Set<UUID>()
+        let validProfiles = Set(profiles.map(\.id))
+        var result: [ProfileFolder] = []
+        for var folder in folders {
+            if !folderIDs.insert(folder.id).inserted { folder.id = UUID(); folderIDs.insert(folder.id) }
+            folder.name = ProfileNamePolicy.uniqueName(base: folder.name, existingNames: result.map(\.name))
+            folder.profileIDs = folder.profileIDs.filter {
+                validProfiles.contains($0) && claimedProfiles.insert($0).inserted
+            }
+            result.append(folder)
+        }
+        folders = result
     }
 
     func update(_ profile: DeviceProfile) {
@@ -216,6 +343,7 @@ final class ProfileStore: ObservableObject {
         }
         let decoder = JSONDecoder()
         if let stored = try? decoder.decode(StoredProfileConfiguration.self, from: data) {
+            folders = stored.folders
             profiles = stored.profiles
             physicalDeviceDefaults = stored.physicalDeviceDefaults
             return
@@ -287,7 +415,8 @@ final class ProfileStore: ObservableObject {
         }
         let stored = StoredProfileConfiguration(
             profiles: profiles,
-            physicalDeviceDefaults: physicalDeviceDefaults
+            physicalDeviceDefaults: physicalDeviceDefaults,
+            folders: folders
         )
         persistenceRevision &+= 1
         let revision = persistenceRevision
@@ -327,7 +456,8 @@ final class ProfileStore: ObservableObject {
         persistenceRevision &+= 1
         let stored = StoredProfileConfiguration(
             profiles: profiles,
-            physicalDeviceDefaults: physicalDeviceDefaults
+            physicalDeviceDefaults: physicalDeviceDefaults,
+            folders: folders
         )
         let destination = url
         let result = persistenceQueue.sync {
@@ -356,8 +486,42 @@ final class ProfileStore: ObservableObject {
 }
 
 private struct StoredProfileConfiguration: Codable, Sendable {
+    static let currentSchemaVersion = 1
+    var schemaVersion: Int = currentSchemaVersion
     var profiles: [DeviceProfile]
     var physicalDeviceDefaults: [PhysicalDeviceDefaultProfile]
+    var folders: [ProfileFolder]
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, profiles, physicalDeviceDefaults, folders
+    }
+
+    init(profiles: [DeviceProfile], physicalDeviceDefaults: [PhysicalDeviceDefaultProfile], folders: [ProfileFolder]) {
+        self.folders = folders
+        self.profiles = profiles
+        self.physicalDeviceDefaults = physicalDeviceDefaults
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        // The original document had no version. Accept that exact legacy
+        // shape, but reject explicit unsupported versions before decoding data.
+        if values.contains(.schemaVersion) {
+            let version = try values.decode(Int.self, forKey: .schemaVersion)
+            guard version == Self.currentSchemaVersion else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .schemaVersion,
+                    in: values,
+                    debugDescription: "Unsupported profile schema version: \(version)"
+                )
+            }
+        }
+        folders = try values.decodeIfPresent([ProfileFolder].self, forKey: .folders) ?? []
+        profiles = try values.decode([DeviceProfile].self, forKey: .profiles)
+        physicalDeviceDefaults = try values.decode(
+            [PhysicalDeviceDefaultProfile].self, forKey: .physicalDeviceDefaults
+        )
+    }
 }
 
 private struct LegacyStoredProfile: Decodable {

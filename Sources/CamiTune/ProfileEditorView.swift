@@ -17,7 +17,7 @@ struct ProfileEditorView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            LazyVStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .firstTextBaseline) {
                     if isRenamingProfile {
                         TextField("Profile name", text: $profileNameDraft)
@@ -39,19 +39,18 @@ struct ProfileEditorView: View {
                         outputDeviceUID: profile.outputDeviceUID
                     )
                     Spacer()
-                    Toggle("", isOn: Binding(
+                    Toggle("Enabled", isOn: Binding(
                         get: { profile.isEnabled },
                         set: { newValue in
                             Task { await state.setProfileEnabled(id: profile.id, enabled: newValue) }
                         }
                     ))
-                    .labelsHidden()
                     .toggleStyle(.switch)
                     .accessibilityLabel("Enable Profile")
                     .help("Make this profile available for activation")
                 }
 
-                Text("The switch activates this profile. Its selected activation conditions decide when the EQ runs.")
+                Text("Enabled makes this profile available. Activation conditions decide when processing starts; Active means its audio runtime is running. Disabling stops this profile if it is running.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -82,18 +81,16 @@ struct ProfileEditorView: View {
                     profile: $profile
                 )
 
-                VStack(alignment: .leading, spacing: 18) {
-                    GlobalEqualizerEditorView(
-                        state: state,
-                        profile: $profile,
-                        graphModel: graphModel
-                    )
+                GlobalEqualizerEditorView(
+                    state: state,
+                    profile: $profile,
+                    graphModel: graphModel
+                )
 
-                    ConvolutionEditorView(
-                        state: state,
-                        profile: $profile
-                    )
-                }
+                ConvolutionEditorView(
+                    state: state,
+                    profile: $profile
+                )
 
                 CrossfeedEditorView(
                     state: state,

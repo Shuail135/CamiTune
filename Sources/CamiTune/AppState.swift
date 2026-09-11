@@ -1644,7 +1644,7 @@ final class AppState: NSObject, ObservableObject {
             case .unsupportedRoutingLayout: return "The installed audio routing driver does not expose a supported 2.0, 5.1, or 7.1 LPCM layout. Open Setup and select Install / Repair Everything."
             case .outputMissing(let name): return "The selected output device is not connected: \(name)"
             case .invalidTarget: return "The virtual routing device cannot be used as the physical playback target."
-            case .profileDisabled(let name): return "Activate the \(name) profile before using its EQ activation conditions."
+            case .profileDisabled(let name): return "Enable the \(name) profile before using its activation conditions."
             case .profileRoutingDeviceMissing(let name): return "CoreAudio did not create the \(name) profile audio device."
             case .unsupportedSampleRate(let rate, let device): return "\(device) does not report support for the selected \(Double(rate) / 1000) kHz sample rate."
             case .camillaDSPCoreAudioUIDUnsupported:
