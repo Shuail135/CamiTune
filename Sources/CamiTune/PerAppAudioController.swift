@@ -8,6 +8,27 @@ struct PerAppAudioSettings: Codable, Hashable, Sendable {
     var isMuted = false
     var eqBypassed = true
     var equalizerBands: [EQBand] = []
+    var playbackModeOverride: PlaybackMode?
+}
+
+struct PerAppPlaybackContext: Sendable {
+    var profileMode: PlaybackMode
+    var availableModes: Set<PlaybackMode>
+
+    init(profile: DeviceProfile) {
+        profileMode = profile.playbackMode
+        availableModes = Set(profile.availablePlaybackModes)
+    }
+
+    func effectiveMode(for override: PlaybackMode?) -> PlaybackMode {
+        guard let override, availableModes.contains(override) else { return profileMode }
+        // Reference owns an N-channel DSP graph. A stereo override cannot
+        // change that graph while other applications are playing through it.
+        guard (override == .referencePlayback) == (profileMode == .referencePlayback) else {
+            return profileMode
+        }
+        return override
+    }
 }
 
 struct PerAppAudioApplication: Identifiable, Hashable, Sendable {
@@ -105,6 +126,7 @@ enum PerAppMixFlushResult: Sendable {
 /// state, and the pre-global-DSP application mixer.
 final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     @Published private(set) var applications: [PerAppAudioApplication] = []
+    private var playbackContext: PerAppPlaybackContext?
 
     private struct PendingMix {
         var deviceObjectID: UInt32
@@ -116,6 +138,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         var sourceCapacityFrames: Int
         var clientKeys: Set<PerAppTransportClientKey>
         var samples: [Float]
+        var samplesByMode: [PlaybackMode: [Float]]
         var largestPacketFrames: Int
         var lastPacketDate: Date
 
@@ -611,6 +634,43 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             || knownAudioApplicationIDs.contains(applicationID)
     }
 
+    func setPlaybackContext(_ context: PerAppPlaybackContext?) {
+        stateLock.lock()
+        playbackContext = context
+        stateLock.unlock()
+    }
+
+    func setPlaybackModeOverride(_ mode: PlaybackMode?, for applicationID: String) {
+        updateSettings(for: applicationID) { $0.playbackModeOverride = mode }
+    }
+
+    func effectivePlaybackMode(for override: PlaybackMode?, fallbackProfile: DeviceProfile) -> PlaybackMode {
+        stateLock.lock()
+        let context = playbackContext
+        stateLock.unlock()
+        return (context ?? PerAppPlaybackContext(profile: fallbackProfile)).effectiveMode(for: override)
+    }
+
+    func rankedMenuApplicationIDs() -> [String] {
+        audioLock.lock()
+        let audibleDates = lastAudibleDateByApplication
+        audioLock.unlock()
+        let now = Date()
+        return applications.filter { $0.isActive }.sorted { lhs, rhs in
+            func rank(_ app: PerAppAudioApplication) -> Int {
+                if let date = audibleDates[app.id], now.timeIntervalSince(date) < 2 { return 0 }
+                if let date = audibleDates[app.id], now.timeIntervalSince(date) < 300 { return 1 }
+                return app.settings != PerAppAudioSettings() ? 2 : 3
+            }
+            let l = rank(lhs), r = rank(rhs)
+            if l != r { return l < r }
+            if l < 2, audibleDates[lhs.id] != audibleDates[rhs.id] {
+                return (audibleDates[lhs.id] ?? .distantPast) > (audibleDates[rhs.id] ?? .distantPast)
+            }
+            return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+        }.map(\.id)
+    }
+
     func setVolume(
         _ volume: Double,
         for applicationID: String,
@@ -766,6 +826,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             ?? (packet.processID > 0 ? "pid:\(packet.processID)" : nil)
             ?? "client:\(packet.deviceObjectID):\(packet.clientID)"
         let settings = settingsByApplication[applicationID] ?? PerAppAudioSettings()
+        let playbackMode = playbackContext?.effectiveMode(for: settings.playbackModeOverride) ?? .normal
         let settingsRevision = settingsRevisionByApplication[applicationID] ?? 0
         stateLock.unlock()
 
@@ -848,6 +909,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
         let completed = mixProcessedPacketLocked(
             packet,
+            mode: playbackMode,
             packetStartSampleTime: packetStartSampleTime,
             samples: processed,
             clientKey: dspClientKey,
@@ -1087,6 +1149,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
     private func mixProcessedPacketLocked(
         _ packet: PerAppAudioPacket,
+        mode: PlaybackMode,
         packetStartSampleTime: Int64,
         samples: [Float],
         clientKey: PerAppTransportClientKey,
@@ -1121,6 +1184,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                 let completed = emitAllPendingMixLocked(for: packet.deviceObjectID)
                 pendingMixesByDevice[packet.deviceObjectID] = makePendingMix(
                     packet,
+                    mode: mode,
                     startSampleTime: packetStart,
                     samples: packetSamples,
                     clientKey: clientKey,
@@ -1142,6 +1206,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                 let completed = emitAllPendingMixLocked(for: packet.deviceObjectID)
                 pendingMixesByDevice[packet.deviceObjectID] = makePendingMix(
                     packet,
+                    mode: mode,
                     startSampleTime: packetStart,
                     samples: packetSamples,
                     clientKey: clientKey,
@@ -1164,6 +1229,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                     count: prependFrames * channelCount
                 ) + mix.samples
                 mix.startSampleTime = packetStart
+                for key in Array(mix.samplesByMode.keys) {
+                    mix.samplesByMode[key] = [Float](repeating: 0,
+                        count: prependFrames * channelCount) + mix.samplesByMode[key]!
+                }
             }
 
             let frameOffset = Int(packetStart - mix.startSampleTime)
@@ -1177,6 +1246,14 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             }
             for index in packetSamples.indices {
                 mix.samples[sampleOffset + index] += packetSamples[index]
+            }
+            for key in Set(mix.samplesByMode.keys).union([mode]) {
+                var bus = mix.samplesByMode[key] ?? []
+                bus.append(contentsOf: repeatElement(Float(0), count: mix.samples.count - bus.count))
+                if key == mode {
+                    for index in packetSamples.indices { bus[sampleOffset + index] += packetSamples[index] }
+                }
+                mix.samplesByMode[key] = bus
             }
             mix.sourceBufferedFrames = max(
                 mix.sourceBufferedFrames,
@@ -1193,6 +1270,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         } else {
             pendingMixesByDevice[packet.deviceObjectID] = makePendingMix(
                 packet,
+                mode: mode,
                 startSampleTime: packetStart,
                 samples: packetSamples,
                 clientKey: clientKey,
@@ -1217,6 +1295,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
     private func makePendingMix(
         _ packet: PerAppAudioPacket,
+        mode: PlaybackMode,
         startSampleTime: Int64,
         samples: [Float],
         clientKey: PerAppTransportClientKey,
@@ -1232,6 +1311,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             sourceCapacityFrames: packet.sourceCapacityFrames,
             clientKeys: [clientKey],
             samples: samples,
+            samplesByMode: [mode: samples],
             largestPacketFrames: max(1, samples.count / packet.channelCount),
             lastPacketDate: now
         )
@@ -1257,7 +1337,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         let sampleCount = frameCount * mix.channelCount
         let outputSamples = Array(mix.samples.prefix(sampleCount))
         let activeClientCount = max(1, mix.clientKeys.count)
-        let output = PCMFrame(
+        var output = PCMFrame(
             interleaved: outputSamples,
             channelCount: mix.channelCount,
             sampleRate: mix.sampleRate,
@@ -1265,6 +1345,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             sourceBufferedFrames: mix.sourceBufferedFrames / activeClientCount,
             sourceCapacityFrames: mix.sourceCapacityFrames
         )
+        output.playbackModeSamples = mix.samplesByMode.mapValues { Array($0.prefix(sampleCount)) }
         let emittedEnd = mix.startSampleTime + Int64(frameCount)
         lastEmittedEndSampleTimeByDevice[deviceObjectID] = emittedEnd
 
@@ -1272,6 +1353,9 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             pendingMixesByDevice.removeValue(forKey: deviceObjectID)
         } else {
             mix.samples.removeFirst(sampleCount)
+            for key in Array(mix.samplesByMode.keys) {
+                mix.samplesByMode[key]?.removeFirst(sampleCount)
+            }
             mix.startSampleTime = emittedEnd
             pendingMixesByDevice[deviceObjectID] = mix
         }

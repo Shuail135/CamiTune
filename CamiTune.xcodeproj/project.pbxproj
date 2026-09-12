@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        CA3300000000000000000001 = {isa = PBXBuildFile; fileRef = CA3300000000000000000002; };
 		6E230EE1DB6F0ECCA260B06E = {isa = PBXBuildFile; fileRef = 3BB3CD1B243E9D023FB1E9C3; };
 		728B17019F77D3D62CB27FBC = {isa = PBXBuildFile; fileRef = 5A2E1F952D18506134163551; };
 		03873F6A543C0FC7E3B5F27F = {isa = PBXBuildFile; fileRef = 412254C9FCC8F1B095E341C9; };
@@ -545,6 +546,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+        CA3300000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		3BB3CD1B243E9D023FB1E9C3 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Tests/CamiTuneTests/SpeakerTopologyProbeTests.swift"; sourceTree = SOURCE_ROOT; };
 		5A2E1F952D18506134163551 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Tests/CamiTuneTests/SpatialInputDetectionTests.swift"; sourceTree = SOURCE_ROOT; };
 		412254C9FCC8F1B095E341C9 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Tests/CamiTuneTests/ReferenceSpeakerTests.swift"; sourceTree = SOURCE_ROOT; };
@@ -1544,6 +1546,7 @@
 			    F34F09C350FEFEAECAF05185,
 			    A8D0128ACA3AA5114A452008,
 			    0A1BE14A6E8F329E9C48F007,
+                CA3300000000000000000002,
 			    356E5942FA333F1538E02434,
 			    7EA0A802461577D9770FC168,
 			    33E9A29DC002A4A4D35C4C60,
@@ -1848,6 +1851,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                CA3300000000000000000001,
 				CA3200000000000000000201,
 				CA3200000000000000000202,
 				CA3200000000000000000203,

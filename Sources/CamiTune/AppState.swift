@@ -71,7 +71,7 @@ final class AppState: NSObject, ObservableObject {
     private var startupConfigurationTask: Task<Void, Never>?
     private var suppressedAutoUID: String?
     private var automaticActivationRetry: AutomaticActivationRetryState?
-    private var transitionInProgress = false
+    @Published private(set) var transitionInProgress = false
     private struct PendingDeactivation {
         var manual: Bool
         var restoreOutput: Bool
@@ -746,6 +746,55 @@ final class AppState: NSObject, ObservableObject {
         return profile.id
     }
 
+    func setPlaybackMode(profileID: UUID, mode: PlaybackMode) async {
+        guard !transitionInProgress, spatialCalibrationContext == nil,
+              var profile = profiles.profiles.first(where: { $0.id == profileID }),
+              profile.availablePlaybackModes.contains(mode) else { return }
+        profile.setPlaybackMode(mode)
+        profiles.update(profile)
+        if isActive && activeProfileID == profileID { await apply(profile: profile) }
+    }
+
+    func setActivationMode(profileID: UUID, mode: ProfileActivationMode) async {
+        guard let profile = profiles.profiles.first(where: { $0.id == profileID }) else { return }
+        switch mode {
+        case .physicalOutput:
+            await setAutomaticProfile(for: profile.outputDevice, profileID: profileID)
+        case .profileAudioDevice:
+            await setAutoActivateWhenProfileDeviceSelected(id: profileID, enabled: true)
+        case .manual:
+            if profiles.activationMode(for: profile) == .physicalOutput {
+                await setAutomaticProfile(for: profile.outputDevice, profileID: nil)
+            }
+            await setAutoActivateWhenProfileDeviceSelected(id: profileID, enabled: false)
+        }
+    }
+
+    /// The confirmation is tied to a profile ID; revalidate it before any write.
+    func deactivateProfileFromMenu(profileID: UUID, physicalOutputConfirmed: Bool) async {
+        guard !transitionInProgress, isActive, activeProfileID == profileID,
+              let profile = profiles.profiles.first(where: { $0.id == profileID }) else { return }
+        let mode = profiles.activationMode(for: profile)
+        if mode == .physicalOutput {
+            guard physicalOutputConfirmed else { return }
+            // No await between policy mutation, durable save, and deactivation.
+            profiles.setAutomaticProfile(physicalDevice: profile.outputDevice, profileID: nil)
+            profiles.setAutoActivateWhenProfileDeviceSelected(profileID: profileID, enabled: true)
+            profiles.flushPendingSaveSynchronously()
+            if let error = profiles.persistenceError {
+                profiles.setAutoActivateWhenProfileDeviceSelected(profileID: profileID,
+                    enabled: profile.autoActivateWhenProfileDeviceSelected)
+                profiles.setAutomaticProfile(physicalDevice: profile.outputDevice, profileID: profileID)
+                errorMessage = error
+                return
+            }
+        }
+        if mode != .manual {
+            previousDefaultUID = activePhysicalOutputUID ?? profile.outputDeviceUID
+        }
+        await deactivate(manual: true)
+    }
+
     func setAutomaticProfile(
         for physicalDevice: PhysicalOutputIdentity,
         profileID: UUID?
@@ -998,6 +1047,7 @@ final class AppState: NSObject, ObservableObject {
             )
             activeReferenceTopology = referenceTopology
             pcmRouter.setVirtualSurroundLayout(profile.virtualSurroundLayout)
+            perAppAudio.setPlaybackContext(PerAppPlaybackContext(profile: profile))
             var transportConnected = false
             var transportError: Error?
             for attempt in 0..<3 {
@@ -1317,6 +1367,7 @@ final class AppState: NSObject, ObservableObject {
             pcmRouter.setSpatialListenerTuning(currentProfile.spatialListenerTuning)
             pcmRouter.setSpatialContentMode(currentProfile.spatialContentMode)
             pcmRouter.setVirtualSurroundLayout(currentProfile.virtualSurroundLayout)
+            perAppAudio.setPlaybackContext(PerAppPlaybackContext(profile: currentProfile))
             clearTransientError()
         } catch {
             guard request == latestApplyRequest else { return }
@@ -1458,6 +1509,7 @@ final class AppState: NSObject, ObservableObject {
     }
 
     private func stopProcessingPipeline() async {
+        perAppAudio.setPlaybackContext(nil)
         if let context = spatialCalibrationContext { endSpatialCalibration(id: context.id) }
         meters.stop()
         await driverTransport.stopWithoutBlockingUI()
@@ -1591,6 +1643,7 @@ final class AppState: NSObject, ObservableObject {
 
         meters.stop()
         driverTransport.stop()
+        perAppAudio.setPlaybackContext(nil)
         perAppAudio.resetRuntime()
         pcmRouter.stop()
         dsp.closeAudioInput()

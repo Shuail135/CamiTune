@@ -16,7 +16,7 @@ struct CamiTuneMain: App {
 
     var body: some Scene {
         MenuBarExtra {
-            CamillaMenuBarView(state: state)
+            MenuBarRootView(state: state)
         } label: {
             CamiTuneMenuBarLabel(
                 isActive: state.isActive
@@ -134,7 +134,7 @@ private enum AppIcon {
 }
 
 @MainActor
-private final class CamiTunePresentationCoordinator {
+final class CamiTunePresentationCoordinator {
     static let shared = CamiTunePresentationCoordinator()
 
     let state = AppState()
@@ -216,39 +216,6 @@ private final class CamiTunePresentationCoordinator {
     }
 }
 
-private struct CamillaMenuBarView: View {
-    let state: AppState
-
-    var body: some View {
-        VStack(alignment: .center, spacing: 12) {
-            PerAppMenuBarControls(controller: state.perAppAudio)
-            Divider()
-
-            HStack(spacing: 8) {
-                Button {
-                    CamiTunePresentationCoordinator.shared.showMainWindow()
-                    Task { await state.updateChecker.checkAfterReminderIfNeeded() }
-                } label: {
-                    Label("Show CamiTune", systemImage: "macwindow")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                Button {
-                    NSApp.terminate(nil)
-                } label: {
-                    Image(systemName: "power")
-                        .frame(width: 18)
-                }
-                .buttonStyle(.bordered)
-                .help("Quit CamiTune")
-                .accessibilityLabel("Quit CamiTune")
-                .keyboardShortcut("q")
-            }
-        }
-        .padding(14)
-        .frame(width: 300)
-    }
-}
 
 private struct CamiTuneMenuBarLabel: View {
     var isActive: Bool
@@ -260,172 +227,6 @@ private struct CamiTuneMenuBarLabel: View {
     }
 }
 
-private struct PerAppMenuBarControls: View {
-    @ObservedObject var controller: PerAppAudioController
-
-    private var activeApplications: [PerAppAudioApplication] {
-        controller.applications.filter(\.isActive)
-    }
-
-    var body: some View {
-        VStack(alignment: .center, spacing: 9) {
-            Text("Application Volume").font(.subheadline.bold())
-            if activeApplications.isEmpty {
-                Text("No eligible applications are running.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 8)
-            } else {
-                ScrollView(.horizontal) {
-                    LazyHStack(alignment: .top, spacing: 10) {
-                        ForEach(activeApplications) { application in
-                            VStack(spacing: 8) {
-                                Button {
-                                    controller.setMuted(
-                                        !application.settings.isMuted,
-                                        for: application.id
-                                    )
-                                } label: {
-                                    ZStack(alignment: .bottomTrailing) {
-                                        Image(nsImage: PerAppIconCache.icon(for: application))
-                                            .resizable()
-                                            .frame(width: 32, height: 32)
-                                            .opacity(application.settings.isMuted ? 0.45 : 1)
-                                        if application.settings.isMuted {
-                                            Image(systemName: "speaker.slash.fill")
-                                                .font(.system(size: 9, weight: .bold))
-                                                .foregroundStyle(.white)
-                                                .padding(3)
-                                                .background(.red, in: Circle())
-                                                .offset(x: 3, y: 3)
-                                        }
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                                .help(
-                                    application.settings.isMuted
-                                        ? "Unmute \(application.displayName)"
-                                        : "Mute \(application.displayName)"
-                                )
-
-                                VerticalMeteredApplicationVolumeSlider(
-                                    volume: application.settings.volume,
-                                    level: application.level,
-                                    isMuted: application.settings.isMuted,
-                                    onVolumeChange: { volume, interactionFinished in
-                                        controller.setVolume(
-                                            volume,
-                                            for: application.id,
-                                            interactionFinished: interactionFinished
-                                        )
-                                    }
-                                )
-                                .frame(width: 28, height: 126)
-                                .help(
-                                    "\(application.displayName) volume: "
-                                        + "\(Int((application.settings.volume * 100).rounded()))%"
-                                )
-                            }
-                            .frame(width: 48)
-                            .padding(.vertical, 8)
-                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
-                        }
-                    }
-                    .padding(.horizontal, 1)
-                    .frame(minWidth: 270, alignment: .center)
-                }
-                .frame(height: 184)
-            }
-            Text("Click an app icon to mute. Menu-bar apps appear after producing audio; per-app EQ remains in the main window.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .onAppear {
-            controller.setMeterPresentationActive(true, source: "menu")
-        }
-        .onDisappear {
-            controller.setMeterPresentationActive(false, source: "menu")
-        }
-    }
-}
-
-private struct VerticalMeteredApplicationVolumeSlider: View {
-    var volume: Double
-    var level: Double
-    var isMuted: Bool
-    var onVolumeChange: (Double, Bool) -> Void
-    @State private var interactionVolume: Double?
-
-    var body: some View {
-        GeometryReader { geometry in
-            let inset: CGFloat = 9
-            let trackWidth: CGFloat = 7
-            let track = CGRect(
-                x: (geometry.size.width - trackWidth) / 2,
-                y: inset,
-                width: trackWidth,
-                height: max(1, geometry.size.height - 2 * inset)
-            )
-            let meterAmount = isMuted ? 0 : min(1, max(0, level))
-            let volumeAmount = min(1, max(0, interactionVolume ?? volume))
-            let thumbY = track.maxY - track.height * volumeAmount
-            ZStack {
-                Capsule()
-                    .fill(Color.secondary.opacity(0.18))
-                    .frame(width: track.width, height: track.height)
-                    .position(x: track.midX, y: track.midY)
-                Capsule()
-                    .fill(.green)
-                    .frame(width: track.width, height: track.height)
-                    .scaleEffect(x: 1, y: meterAmount, anchor: .bottom)
-                    .position(x: track.midX, y: track.midY)
-                Circle()
-                    .fill(Color(nsColor: .controlBackgroundColor))
-                    .overlay(Circle().stroke(Color.primary.opacity(0.75), lineWidth: 1.5))
-                    .frame(width: 17, height: 17)
-                    .shadow(color: .black.opacity(0.2), radius: 1.5, y: 1)
-                    .position(x: track.midX, y: thumbY)
-            }
-            .frame(width: geometry.size.width, height: geometry.size.height)
-            .animation(
-                .linear(duration: UIRenderPerformance.animatedLevelTransitionDuration),
-                value: meterAmount
-            )
-            .contentShape(Rectangle())
-            .highPriorityGesture(DragGesture(minimumDistance: 0).onChanged { value in
-                let adjusted = adjustedVolume(for: value.location.y, in: track)
-                interactionVolume = adjusted
-                onVolumeChange(adjusted, false)
-            }.onEnded { value in
-                let adjusted = adjustedVolume(for: value.location.y, in: track)
-                interactionVolume = adjusted
-                onVolumeChange(adjusted, true)
-                DispatchQueue.main.async { interactionVolume = nil }
-            })
-        }
-        .accessibilityElement()
-        .accessibilityLabel("Application volume")
-        .accessibilityValue("\(Int(((interactionVolume ?? volume) * 100).rounded())) percent")
-        .accessibilityAdjustableAction { direction in
-            let current = interactionVolume ?? volume
-            let next: Double
-            switch direction {
-            case .increment: next = min(1, current + 0.01)
-            case .decrement: next = max(0, current - 0.01)
-            @unknown default: return
-            }
-            interactionVolume = next
-            onVolumeChange(next, true)
-            DispatchQueue.main.async { interactionVolume = nil }
-        }
-    }
-
-    private func adjustedVolume(for y: CGFloat, in track: CGRect) -> Double {
-        let ratio = min(1, max(0, (track.maxY - y) / track.height))
-        return Double((ratio * 100).rounded()) / 100
-    }
-}
 
 final class CamiTuneAppDelegate: NSObject, NSApplicationDelegate {
     private static let showMainWindowNotification = Notification.Name(

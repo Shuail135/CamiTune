@@ -3,6 +3,9 @@ import Darwin
 
 struct PCMFrame: Sendable {
     var interleaved: [Float]
+    /// Optional mode buses share this frame's exact format and timeline.
+    /// `interleaved` remains the combined signal for observation branches.
+    var playbackModeSamples: [PlaybackMode: [Float]] = [:]
     let channelCount: Int
     let sampleRate: Double
     let channelLayout: LPCMChannelLayout
@@ -230,8 +233,10 @@ final class PCMRouter: @unchecked Sendable {
         // stalls can drop observation frames, but never execute on or hold up
         // the CamillaDSP delivery branch.
         camillaBranch?.enqueue(frame)
-        meterBranch?.enqueue(frame)
-        analyzerBranch?.enqueue(frame)
+        var observation = frame
+        observation.playbackModeSamples = [:]
+        meterBranch?.enqueue(observation)
+        analyzerBranch?.enqueue(observation)
     }
 
     func setSpatialListenerTuning(_ tuning: SpatialListenerTuning) {
@@ -572,6 +577,7 @@ private final class CamillaPCMBranch: @unchecked Sendable {
     private var renderOutput: SpatialOutputKind
     private var virtualSurroundLayout = VirtualSurroundLayout.standard
     private var lastSourceFormat: SpatialSourceFormat?
+    private var hasRenderedSpatialBus = false
     private var spatialRenderingMode: SpatialRenderingMode
     private var spatialListenerTuning: SpatialListenerTuning
     private var calibrationID: UUID?
@@ -856,7 +862,8 @@ private final class CamillaPCMBranch: @unchecked Sendable {
                 renderSettings.cinema.amount = 1
             }
             let renderOutput = self.renderOutput
-            let shouldAnalyzeContent = spatialRenderingMode != .standard && renderSettings.enabled
+            let hasSpatialBus = frame.playbackModeSamples[.spatialRender] != nil
+            let shouldAnalyzeContent = ((spatialRenderingMode != .standard && renderSettings.enabled) || hasSpatialBus)
                 && calibrationID == nil && !isCalibrationSample
             let shouldResetContent = needsContentReset || Date().timeIntervalSince(contentEstimateDate) > 1
             needsContentReset = false
@@ -874,8 +881,12 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             condition.unlock()
             if shouldResetRateMatcher {
                 spatialEngine.reset(); referenceRenderer?.reset(); rateController.reset(); resampler.reset()
+                hasRenderedSpatialBus = false
             }
-            if shouldResetSpatialRenderer { spatialEngine.reset(); referenceRenderer?.reset() }
+            if shouldResetSpatialRenderer {
+                spatialEngine.reset(); referenceRenderer?.reset()
+                hasRenderedSpatialBus = false
+            }
             lastSourceFormat = frame.sourceFormat
             // The immutable physical route and backend share one channel count.
             // Legacy profiles retain their existing stereo rendering policy.
@@ -890,13 +901,39 @@ private final class CamillaPCMBranch: @unchecked Sendable {
                     renderedFrame = try? referenceRenderer?.render(scene)
                 } else { renderedFrame = nil }
             } else {
-                renderedFrame = spatialRenderingMode == .standard
-                    ? sourceRouter.stereoFallback(for: frame)
-                    : spatialEngine.render(frame: frame, settings: renderSettings, detectedOutput: renderOutput)
+                if !frame.playbackModeSamples.isEmpty {
+                    // Render both stereo buses on every interval, including
+                    // silence, so spatial filter tails advance on one clock.
+                    var normal = frame
+                    normal.playbackModeSamples = [:]
+                    normal.interleaved = frame.playbackModeSamples[.normal]
+                        ?? [Float](repeating: 0, count: frame.interleaved.count)
+                    var spatial = normal
+                    spatial.interleaved = frame.playbackModeSamples[.spatialRender]
+                        ?? [Float](repeating: 0, count: frame.interleaved.count)
+                    var settings = renderSettings
+                    settings.enabled = true
+                    if !hasSpatialBus && !hasRenderedSpatialBus {
+                        // Ordinary Normal playback needs no spatial DSP work.
+                        renderedFrame = sourceRouter.stereoFallback(for: normal)
+                    } else if var sum = sourceRouter.stereoFallback(for: normal),
+                       let renderedSpatial = spatialEngine.render(frame: spatial, settings: settings, detectedOutput: renderOutput),
+                       sum.interleaved.count == renderedSpatial.interleaved.count {
+                        hasRenderedSpatialBus = true
+                        for index in sum.interleaved.indices {
+                            sum.interleaved[index] += renderedSpatial.interleaved[index]
+                        }
+                        renderedFrame = sum
+                    } else { renderedFrame = nil }
+                } else {
+                    renderedFrame = spatialRenderingMode == .standard
+                        ? sourceRouter.stereoFallback(for: frame)
+                        : spatialEngine.render(frame: frame, settings: renderSettings, detectedOutput: renderOutput)
+                }
             }
             condition.lock()
             publishedReferenceDiagnostics = referenceRenderer?.diagnostics
-            publishedRenderDiagnostics = spatialRenderingMode == .spatialAudio ? spatialEngine.diagnostics : nil
+            publishedRenderDiagnostics = spatialRenderingMode == .spatialAudio || hasSpatialBus ? spatialEngine.diagnostics : nil
             condition.unlock()
             guard let renderedFrame, renderedFrame.channelCount == expectedOutputChannelCount else {
                 recoveryHandler(frame.frameCount)

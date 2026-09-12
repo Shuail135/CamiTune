@@ -8,11 +8,7 @@ struct ProfileRoutingAndDeviceView: View {
     @Binding var profile: DeviceProfile
     let graphModel: ProfileEditorGraphModel
 
-    private enum AutomaticActivationChoice: Hashable {
-        case physicalOutput
-        case profileAudioDevice
-        case manual
-    }
+    private typealias AutomaticActivationChoice = ProfileActivationMode
 
     private var profileIsActive: Bool {
         state.isActive && state.activeProfileID == profile.id
@@ -220,9 +216,7 @@ struct ProfileRoutingAndDeviceView: View {
     }
 
     private var automaticActivationChoice: AutomaticActivationChoice {
-        if physicalActivationOwner?.id == profile.id { return .physicalOutput }
-        if profile.autoActivateWhenProfileDeviceSelected { return .profileAudioDevice }
-        return .manual
+        state.profiles.activationMode(for: profile)
     }
 
     private var automaticActivationBinding: Binding<AutomaticActivationChoice> {
@@ -246,20 +240,7 @@ struct ProfileRoutingAndDeviceView: View {
     }
 
     private func setAutomaticActivation(_ choice: AutomaticActivationChoice) async {
-        switch choice {
-        case .physicalOutput:
-            await state.setAutomaticProfile(
-                for: profile.outputDevice,
-                profileID: profile.id
-            )
-        case .profileAudioDevice:
-            await state.setAutoActivateWhenProfileDeviceSelected(id: profile.id, enabled: true)
-        case .manual:
-            if physicalActivationOwner?.id == profile.id {
-                await state.setAutomaticProfile(for: profile.outputDevice, profileID: nil)
-            }
-            await state.setAutoActivateWhenProfileDeviceSelected(id: profile.id, enabled: false)
-        }
+        await state.setActivationMode(profileID: profile.id, mode: choice)
     }
 
     private func rateLabel(_ rate: Int) -> String {

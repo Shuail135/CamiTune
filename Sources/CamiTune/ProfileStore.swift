@@ -178,6 +178,13 @@ final class ProfileStore: ObservableObject {
         }
     }
 
+    func activationMode(for profile: DeviceProfile) -> ProfileActivationMode {
+        if automaticProfileID(forPhysicalDeviceUID: profile.outputDeviceUID) == profile.id {
+            return .physicalOutput
+        }
+        return profile.autoActivateWhenProfileDeviceSelected ? .profileAudioDevice : .manual
+    }
+
     func automaticProfileID(forPhysicalDeviceUID uid: String) -> UUID? {
         physicalDeviceDefaults.first(where: { $0.physicalDevice.uid == uid })?.profileID
     }

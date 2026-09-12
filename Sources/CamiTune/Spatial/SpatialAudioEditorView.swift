@@ -19,11 +19,12 @@ struct SpatialAudioEditorView: View {
                 Text("Playback").font(.title3.bold())
                 Picker("Playback mode", selection: playbackMode) {
                     ForEach(profile.availablePlaybackModes, id: \.self) { mode in
-                        Text(mode.displayName).tag(mode)
+                        Label(mode.compactDisplayName, systemImage: mode.systemImageName).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
-                .disabled(state.spatialCalibrationContext != nil)
+                .labelStyle(.titleAndIcon)
+                .disabled(state.transitionInProgress || state.spatialCalibrationContext != nil)
                 Text(playbackModeDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -146,14 +147,12 @@ struct SpatialAudioEditorView: View {
                 output: profile.spatialSettings.resolvedOutput(deviceName: profile.outputDeviceName))
             state.pcmRouter.setSpatialRenderingMode(.spatialAudio)
         }
-        .onChange(of: profile.playbackMode) { _ in
-            guard active, state.spatialCalibrationContext == nil else { return }
-            let updated = profile
-            Task { await state.apply(profile: updated) }
-        }
     }
     private var playbackMode: Binding<PlaybackMode> {
-        Binding(get: { profile.playbackMode }, set: { profile.setPlaybackMode($0) })
+        Binding(get: { profile.playbackMode }, set: { mode in
+            let id = profile.id
+            Task { await state.setPlaybackMode(profileID: id, mode: mode) }
+        })
     }
     private var playbackModeDescription: String {
         switch profile.playbackMode {

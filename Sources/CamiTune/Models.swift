@@ -53,10 +53,30 @@ enum ProfileEndpointKind: String, Codable, CaseIterable, Sendable {
     }
 }
 
+enum ProfileActivationMode: Hashable, Sendable {
+    case physicalOutput, profileAudioDevice, manual
+}
+
 enum PlaybackMode: String, Codable, CaseIterable, Hashable, Sendable {
     case normal
     case referencePlayback
     case spatialRender
+
+    var compactDisplayName: String {
+        switch self {
+        case .normal: return "Normal"
+        case .referencePlayback: return "Reference"
+        case .spatialRender: return "Spatial"
+        }
+    }
+
+    var systemImageName: String {
+        switch self {
+        case .normal: return "waveform.circle"
+        case .referencePlayback: return "headphones"
+        case .spatialRender: return "tv.music.note"
+        }
+    }
 
     var displayName: String {
         switch self {
