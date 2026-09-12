@@ -8,6 +8,10 @@ final class MenuBarViewModel: ObservableObject {
     @Published private(set) var actionInFlight = false
     @Published private(set) var orderedApplicationIDs: [String] = []
     @Published var pendingOffProfileID: UUID?
+    // Routing can temporarily lose its active profile during a mode change.
+    // Keep the controls attached to the same profile until the command finishes.
+    private var actionProfile: DeviceProfile?
+    private var actionWasActive = false
     private var subscriptions: Set<AnyCancellable> = []
     private var isOpen = false
     private weak var menuWindow: NSWindow?
@@ -96,6 +100,9 @@ final class MenuBarViewModel: ObservableObject {
 
     var profile: DeviceProfile? {
         let store = state.profiles
+        if let actionProfile {
+            return store.profiles.first { $0.id == actionProfile.id } ?? actionProfile
+        }
         let output = state.coreAudio.defaultOutputUID
         let candidates = [state.activeProfileID,
             output.flatMap(ProfileRoutingDescriptor.profileID(from:)),
@@ -105,6 +112,18 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     var isActive: Bool { state.isActive && state.activeProfileID == profile?.id }
+    var runtimeControlSelection: Bool { actionInFlight ? actionWasActive : isActive }
+
+    private func beginAction(profile: DeviceProfile) {
+        actionWasActive = state.isActive && state.activeProfileID == profile.id
+        actionProfile = profile
+        actionInFlight = true
+    }
+
+    private func finishAction() {
+        actionProfile = nil
+        actionInFlight = false
+    }
 
     func open() {
         guard !isOpen else { return }
@@ -136,9 +155,11 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     private func performRuntimeAction(profileID: UUID, enabled: Bool, confirmed: Bool) {
-        actionInFlight = true
+        guard !actionInFlight,
+              let profile = state.profiles.profiles.first(where: { $0.id == profileID }) else { return }
+        beginAction(profile: profile)
         Task {
-            defer { actionInFlight = false }
+            defer { finishAction() }
             if enabled {
                 guard let current = state.profiles.profiles.first(where: { $0.id == profileID }) else { return }
                 await state.activate(profile: current)
@@ -149,11 +170,12 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     func setPlaybackMode(_ mode: PlaybackMode) {
-        guard !actionInFlight, !state.transitionInProgress, let id = profile?.id else { return }
-        actionInFlight = true
+        guard !actionInFlight, !state.transitionInProgress, let profile,
+              profile.playbackMode != mode else { return }
+        beginAction(profile: profile)
         Task {
-            defer { actionInFlight = false }
-            await state.setPlaybackMode(profileID: id, mode: mode)
+            defer { finishAction() }
+            await state.setPlaybackMode(profileID: profile.id, mode: mode)
         }
     }
 }
@@ -244,18 +266,15 @@ struct MenuBarRootView: View {
                 HStack {
                     Text(profile.name).font(.headline).lineLimit(1)
                     Spacer()
-                    MenuBarSegmentedControl(options: [true, false], selection: Binding(
-                        get: { model.isActive }, set: { model.setRuntimeActive($0) }
-                    ), title: { $0 ? "On" : "Off" })
-                    .accessibilityLabel("Profile runtime")
-                    .frame(width: 84)
-                    .disabled(model.actionInFlight || model.state.transitionInProgress || model.state.spatialCalibrationContext != nil)
-                    .popover(isPresented: Binding(
-                        get: { model.pendingOffProfileID != nil },
-                        set: { if !$0 { model.pendingOffProfileID = nil } }
-                    ), attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
-                        offConfirmation
-                    }
+                    MenuBarRuntimeControl(
+                        isActive: model.runtimeControlSelection,
+                        isEnabled: !model.actionInFlight && !model.state.transitionInProgress && model.state.spatialCalibrationContext == nil,
+                        confirmationID: model.pendingOffProfileID,
+                        confirmation: AnyView(offConfirmation),
+                        onChange: { model.setRuntimeActive($0) },
+                        onDismissConfirmation: { model.pendingOffProfileID = nil }
+                    )
+                    .frame(width: 84, height: 24)
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Mode").font(.caption)
@@ -268,6 +287,82 @@ struct MenuBarRootView: View {
             } else {
                 Text("No output profile").foregroundStyle(.secondary)
             }
+        }
+    }
+}
+
+/// Keep one AppKit control and one popover anchor alive across SwiftUI updates.
+/// Mode changes only update enabled state; they never replace the runtime view.
+struct MenuBarRuntimeControl: NSViewRepresentable {
+    let isActive: Bool
+    let isEnabled: Bool
+    let confirmationID: UUID?
+    let confirmation: AnyView
+    let onChange: (Bool) -> Void
+    let onDismissConfirmation: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let control = NSSegmentedControl(labels: ["On", "Off"], trackingMode: .selectOne,
+            target: context.coordinator, action: #selector(Coordinator.selectionChanged(_:)))
+        control.segmentStyle = .rounded
+        control.segmentDistribution = .fill
+        control.controlSize = .small
+        control.font = .systemFont(ofSize: 11)
+        control.selectedSegmentBezelColor = .systemBlue
+        control.setAccessibilityLabel("Profile runtime")
+        return control
+    }
+
+    func updateNSView(_ control: NSSegmentedControl, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.parent = self
+        let selected = isActive ? 0 : 1
+        if control.selectedSegment != selected { control.selectedSegment = selected }
+        if control.isEnabled != isEnabled { control.isEnabled = isEnabled }
+
+        if let confirmationID {
+            guard coordinator.presentedID != confirmationID else { return }
+            coordinator.presentedID = confirmationID
+            coordinator.popover.contentViewController = NSHostingController(rootView: confirmation)
+            coordinator.popover.show(relativeTo: control.bounds, of: control, preferredEdge: .minY)
+        } else if coordinator.presentedID != nil {
+            coordinator.presentedID = nil
+            coordinator.popover.close()
+        }
+    }
+
+    static func dismantleNSView(_ control: NSSegmentedControl, coordinator: Coordinator) {
+        coordinator.popover.delegate = nil
+        coordinator.popover.close()
+    }
+
+    final class Coordinator: NSObject, NSPopoverDelegate {
+        var parent: MenuBarRuntimeControl
+        var presentedID: UUID?
+        let popover = NSPopover()
+
+        init(parent: MenuBarRuntimeControl) {
+            self.parent = parent
+            super.init()
+            popover.behavior = .transient
+            popover.animates = false
+            popover.delegate = self
+        }
+
+        @objc func selectionChanged(_ sender: NSSegmentedControl) {
+            let requested = sender.selectedSegment == 0
+            // Confirmation and runtime completion own the actual selection.
+            sender.selectedSegment = parent.isActive ? 0 : 1
+            guard requested != parent.isActive else { return }
+            parent.onChange(requested)
+        }
+
+        func popoverDidClose(_ notification: Notification) {
+            guard presentedID != nil else { return }
+            presentedID = nil
+            parent.onDismissConfirmation()
         }
     }
 }
@@ -293,8 +388,10 @@ private struct MenuBarSegmentedControl<Value: Hashable>: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: 24)
                     .contentShape(Rectangle())
-                    .foregroundStyle(selection == option ? Color.white : Color.primary)
-                    .background(selection == option ? Color.blue : Color.clear)
+                    .foregroundStyle(isEnabled && selection == option ? Color.white : Color.primary)
+                    .background(selection == option
+                        ? (isEnabled ? Color.blue : Color.secondary.opacity(0.25))
+                        : Color.clear)
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(selection == option ? .isSelected : [])
@@ -303,7 +400,8 @@ private struct MenuBarSegmentedControl<Value: Hashable>: View {
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 5))
         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
-        .opacity(isEnabled ? 1 : 0.5)
+        .opacity(isEnabled ? 1 : 0.65)
+        .transaction { $0.animation = nil }
     }
 }
 
