@@ -45,7 +45,7 @@ enum ProfileEndpointKind: String, Codable, CaseIterable, Sendable {
     var displayName: String {
         switch self {
         case .headphones: return "Headphones"
-        case .iem: return "IEM"
+        case .iem: return "In-ear Earphone (IEM)"
         case .speakers: return "Speakers"
         case .audioInterface: return "Audio Interface"
         case .custom: return "Custom / Unspecified"
@@ -105,6 +105,7 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     /// User-described use, independent of hardware identity and DSP selection.
     var endpointKind: ProfileEndpointKind = .custom
     /// Inactive contexts retain their mode without duplicating shared DSP/geometry.
+    var audioInterface: AudioInterfaceConfiguration?
     var sectionLayout: ProfileSectionLayout?
     var playbackModesByEndpoint: [String: PlaybackMode] = [:]
     var isEnabled: Bool = true
@@ -125,9 +126,19 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         }
     }
 
+    var effectiveEndpointKind: ProfileEndpointKind {
+        endpointKind == .audioInterface ? (audioInterface?.connectedEndpoint ?? .custom) : endpointKind
+    }
+
+    func validatedInterfaceConfiguration() throws -> AudioInterfaceConfiguration? {
+        guard endpointKind == .audioInterface, let audioInterface else { return nil }
+        try audioInterface.validate(deviceUID: outputDeviceUID)
+        return audioInterface
+    }
+
     var availablePlaybackModes: [PlaybackMode] {
         var modes: [PlaybackMode]
-        switch endpointKind {
+        switch effectiveEndpointKind {
         case .headphones, .iem:
             modes = [.direct, .spatialRender]
         case .speakers:
@@ -164,7 +175,7 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
 
     var effectiveSpatialSettings: SpatialRenderSettings {
         var settings = spatialSettings
-        switch endpointKind {
+        switch effectiveEndpointKind {
         case .headphones, .iem: settings.outputSelection = .headphones
         case .speakers: settings.outputSelection = .speakers
         case .audioInterface, .custom: break
@@ -323,7 +334,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
 
     private enum CodingKeys: String, CodingKey {
         case id, name, outputDevice, outputDeviceUID, outputDeviceName, isEnabled, endpointKind
-        case autoActivateWhenProfileDeviceSelected, playbackModesByEndpoint, sectionLayout
+        case autoActivateWhenProfileDeviceSelected, playbackModesByEndpoint, sectionLayout, audioInterface
         case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize, playbackMode
         case spatialRenderingMode, spatialContentMode, spatialListenerProfile, spatialAcousticProfile, equalizerAPOText, processing
         case virtualSurroundLayout, spatialSettings, speakerTopology, usesReferenceSpeakers
@@ -349,6 +360,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         }
         isEnabled = try values.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
         endpointKind = try values.decodeIfPresent(ProfileEndpointKind.self, forKey: .endpointKind) ?? .custom
+        audioInterface = try values.decodeIfPresent(AudioInterfaceConfiguration.self, forKey: .audioInterface)
         sectionLayout = try values.decodeIfPresent(ProfileSectionLayout.self, forKey: .sectionLayout)
         playbackModesByEndpoint = try values.decodeIfPresent(
             [String: PlaybackMode].self, forKey: .playbackModesByEndpoint) ?? [:]
@@ -427,6 +439,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         try values.encode(endpointKind, forKey: .endpointKind)
         try values.encode(playbackModesByEndpoint, forKey: .playbackModesByEndpoint)
         try values.encodeIfPresent(sectionLayout, forKey: .sectionLayout)
+        try values.encodeIfPresent(audioInterface, forKey: .audioInterface)
         try values.encode(isEnabled, forKey: .isEnabled)
         try values.encode(autoActivateWhenProfileDeviceSelected, forKey: .autoActivateWhenProfileDeviceSelected)
         try values.encode(lockOutputVolume, forKey: .lockOutputVolume)
@@ -547,7 +560,7 @@ enum ProfileSection: String, Codable, CaseIterable, Identifiable, Sendable {
 }
 
 enum EqualizerPresentation: String, Codable, CaseIterable, Identifiable, Sendable {
-    case bands, simpleTone, both
+    case simpleTone, bands, both
     var id: Self { self }
     var title: String { self == .bands ? "Bands" : self == .simpleTone ? "Simple Tone" : "Both" }
 }
@@ -608,6 +621,8 @@ struct ProfileSettingsDraft {
     var sampleRate: Int
     var activation: ProfileActivationMode
     var sectionLayout: ProfileSectionLayout?
+    var speakerTopology: SpeakerTopology?
+    var spatialSettings: SpatialRenderSettings
 
     init(profile: DeviceProfile, activation: ProfileActivationMode) {
         original = profile
@@ -618,6 +633,8 @@ struct ProfileSettingsDraft {
         sampleRate = profile.sampleRate
         self.activation = activation
         sectionLayout = profile.sectionLayout
+        speakerTopology = profile.speakerTopology
+        spatialSettings = profile.spatialSettings
     }
     func candidate() throws -> DeviceProfile {
         var typeDraft = ProfileDeviceTypeDraft(profile: original)
@@ -628,6 +645,12 @@ struct ProfileSettingsDraft {
         result.outputDevice = outputDevice
         result.sampleRate = sampleRate
         result.sectionLayout = sectionLayout
+        result.speakerTopology = speakerTopology
+        // A type change owns enabled/output mode; geometry and seats remain shared.
+        if spatialSettings != original.spatialSettings {
+            result.spatialSettings = spatialSettings
+            result.synchronizeListeningPositionCorrection()
+        }
         return result
     }
 }
@@ -663,6 +686,23 @@ enum ProfileSettingsTransaction {
             do { try await rollback() }
             catch { throw ProfileSettingsError.rollback(failure.localizedDescription, error.localizedDescription) }
             throw failure
+        }
+    }
+}
+
+struct AudioInterfaceConfiguration: Codable, Hashable, Sendable {
+    var deviceUID: String
+    var hardwareChannelCount: Int
+    /// Ordered physical destinations for the logical left and right channels.
+    var outputChannels: [Int]
+    var connectedEndpoint: ProfileEndpointKind
+
+    func validate(deviceUID: String) throws {
+        guard self.deviceUID == deviceUID, (2...32).contains(hardwareChannelCount),
+              outputChannels.count == 2, Set(outputChannels).count == 2,
+              outputChannels.allSatisfy({ (0..<hardwareChannelCount).contains($0) }),
+              connectedEndpoint != .audioInterface else {
+            throw ProfileSettingsError.runtime("Choose two distinct hardware outputs and identify what is connected to them.")
         }
     }
 }

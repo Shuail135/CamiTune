@@ -8,6 +8,8 @@ struct SpatialSeatingCalibration: Codable, Hashable, Sendable, Identifiable {
     var name = "My listening position"
     var leftDistanceMeters: Float = 1
     var rightDistanceMeters: Float = 1
+    var roomX: Float = 0
+    var roomY: Float = 0
     var enabled = true
     /// A listening check may trim the dominant side without boosting either output.
     var balanceDB: Float = 0
@@ -20,7 +22,7 @@ struct SpatialSeatingCalibration: Codable, Hashable, Sendable, Identifiable {
     var roomCorrectionBands: [EQBand] = []
 
     private enum CodingKeys: String, CodingKey {
-        case id, outputDeviceUID, name, leftDistanceMeters, rightDistanceMeters, enabled, balanceDB
+        case id, outputDeviceUID, name, leftDistanceMeters, rightDistanceMeters, roomX, roomY, enabled, balanceDB
         case measuredArrivalDifferenceMS, measuredLevelDifferenceDB, useMeasuredAlignment
         case measuredAt, microphoneName, measurementConfidence, roomCorrectionBands
     }
@@ -36,6 +38,9 @@ struct SpatialSeatingCalibration: Codable, Hashable, Sendable, Identifiable {
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? "My listening position"
         leftDistanceMeters = Self.distance(try c.decodeIfPresent(Float.self, forKey: .leftDistanceMeters) ?? 1)
         rightDistanceMeters = Self.distance(try c.decodeIfPresent(Float.self, forKey: .rightDistanceMeters) ?? 1)
+        roomX = try c.decodeIfPresent(Float.self, forKey: .roomX) ?? 0
+        roomY = try c.decodeIfPresent(Float.self, forKey: .roomY) ?? 0
+        if !roomX.isFinite { roomX = 0 }; if !roomY.isFinite { roomY = 0 }
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         balanceDB = min(6, max(-6, try c.decodeIfPresent(Float.self, forKey: .balanceDB) ?? 0))
         measuredArrivalDifferenceMS = try c.decodeIfPresent(Double.self, forKey: .measuredArrivalDifferenceMS)

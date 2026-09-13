@@ -66,12 +66,12 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showingOutputPicker) {
-            AddOutputProfileSheet(
-                coreAudio: state.coreAudio,
-                selectedUID: $pendingOutputUID,
-                onCancel: cancelAddingOutput,
-                onAdd: addSelectedOutput
-            )
+            AddOutputProfileSheet(state: state, initialUID: pendingOutputUID,
+                onCancel: cancelAddingOutput) { id in
+                    selection = .profile(id)
+                    showingOutputPicker = false
+                    pendingOutputUID = nil
+                }
         }
         .modifier(SetupPresentationModifier(state: state, presentation: state.setupPresentation))
         .modifier(ProfileConfirmationModifier(presentation: state.profileConfirmations, store: state.profiles))
@@ -95,14 +95,4 @@ struct ContentView: View {
         pendingOutputUID = nil
     }
 
-    private func addSelectedOutput() {
-        guard let pendingOutputUID,
-              let device = state.coreAudio.physicalOutputDevices.first(where: {
-                  $0.id == pendingOutputUID
-              }) else { return }
-        let profileID = state.addProfile(for: device)
-        selection = profileID.map(SidebarDestination.profile) ?? .empty
-        showingOutputPicker = false
-        self.pendingOutputUID = nil
-    }
 }

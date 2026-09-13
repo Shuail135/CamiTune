@@ -225,6 +225,45 @@ final class ProfileStore: ObservableObject {
         return profile
     }
 
+    /// Wizard commit: persist a complete profile before publishing or exposing a route.
+    func insertConfiguredProfile(_ candidate: DeviceProfile) throws -> UUID {
+        guard !protectsUnreadableStorage else {
+            throw ProfileSettingsError.runtime(persistenceError ?? "Saved profiles cannot be overwritten.")
+        }
+        guard !candidate.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !candidate.outputDeviceUID.isEmpty,
+              !profiles.contains(where: { $0.id == candidate.id }),
+              ProfileNamePolicy.isAvailable(candidate.name, in: profiles) else {
+            throw ProfileSettingsError.runtime("Enter a unique profile name before adding the profile.")
+        }
+        var profile = candidate
+        let firstForOutput = !profiles.contains { $0.outputDeviceUID == profile.outputDeviceUID }
+        profile.autoActivateWhenProfileDeviceSelected = !firstForOutput
+        let updated = profiles + [profile]
+        var defaults = physicalDeviceDefaults
+        if firstForOutput {
+            defaults.removeAll { $0.physicalDevice.uid == profile.outputDeviceUID }
+            defaults.append(.init(physicalDevice: profile.outputDevice, profileID: profile.id))
+        }
+        let order = effectiveRootOrder + [.profile(profile.id)]
+        let stored = StoredProfileConfiguration(profiles: updated, physicalDeviceDefaults: defaults,
+            folders: folders, rootOrder: order, layoutDefaults: layoutDefaults,
+            showProfileEnabledExplanation: showProfileEnabledExplanation)
+        pendingPersistence?.cancel()
+        pendingPersistence = nil
+        persistenceRevision &+= 1
+        do { try persistenceQueue.sync { try Self.persist(stored, to: url) } }
+        catch { save(); throw error }
+        isLoading = true
+        profiles = updated
+        physicalDeviceDefaults = defaults
+        rootOrder = order
+        isLoading = false
+        persistenceError = nil
+        selectedProfileID = profile.id
+        return profile.id
+    }
+
     func setAutoActivateWhenProfileDeviceSelected(profileID: UUID, enabled: Bool) {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else { return }
         profiles[index].autoActivateWhenProfileDeviceSelected = enabled
@@ -643,7 +682,7 @@ final class ProfileStore: ObservableObject {
 }
 
 private struct StoredProfileConfiguration: Codable, Sendable {
-    static let currentSchemaVersion = 4
+    static let currentSchemaVersion = 5
     var schemaVersion: Int = currentSchemaVersion
     var profiles: [DeviceProfile]
     var physicalDeviceDefaults: [PhysicalDeviceDefaultProfile]

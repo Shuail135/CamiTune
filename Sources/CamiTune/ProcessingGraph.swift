@@ -29,6 +29,7 @@ struct ProcessingGraph: Hashable, Sendable {
 
     struct PlaybackEndpoint: Hashable, Sendable {
         var deviceUID: String
+        var channelCount: Int? = nil
         var exclusive: Bool
     }
 
@@ -235,6 +236,18 @@ struct ProcessingGraphBuilder {
             processorIDs: [ProcessingGraph.automaticHeadroomProcessorID]
         ), at: 0)
 
+        if let assignment = try profile.validatedInterfaceConfiguration() {
+            graph.playback.channelCount = assignment.hardwareChannelCount
+            let mixerID = "interface_output_assignment"
+            let stageID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+            graph.mixers.append(.init(id: mixerID, sourceStageID: stageID,
+                inputChannelCount: channelCount, outputChannelCount: assignment.hardwareChannelCount,
+                mappings: assignment.outputChannels.enumerated().map { logical, physical in
+                    .init(destination: physical, sources: [.init(channel: profile.usesReferenceSpeakers ? physical : logical)])
+                }))
+            graph.pipeline.append(.init(id: stageID, kind: .mixer(id: mixerID), scope: .global,
+                channels: [], processorIDs: []))
+        }
         return graph
     }
 

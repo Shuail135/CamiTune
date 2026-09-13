@@ -95,7 +95,7 @@ devices:
     format: \(captureFormat(graph.capture.format))
   playback:
     type: CoreAudio
-    channels: \(graph.channelCount)
+    channels: \(graph.playback.channelCount ?? graph.channelCount)
     device: "\(yamlEscape(graph.playback.deviceUID))"
     exclusive: \(graph.playback.exclusive)
 \(filterSection)

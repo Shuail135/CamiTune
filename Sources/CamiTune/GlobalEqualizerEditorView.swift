@@ -65,19 +65,6 @@ struct GlobalEqualizerEditorView: View {
                 Text("Imports ON/OFF PK/PEQ, LS/LSC, HS/HSC, LP/LPQ, HP/HPQ, NO, and AP filters using Q, BW Oct, or 6/12 dB shelf slopes. APO Preamp is ignored; use User Preamp instead. Other valid APO commands are skipped.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    Text("Bands")
-                    Picker("Bands", selection: Binding(
-                        get: { graphicBands.count },
-                        set: { setBandCount($0) }
-                    )) {
-                        ForEach(1...20, id: \.self) { count in
-                            Text("\(count)").tag(count)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 64)
-                }
                 PreampGainControl(
                     gainDB: $preampDB,
                     limiterEnabled: $limiterEnabled,
@@ -88,6 +75,22 @@ struct GlobalEqualizerEditorView: View {
                 Text("Automatic system headroom: \(automaticSystemHeadroomDB, format: .number.precision(.fractionLength(2))) dB")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if presentation != .simpleTone {
+                    HStack(spacing: 8) {
+                        Text("Bands")
+                        Picker("Bands", selection: Binding(
+                            get: { graphicBands.count },
+                            set: { setBandCount($0) }
+                        )) {
+                            ForEach(1...20, id: \.self) { count in
+                                Text("\(count)").tag(count)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 64)
+                    }
+                }
 
                 if !graphicBands.isEmpty {
                     if presentation != .simpleTone {

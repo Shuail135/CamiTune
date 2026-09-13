@@ -764,6 +764,33 @@ final class AppState: NSObject, ObservableObject {
         return profile.id
     }
 
+    func addProfile(from draft: AddOutputDraft) async throws -> UUID {
+        guard !isSavingProfileSettings, !transitionInProgress else { throw ProfileSettingsError.busy }
+        let candidate = try draft.candidate()
+        guard let device = await coreAudio.resolveDeviceWithoutBlockingUI(uid: candidate.outputDeviceUID),
+              !device.isRoutingDevice else { throw AppError.outputMissing(candidate.outputDeviceName) }
+        guard await coreAudio.supportsSampleRateWithoutBlockingUI(uid: device.id, rate: Double(candidate.sampleRate)) else {
+            throw AppError.unsupportedSampleRate(candidate.sampleRate, candidate.outputDeviceName)
+        }
+        if draft.needsSpeakers || candidate.endpointKind == .audioInterface {
+            let found = try await Task.detached(priority: .userInitiated) { try SpeakerTopologyProbe().probe(device) }.value
+            if let topology = candidate.speakerTopology { try topology.validateHardware(found) }
+            if let assignment = try candidate.validatedInterfaceConfiguration(), assignment.hardwareChannelCount != found.declaredChannelCount {
+                throw SpeakerTopologyError.hardwareLayoutChanged
+            }
+        }
+        _ = try await buildGraphWithoutBlockingUI(profile: candidate)
+        guard !isSavingProfileSettings, !transitionInProgress,
+              await coreAudio.resolveDeviceWithoutBlockingUI(uid: candidate.outputDeviceUID) != nil else {
+            throw ProfileSettingsError.runtime("The audio device changed. Check its connection and try again.")
+        }
+        let id = try profiles.insertConfiguredProfile(candidate)
+        automaticActivationRetry = nil
+        if suppressedAutoUID == candidate.outputDeviceUID { suppressedAutoUID = nil }
+        Task { @MainActor [weak self] in await self?.monitorRouting() }
+        return id
+    }
+
     func saveProfileSettings(_ draft: ProfileSettingsDraft) async throws {
         guard !isSavingProfileSettings, !transitionInProgress, liveApplyWorker == nil,
               spatialCalibrationContext == nil else { throw ProfileSettingsError.busy }
@@ -792,6 +819,8 @@ final class AppState: NSObject, ObservableObject {
         let changesRendering = original.endpointKind != candidate.endpointKind
             || original.sampleRate != candidate.sampleRate || original.outputDevice != candidate.outputDevice
             || original.playbackMode != candidate.playbackMode
+            || original.speakerTopology != candidate.speakerTopology
+            || original.spatialSettings != candidate.spatialSettings
         var touchedRuntime = false
         var touchedRouting = false
         func checkCurrent() throws {
@@ -812,11 +841,16 @@ final class AppState: NSObject, ObservableObject {
                 guard await coreAudio.supportsSampleRateWithoutBlockingUI(uid: device.id, rate: Double(candidate.sampleRate)) else {
                     throw AppError.unsupportedSampleRate(candidate.sampleRate, device.name)
                 }
-                if let topology = try candidate.validatedReferenceTopology() {
+                let topology = try candidate.validatedReferenceTopology()
+                let assignment = try candidate.validatedInterfaceConfiguration()
+                if topology != nil || assignment != nil {
                     let discovered = try await Task.detached(priority: .userInitiated) {
                         try SpeakerTopologyProbe().probe(device)
                     }.value
-                    try topology.validateHardware(discovered)
+                    try topology?.validateHardware(discovered)
+                    if let assignment, discovered.declaredChannelCount != assignment.hardwareChannelCount {
+                        throw SpeakerTopologyError.hardwareLayoutChanged
+                    }
                 }
                 _ = try await buildGraphWithoutBlockingUI(profile: newRuntime)
                 if wasActive {
@@ -964,43 +998,14 @@ final class AppState: NSObject, ObservableObject {
         }
     }
 
-    /// Changes an output through the runtime owner. If this profile is active,
-    /// its old engine and volume bridge are released before the same profile is
-    /// restarted against the new physical endpoint. Session EQ drafts remain
-    /// in memory and are applied to the restarted graph.
+    /// Output changes use the same staged validation and rollback as Profile Settings.
     func setOutputDevice(profileID: UUID, device: AudioDeviceInfo) async {
-        guard !isSavingProfileSettings else { return }
         guard !device.isRoutingDevice,
-              let current = profiles.profiles.first(where: { $0.id == profileID }) else {
-            return
-        }
-        let requiresRestart = isActive
-            && activeProfileID == profileID
-            && current.outputDeviceUID != device.id
-
-        profiles.setOutputDevice(profileID: profileID, device: device)
-        automaticActivationRetry = nil
-        suppressedAutoUID = nil
-
-        if requiresRestart {
-            let manualDeactivationRevision = self.manualDeactivationRevision
-            await deactivate(manual: false)
-            guard manualDeactivationRevision == self.manualDeactivationRevision else { return }
-            guard let persisted = profiles.profiles.first(where: { $0.id == profileID }) else {
-                return
-            }
-            do {
-                await activate(profile: try applyingSessionEQDrafts(to: persisted))
-            } catch {
-                presentError(error)
-            }
-        } else {
-            _ = try? await coreAudio.synchronizeProfileRoutingDevicesWithoutBlockingUI(
-                profiles: profiles.profiles,
-                activeProfileID: activeProfileID
-            )
-            await monitorRouting()
-        }
+              let current = profiles.profiles.first(where: { $0.id == profileID }) else { return }
+        var draft = ProfileSettingsDraft(profile: current, activation: profiles.activationMode(for: current))
+        draft.outputDevice = PhysicalOutputIdentity(uid: device.id, name: device.name)
+        do { try await saveProfileSettings(draft) }
+        catch { presentError(error) }
     }
 
     func activate(
@@ -1051,6 +1056,14 @@ final class AppState: NSObject, ObservableObject {
                 throw AppError.outputMissing(profile.outputDeviceName)
             }
             guard !output.isRoutingDevice else { throw AppError.invalidTarget }
+            if let assignment = try profile.validatedInterfaceConfiguration() {
+                let discovered = try await Task.detached(priority: .userInitiated) {
+                    try SpeakerTopologyProbe().probe(output)
+                }.value
+                guard discovered.declaredChannelCount == assignment.hardwareChannelCount else {
+                    throw SpeakerTopologyError.hardwareLayoutChanged
+                }
+            }
             let referenceTopology = try profile.validatedReferenceTopology()
             if let referenceTopology {
                 let discovered = try await Task.detached(priority: .userInitiated) {

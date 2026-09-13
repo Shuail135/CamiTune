@@ -264,7 +264,7 @@ struct ProfileSettingsView: View {
     }
     private var categories: [String] {
         ["General", "Device", "Processing", "Activation", "Section Layout"]
-            + (draft.selectedType == .speakers ? ["Speaker & Listening Position"] : [])
+            + ((draft.selectedType == .speakers || (draft.selectedType == .audioInterface && draft.original.audioInterface?.connectedEndpoint == .speakers)) ? ["Speaker & Listening Position"] : [])
     }
     private var hasChanges: Bool {
         (try? draft.candidate()) != draft.original || draft.activation != draft.originalActivation

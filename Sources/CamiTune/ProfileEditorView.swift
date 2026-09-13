@@ -13,6 +13,8 @@ struct ProfileEditorView: View {
     @Binding var profile: DeviceProfile
     @StateObject private var graphModel = ProfileEditorGraphModel()
     @State private var isRenamingProfile = false
+    @State private var titleHovered = false
+    @FocusState private var titleFocused: Bool
     @State private var renamingProfileID: UUID?
     @State private var profileNameDraft = ""
     @State private var focusClearingMonitor: Any?
@@ -55,11 +57,20 @@ struct ProfileEditorView: View {
                             .onSubmit { commitProfileRename() }
                             .onExitCommand { cancelProfileRename() }
                     } else {
-                        Text(profile.name)
-                            .font(.largeTitle.bold())
+                        Button { beginProfileRename() } label: {
+                            HStack(spacing: 8) {
+                                Text(profile.name).font(.largeTitle.bold())
+                                Image(systemName: "pencil")
+                                    .font(.body).foregroundStyle(.secondary)
+                                    .opacity(titleHovered || titleFocused ? 1 : 0)
+                            }
                             .contentShape(Rectangle())
-                            .onTapGesture { beginProfileRename() }
-                            .help("Click to rename this profile")
+                        }
+                        .buttonStyle(.plain)
+                        .focused($titleFocused)
+                        .onHover { titleHovered = $0 }
+                        .accessibilityLabel("Rename \(profile.name)")
+                        .help("Click to rename this profile")
                     }
                     ProfileConnectionStatusView(
                         coreAudio: coreAudio,
