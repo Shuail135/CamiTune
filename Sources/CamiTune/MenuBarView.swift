@@ -170,12 +170,27 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     func setPlaybackMode(_ mode: PlaybackMode) {
-        guard !actionInFlight, !state.transitionInProgress, !state.isSavingProfileSettings, let profile,
-              profile.playbackMode != mode else { return }
+        guard !actionInFlight,
+              !state.transitionInProgress,
+              !state.isSavingProfileSettings,
+              let profile,
+              profile.playbackMode != mode else {
+            return
+        }
         beginAction(profile: profile)
         Task {
             defer { finishAction() }
-            await state.setPlaybackMode(profileID: profile.id, mode: mode)
+            await state.setPlaybackMode(
+                profileID: profile.id,
+                mode: mode
+            )
+            guard let updatedProfile = state.profiles.profiles.first(
+                where: { $0.id == profile.id }
+            ),
+            updatedProfile.playbackMode == mode else {
+                return
+            }
+            state.perAppAudio.setPlaybackModeForAllApplications(mode)
         }
     }
 }
@@ -257,9 +272,15 @@ struct MenuBarRootView: View {
             HStack {
                 Text("OUTPUT").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
-                Label(model.isActive ? "Active" : "Inactive",
-                    systemImage: model.isActive ? "circle.fill" : "circle")
-                    .font(.caption)
+                HStack(spacing: 3) {
+                        Image(systemName: model.isActive ? "circle.fill" : "circle.fill")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 5, height: 5)
+
+                        Text(model.isActive ? "Active" : "Inactive")
+                            .font(.caption)
+                    }
                     .foregroundStyle(model.isActive ? Color.green : Color.secondary)
             }
             if let profile = model.profile {
@@ -268,7 +289,14 @@ struct MenuBarRootView: View {
                     Spacer()
                     MenuBarRuntimeControl(
                         isActive: model.runtimeControlSelection,
-                        isEnabled: !model.actionInFlight && !model.state.transitionInProgress && !model.state.isSavingProfileSettings && model.state.spatialCalibrationContext == nil,
+                        isVisuallyEnabled:
+                            !model.state.isSavingProfileSettings
+                            && model.state.spatialCalibrationContext == nil,
+                        isInteractive:
+                            !model.actionInFlight
+                            && !model.state.transitionInProgress
+                            && !model.state.isSavingProfileSettings
+                            && model.state.spatialCalibrationContext == nil,
                         confirmationID: model.pendingOffProfileID,
                         confirmation: AnyView(offConfirmation),
                         onChange: { model.setRuntimeActive($0) },
@@ -295,7 +323,8 @@ struct MenuBarRootView: View {
 /// Mode changes only update enabled state; they never replace the runtime view.
 struct MenuBarRuntimeControl: NSViewRepresentable {
     let isActive: Bool
-    let isEnabled: Bool
+    let isVisuallyEnabled: Bool
+    let isInteractive: Bool
     let confirmationID: UUID?
     let confirmation: AnyView
     let onChange: (Bool) -> Void
@@ -320,7 +349,7 @@ struct MenuBarRuntimeControl: NSViewRepresentable {
         coordinator.parent = self
         let selected = isActive ? 0 : 1
         if control.selectedSegment != selected { control.selectedSegment = selected }
-        if control.isEnabled != isEnabled { control.isEnabled = isEnabled }
+        if control.isEnabled != isVisuallyEnabled {control.isEnabled = isVisuallyEnabled}
 
         if let confirmationID {
             guard coordinator.presentedID != confirmationID else { return }
@@ -353,12 +382,16 @@ struct MenuBarRuntimeControl: NSViewRepresentable {
 
         @objc func selectionChanged(_ sender: NSSegmentedControl) {
             let requested = sender.selectedSegment == 0
-            // Confirmation and runtime completion own the actual selection.
             sender.selectedSegment = parent.isActive ? 0 : 1
-            guard requested != parent.isActive else { return }
+            guard parent.isInteractive else {
+                return
+            }
+            guard requested != parent.isActive else {
+                return
+            }
             parent.onChange(requested)
         }
-
+        
         func popoverDidClose(_ notification: Notification) {
             guard presentedID != nil else { return }
             presentedID = nil
@@ -589,12 +622,18 @@ private struct MenuBarApplicationRow: View {
 
 @MainActor
 private struct PlaybackModeMenu: View {
+    @EnvironmentObject private var model: MenuBarViewModel
     let application: PerAppAudioApplication
     let controller: PerAppAudioController
     let profile: DeviceProfile
 
-    private var effectiveMode: PlaybackMode {
-        controller.effectivePlaybackMode(for: application.settings.playbackModeOverride, fallbackProfile: profile)
+    private var displayedMode: PlaybackMode {
+        application.settings.playbackModeOverride
+            ?? profile.playbackMode
+    }
+    
+    private var isLoading: Bool {
+        model.actionInFlight || model.state.transitionInProgress
     }
 
     var body: some View {
@@ -613,18 +652,33 @@ private struct PlaybackModeMenu: View {
                     Label(mode.compactDisplayName, systemImage: mode.systemImageName)
                 }
             }
-            if let saved = application.settings.playbackModeOverride, saved != effectiveMode {
+            if let saved = application.settings.playbackModeOverride, saved != displayedMode {
                 Divider()
                 Text("\(saved.compactDisplayName) saved; following profile on this output")
             }
         } label: {
-            Image(systemName: effectiveMode.systemImageName)
+            Color.clear
+                .frame(width: 28, height: 22)
+                .contentShape(Rectangle())
         }
-        .labelStyle(.titleAndIcon)
         .menuStyle(.borderlessButton)
-        .menuIndicator(.visible)
-        .help("\(application.displayName) playback: \(effectiveMode.compactDisplayName)")
-        .accessibilityLabel("\(application.displayName) playback mode")
+        .menuIndicator(.hidden)
+        .overlay {
+            HStack(spacing: 2) {
+                Image(systemName: displayedMode.systemImageName)
+                
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .semibold))
+            }
+            .foregroundStyle(
+                isLoading
+                ? Color.secondary
+                : Color(nsColor: .labelColor)
+            )
+            .opacity(isLoading ? 0.55 : 1.0)
+            .allowsHitTesting(false)
+        }
+        .allowsHitTesting(!isLoading)
     }
 }
 

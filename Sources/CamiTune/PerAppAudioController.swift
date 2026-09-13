@@ -643,6 +643,16 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     func setPlaybackModeOverride(_ mode: PlaybackMode?, for applicationID: String) {
         updateSettings(for: applicationID) { $0.playbackModeOverride = mode }
     }
+    
+    func setPlaybackModeForAllApplications(_ mode: PlaybackMode) {
+        let applicationIDs = applications.map(\.id)
+        for applicationID in applicationIDs {
+            setPlaybackModeOverride(
+                mode,
+                for: applicationID
+            )
+        }
+    }
 
     func effectivePlaybackMode(for override: PlaybackMode?, fallbackProfile: DeviceProfile) -> PlaybackMode {
         stateLock.lock()

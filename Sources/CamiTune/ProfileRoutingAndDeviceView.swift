@@ -25,16 +25,22 @@ struct ProfileRoutingAndDeviceView: View {
                 HStack {
                     Text("Device Setup").font(.title3.bold())
                     Spacer()
-                    Label(profileIsActive ? "Active" : "Inactive", systemImage: profileIsActive ? "circle.fill" : "circle")
-                        .font(.callout).foregroundStyle(profileIsActive ? Color.green : Color.secondary)
+                    HStack(spacing: 3) {
+                        Image(systemName: profileIsActive ? "circle.fill" : "circle.fill")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 6, height: 6)
+                        Text(profileIsActive ? "Active" : "Inactive").font(.callout)
+                    }
+                    .foregroundStyle(profileIsActive ? Color.green : Color.secondary)
                 }
                 Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 10) {
                     GridRow {
-                        Text("CamiTune Output").foregroundStyle(.secondary)
+                        Text("CamiTune Output:").foregroundStyle(.secondary)
                         Text(profileRoutingName).textSelection(.enabled)
                     }
                     GridRow {
-                        Text("Output Device").foregroundStyle(.secondary)
+                        Text("Output Device:").foregroundStyle(.secondary)
                         Picker("Output Device", selection: Binding(
                             get: { profile.outputDeviceUID },
                             set: { uid in
@@ -62,9 +68,9 @@ struct ProfileRoutingAndDeviceView: View {
                 Text("To activate CamiTune, choose the audio device from macOS Sound Settings.")
                     .font(.callout).foregroundStyle(.secondary)
                 activationRow(.physicalOutput, title: "When I select \(profile.outputDeviceName)",
-                    hint: "CamiTune will automatically use this profile and route the audio through CamiTune.")
+                    hint: "Activate this profile when \(profile.outputDeviceName) is selected in macOS Sound Settings.")
                 activationRow(.profileAudioDevice, title: "When I select \(profileRoutingName)",
-                    hint: "Use this profile when its CamiTune audio device is selected directly in macOS Sound Settings.")
+                    hint: "Activate this profile when \(profileRoutingName) is selected in macOS Sound Settings.")
                 activationRow(.manual, title: "Only when I select it in CamiTune", hint: "Activate and deactivate in CamiTune.")
                 if let owner = state.profiles.automaticProfileID(forPhysicalDeviceUID: profile.outputDeviceUID),
                    owner != profile.id, let other = state.profiles.profiles.first(where: { $0.id == owner }) {
