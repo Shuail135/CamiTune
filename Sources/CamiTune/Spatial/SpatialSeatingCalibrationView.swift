@@ -84,7 +84,7 @@ struct SpatialSeatingCalibrationView: View {
             if state.spatialCalibrationContext == context {
                 if let saved = state.profiles.profiles.first(where: { $0.id == context.profileID && $0.outputDeviceUID == context.outputDeviceUID }) {
                     state.pcmRouter.setSpatialSettings(saved.effectiveSpatialSettings,
-                        output: saved.spatialSettings.resolvedOutput(deviceName: saved.outputDeviceName))
+                        output: saved.effectiveSpatialSettings.resolvedOutput(deviceName: saved.outputDeviceName))
                 }
                 state.endSpatialCalibration(id: context.id)
             }

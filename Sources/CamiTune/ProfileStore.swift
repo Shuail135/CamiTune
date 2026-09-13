@@ -45,6 +45,19 @@ struct ProfileFolder: Identifiable, Codable, Equatable, Sendable {
     var profileIDs: [UUID] = []
 }
 
+enum ProfileRootItem: Codable, Hashable, Sendable {
+    case profile(UUID), folder(UUID)
+
+    static func normalized(_ order: [Self], profiles: [DeviceProfile], folders: [ProfileFolder]) -> [Self] {
+        let grouped = Set(folders.flatMap(\.profileIDs))
+        let defaults = profiles.filter { !grouped.contains($0.id) }.map { Self.profile($0.id) }
+            + folders.map { Self.folder($0.id) }
+        let valid = Set(defaults)
+        var seen = Set<Self>()
+        return (order + defaults).filter { valid.contains($0) && seen.insert($0).inserted }
+    }
+}
+
 @MainActor
 final class ProfileStore: ObservableObject {
     @Published var profiles: [DeviceProfile] = [] {
@@ -56,6 +69,89 @@ final class ProfileStore: ObservableObject {
     @Published private(set) var folders: [ProfileFolder] = [] {
         didSet { save() }
     }
+    @Published private(set) var rootOrder: [ProfileRootItem] = [] {
+        didSet { save() }
+    }
+    var effectiveRootOrder: [ProfileRootItem] {
+        ProfileRootItem.normalized(rootOrder, profiles: profiles, folders: folders)
+    }
+    @Published private(set) var layoutDefaults: [String: ProfileSectionLayout] = [:] {
+        didSet { save() }
+    }
+    @Published var showProfileEnabledExplanation = true {
+        didSet { save() }
+    }
+    func defaultLayout(for type: ProfileEndpointKind) -> ProfileSectionLayout {
+        layoutDefaults[type.rawValue] ?? ProfileSectionLayout()
+    }
+    func effectiveLayout(for profile: DeviceProfile) -> ProfileSectionLayout {
+        profile.sectionLayout ?? defaultLayout(for: profile.endpointKind)
+    }
+    func setDefaultLayout(_ layout: ProfileSectionLayout, for type: ProfileEndpointKind) {
+        layoutDefaults[type.rawValue] = layout
+    }
+    func applyDefaultLayout(for type: ProfileEndpointKind, to ids: Set<UUID>) {
+        // Explicitly opted-in profiles resume inheritance; other local layouts stay intact.
+        performBatchUpdate {
+            for index in profiles.indices where ids.contains(profiles[index].id) && profiles[index].endpointKind == type {
+                profiles[index].sectionLayout = nil
+            }
+        }
+    }
+
+    static func settingsSnapshot(_ profile: DeviceProfile) -> DeviceProfile {
+        var result = profile
+        // Hardware volume events are live state, not conflicting settings edits.
+        result.outputVolumeScalar = 0
+        return result
+    }
+    func validateSettingsSnapshot(_ expected: DeviceProfile, activation: ProfileActivationMode) throws {
+        guard let current = profiles.first(where: { $0.id == expected.id }),
+              Self.settingsSnapshot(current) == Self.settingsSnapshot(expected),
+              activationMode(for: current) == activation else { throw ProfileSettingsError.staleDraft }
+        guard !protectsUnreadableStorage else {
+            throw ProfileSettingsError.runtime(persistenceError ?? "Saved profiles cannot be overwritten.")
+        }
+    }
+
+    /// Write the complete candidate atomically before publishing it to observers.
+    /// A failed write leaves the original in-memory and persisted configuration intact.
+    func commitSettings(_ candidate: DeviceProfile, expected: DeviceProfile,
+                        originalActivation: ProfileActivationMode, activation: ProfileActivationMode) throws {
+        try validateSettingsSnapshot(expected, activation: originalActivation)
+        guard let index = profiles.firstIndex(where: { $0.id == candidate.id }),
+              ProfileNamePolicy.isAvailable(candidate.name, in: profiles, excluding: candidate.id) else {
+            throw ProfileSettingsError.runtime("A profile with that name already exists.")
+        }
+        var updated = profiles
+        var saved = candidate
+        saved.outputVolumeScalar = updated[index].outputVolumeScalar
+        saved.autoActivateWhenProfileDeviceSelected = activation == .profileAudioDevice
+        updated[index] = saved
+        var defaults = physicalDeviceDefaults.filter { $0.profileID != candidate.id }
+        if activation == .physicalOutput {
+            defaults.removeAll { $0.physicalDevice.uid == candidate.outputDeviceUID }
+            defaults.append(PhysicalDeviceDefaultProfile(physicalDevice: candidate.outputDevice, profileID: candidate.id))
+        }
+        let stored = StoredProfileConfiguration(profiles: updated, physicalDeviceDefaults: defaults,
+            folders: folders, rootOrder: effectiveRootOrder, layoutDefaults: layoutDefaults,
+            showProfileEnabledExplanation: showProfileEnabledExplanation)
+        pendingPersistence?.cancel()
+        pendingPersistence = nil
+        persistenceRevision &+= 1
+        do { try persistenceQueue.sync { try Self.persist(stored, to: url) } }
+        catch {
+            // Preserve a pending save of unrelated edits if this transaction fails.
+            save()
+            throw error
+        }
+        isLoading = true
+        profiles = updated
+        physicalDeviceDefaults = defaults
+        isLoading = false
+        persistenceError = nil
+    }
+
     @Published var selectedProfileID: UUID? {
         didSet { userDefaults.set(selectedProfileID?.uuidString, forKey: "selectedProfileID") }
     }
@@ -209,12 +305,13 @@ final class ProfileStore: ObservableObject {
     }
 
     func deleteProfile(id: UUID) {
+        let fallback = nearbySurvivingProfile(excluding: [id])
         performBatchUpdate {
             physicalDeviceDefaults.removeAll { $0.profileID == id }
             profiles.removeAll { $0.id == id }
             for index in folders.indices { folders[index].profileIDs.removeAll { $0 == id } }
         }
-        if selectedProfileID == id { selectedProfileID = profiles.first?.id }
+        if selectedProfileID == id { selectedProfileID = fallback }
     }
 
     /// Uses the original list's insertion offset, as supplied by sidebar dragging.
@@ -256,6 +353,7 @@ final class ProfileStore: ObservableObject {
     func deleteFolder(id: UUID) {
         guard folders.contains(where: { $0.id == id }) else { return }
         let deletedIDs = Set(profiles(in: id).map(\.id))
+        let fallback = nearbySurvivingProfile(excluding: deletedIDs)
         performBatchUpdate {
             physicalDeviceDefaults.removeAll { deletedIDs.contains($0.profileID) }
             profiles.removeAll { deletedIDs.contains($0.id) }
@@ -266,8 +364,20 @@ final class ProfileStore: ObservableObject {
             folders = remaining
         }
         if let selectedProfileID, deletedIDs.contains(selectedProfileID) {
-            self.selectedProfileID = profiles.first?.id
+            self.selectedProfileID = fallback
         }
+    }
+
+    private func nearbySurvivingProfile(excluding deleted: Set<UUID>) -> UUID? {
+        let ordered = effectiveRootOrder.flatMap { item -> [UUID] in
+            switch item {
+            case .profile(let id): return [id]
+            case .folder(let id): return profiles(in: id).map(\.id)
+            }
+        }
+        let anchor = ordered.firstIndex { $0 == selectedProfileID } ?? 0
+        return ordered.dropFirst(anchor).first { !deleted.contains($0) }
+            ?? ordered.prefix(anchor).last { !deleted.contains($0) }
     }
 
     func assignProfile(id: UUID, toFolder folderID: UUID?) {
@@ -317,6 +427,28 @@ final class ProfileStore: ObservableObject {
         }
     }
 
+    /// Root insertion offsets refer to the order before removal, just like AppKit.
+    func dropRootItems(_ items: Set<ProfileRootItem>, at destination: Int?) {
+        let roots = effectiveRootOrder
+        let offset = destination ?? roots.count
+        guard (0...roots.count).contains(offset) else { return }
+        let validProfiles = Set(profiles.map { ProfileRootItem.profile($0.id) })
+        let validFolders = Set(folders.map { ProfileRootItem.folder($0.id) })
+        guard !items.isEmpty, items.isSubset(of: validProfiles.union(validFolders)) else { return }
+        let ordered = roots.filter { items.contains($0) }
+            + profiles.map { ProfileRootItem.profile($0.id) }.filter { items.contains($0) && !roots.contains($0) }
+        var remaining = roots.filter { !items.contains($0) }
+        let insertion = offset - roots.prefix(offset).filter { items.contains($0) }.count
+        remaining.insert(contentsOf: ordered, at: insertion)
+        let ids = Set(items.compactMap { item -> UUID? in
+            if case .profile(let id) = item { return id }; return nil
+        })
+        performBatchUpdate {
+            assignProfiles(ids: ids, toFolder: nil)
+            rootOrder = remaining
+        }
+    }
+
     func moveProfiles(in folderID: UUID?, fromOffsets source: IndexSet, toOffset destination: Int) {
         let visible = profiles(in: folderID)
         guard !source.isEmpty, source.allSatisfy({ visible.indices.contains($0) }),
@@ -363,6 +495,9 @@ final class ProfileStore: ObservableObject {
         }
         let decoder = JSONDecoder()
         if let stored = try? decoder.decode(StoredProfileConfiguration.self, from: data) {
+            layoutDefaults = stored.layoutDefaults
+            showProfileEnabledExplanation = stored.showProfileEnabledExplanation
+            rootOrder = stored.rootOrder
             folders = stored.folders
             profiles = stored.profiles
             physicalDeviceDefaults = stored.physicalDeviceDefaults
@@ -436,7 +571,8 @@ final class ProfileStore: ObservableObject {
         let stored = StoredProfileConfiguration(
             profiles: profiles,
             physicalDeviceDefaults: physicalDeviceDefaults,
-            folders: folders
+            folders: folders, rootOrder: effectiveRootOrder, layoutDefaults: layoutDefaults,
+            showProfileEnabledExplanation: showProfileEnabledExplanation
         )
         persistenceRevision &+= 1
         let revision = persistenceRevision
@@ -477,7 +613,8 @@ final class ProfileStore: ObservableObject {
         let stored = StoredProfileConfiguration(
             profiles: profiles,
             physicalDeviceDefaults: physicalDeviceDefaults,
-            folders: folders
+            folders: folders, rootOrder: effectiveRootOrder, layoutDefaults: layoutDefaults,
+            showProfileEnabledExplanation: showProfileEnabledExplanation
         )
         let destination = url
         let result = persistenceQueue.sync {
@@ -506,17 +643,23 @@ final class ProfileStore: ObservableObject {
 }
 
 private struct StoredProfileConfiguration: Codable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 4
     var schemaVersion: Int = currentSchemaVersion
     var profiles: [DeviceProfile]
     var physicalDeviceDefaults: [PhysicalDeviceDefaultProfile]
     var folders: [ProfileFolder]
+    var rootOrder: [ProfileRootItem]
+    var layoutDefaults: [String: ProfileSectionLayout]
+    var showProfileEnabledExplanation: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, profiles, physicalDeviceDefaults, folders
+        case schemaVersion, profiles, physicalDeviceDefaults, folders, rootOrder, layoutDefaults, showProfileEnabledExplanation
     }
 
-    init(profiles: [DeviceProfile], physicalDeviceDefaults: [PhysicalDeviceDefaultProfile], folders: [ProfileFolder]) {
+    init(profiles: [DeviceProfile], physicalDeviceDefaults: [PhysicalDeviceDefaultProfile], folders: [ProfileFolder], rootOrder: [ProfileRootItem], layoutDefaults: [String: ProfileSectionLayout], showProfileEnabledExplanation: Bool) {
+        self.layoutDefaults = layoutDefaults
+        self.showProfileEnabledExplanation = showProfileEnabledExplanation
+        self.rootOrder = rootOrder
         self.folders = folders
         self.profiles = profiles
         self.physicalDeviceDefaults = physicalDeviceDefaults
@@ -528,7 +671,7 @@ private struct StoredProfileConfiguration: Codable, Sendable {
         // shape, but reject explicit unsupported versions before decoding data.
         if values.contains(.schemaVersion) {
             let version = try values.decode(Int.self, forKey: .schemaVersion)
-            guard version == Self.currentSchemaVersion else {
+            guard (1...Self.currentSchemaVersion).contains(version) else {
                 throw DecodingError.dataCorruptedError(
                     forKey: .schemaVersion,
                     in: values,
@@ -536,6 +679,9 @@ private struct StoredProfileConfiguration: Codable, Sendable {
                 )
             }
         }
+        layoutDefaults = try values.decodeIfPresent([String: ProfileSectionLayout].self, forKey: .layoutDefaults) ?? [:]
+        showProfileEnabledExplanation = try values.decodeIfPresent(Bool.self, forKey: .showProfileEnabledExplanation) ?? true
+        rootOrder = try values.decodeIfPresent([ProfileRootItem].self, forKey: .rootOrder) ?? []
         folders = try values.decodeIfPresent([ProfileFolder].self, forKey: .folders) ?? []
         profiles = try values.decode([DeviceProfile].self, forKey: .profiles)
         physicalDeviceDefaults = try values.decode(

@@ -1,7 +1,14 @@
 import AppKit
+import os.signpost
 
 @MainActor
 enum UIRenderPerformance {
+    private static let log = OSLog(subsystem: "CamiTune", category: "UI Performance")
+
+    static func recordProfilePresentation() {
+        os_signpost(.event, log: log, name: "Profile Presentation")
+    }
+
     private static var monitoringStarted = false
     private static var liveScrollDepth = 0
     private static var observers: [NSObjectProtocol] = []
@@ -16,14 +23,25 @@ enum UIRenderPerformance {
                 object: nil,
                 queue: .main
             ) { _ in
-                Task { @MainActor in liveScrollDepth += 1 }
+                Task { @MainActor in
+                    if liveScrollDepth == 0 {
+                        os_signpost(.begin, log: log, name: "Live Scroll")
+                    }
+                    liveScrollDepth += 1
+                }
             },
             center.addObserver(
                 forName: NSScrollView.didEndLiveScrollNotification,
                 object: nil,
                 queue: .main
             ) { _ in
-                Task { @MainActor in liveScrollDepth = max(0, liveScrollDepth - 1) }
+                Task { @MainActor in
+                    guard liveScrollDepth > 0 else { return }
+                    liveScrollDepth -= 1
+                    if liveScrollDepth == 0 {
+                        os_signpost(.end, log: log, name: "Live Scroll")
+                    }
+                }
             }
         ]
     }

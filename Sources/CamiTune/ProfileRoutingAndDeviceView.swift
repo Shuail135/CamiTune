@@ -23,7 +23,6 @@ struct ProfileRoutingAndDeviceView: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Routing & device behavior").font(.title3.bold())
-                    endpointKindPicker
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 12) {
                             systemRouteSummary
@@ -91,38 +90,8 @@ struct ProfileRoutingAndDeviceView: View {
                         .font(.caption)
                         .foregroundStyle(.blue)
                     }
-                    ViewThatFits(in: .horizontal) {
-                        HStack {
-                            Text("Processing sample rate")
-                            Spacer()
-                            sampleRatePicker
-                                .frame(width: 190)
-                        }
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Processing sample rate")
-                            sampleRatePicker
-                                .frame(maxWidth: 240)
-                        }
-                    }
-                    Text("Higher rates increase CPU and bandwidth use but do not improve lower-rate source audio; 48 kHz is the recommended default.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }.padding(6)
             }
-    }
-
-    private var endpointKindPicker: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Picker("Device / use type", selection: $profile.endpointKind) {
-                ForEach(ProfileEndpointKind.allCases, id: \.self) { kind in
-                    Text(kind.displayName).tag(kind)
-                }
-            }
-            Text("Describe what you use with this output. This label does not change playback processing or assign interface channels.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
     }
 
     private var systemRouteSummary: some View {
@@ -171,41 +140,6 @@ struct ProfileRoutingAndDeviceView: View {
                 }
             }
         )
-    }
-
-    private var sampleRatePicker: some View {
-        Picker("Sample rate", selection: Binding(
-            get: { profile.sampleRate },
-            set: { newRate in
-                guard newRate != profile.sampleRate else { return }
-                let profileID = profile.id
-                let outputUID = profile.outputDeviceUID
-                Task {
-                    if let problem = await state
-                        .processingSampleRateProblemWithoutBlockingUI(
-                            rate: newRate,
-                            outputUID: outputUID
-                        ) {
-                        state.reportProcessingSampleRateProblem(problem)
-                        return
-                    }
-                    guard profile.id == profileID else { return }
-                    profile.sampleRate = newRate
-                    graphModel.seed(profile: profile, state: state)
-                    if profileIsActive {
-                        let updatedProfile = (try? state
-                            .applyingSessionEQDrafts(to: profile)) ?? profile
-                        await state.apply(profile: updatedProfile)
-                    }
-                }
-            }
-        )) {
-            ForEach([44_100, 48_000, 88_200, 96_000, 176_400, 192_000], id: \.self) { rate in
-                Text(rateLabel(rate))
-                    .tag(rate)
-            }
-        }
-        .labelsHidden()
     }
 
     private var physicalActivationOwner: DeviceProfile? {

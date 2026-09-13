@@ -904,19 +904,19 @@ private final class CamillaPCMBranch: @unchecked Sendable {
                 if !frame.playbackModeSamples.isEmpty {
                     // Render both stereo buses on every interval, including
                     // silence, so spatial filter tails advance on one clock.
-                    var normal = frame
-                    normal.playbackModeSamples = [:]
-                    normal.interleaved = frame.playbackModeSamples[.normal]
+                    var direct = frame
+                    direct.playbackModeSamples = [:]
+                    direct.interleaved = frame.playbackModeSamples[.direct]
                         ?? [Float](repeating: 0, count: frame.interleaved.count)
-                    var spatial = normal
+                    var spatial = direct
                     spatial.interleaved = frame.playbackModeSamples[.spatialRender]
                         ?? [Float](repeating: 0, count: frame.interleaved.count)
                     var settings = renderSettings
                     settings.enabled = true
                     if !hasSpatialBus && !hasRenderedSpatialBus {
-                        // Ordinary Normal playback needs no spatial DSP work.
-                        renderedFrame = sourceRouter.stereoFallback(for: normal)
-                    } else if var sum = sourceRouter.stereoFallback(for: normal),
+                        // Ordinary Direct playback needs no spatial DSP work.
+                        renderedFrame = sourceRouter.stereoFallback(for: direct)
+                    } else if var sum = sourceRouter.stereoFallback(for: direct),
                        let renderedSpatial = spatialEngine.render(frame: spatial, settings: settings, detectedOutput: renderOutput),
                        sum.interleaved.count == renderedSpatial.interleaved.count {
                         hasRenderedSpatialBus = true

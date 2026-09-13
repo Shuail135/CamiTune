@@ -10,8 +10,13 @@ struct ContentDetailView: View {
 
     var body: some View {
         switch selection {
-        case .setup:
-            SetupView(state: state)
+        case .empty:
+            VStack(spacing: 10) {
+                Image(systemName: "speaker.wave.2").font(.largeTitle)
+                Text("Add an output to get started").font(.title2)
+                Text("Choose Add Output in the sidebar.").foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .settings:
             SettingsView(state: state)
         case .applications:
@@ -24,6 +29,7 @@ struct ContentDetailView: View {
                     profile: $profileStore.profiles[index]
                 )
                 .id(id)
+                .onAppear { UIRenderPerformance.recordProfilePresentation() }
             } else {
                 VStack(spacing: 10) {
                     Image(systemName: "slider.horizontal.3").font(.largeTitle)

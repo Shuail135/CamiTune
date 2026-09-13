@@ -8,6 +8,8 @@ struct GlobalEqualizerEditorView: View {
     let state: AppState
     @Binding var profile: DeviceProfile
     let graphModel: ProfileEditorGraphModel
+    var presentation: EqualizerPresentation = .both
+    var needsResponseGraph = true
 
     @State var parsedForGraph = ParsedEQ()
     @State var filterResponsePoints: [EQResponsePoint] = []
@@ -88,6 +90,7 @@ struct GlobalEqualizerEditorView: View {
                     .foregroundStyle(.secondary)
 
                 if !graphicBands.isEmpty {
+                    if presentation != .simpleTone {
                     let columnWidth = 96.0
                     let contentWidth = GraphicEqualizerBands.requiredContentWidth(
                         bandCount: graphicBands.count,
@@ -108,11 +111,14 @@ struct GlobalEqualizerEditorView: View {
                         )
                     }
 
-                    Divider()
+                    }
+                    if presentation == .both { Divider() }
+                    if presentation != .bands {
                     SimpleEQControlsView(
                         bands: $graphicBands,
                         onEditingChanged: continuousEditingChanged
                     )
+                    }
                 } else {
                     Text("Choose a band count above.")
                         .foregroundStyle(.secondary)
@@ -122,6 +128,8 @@ struct GlobalEqualizerEditorView: View {
             .padding(6)
         }
         .onAppear { loadGraphicEQIfNeeded() }
+        .onChange(of: needsResponseGraph) { _ in updateGraphResponses() }
+        .onChange(of: presentation) { _ in updateGraphResponses() }
         .onChange(of: profile.id) { _ in
             runtime.loadedProfileID = nil
             loadGraphicEQIfNeeded()

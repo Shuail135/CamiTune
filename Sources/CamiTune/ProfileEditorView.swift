@@ -6,6 +6,10 @@ import Foundation
 struct ProfileEditorView: View {
     let state: AppState
     let coreAudio: CoreAudioManager
+    @ObservedObject private var store: ProfileStore
+    @State private var showingSettings = false
+    @State private var showingSpeakers = false
+    @State private var openSpeakersAfterSettings = false
     @Binding var profile: DeviceProfile
     @StateObject private var graphModel = ProfileEditorGraphModel()
     @State private var isRenamingProfile = false
@@ -14,6 +18,29 @@ struct ProfileEditorView: View {
     @State private var focusClearingMonitor: Any?
     @FocusState private var profileNameFocused: Bool
 
+
+    init(state: AppState, coreAudio: CoreAudioManager, profile: Binding<DeviceProfile>) {
+        self.state = state
+        self.coreAudio = coreAudio
+        _profile = profile
+        _store = ObservedObject(wrappedValue: state.profiles)
+    }
+
+    private var layout: ProfileSectionLayout { store.effectiveLayout(for: profile) }
+    private var sections: [ProfileSection] { layout.visibleSections(for: profile.endpointKind) }
+    private func updateVisuals() {
+        // EQ bands and per-channel controls also display spectrum/level data.
+        let demand = layout.visualDemand(for: profile.endpointKind)
+        state.setRuntimeVisuals(profileID: profile.id, active: true,
+            meters: demand.meters, spectrum: demand.spectrum)
+        if !demand.spectrum { graphModel.cancel() }
+    }
+
+    private func seedGraphIfNeeded() {
+        if layout.visualDemand(for: profile.endpointKind).spectrum {
+            graphModel.seed(profile: profile, state: state)
+        } else { graphModel.cancel() }
+    }
 
     var body: some View {
         ScrollView {
@@ -39,6 +66,11 @@ struct ProfileEditorView: View {
                         outputDeviceUID: profile.outputDeviceUID
                     )
                     Spacer()
+                    Button { showingSettings = true } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .help("Profile Settings")
+                    .accessibilityLabel("Profile Settings")
                     Toggle("Enabled", isOn: Binding(
                         get: { profile.isEnabled },
                         set: { newValue in
@@ -46,75 +78,44 @@ struct ProfileEditorView: View {
                         }
                     ))
                     .toggleStyle(.switch)
+                    .labelsHidden()
                     .accessibilityLabel("Enable Profile")
                     .help("Make this profile available for activation")
                 }
 
-                Text("Enabled makes this profile available. Activation conditions decide when processing starts; Active means its audio runtime is running. Disabling stops this profile if it is running.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                ProfileRoutingAndDeviceView(
-                    state: state,
-                    coreAudio: coreAudio,
-                    profile: $profile,
-                    graphModel: graphModel
-                )
-
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Meters & status").font(.title3.bold())
-                        SignalMetersView(meters: state.meters, profileID: profile.id)
-                        Divider()
-                        AudioRuntimeStatusView(monitor: state.meters, profileID: profile.id)
-                    }.padding(6)
+                ForEach(sections) { section in
+                    profileSection(section)
                 }
-
-                LiveSpectrumPanels(
-                    spectrum: state.spectrum,
-                    profileID: profile.id,
-                    graphModel: graphModel
-                )
-
-                SpatialAudioEditorView(
-                    state: state,
-                    profile: $profile
-                )
-
-                GlobalEqualizerEditorView(
-                    state: state,
-                    profile: $profile,
-                    graphModel: graphModel
-                )
-
-                ConvolutionEditorView(
-                    state: state,
-                    profile: $profile
-                )
-
-                CrossfeedEditorView(
-                    state: state,
-                    profile: $profile
-                )
-
-                PerChannelProcessingView(
-                    state: state,
-                    profile: $profile
-                )
             }
             .padding(28)
         }
         .onAppear {
-            state.setRuntimeVisuals(profileID: profile.id, active: true)
-            graphModel.seed(profile: profile, state: state)
+            updateVisuals()
+            seedGraphIfNeeded()
             installFocusClearingMonitor()
         }
+        .sheet(isPresented: $showingSettings, onDismiss: {
+            if openSpeakersAfterSettings {
+                openSpeakersAfterSettings = false
+                DispatchQueue.main.async { showingSpeakers = true }
+            }
+        }) {
+            ProfileSettingsView(state: state, profile: profile) { openSpeakersAfterSettings = true }
+        }
+        .sheet(isPresented: $showingSpeakers) { SpeakerSystemView(state: state, profile: $profile) }
+        .onChange(of: layout) { _ in
+            updateVisuals()
+            if sections.contains(.equalizer) || sections.contains(.spectrum) {
+                seedGraphIfNeeded()
+            }
+        }
+        .onChange(of: profile.endpointKind) { _ in updateVisuals() }
         .onChange(of: profile.id) { _ in
             commitProfileRename()
-            graphModel.seed(profile: profile, state: state)
+            seedGraphIfNeeded()
         }
         .onChange(of: profile.sampleRate) { _ in
-            graphModel.seed(profile: profile, state: state)
+            seedGraphIfNeeded()
         }
         .onChange(of: profileNameFocused) { isFocused in
             if isRenamingProfile && !isFocused { commitProfileRename() }
@@ -124,6 +125,36 @@ struct ProfileEditorView: View {
             commitProfileRename()
             graphModel.cancel()
             removeFocusClearingMonitor()
+        }
+    }
+
+    @ViewBuilder
+    private func profileSection(_ section: ProfileSection) -> some View {
+        switch section {
+        case .deviceSetup:
+            ProfileRoutingAndDeviceView(state: state, coreAudio: coreAudio, profile: $profile, graphModel: graphModel)
+        case .meters:
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Meters & Status").font(.title3.bold())
+                    SignalMetersView(meters: state.meters, profileID: profile.id)
+                    Divider()
+                    AudioRuntimeStatusView(monitor: state.meters, profileID: profile.id)
+                }.padding(6)
+            }
+        case .spectrum:
+            LiveSpectrumPanels(spectrum: state.spectrum, profileID: profile.id, graphModel: graphModel)
+        case .mode:
+            SpatialAudioEditorView(state: state, profile: $profile)
+        case .equalizer:
+            GlobalEqualizerEditorView(state: state, profile: $profile, graphModel: graphModel,
+                presentation: layout.equalizer, needsResponseGraph: sections.contains(.spectrum) || layout.equalizer != .simpleTone)
+        case .convolution:
+            ConvolutionEditorView(state: state, profile: $profile)
+        case .crossfeed:
+            CrossfeedEditorView(state: state, profile: $profile)
+        case .perChannel:
+            PerChannelProcessingView(state: state, profile: $profile)
         }
     }
 

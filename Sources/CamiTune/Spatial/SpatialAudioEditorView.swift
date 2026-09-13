@@ -59,11 +59,6 @@ struct SpatialAudioEditorView: View {
                     DisclosureGroup("Advanced & calibration") {
                     VStack(alignment: .leading, spacing: 10) {
                         Group {
-                            Picker("Output", selection: $profile.spatialSettings.outputSelection) {
-                                Text("Automatic").tag(SpatialOutputSelection.automatic)
-                                Text("Headphones").tag(SpatialOutputSelection.headphones)
-                                Text("Speakers").tag(SpatialOutputSelection.speakers)
-                            }
                             if profile.spatialSettings.contentSelection != .music {
                                 HStack {
                                     Text("Dialogue")
@@ -71,7 +66,7 @@ struct SpatialAudioEditorView: View {
                                     Text("Clear").font(.caption).foregroundStyle(.secondary)
                                 }
                             }
-                            if profile.spatialSettings.resolvedOutput(deviceName: profile.outputDeviceName) == .speakers {
+                            if profile.effectiveSpatialSettings.resolvedOutput(deviceName: profile.outputDeviceName) == .speakers {
                                 Picker("Listening position", selection: selectedPosition) {
                                     Text("Uncalibrated").tag(UUID?.none)
                                     ForEach(profile.spatialSettings.listeningPositions.filter { $0.outputDeviceUID == profile.outputDeviceUID }) { seat in
@@ -134,7 +129,7 @@ struct SpatialAudioEditorView: View {
         }
         .sheet(item: $channelContext) { context in
             SpatialChannelCheckView(state: state, context: context,
-                headphones: profile.spatialSettings.resolvedOutput(deviceName: profile.outputDeviceName) == .headphones)
+                headphones: profile.effectiveSpatialSettings.resolvedOutput(deviceName: profile.outputDeviceName) == .headphones)
         }
         .sheet(item: $microphoneContext) { context in
             SpatialMicrophoneCalibrationView(state: state, context: context, profile: profile, roomCorrection: true)
@@ -144,7 +139,7 @@ struct SpatialAudioEditorView: View {
             guard profile.playbackMode == .spatialRender else { return }
             guard active, state.spatialCalibrationContext == nil else { return }
             state.pcmRouter.setSpatialSettings(profile.effectiveSpatialSettings,
-                output: profile.spatialSettings.resolvedOutput(deviceName: profile.outputDeviceName))
+                output: profile.effectiveSpatialSettings.resolvedOutput(deviceName: profile.outputDeviceName))
             state.pcmRouter.setSpatialRenderingMode(.spatialAudio)
         }
     }
@@ -156,7 +151,7 @@ struct SpatialAudioEditorView: View {
     }
     private var playbackModeDescription: String {
         switch profile.playbackMode {
-        case .normal:
+        case .direct:
             return "No spatial remapping. Equalizer, device correction, room correction, and protection can still run."
         case .referencePlayback:
             return "Preserves source positions through the configured speaker map without creating surround or height content."

@@ -211,6 +211,12 @@ extension GlobalEqualizerEditorView {
     }
 
     func updateGraphResponses() {
+        guard needsResponseGraph else {
+            graphModel.cancel()
+            runtime.filterResponseTask?.cancel()
+            updateAutomaticSystemHeadroom()
+            return
+        }
         let calculator = EQResponseCalculator()
         var combined = parsedForGraph
         if !state.eqDraftReplacesDeviceCorrection(for: profile.id),
@@ -223,6 +229,10 @@ extension GlobalEqualizerEditorView {
         let profileID = profile.id
         graphModel.calculate(parsed: combined, sampleRate: sampleRate)
         runtime.filterResponseTask?.cancel()
+        guard presentation != .simpleTone else {
+            updateAutomaticSystemHeadroom()
+            return
+        }
         runtime.filterResponseTask = Task {
             do {
                 try await Task.sleep(for: .milliseconds(25))

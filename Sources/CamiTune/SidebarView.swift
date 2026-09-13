@@ -4,13 +4,14 @@ import Combine
 
 /// Lightweight presentation data: EQ edits must not reload the native table.
 struct SidebarRow: Equatable {
-    enum Kind: Equatable {
+    enum Kind: Hashable {
         case navigation(SidebarDestination), addOutput, heading, folder(UUID), profile(UUID)
     }
     let kind: Kind
     let title: String
     var folderID: UUID? = nil
     var indexInGroup = 0
+    var rootIndex: Int? = nil
     var enabled = true
     var expanded = false
 
@@ -22,7 +23,7 @@ struct SidebarRow: Equatable {
         }
     }
 
-    static func build(profiles: [DeviceProfile], folders: [ProfileFolder], expanded: Set<UUID>) -> [SidebarRow] {
+    static func build(profiles: [DeviceProfile], folders: [ProfileFolder], expanded: Set<UUID>, rootOrder: [ProfileRootItem] = []) -> [SidebarRow] {
         var membership: [UUID: UUID] = [:]
         for folder in folders {
             for id in folder.profileIDs where membership[id] == nil { membership[id] = folder.id }
@@ -34,10 +35,9 @@ struct SidebarRow: Equatable {
             else { ungrouped.append(profile) }
         }
         var rows = [
-            SidebarRow(kind: .navigation(.setup), title: "Setup"),
-            SidebarRow(kind: .addOutput, title: "Add Output"),
-            SidebarRow(kind: .navigation(.applications), title: "Applications"),
-            SidebarRow(kind: .heading, title: "Output profiles")
+            SidebarRow(kind: .navigation(.applications), title: "App Audio"),
+            SidebarRow(kind: .heading, title: "Output Profiles"),
+            SidebarRow(kind: .addOutput, title: "Add Output")
         ]
         func appendProfiles(_ profiles: [DeviceProfile], folder: UUID?) {
             for (index, profile) in profiles.enumerated() {
@@ -45,11 +45,18 @@ struct SidebarRow: Equatable {
                     folderID: folder, indexInGroup: index, enabled: profile.isEnabled))
             }
         }
-        appendProfiles(ungrouped, folder: nil)
-        for folder in folders {
-            rows.append(SidebarRow(kind: .folder(folder.id), title: folder.name,
-                expanded: expanded.contains(folder.id)))
-            if expanded.contains(folder.id) { appendProfiles(groups[folder.id] ?? [], folder: folder.id) }
+        for (index, item) in ProfileRootItem.normalized(rootOrder, profiles: profiles, folders: folders).enumerated() {
+            switch item {
+            case .profile(let id):
+                guard let profile = ungrouped.first(where: { $0.id == id }) else { continue }
+                rows.append(SidebarRow(kind: .profile(id), title: profile.name,
+                    rootIndex: index, enabled: profile.isEnabled))
+            case .folder(let id):
+                guard let folder = folders.first(where: { $0.id == id }) else { continue }
+                rows.append(SidebarRow(kind: .folder(id), title: folder.name,
+                    rootIndex: index, expanded: expanded.contains(id)))
+                if expanded.contains(id) { appendProfiles(groups[id] ?? [], folder: id) }
+            }
         }
         return rows
     }
@@ -58,18 +65,22 @@ struct SidebarRow: Equatable {
         var folderID: UUID?
         var index: Int?
         var onRow: Bool
+        var rootIndex: Int? = nil
     }
 
-    static func dropTarget(rows: [SidebarRow], row: Int, onRow: Bool) -> DropTarget? {
+    static func dropTarget(rows: [SidebarRow], row: Int, onRow: Bool, draggingFolders: Bool = false) -> DropTarget? {
         // Empty space after the list always means the top-level profile group.
         if row == rows.count || row == -1 { return DropTarget(onRow: false) }
         guard rows.indices.contains(row) else { return nil }
         switch rows[row].kind {
-        case .heading: return DropTarget(onRow: true)
+        case .heading: return nil
         case .folder(let id):
-            return onRow ? DropTarget(folderID: id, onRow: true) : DropTarget(onRow: false)
+            if onRow && draggingFolders { return nil }
+            return onRow ? DropTarget(folderID: id, onRow: true) : DropTarget(onRow: false, rootIndex: rows[row].rootIndex)
         case .profile:
-            return DropTarget(folderID: rows[row].folderID, index: rows[row].indexInGroup, onRow: false)
+            if draggingFolders && rows[row].folderID != nil { return nil }
+            return DropTarget(folderID: rows[row].folderID, index: rows[row].folderID == nil ? nil : rows[row].indexInGroup,
+                onRow: false, rootIndex: rows[row].rootIndex)
         default: return nil
         }
     }
@@ -121,7 +132,7 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             NativeProfileSidebar(
-                rows: SidebarRow.build(profiles: profileStore.profiles, folders: profileStore.folders, expanded: expandedFolders),
+                rows: SidebarRow.build(profiles: profileStore.profiles, folders: profileStore.folders, expanded: expandedFolders, rootOrder: profileStore.effectiveRootOrder),
                 selection: selection, state: state, editRequest: inlineEditRequest,
                 onRename: { target, name in
                     switch target {
@@ -134,9 +145,16 @@ struct SidebarView: View {
                     if let destination, selection != destination { selection = destination }
                 },
                 onAction: handleAction,
-                onDrop: { ids, target in
-                    profileStore.dropProfiles(ids: ids, into: target.folderID, at: target.index)
-                    if let folder = target.folderID { expandedFolders.insert(folder) }
+                onDrop: { items, target in
+                    if let folder = target.folderID {
+                        let ids = Set(items.compactMap { item -> UUID? in
+                            if case .profile(let id) = item { return id }; return nil
+                        })
+                        profileStore.dropProfiles(ids: ids, into: folder, at: target.index)
+                        expandedFolders.insert(folder)
+                    } else {
+                        profileStore.dropRootItems(items, at: target.rootIndex)
+                    }
                 }
             )
             Divider()
@@ -165,17 +183,21 @@ struct SidebarView: View {
             .accessibilityLabel("Settings")
         }
         .navigationTitle("CamiTune")
-        .sheet(item: $folderDeletion) { request in
-            FolderDeletionSheet(request: request, onCancel: { folderDeletion = nil }) {
-                let deleted = await state.deleteProfileFolder(
-                    id: request.id, confirmedProfileIDs: Set(request.profiles.map(\.id)))
-                if deleted {
-                    expandedFolders.remove(request.id)
-                    if request.profiles.contains(where: { .profile($0.id) == selection }) {
-                        selection = profileStore.selectedProfileID.map(SidebarDestination.profile) ?? .setup
+        .background {
+            FolderDeletionAlert(request: folderDeletion) { confirmed in
+                guard let request = folderDeletion else { return }
+                folderDeletion = nil
+                guard confirmed else { return }
+                Task {
+                    let deleted = await state.deleteProfileFolder(
+                        id: request.id, confirmedProfileIDs: Set(request.profiles.map(\.id)))
+                    if deleted {
+                        expandedFolders.remove(request.id)
+                        if request.profiles.contains(where: { .profile($0.id) == selection }) {
+                            selection = profileStore.selectedProfileID.map(SidebarDestination.profile) ?? .empty
+                        }
                     }
                 }
-                folderDeletion = nil
             }
         }
     }
@@ -203,10 +225,12 @@ struct SidebarView: View {
                 Task { await state.setProfileEnabled(id: id, enabled: !profile.isEnabled) }
             }
         case .deleteProfile(let id):
-            selection = .setup
             Task {
                 if state.activeProfileID == id { await state.deactivate(manual: true) }
                 profileStore.deleteProfile(id: id)
+                if selection == .profile(id) {
+                    selection = profileStore.selectedProfileID.map(SidebarDestination.profile) ?? .empty
+                }
             }
         case .moveToFolder(let ids, let folder): profileStore.assignProfiles(ids: ids, toFolder: folder)
         }
@@ -219,48 +243,52 @@ private struct FolderDeletionRequest: Identifiable {
     let profiles: [DeviceProfile]
 }
 
-/// A window-attached macOS sheet with native controls and no app icon.
+/// AppKit owns alert layout, keyboard handling and the window attachment.
 @MainActor
-private struct FolderDeletionSheet: View {
-    let request: FolderDeletionRequest
-    let onCancel: () -> Void
-    let onDelete: () async -> Void
-    @State private var isDeleting = false
+private struct FolderDeletionAlert: NSViewRepresentable {
+    let request: FolderDeletionRequest?
+    let onResponse: (Bool) -> Void
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Delete “\(request.name)”?")
-                .font(.headline)
-            Text(request.profiles.isEmpty
-                 ? "This folder will be deleted. This cannot be undone."
-                 : "This folder and all \(request.profiles.count) profiles inside it will be deleted. This cannot be undone.")
-                .fixedSize(horizontal: false, vertical: true)
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> NSView { NSView() }
+    func updateNSView(_ view: NSView, context: Context) {
+        guard let request, context.coordinator.presentedID != request.id else { return }
+        context.coordinator.presentedID = request.id
+        DispatchQueue.main.async {
+            guard let window = view.window else {
+                context.coordinator.presentedID = nil
+                onResponse(false)
+                return
+            }
+            let alert = NSAlert()
+            alert.messageText = "Delete “\(request.name)”?"
+            alert.informativeText = request.profiles.isEmpty
+                ? "This folder will be deleted. This can’t be undone."
+                : "This folder and all \(request.profiles.count) profiles inside it will be deleted. This can’t be undone."
+            let cancel = alert.addButton(withTitle: "Cancel")
+            cancel.keyEquivalent = "\r"
+            let delete = alert.addButton(withTitle: "Delete")
+            delete.hasDestructiveAction = true
+            delete.keyEquivalent = ""
             if !request.profiles.isEmpty {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 5) {
-                        ForEach(request.profiles) { profile in
-                            Text(profile.name).frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                }
-                .frame(height: min(140, CGFloat(request.profiles.count) * 23))
+                let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300,
+                    height: min(140, request.profiles.count * 22)))
+                scroll.hasVerticalScroller = true
+                scroll.drawsBackground = false
+                let list = NSTextField(wrappingLabelWithString: request.profiles.map(\.name).joined(separator: "\n"))
+                let listHeight = list.cell?.cellSize(forBounds:
+                    NSRect(x: 0, y: 0, width: 280, height: CGFloat.greatestFiniteMagnitude)).height ?? 22
+                list.frame = NSRect(x: 0, y: 0, width: 280, height: max(22, listHeight))
+                scroll.documentView = list
+                alert.accessoryView = scroll
             }
-            HStack {
-                if isDeleting { ProgressView().controlSize(.small) }
-                Spacer()
-                Button("Cancel", action: onCancel)
-                    .keyboardShortcut(.cancelAction)
-                Button("Delete", role: .destructive) {
-                    isDeleting = true
-                    Task { await onDelete() }
-                }
+            alert.beginSheetModal(for: window) { response in
+                context.coordinator.presentedID = nil
+                onResponse(response == .alertSecondButtonReturn)
             }
-            .disabled(isDeleting)
         }
-        .padding(24)
-        .frame(width: 390)
-        .interactiveDismissDisabled(isDeleting)
     }
+    final class Coordinator { var presentedID: UUID? }
 }
 
 private struct SidebarInlineEditRequest {
@@ -283,7 +311,7 @@ private struct NativeProfileSidebar: NSViewRepresentable {
     let onRename: @MainActor (SidebarRow.Kind, String) -> Void
     let onSelection: @MainActor (Set<UUID>, SidebarDestination?) -> Void
     let onAction: @MainActor (SidebarAction) -> Void
-    let onDrop: @MainActor (Set<UUID>, SidebarRow.DropTarget) -> Void
+    let onDrop: @MainActor (Set<ProfileRootItem>, SidebarRow.DropTarget) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -331,7 +359,8 @@ private struct NativeProfileSidebar: NSViewRepresentable {
         var runtimeSubscription: AnyCancellable?
         var activeProfileID: UUID?
         var menuActions: [SidebarAction] = []
-        var draggedIDs: Set<UUID> = []
+        var draggedItems: Set<ProfileRootItem> = []
+        var validatedDrop: SidebarRow.DropTarget?
         let selectionScheduler = SidebarSelectionScheduler<SidebarDestination>()
         var handledEditRequest: UUID?
         var editingTarget: SidebarRow.Kind?
@@ -375,11 +404,12 @@ private struct NativeProfileSidebar: NSViewRepresentable {
             let externalSelectionChanged = lastSelection != parent.selection
             if displayedRows != parent.rows {
                 finishEditing(save: true)
-                let selected = Set(table.selectedRowIndexes.compactMap { displayedRows.indices.contains($0) ? displayedRows[$0].selectionID : nil })
+                let selected = Set(table.selectedRowIndexes.compactMap { displayedRows.indices.contains($0) ? displayedRows[$0].kind : nil })
+                validatedDrop = nil
                 displayedRows = parent.rows
                 suppressSelection = true
                 table.reloadData()
-                table.selectRowIndexes(IndexSet(displayedRows.indices.filter { displayedRows[$0].selectionID.map { selected.contains($0) } ?? false }), byExtendingSelection: false)
+                table.selectRowIndexes(IndexSet(displayedRows.indices.filter { selected.contains(displayedRows[$0].kind) }), byExtendingSelection: false)
                 suppressSelection = false
             }
             if externalSelectionChanged {
@@ -491,7 +521,8 @@ private struct NativeProfileSidebar: NSViewRepresentable {
 
         func numberOfRows(in tableView: NSTableView) -> Int { displayedRows.count }
         func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
-            displayedRows[row].selectionID != nil
+            if case .folder = displayedRows[row].kind { return true }
+            return displayedRows[row].selectionID != nil
         }
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !suppressSelection, let table else { return }
@@ -526,32 +557,50 @@ private struct NativeProfileSidebar: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
-            guard editingTarget == nil, case .profile(let id) = displayedRows[row].kind else { return nil }
+            guard editingTarget == nil, let identity = rootItem(at: row),
+                  let data = try? JSONEncoder().encode(identity) else { return nil }
             let item = NSPasteboardItem()
-            item.setString(id.uuidString, forType: Self.dragType)
+            item.setData(data, forType: Self.dragType)
             return item
+        }
+        func rootItem(at row: Int) -> ProfileRootItem? {
+            guard displayedRows.indices.contains(row) else { return nil }
+            switch displayedRows[row].kind {
+            case .profile(let id): return .profile(id)
+            case .folder(let id): return .folder(id)
+            default: return nil
+            }
         }
         func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forRowIndexes rowIndexes: IndexSet) {
             selectionScheduler.cancel()
-            draggedIDs = Set(rowIndexes.compactMap {
-                if case .profile(let id) = displayedRows[$0].kind { return id }; return nil
-            })
+            draggedItems = Set(rowIndexes.compactMap { rootItem(at: $0) })
+            // Selecting a folder and its children moves the intact folder.
+            for row in displayedRows {
+                if let folder = row.folderID, draggedItems.contains(.folder(folder)),
+                   case .profile(let id) = row.kind { draggedItems.remove(.profile(id)) }
+            }
         }
         func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
-            draggedIDs = []
+            draggedItems = []
+            validatedDrop = nil
         }
         func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation operation: NSTableView.DropOperation) -> NSDragOperation {
-            guard (info.draggingSource as? NSTableView) === tableView, !draggedIDs.isEmpty,
-                  let target = SidebarRow.dropTarget(rows: displayedRows, row: row, onRow: operation == .on) else { return [] }
-            tableView.setDropRow(row == -1 ? displayedRows.count : row, dropOperation: target.onRow ? .on : .above)
+            validatedDrop = nil
+            guard (info.draggingSource as? NSTableView) === tableView, !draggedItems.isEmpty,
+                  let target = SidebarRow.dropTarget(rows: displayedRows, row: row, onRow: operation == .on,
+                    draggingFolders: draggedItems.contains(where: { if case .folder = $0 { return true }; return false })) else { return [] }
+            let indicatorRow = row == -1 ? displayedRows.count : row
+            tableView.setDropRow(indicatorRow, dropOperation: target.onRow ? .on : .above)
+            validatedDrop = target
             return .move
         }
         func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation operation: NSTableView.DropOperation) -> Bool {
+            // Use the semantic target retained from validation, not AppKit's
+            // possibly rewritten indicator coordinates.
             guard (info.draggingSource as? NSTableView) === tableView,
-                  let target = SidebarRow.dropTarget(rows: displayedRows, row: row, onRow: operation == .on) else { return false }
-            let ids = Set((info.draggingPasteboard.pasteboardItems ?? []).compactMap { $0.string(forType: Self.dragType).flatMap(UUID.init(uuidString:)) })
-            guard !ids.isEmpty else { return false }
-            parent.onDrop(ids, target)
+                  let target = validatedDrop, !draggedItems.isEmpty else { return false }
+            parent.onDrop(draggedItems, target)
+            validatedDrop = nil
             return true
         }
 
@@ -670,15 +719,9 @@ private final class SidebarCell: NSTableCellView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func configure(_ row: SidebarRow, activeID: UUID?) {
-        let isHeading = row.kind == .heading
-        if isHeading {
-            titleAfterIcon.isActive = false
-            headingLeading.isActive = true
-        } else {
-            headingLeading.isActive = false
-            titleAfterIcon.isActive = true
-        }
-        icon.isHidden = isHeading
+        headingLeading.isActive = false
+        titleAfterIcon.isActive = true
+        icon.isHidden = false
         title.stringValue = row.title
         title.font = .systemFont(ofSize: NSFont.systemFontSize)
         title.textColor = .labelColor
@@ -689,10 +732,10 @@ private final class SidebarCell: NSTableCellView {
         let symbol: String
         switch row.kind {
         case .navigation(let id):
-            symbol = id == .setup ? "wrench.and.screwdriver" : (id == .applications ? "square.stack.3d.up.fill" : "gearshape")
+            symbol = id == .applications ? "square.stack.3d.up.fill" : "gearshape"
         case .addOutput: symbol = "plus.circle.fill"; icon.contentTintColor = .controlAccentColor
         case .heading:
-            symbol = ""; title.font = .boldSystemFont(ofSize: 11); title.textColor = .secondaryLabelColor
+            symbol = "hifispeaker.2"; title.font = .boldSystemFont(ofSize: 12); title.textColor = .secondaryLabelColor
         case .folder: symbol = row.expanded ? "chevron.down" : "chevron.right"
         case .profile(let id):
             symbol = "speaker.wave.2"

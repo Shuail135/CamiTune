@@ -17,7 +17,7 @@ struct PerAppAudioView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
-                Text("Application Audio").font(.largeTitle.bold())
+                Text("App Audio").font(.largeTitle.bold())
                 Text("Each application is processed and mixed independently before the active profile's global DSP.")
                     .foregroundStyle(.secondary)
 

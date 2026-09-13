@@ -141,7 +141,7 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     func setRuntimeActive(_ enabled: Bool) {
-        guard !actionInFlight, !state.transitionInProgress, let profile else { return }
+        guard !actionInFlight, !state.transitionInProgress, !state.isSavingProfileSettings, let profile else { return }
         if !enabled && state.profiles.activationMode(for: profile) == .physicalOutput {
             pendingOffProfileID = profile.id
             return
@@ -170,7 +170,7 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     func setPlaybackMode(_ mode: PlaybackMode) {
-        guard !actionInFlight, !state.transitionInProgress, let profile,
+        guard !actionInFlight, !state.transitionInProgress, !state.isSavingProfileSettings, let profile,
               profile.playbackMode != mode else { return }
         beginAction(profile: profile)
         Task {
@@ -268,7 +268,7 @@ struct MenuBarRootView: View {
                     Spacer()
                     MenuBarRuntimeControl(
                         isActive: model.runtimeControlSelection,
-                        isEnabled: !model.actionInFlight && !model.state.transitionInProgress && model.state.spatialCalibrationContext == nil,
+                        isEnabled: !model.actionInFlight && !model.state.transitionInProgress && !model.state.isSavingProfileSettings && model.state.spatialCalibrationContext == nil,
                         confirmationID: model.pendingOffProfileID,
                         confirmation: AnyView(offConfirmation),
                         onChange: { model.setRuntimeActive($0) },
@@ -282,7 +282,7 @@ struct MenuBarRootView: View {
                         get: { profile.playbackMode }, set: { model.setPlaybackMode($0) }
                     ), title: { $0.compactDisplayName }, symbol: { $0.systemImageName })
                     .accessibilityLabel("Mode")
-                    .disabled(model.actionInFlight || model.state.transitionInProgress || model.state.spatialCalibrationContext != nil)
+                    .disabled(model.actionInFlight || model.state.transitionInProgress || model.state.isSavingProfileSettings || model.state.spatialCalibrationContext != nil)
                 }
             } else {
                 Text("No output profile").foregroundStyle(.secondary)

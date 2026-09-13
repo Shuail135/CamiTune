@@ -2,11 +2,11 @@ import SwiftUI
 import Foundation
 
 enum SidebarDestination: Hashable, Sendable {
-    case setup, applications, settings, profile(UUID)
+    case empty, applications, settings, profile(UUID)
 
     var storageValue: String {
         switch self {
-        case .setup: return "setup"
+        case .empty: return "empty"
         case .applications: return "applications"
         case .settings: return "settings"
         case .profile(let id): return id.uuidString
@@ -15,13 +15,12 @@ enum SidebarDestination: Hashable, Sendable {
 
     static func restore(_ saved: String?, profileIDs: Set<UUID>, fallbackProfileID: UUID?) -> Self {
         switch saved {
-        case "setup": return .setup
         case "applications": return .applications
         case "settings", "global-settings", "default-profiles": return .settings
         default:
             if let saved, let id = UUID(uuidString: saved), profileIDs.contains(id) { return .profile(id) }
             if let fallbackProfileID, profileIDs.contains(fallbackProfileID) { return .profile(fallbackProfileID) }
-            return .setup
+            return .empty
         }
     }
 }
@@ -74,6 +73,8 @@ struct ContentView: View {
                 onAdd: addSelectedOutput
             )
         }
+        .modifier(SetupPresentationModifier(state: state, presentation: state.setupPresentation))
+        .modifier(ProfileConfirmationModifier(presentation: state.profileConfirmations, store: state.profiles))
         .modifier(AppErrorPresentationModifier(state: state))
         .modifier(AppUpdatePresentationModifier(updateChecker: state.updateChecker))
     }
@@ -100,7 +101,7 @@ struct ContentView: View {
                   $0.id == pendingOutputUID
               }) else { return }
         let profileID = state.addProfile(for: device)
-        selection = profileID.map(SidebarDestination.profile) ?? .setup
+        selection = profileID.map(SidebarDestination.profile) ?? .empty
         showingOutputPicker = false
         self.pendingOutputUID = nil
     }

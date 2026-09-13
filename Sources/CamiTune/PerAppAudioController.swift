@@ -826,7 +826,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             ?? (packet.processID > 0 ? "pid:\(packet.processID)" : nil)
             ?? "client:\(packet.deviceObjectID):\(packet.clientID)"
         let settings = settingsByApplication[applicationID] ?? PerAppAudioSettings()
-        let playbackMode = playbackContext?.effectiveMode(for: settings.playbackModeOverride) ?? .normal
+        let playbackMode = playbackContext?.effectiveMode(for: settings.playbackModeOverride) ?? .direct
         let settingsRevision = settingsRevisionByApplication[applicationID] ?? 0
         stateLock.unlock()
 

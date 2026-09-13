@@ -58,13 +58,24 @@ enum ProfileActivationMode: Hashable, Sendable {
 }
 
 enum PlaybackMode: String, Codable, CaseIterable, Hashable, Sendable {
-    case normal
+    case direct
     case referencePlayback
     case spatialRender
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        if value == "normal" { self = .direct; return }
+        guard let mode = Self(rawValue: value) else {
+            throw DecodingError.dataCorruptedError(in: container,
+                debugDescription: "Unsupported playback mode: \(value)")
+        }
+        self = mode
+    }
+
     var compactDisplayName: String {
         switch self {
-        case .normal: return "Normal"
+        case .direct: return "Direct"
         case .referencePlayback: return "Reference"
         case .spatialRender: return "Spatial"
         }
@@ -72,7 +83,7 @@ enum PlaybackMode: String, Codable, CaseIterable, Hashable, Sendable {
 
     var systemImageName: String {
         switch self {
-        case .normal: return "waveform.circle"
+        case .direct: return "waveform.circle"
         case .referencePlayback: return "headphones"
         case .spatialRender: return "tv.music.note"
         }
@@ -80,7 +91,7 @@ enum PlaybackMode: String, Codable, CaseIterable, Hashable, Sendable {
 
     var displayName: String {
         switch self {
-        case .normal: return "Normal"
+        case .direct: return "Direct"
         case .referencePlayback: return "Reference Playback"
         case .spatialRender: return "Spatial Render"
         }
@@ -93,13 +104,16 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     var outputDevice: PhysicalOutputIdentity
     /// User-described use, independent of hardware identity and DSP selection.
     var endpointKind: ProfileEndpointKind = .custom
+    /// Inactive contexts retain their mode without duplicating shared DSP/geometry.
+    var sectionLayout: ProfileSectionLayout?
+    var playbackModesByEndpoint: [String: PlaybackMode] = [:]
     var isEnabled: Bool = true
     var autoActivateWhenProfileDeviceSelected: Bool = false
     var lockOutputVolume: Bool = false
     var outputVolumeScalar: Double = 0.0625
     var sampleRate: Int = 48_000
     var chunkSize: Int = 1024
-    var playbackMode: PlaybackMode = .normal
+    var playbackMode: PlaybackMode = .direct
     var spatialRenderingMode: SpatialRenderingMode = .standard
     var spatialSettings = SpatialRenderSettings()
     var speakerTopology: SpeakerTopology?
@@ -107,7 +121,7 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         get { playbackMode == .referencePlayback }
         set {
             if newValue { setPlaybackMode(.referencePlayback) }
-            else if playbackMode == .referencePlayback { setPlaybackMode(.normal) }
+            else if playbackMode == .referencePlayback { setPlaybackMode(.direct) }
         }
     }
 
@@ -115,14 +129,14 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         var modes: [PlaybackMode]
         switch endpointKind {
         case .headphones, .iem:
-            modes = [.normal, .spatialRender]
+            modes = [.direct, .spatialRender]
         case .speakers:
             modes = speakerTopology == nil
-                ? [.normal, .spatialRender]
-                : [.normal, .referencePlayback, .spatialRender]
+                ? [.direct, .spatialRender]
+                : [.direct, .referencePlayback, .spatialRender]
         case .audioInterface, .custom:
             // These require an endpoint assignment before enabling a renderer.
-            modes = [.normal]
+            modes = [.direct]
         }
         if !modes.contains(playbackMode) { modes.append(playbackMode) }
         return modes
@@ -150,6 +164,11 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
 
     var effectiveSpatialSettings: SpatialRenderSettings {
         var settings = spatialSettings
+        switch endpointKind {
+        case .headphones, .iem: settings.outputSelection = .headphones
+        case .speakers: settings.outputSelection = .speakers
+        case .audioInterface, .custom: break
+        }
         if settings.seating?.outputDeviceUID != outputDeviceUID { settings.seating = nil }
         return settings
     }
@@ -205,7 +224,7 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         self.chunkSize = chunkSize
         self.spatialRenderingMode = spatialRenderingMode
         self.spatialSettings = .migrated(from: spatialRenderingMode)
-        self.playbackMode = spatialRenderingMode == .standard ? .normal : .spatialRender
+        self.playbackMode = spatialRenderingMode == .standard ? .direct : .spatialRender
         if let processing {
             self.processing = processing
             self.unmigratedEqualizerAPOText = nil
@@ -304,7 +323,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
 
     private enum CodingKeys: String, CodingKey {
         case id, name, outputDevice, outputDeviceUID, outputDeviceName, isEnabled, endpointKind
-        case autoActivateWhenProfileDeviceSelected
+        case autoActivateWhenProfileDeviceSelected, playbackModesByEndpoint, sectionLayout
         case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize, playbackMode
         case spatialRenderingMode, spatialContentMode, spatialListenerProfile, spatialAcousticProfile, equalizerAPOText, processing
         case virtualSurroundLayout, spatialSettings, speakerTopology, usesReferenceSpeakers
@@ -330,6 +349,9 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         }
         isEnabled = try values.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
         endpointKind = try values.decodeIfPresent(ProfileEndpointKind.self, forKey: .endpointKind) ?? .custom
+        sectionLayout = try values.decodeIfPresent(ProfileSectionLayout.self, forKey: .sectionLayout)
+        playbackModesByEndpoint = try values.decodeIfPresent(
+            [String: PlaybackMode].self, forKey: .playbackModesByEndpoint) ?? [:]
         autoActivateWhenProfileDeviceSelected = try values.decodeIfPresent(
             Bool.self,
             forKey: .autoActivateWhenProfileDeviceSelected
@@ -363,7 +385,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         } else if spatialSettings.enabled || spatialRenderingMode != .standard {
             playbackMode = .spatialRender
         } else {
-            playbackMode = .normal
+            playbackMode = .direct
         }
         spatialSettings.enabled = playbackMode == .spatialRender
         spatialRenderingMode = playbackMode == .spatialRender ? .spatialAudio : .standard
@@ -403,6 +425,8 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         try values.encode(name, forKey: .name)
         try values.encode(outputDevice, forKey: .outputDevice)
         try values.encode(endpointKind, forKey: .endpointKind)
+        try values.encode(playbackModesByEndpoint, forKey: .playbackModesByEndpoint)
+        try values.encodeIfPresent(sectionLayout, forKey: .sectionLayout)
         try values.encode(isEnabled, forKey: .isEnabled)
         try values.encode(autoActivateWhenProfileDeviceSelected, forKey: .autoActivateWhenProfileDeviceSelected)
         try values.encode(lockOutputVolume, forKey: .lockOutputVolume)
@@ -470,4 +494,175 @@ struct SpectrumPoint: Identifiable {
     let frequency: Double
     let db: Double
     var id: Double { frequency }
+}
+
+/// Pure settings preflight. The runtime owner must apply the returned candidate
+/// successfully before persisting it; abandoning a draft never changes the source.
+struct ProfileDeviceTypeDraft {
+    let original: DeviceProfile
+    var selectedType: ProfileEndpointKind
+
+    init(profile: DeviceProfile) {
+        original = profile
+        selectedType = profile.endpointKind
+    }
+
+    func prepare(validate: (DeviceProfile) throws -> Void) throws -> DeviceProfile {
+        var candidate = original
+        if selectedType != original.endpointKind {
+            candidate.playbackModesByEndpoint[original.endpointKind.rawValue] = original.playbackMode
+            candidate.endpointKind = selectedType
+            // Reset before asking for capabilities: availability retains legacy
+            // selected modes, which must not authorize a different endpoint.
+            candidate.setPlaybackMode(.direct)
+            if let remembered = candidate.playbackModesByEndpoint[selectedType.rawValue],
+               candidate.availablePlaybackModes.contains(remembered) {
+                candidate.setPlaybackMode(remembered)
+            }
+        }
+        try validate(candidate)
+        return candidate
+    }
+}
+
+// Presentation preferences are separate from processing and routing identity.
+enum ProfileSection: String, Codable, CaseIterable, Identifiable, Sendable {
+    case deviceSetup, meters, spectrum, mode, equalizer, convolution, crossfeed, perChannel
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .deviceSetup: return "Device Setup"
+        case .meters: return "Meters & Status"
+        case .spectrum: return "Spectrum"
+        case .mode: return "Mode"
+        case .equalizer: return "Equalizer"
+        case .convolution: return "FIR / Convolution"
+        case .crossfeed: return "Headphone Crossfeed"
+        case .perChannel: return "Per-channel EQ, Gain & Delay"
+        }
+    }
+    func applies(to type: ProfileEndpointKind) -> Bool {
+        self != .crossfeed || type == .headphones || type == .iem || type == .custom || type == .audioInterface
+    }
+}
+
+enum EqualizerPresentation: String, Codable, CaseIterable, Identifiable, Sendable {
+    case bands, simpleTone, both
+    var id: Self { self }
+    var title: String { self == .bands ? "Bands" : self == .simpleTone ? "Simple Tone" : "Both" }
+}
+
+struct SectionPresentationPreference: Codable, Hashable, Sendable {
+    var equalizer: EqualizerPresentation = .both
+}
+
+struct ProfileSectionLayout: Codable, Hashable, Sendable {
+    var order: [ProfileSection] = ProfileSection.allCases
+    var hidden: Set<ProfileSection> = []
+    var presentation: [String: SectionPresentationPreference] = [:]
+
+    private enum CodingKeys: String, CodingKey { case order, hidden, presentation }
+    init(order: [ProfileSection] = ProfileSection.allCases, hidden: Set<ProfileSection> = [],
+         presentation: [String: SectionPresentationPreference] = [:]) {
+        self.order = order
+        self.hidden = hidden
+        self.presentation = presentation
+    }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        order = try values.decodeIfPresent([ProfileSection].self, forKey: .order) ?? ProfileSection.allCases
+        hidden = try values.decodeIfPresent(Set<ProfileSection>.self, forKey: .hidden) ?? []
+        presentation = try values.decodeIfPresent([String: SectionPresentationPreference].self, forKey: .presentation) ?? [:]
+    }
+    func visualDemand(for type: ProfileEndpointKind) -> (meters: Bool, spectrum: Bool) {
+        let sections = visibleSections(for: type)
+        return (sections.contains(.meters) || sections.contains(.equalizer) || sections.contains(.perChannel),
+                sections.contains(.spectrum) || (sections.contains(.equalizer) && equalizer != .simpleTone))
+    }
+
+    var equalizer: EqualizerPresentation {
+        get { presentation[ProfileSection.equalizer.rawValue]?.equalizer ?? .both }
+        set { presentation[ProfileSection.equalizer.rawValue] = SectionPresentationPreference(equalizer: newValue) }
+    }
+    var normalizedOrder: [ProfileSection] {
+        var seen: Set<ProfileSection> = [.deviceSetup]
+        return [.deviceSetup] + (order + ProfileSection.allCases).filter { seen.insert($0).inserted }
+    }
+    func visibleSections(for type: ProfileEndpointKind) -> [ProfileSection] {
+        normalizedOrder.filter { $0.applies(to: type) && ($0 == .deviceSetup || !hidden.contains($0)) }
+    }
+    mutating func move(_ section: ProfileSection, before destination: ProfileSection?) {
+        guard section != .deviceSetup, destination != .deviceSetup, section != destination else { return }
+        var ordered = normalizedOrder.filter { $0 != section }
+        ordered.insert(section, at: destination.flatMap { ordered.firstIndex(of: $0) } ?? ordered.count)
+        order = ordered
+    }
+}
+
+struct ProfileSettingsDraft {
+    let original: DeviceProfile
+    let originalActivation: ProfileActivationMode
+    var name: String
+    var outputDevice: PhysicalOutputIdentity
+    var selectedType: ProfileEndpointKind
+    var sampleRate: Int
+    var activation: ProfileActivationMode
+    var sectionLayout: ProfileSectionLayout?
+
+    init(profile: DeviceProfile, activation: ProfileActivationMode) {
+        original = profile
+        originalActivation = activation
+        name = profile.name
+        outputDevice = profile.outputDevice
+        selectedType = profile.endpointKind
+        sampleRate = profile.sampleRate
+        self.activation = activation
+        sectionLayout = profile.sectionLayout
+    }
+    func candidate() throws -> DeviceProfile {
+        var typeDraft = ProfileDeviceTypeDraft(profile: original)
+        typeDraft.selectedType = selectedType
+        var result = try typeDraft.prepare { _ in }
+        result.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !result.name.isEmpty else { throw ProfileSettingsError.invalidName }
+        result.outputDevice = outputDevice
+        result.sampleRate = sampleRate
+        result.sectionLayout = sectionLayout
+        return result
+    }
+}
+
+enum ProfileSettingsError: LocalizedError {
+    case invalidName, staleDraft, busy, cancelled, runtime(String), rollback(String, String)
+    var errorDescription: String? {
+        switch self {
+        case .invalidName: return "Enter a profile name."
+        case .staleDraft: return "This profile changed while Settings was open. Close Settings and reopen it to load the latest values."
+        case .busy: return "Wait for the current audio operation to finish, then save again."
+        case .cancelled: return "The audio operation was cancelled. Your settings were not saved."
+        case .runtime(let detail): return detail
+        case .rollback(let failure, let rollback): return "\(failure) The previous settings are still saved, but audio could not be restored: \(rollback)"
+        }
+    }
+}
+
+/// Shared by the runtime adapter and failure-injection tests. Persistence is the
+/// final fallible commit, and failed application/commit rolls back the runtime.
+@MainActor
+enum ProfileSettingsTransaction {
+    static func run(preflight: () async throws -> Void,
+                    apply: () async throws -> Void,
+                    commit: () throws -> Void,
+                    rollback: () async throws -> Void) async throws {
+        try await preflight()
+        do {
+            try await apply()
+            try commit()
+        } catch {
+            let failure = error
+            do { try await rollback() }
+            catch { throw ProfileSettingsError.rollback(failure.localizedDescription, error.localizedDescription) }
+            throw failure
+        }
+    }
 }
