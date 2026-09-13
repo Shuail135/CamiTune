@@ -37,7 +37,6 @@ struct SidebarRow: Equatable {
         var rows = [
             SidebarRow(kind: .navigation(.applications), title: "App Audio"),
             SidebarRow(kind: .heading, title: "Output Profiles"),
-            SidebarRow(kind: .addOutput, title: "Add Output")
         ]
         func appendProfiles(_ profiles: [DeviceProfile], folder: UUID?) {
             for (index, profile) in profiles.enumerated() {
@@ -183,6 +182,11 @@ struct SidebarView: View {
             .accessibilityLabel("Settings")
         }
         .navigationTitle("CamiTune")
+        .navigationSplitViewColumnWidth(
+            min: minimumSidebarWidth,
+            ideal: minimumSidebarWidth + 15,
+            max: 260
+        )
         .background {
             FolderDeletionAlert(request: folderDeletion) { confirmed in
                 guard let request = folderDeletion else { return }
@@ -489,7 +493,15 @@ private struct NativeProfileSidebar: NSViewRepresentable {
             field?.stringValue = oldName
             if let cell = field?.superview as? SidebarCell,
                let row = displayedRows.first(where: { $0.kind == target }) {
-                cell.configure(row, activeID: activeProfileID)
+                cell.configure(
+                    row,
+                    activeID: activeProfileID,
+                    onAddOutput: { [weak self] in
+                        guard let self else { return }
+                        self.selectionScheduler.cancel()
+                        self.parent.onAction(.addOutput)
+                    }
+                )
             }
             if save, !text.isEmpty, text != oldName {
                 // A profile rename also updates its system audio-device label;
@@ -536,15 +548,17 @@ private struct NativeProfileSidebar: NSViewRepresentable {
             }
         }
         @objc func clicked() {
-            guard let table, displayedRows.indices.contains(table.clickedRow) else { return }
+            guard let table, displayedRows.indices.contains(table.clickedRow)
+            else { return }
             switch displayedRows[table.clickedRow].kind {
             case .folder(let id):
                 selectionScheduler.cancel()
                 parent.onAction(.toggleFolder(id))
-            case .addOutput:
+            case .heading, .addOutput:
                 selectionScheduler.cancel()
                 parent.onAction(.addOutput)
-            default: break
+            default:
+                break
             }
         }
 
@@ -552,7 +566,15 @@ private struct NativeProfileSidebar: NSViewRepresentable {
             let identifier = NSUserInterfaceItemIdentifier("sidebar-cell")
             let cell = (tableView.makeView(withIdentifier: identifier, owner: nil) as? SidebarCell) ?? SidebarCell()
             cell.identifier = identifier
-            cell.configure(displayedRows[row], activeID: activeProfileID)
+            cell.configure(
+                displayedRows[row],
+                activeID: activeProfileID,
+                onAddOutput: { [weak self] in
+                    guard let self else { return }
+                    self.selectionScheduler.cancel()
+                    self.parent.onAction(.addOutput)
+                }
+            )
             return cell
         }
 
@@ -688,37 +710,72 @@ private final class SidebarCell: NSTableCellView {
     private let icon = NSImageView()
     private let title = NSTextField(labelWithString: "")
     private let dot = NSView()
+    private let addButton = NSButton()
+    private var onAddOutput: (() -> Void)?
     private var leading: NSLayoutConstraint!
     private var titleAfterIcon: NSLayoutConstraint!
     private var headingLeading: NSLayoutConstraint!
+    private var titleToDot: NSLayoutConstraint!
+    private var titleToAddButton: NSLayoutConstraint!
 
+    @objc
+    private func addOutputClicked() {onAddOutput?()}
+    
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        for view in [icon, title, dot] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
+        for view in [icon, title, dot, addButton] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+        }
         textField = title
         imageView = icon
         title.lineBreakMode = .byTruncatingTail
         title.maximumNumberOfLines = 1
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         dot.wantsLayer = true
-        dot.layer?.cornerRadius = 4
+        dot.layer?.cornerRadius = 3
         dot.layer?.backgroundColor = NSColor.systemGreen.cgColor
         leading = icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2)
         titleAfterIcon = title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6)
         headingLeading = title.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2)
+        leading = icon.leadingAnchor.constraint(equalTo: leadingAnchor,constant: 2)
+        titleAfterIcon = title.leadingAnchor.constraint(equalTo: icon.trailingAnchor,constant: 6)
+        headingLeading = title.leadingAnchor.constraint(equalTo: leadingAnchor,constant: 2)
+        titleToDot = title.trailingAnchor.constraint(lessThanOrEqualTo: dot.leadingAnchor,constant: -2)
+        titleToAddButton = title.trailingAnchor.constraint(
+            lessThanOrEqualTo:addButton.leadingAnchor,constant: -3
+        )
         NSLayoutConstraint.activate([
-            leading, icon.widthAnchor.constraint(equalToConstant: 16), icon.heightAnchor.constraint(equalToConstant: 16),
+            leading,
+            icon.widthAnchor.constraint(equalToConstant: 16),
+            icon.heightAnchor.constraint(equalToConstant: 16),
             icon.centerYAnchor.constraint(equalTo: centerYAnchor),
             titleAfterIcon,
             title.centerYAnchor.constraint(equalTo: centerYAnchor),
-            title.trailingAnchor.constraint(equalTo: dot.leadingAnchor, constant: -4),
-            dot.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            titleToDot,
+            dot.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -2),
             dot.centerYAnchor.constraint(equalTo: centerYAnchor),
-            dot.widthAnchor.constraint(equalToConstant: 8), dot.heightAnchor.constraint(equalToConstant: 8)
-        ])
+            dot.widthAnchor.constraint(equalToConstant: 6),
+            dot.heightAnchor.constraint(equalToConstant: 6),
+            addButton.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor,constant: -2),
+            addButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            addButton.widthAnchor.constraint(equalToConstant: 16),
+            addButton.heightAnchor.constraint(equalToConstant: 16)
+            ])
+        addButton.image = NSImage(systemSymbolName: "plus",accessibilityDescription: "Add Output")
+        addButton.imagePosition = .imageOnly
+        addButton.isBordered = false
+        addButton.contentTintColor = .secondaryLabelColor
+        addButton.toolTip = "Add Output"
+        addButton.target = self
+        addButton.action = #selector(addOutputClicked)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    func configure(_ row: SidebarRow, activeID: UUID?) {
+    func configure(_ row: SidebarRow, activeID: UUID?, onAddOutput: @escaping () -> Void) {
+        self.onAddOutput = onAddOutput
+        addButton.isHidden = true
+        titleToAddButton.isActive = false
+        titleToDot.isActive = true
         headingLeading.isActive = false
         titleAfterIcon.isActive = true
         icon.isHidden = false
@@ -735,7 +792,12 @@ private final class SidebarCell: NSTableCellView {
             symbol = id == .applications ? "square.stack.3d.up.fill" : "gearshape"
         case .addOutput: symbol = "plus.circle.fill"; icon.contentTintColor = .controlAccentColor
         case .heading:
-            symbol = "hifispeaker.2"; title.font = .boldSystemFont(ofSize: 12); title.textColor = .secondaryLabelColor
+            symbol = "hifispeaker.2"
+            title.font = .systemFont(ofSize: 12,weight: .semibold)
+            title.textColor = .secondaryLabelColor
+            addButton.isHidden = false
+            titleToDot.isActive = false
+            titleToAddButton.isActive = true
         case .folder: symbol = row.expanded ? "chevron.down" : "chevron.right"
         case .profile(let id):
             symbol = "speaker.wave.2"
@@ -745,4 +807,32 @@ private final class SidebarCell: NSTableCellView {
         icon.image = symbol.isEmpty ? nil : NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         setAccessibilityLabel(row.title + (dot.isHidden ? "" : ", Active"))
     }
+}
+
+private var minimumSidebarWidth: CGFloat {
+    let appAudioFont = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+    let outputProfilesFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
+    let appAudioText = NSTextField(labelWithString: "App Audio")
+    appAudioText.font = appAudioFont
+    appAudioText.sizeToFit()
+    let outputProfilesText = NSTextField(labelWithString: "Output Profiles")
+    outputProfilesText.font = outputProfilesFont
+    outputProfilesText.sizeToFit()
+    
+    /*
+     Calculation:
+     icon width          = 16
+     icon -> title gap   = 6
+     heading add button  = 20
+     title -> plus gap   = 6
+     plus trailing       = 2
+     icon leading        = 2
+    */
+    let appAudioWidth = 2 + 16 + 6 + appAudioText.fittingSize.width + 12
+    let outputProfilesWidth = 2 + 16 + 6 + outputProfilesText.fittingSize.width + 6 + 20 + 2 + 5
+    let tableAllowance: CGFloat = 16
+    return ceil(
+        max(appAudioWidth, outputProfilesWidth)
+        + tableAllowance
+    )
 }
