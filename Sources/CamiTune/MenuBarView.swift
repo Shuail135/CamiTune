@@ -203,11 +203,9 @@ final class MenuBarViewModel: ObservableObject {
 
 @MainActor
 struct MenuBarRootView: View {
-    @ObservedObject private var history: UndoCoordinator
     @StateObject private var model: MenuBarViewModel
 
     init(state: AppState) {
-        self.history = state.history
         _model = StateObject(wrappedValue: MenuBarViewModel(state: state))
     }
 
@@ -232,7 +230,6 @@ struct MenuBarRootView: View {
             .buttonStyle(MenuBarCommandStyle())
             .padding(6)
         }
-        .disabled(history.isReplaying)
         .frame(width: 370)
         .background(Color(nsColor: .windowBackgroundColor))
         .background(MenuBarPresentationObserver(windowChanged: { model.registerMenuWindow($0, root: true) }) { visible in
@@ -730,9 +727,6 @@ private struct HorizontalMeteredVolumeSlider: View {
                 onVolumeChange(next, true)
                 interactionVolume = nil
             })
-        }
-        .onDisappear {
-            if let interactionVolume { onVolumeChange(interactionVolume, true) }
         }
         .onAppear { displayedLevel = min(1, max(0, level)) }
         .onChange(of: level) { newLevel in

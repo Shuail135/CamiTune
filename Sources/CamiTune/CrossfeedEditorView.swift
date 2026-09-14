@@ -5,10 +5,9 @@ import SwiftUI
 /// details as required by the roadmap.
 @MainActor
 struct CrossfeedEditorView: View {
-    @ObservedObject var state: AppState
+    let state: AppState
     @Binding var profile: DeviceProfile
 
-    @State private var historyBaseline: CrossfeedHistoryState?
     @State private var settings = CrossfeedProcessor.standard
     @State private var isEnabled = false
     @State private var suppressChanges = false
@@ -98,15 +97,12 @@ struct CrossfeedEditorView: View {
             }
             .padding(6)
         }
-        .onChange(of: state.historyReplayRevision) { _ in load() }
         .onAppear { loadIfNeeded() }
         .onChange(of: profile.id) { _ in
+            loadedProfileID = nil
             loadIfNeeded()
         }
-        .onDisappear {
-            if continuousEditDepth > 0 { continuousEditDepth = 1; continuousEditingChanged(false) }
-            flushPendingCommit()
-        }
+        .onDisappear { flushPendingCommit() }
     }
 
     private func controlRow(
@@ -139,9 +135,6 @@ struct CrossfeedEditorView: View {
     }
 
     private func load() {
-        if let oldID = loadedProfileID {
-            state.history.cancelGesture(key: GestureKey(target: .profile(oldID), control: "crossfeed"))
-        }
         liveApplyTask?.cancel()
         pendingCommitGeneration &+= 1
         hasPendingCommit = false
@@ -149,8 +142,6 @@ struct CrossfeedEditorView: View {
         let saved = profile.processing.crossfeed
         settings = saved?.processor ?? .standard
         isEnabled = saved?.isEnabled ?? false
-        historyBaseline = currentHistoryState
-        continuousEditDepth = 0
         loadedProfileID = profile.id
         DispatchQueue.main.async { suppressChanges = false }
     }
@@ -161,33 +152,22 @@ struct CrossfeedEditorView: View {
         pendingCommitGeneration &+= 1
         hasPendingCommit = true
         guard continuousEditDepth == 0 else { return }
-        recordEdit()
         scheduleCommit(milliseconds: 120)
     }
 
     private func continuousEditingChanged(_ isEditing: Bool) {
         if isEditing {
-            if continuousEditDepth == 0 {
-                state.history.beginGesture(key: gestureKey, actionName: "Adjust Crossfeed", contextName: profile.name,
-                    target: .profile(profile.id), before: .crossfeed(currentHistoryState))
-            }
             continuousEditDepth += 1
             liveApplyTask?.cancel()
             return
         }
         continuousEditDepth = max(0, continuousEditDepth - 1)
-        guard continuousEditDepth == 0 else { return }
-        state.history.endGesture(key: gestureKey, after: .crossfeed(currentHistoryState))
-        historyBaseline = currentHistoryState
-        saveCurrentState()
-        guard hasPendingCommit else { return }
+        guard continuousEditDepth == 0, hasPendingCommit else { return }
         scheduleCommit(milliseconds: 50)
     }
 
     private func scheduleCommit(milliseconds: Int) {
-        state.markPendingEditorApply(profile.id)
         liveApplyTask?.cancel()
-        let editGeneration = state.editGeneration
         let generation = pendingCommitGeneration
         let pendingSettings = settings
         let pendingEnabled = isEnabled
@@ -198,7 +178,7 @@ struct CrossfeedEditorView: View {
             } catch {
                 return
             }
-            guard editGeneration == state.editGeneration, !Task.isCancelled,
+            guard !Task.isCancelled,
                   continuousEditDepth == 0,
                   profile.id == profileID,
                   pendingCommitGeneration == generation else { return }
@@ -216,13 +196,12 @@ struct CrossfeedEditorView: View {
     private func flushPendingCommit() {
         guard !suppressChanges, hasPendingCommit else { return }
         liveApplyTask?.cancel()
-        let editGeneration = state.editGeneration
         let generation = pendingCommitGeneration
         let pendingSettings = settings
         let pendingEnabled = isEnabled
         let profileID = profile.id
         Task { @MainActor in
-            guard editGeneration == state.editGeneration, profile.id == profileID,
+            guard profile.id == profileID,
                   pendingCommitGeneration == generation else { return }
             await persist(
                 pendingSettings,
@@ -242,22 +221,11 @@ struct CrossfeedEditorView: View {
         profileID: UUID
     ) async {
         guard profile.id == profileID else { return }
-        do {
-            try await state.applyHistoryProfileIfActive(profileID)
-        } catch { state.errorMessage = error.localizedDescription }
-    }
-    private var gestureKey: GestureKey { GestureKey(target: .profile(profile.id), control: "crossfeed") }
-    private var currentHistoryState: CrossfeedHistoryState { CrossfeedHistoryState(processor: settings, isEnabled: isEnabled) }
-    private func recordEdit() {
-        if let before = historyBaseline {
-            state.history.record(actionName: "Edit Crossfeed", contextName: profile.name, target: .profile(profile.id),
-                before: .crossfeed(before), after: .crossfeed(currentHistoryState))
-        }
-        historyBaseline = currentHistoryState
-        saveCurrentState()
-    }
-    private func saveCurrentState() {
-        do { try state.mutateSavedProcessing(profileID: profile.id) { $0.setCrossfeed(settings, enabled: isEnabled) } }
-        catch { state.errorMessage = error.localizedDescription }
+        var updated = profile
+        updated.processing.setCrossfeed(pendingSettings, enabled: enabled)
+        guard updated != profile else { return }
+        profile = updated
+        guard profileIsActive else { return }
+        await state.apply(profile: updated)
     }
 }

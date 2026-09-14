@@ -108,16 +108,9 @@ final class MainWindowCommandCoordinator: ObservableObject {
 
 struct CamiTuneCommands: Commands {
     @ObservedObject var coordinator: MainWindowCommandCoordinator
-    @ObservedObject var undo: UndoCommandRouter
     var showLicense: () -> Void
 
     var body: some Commands {
-        CommandGroup(replacing: .undoRedo) {
-            Button(undo.undoMenuTitle) { undo.performUndo() }
-                .keyboardShortcut("z", modifiers: .command).disabled(!undo.canUndo)
-            Button(undo.redoMenuTitle) { undo.performRedo() }
-                .keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!undo.canRedo)
-        }
         CommandGroup(replacing: .appSettings) {
             Button("Settings…") { coordinator.send(.settings) }
                 .keyboardShortcut(",")

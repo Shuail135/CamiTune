@@ -61,7 +61,7 @@ final class PerChannelBandsState: ObservableObject {
     }
 }
 
-struct PerChannelEditorSnapshot: Equatable, Sendable {
+struct PerChannelEditorSnapshot: Sendable {
     let gainDB: Double
     let delayMilliseconds: Double
     let limiterEnabled: Bool
@@ -86,13 +86,10 @@ final class PerChannelEditorRuntime: ObservableObject {
     let responses = PerChannelResponseState()
     let status = PerChannelStatusState()
 
-    var historyActionName: String?
-    var historyBaseline: PerChannelEditorSnapshot?
     var suppressChanges = false
     var liveApplyTask: Task<Void, Never>?
     var responseCalculationTask: Task<Void, Never>?
     var loadedProfileID: UUID?
-    var loadedChannelIndex: Int?
 
     /// Continuous slider gestures keep expensive serialization/DSP work parked
     /// until pointer-up. Text fields, menus, toggles, and band-count edits still

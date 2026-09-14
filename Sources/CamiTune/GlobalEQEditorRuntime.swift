@@ -5,8 +5,6 @@ import Foundation
 /// Keeping them out of @State avoids view invalidations when tasks are replaced.
 @MainActor
 final class GlobalEQEditorRuntime: ObservableObject {
-    var historyActionName: String?
-    var historyBaseline: GlobalEQHistoryState?
     var suppressChanges = false
     var liveApplyTask: Task<Void, Never>?
     var filterResponseTask: Task<Void, Never>?

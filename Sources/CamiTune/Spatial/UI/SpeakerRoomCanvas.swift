@@ -17,7 +17,6 @@ struct SpeakerRoomCanvas: NSViewRepresentable {
     var assignRole: (PhysicalOutputID, ChannelRole?) -> Void
     var zoom: CGFloat = 1.25
     var zoomChanged: (CGFloat) -> Void = { _ in }
-    var editingChanged: (Bool) -> Void = { _ in }
 
     func makeNSView(context: Context) -> SpeakerRoomNSView { SpeakerRoomNSView() }
     func updateNSView(_ view: SpeakerRoomNSView, context: Context) {
@@ -400,14 +399,7 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         let p = convert(event.locationInWindow, from: nil)
         let dx = p.x - pointerStart.x, dy = p.y - pointerStart.y
         guard didDrag || hypot(dx, dy) >= 3 else { return }
-        if !didDrag {
-            UIRenderPerformance.beginSpeakerDrag()
-            switch target {
-            case .listener: config.editingChanged(true)
-            case .speaker where !config.listeningOnly: config.editingChanged(true)
-            default: break
-            }
-        }
+        if !didDrag { UIRenderPerformance.beginSpeakerDrag() }
         didDrag = true
         if case .pan = target {
             pan = CGPoint(x: panStart.x + dx, y: panStart.y + dy); needsDisplay = true; return
@@ -435,12 +427,6 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
     }
     override func mouseUp(with event: NSEvent) {
         if didDrag { UIRenderPerformance.endSpeakerDrag() }
-        if didDrag {
-            switch target {
-            case .listener, .speaker: configuration?.editingChanged(false)
-            default: break
-            }
-        }
         let completedTarget = target
         let clicked = !didDrag
         let openMenu = pressedArrow

@@ -12,8 +12,6 @@ struct SpeakerSystemView: View {
     var onClose: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @StateObject private var audition = SpeakerOutputAudition()
-    @State private var historyBaseline: SpeakerSystemHistoryState?
-    @State private var historyGestureActive = false
     @State private var draft: SpeakerTopology?
     @State private var seat: SpatialSeatingCalibration?
     @State private var originalSeat: SpatialSeatingCalibration?
@@ -97,30 +95,20 @@ struct SpeakerSystemView: View {
             if seat == nil { seat = SpatialSeatingCalibration(outputDeviceUID: profile.outputDeviceUID, name: "Default") }
             if seat?.name == "Primary" || seat?.name == "My listening position" { seat?.name = "Default" }
             originalSeat = newPosition ? nil : existing
-            if !draftOnly, let session = state.speakerEditSessions[profile.id] {
-                draft = session.topology; seat = session.seat
-            }
-            historyBaseline = currentHistoryState
             selected = draft?.endpoints.first?.id
             if let draft { fitBoard(draft) }
             if newPosition { updateDistances() }
             publishDraft()
         }
-        .onChange(of: state.historyReplayRevision) { _ in
-            guard !draftOnly, let session = state.speakerEditSessions[profile.id] else { return }
-            historyBaseline = session
-            draft = session.topology; seat = session.seat
-            originalProfile = profile
-        }
         .onChange(of: selected) { _ in commitTitle() }
         .onChange(of: titleFocused) { focused in if !focused && renamingTitle { commitTitle() } }
-        .onChange(of: draft) { _ in speakerEditChanged(); publishDraft() }
-        .onChange(of: seat) { _ in speakerEditChanged(); publishDraft() }
-        .onDisappear { finishHistoryGesture(); audition.stop() }
+        .onChange(of: draft) { _ in publishDraft() }
+        .onChange(of: seat) { _ in publishDraft() }
+        .onDisappear { audition.stop() }
         .onChange(of: state.isSavingProfileSettings) { saving in if saving { audition.stop() } }
         .confirmationDialog("Save changes before closing?", isPresented: $confirmClose, titleVisibility: .visible) {
             Button("Save Changes") { save(close: true) }
-            Button("Discard Changes", role: .destructive) { draft = profile.speakerTopology; seat = originalSeat; speakerEditChanged(); finishClose() }
+            Button("Discard Changes", role: .destructive) { finishClose() }
             Button("Cancel", role: .cancel) {}
         }
     }
@@ -143,7 +131,7 @@ struct SpeakerSystemView: View {
                 seat?.roomX = point.x; seat?.roomY = point.y
                 seat?.useMeasuredAlignment = false
                 updateDistances()
-            }, assignRole: { id, role in audition.stop(); setRole(role, for: id) }, zoom: graphZoom, zoomChanged: { graphZoom = $0 }, editingChanged: historyEditingChanged)
+            }, assignRole: { id, role in audition.stop(); setRole(role, for: id) }, zoom: graphZoom, zoomChanged: { graphZoom = $0 })
             .id(canvasID)
             .frame(height: compact ? 270 : 370)
     }
@@ -229,7 +217,7 @@ struct SpeakerSystemView: View {
         })
         return HStack {
             Text("Height relative to your head").font(.callout)
-            Slider(value: height, in: -10...10, onEditingChanged: { historyEditingChanged($0) }).accessibilityLabel("Height relative to your head")
+            Slider(value: height, in: -10...10).accessibilityLabel("Height relative to your head")
             Text(String(format: "%+.2f m", height.wrappedValue)).font(.caption.monospacedDigit()).frame(width: 65)
         }.disabled(editingLocked)
     }
@@ -247,34 +235,6 @@ struct SpeakerSystemView: View {
             return max(abs(point.x), abs(point.y)) + 0.25
         }.max() ?? 1)
     }
-    private var currentHistoryState: SpeakerSystemHistoryState { SpeakerSystemHistoryState(topology: draft, seat: seat) }
-    private var gestureKey: GestureKey { GestureKey(target: .speakerSystem(profile.id), control: "position") }
-    private func speakerEditChanged() {
-        guard !draftOnly, let before = historyBaseline else { return }
-        let after = currentHistoryState
-        state.speakerEditSessions[profile.id] = after
-        guard !historyGestureActive else { return }
-        state.history.record(actionName: "Edit Speaker Layout", contextName: profile.name, target: .speakerSystem(profile.id),
-            before: .speakerSystem(before), after: .speakerSystem(after))
-        historyBaseline = after
-    }
-    private func historyEditingChanged(_ editing: Bool) {
-        guard !draftOnly else { return }
-        if editing {
-            guard !historyGestureActive else { return }
-            historyGestureActive = true
-            state.history.beginGesture(key: gestureKey, actionName: "Move Speaker or Listener", contextName: profile.name,
-                target: .speakerSystem(profile.id), before: .speakerSystem(currentHistoryState))
-        } else { finishHistoryGesture() }
-    }
-    private func finishHistoryGesture() {
-        guard historyGestureActive else { return }
-        historyGestureActive = false
-        state.speakerEditSessions[profile.id] = currentHistoryState
-        state.history.endGesture(key: gestureKey, after: .speakerSystem(currentHistoryState))
-        historyBaseline = currentHistoryState
-    }
-
     private func publishDraft() {
         guard draftOnly, let draft else { return }
         profile.speakerTopology = draft
@@ -314,8 +274,6 @@ struct SpeakerSystemView: View {
                     defer { busy = false }
                     do {
                         try await state.saveProfileSettings(settings)
-                        historyBaseline = SpeakerSystemHistoryState(topology: value, seat: seat)
-                        state.speakerEditSessions[profile.id] = historyBaseline
                         draft = value; originalSeat = seat; self.originalProfile = state.profiles.profiles.first { $0.id == profile.id }
                         if close { finishClose() }
                     } catch { message = error.localizedDescription }
@@ -327,7 +285,6 @@ struct SpeakerSystemView: View {
     private func discover() {
         commitTitle()
         busy = true; message = nil
-        let generation = state.editGeneration
         let uid = profile.outputDeviceUID
         Task {
             defer { busy = false }
@@ -336,7 +293,7 @@ struct SpeakerSystemView: View {
                     throw SpeakerTopologyProbe.ProbeError.malformedProperty
                 }
                 var found = try await Task.detached(priority: .userInitiated) { try SpeakerTopologyProbe().probe(device) }.value
-                guard generation == state.editGeneration, profile.outputDeviceUID == uid else { return }
+                guard profile.outputDeviceUID == uid else { return }
                 // Use the profile's requested processing rate; activation negotiates it.
                 found.sampleRate = Double(profile.sampleRate)
                 found = SpeakerLayoutGeometry.arrangedForEditing(found, previous: draft)

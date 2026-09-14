@@ -3,10 +3,9 @@ import UniformTypeIdentifiers
 
 @MainActor
 struct ConvolutionEditorView: View {
-    @ObservedObject var state: AppState
+    let state: AppState
     @Binding var profile: DeviceProfile
 
-    @State private var historyBaseline: ConvolutionHistoryState?
     @State private var convolution: ConvolutionProcessor?
     @State private var isEnabled = false
     @State private var showImporter = false
@@ -107,7 +106,6 @@ struct ConvolutionEditorView: View {
             }
             .padding(6)
         }
-        .onChange(of: state.historyReplayRevision) { _ in load() }
         .onAppear { loadIfNeeded() }
         .onChange(of: profile.id) { _ in
             loadedProfileID = nil
@@ -137,34 +135,19 @@ struct ConvolutionEditorView: View {
         let saved = profile.processing.convolution
         convolution = saved?.processor
         isEnabled = saved?.isEnabled ?? false
-        historyBaseline = ConvolutionHistoryState(processor: convolution, isEnabled: isEnabled)
         loadedProfileID = profile.id
         DispatchQueue.main.async { suppressChanges = false }
     }
 
     private func commit() {
         guard !suppressChanges else { return }
-        let after = ConvolutionHistoryState(processor: convolution, isEnabled: isEnabled)
-        do {
-            try state.mutateSavedProcessing(profileID: profile.id) { $0.setConvolution(after.processor, enabled: after.isEnabled) }
-            if let before = historyBaseline {
-                state.history.record(actionName: "Edit Convolution", contextName: profile.name, target: .profile(profile.id),
-                    before: .convolution(before), after: .convolution(after))
-            }
-            historyBaseline = after
-            let id = profile.id
-            state.markPendingEditorApply(id)
-            let generation = state.editGeneration
-            Task {
-                guard generation == state.editGeneration else { return }
-                do { try await state.applyHistoryProfileIfActive(id) }
-                catch { state.errorMessage = error.localizedDescription }
-            }
-        } catch { state.errorMessage = error.localizedDescription }
+        profile.processing.setConvolution(convolution, enabled: isEnabled)
+        guard profileIsActive else { return }
+        let updated = profile
+        Task { await state.apply(profile: updated) }
     }
 
     private func importImpulseResponse(_ url: URL) {
-        let editGeneration = state.editGeneration
         let importedProfileID = profile.id
         let expectedSampleRate = profile.sampleRate
         isImporting = true
@@ -180,7 +163,7 @@ struct ConvolutionEditorView: View {
                 }
             }.value
             isImporting = false
-            guard editGeneration == state.editGeneration, profile.id == importedProfileID else { return }
+            guard profile.id == importedProfileID else { return }
             switch result {
             case .success(let asset):
                 convolution = ConvolutionProcessor(asset: asset)

@@ -60,41 +60,6 @@ enum ProfileRootItem: Codable, Hashable, Sendable {
 
 @MainActor
 final class ProfileStore: ObservableObject {
-    weak var history: UndoCoordinator?
-    private var organizationEditDepth = 0
-    func organizationHistoryState() -> ProfileOrganizationHistoryState {
-        ProfileOrganizationHistoryState(orderedProfileIDs: profiles.map(\.id), folders: folders, rootOrder: effectiveRootOrder)
-    }
-    private func beginOrganizationEdit() -> ProfileOrganizationHistoryState {
-        organizationEditDepth += 1
-        return organizationHistoryState()
-    }
-    private func endOrganizationEdit(_ before: ProfileOrganizationHistoryState) {
-        organizationEditDepth -= 1
-        guard organizationEditDepth == 0 else { return }
-        history?.record(actionName: "Organize Profiles", target: .profileOrganization,
-            before: .profileOrganization(before), after: .profileOrganization(organizationHistoryState()))
-    }
-    func restoreOrganizationHistoryState(_ state: ProfileOrganizationHistoryState) throws {
-        let ids = Set(profiles.map(\.id))
-        let ordered = Set(state.orderedProfileIDs)
-        let folderIDs = Set(state.folders.map(\.id))
-        let children = state.folders.flatMap(\.profileIDs)
-        guard ordered.count == state.orderedProfileIDs.count, ordered.isSubset(of: ids),
-              folderIDs.count == state.folders.count,
-              Set(children).count == children.count, Set(children).isSubset(of: ids),
-              Set(state.rootOrder).count == state.rootOrder.count,
-              ProfileRootItem.normalized(state.rootOrder, profiles: profiles.filter { ordered.contains($0.id) }, folders: state.folders) == state.rootOrder else {
-            throw HistoryRestoreError.invalidOrganization
-        }
-        let current = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
-        let added = profiles.filter { !ordered.contains($0.id) }
-        performBatchUpdate {
-            profiles = state.orderedProfileIDs.compactMap { current[$0] } + added
-            folders = state.folders
-            rootOrder = state.rootOrder
-        }
-    }
     @Published var profiles: [DeviceProfile] = [] {
         didSet { save() }
     }
@@ -378,57 +343,6 @@ final class ProfileStore: ObservableObject {
         physicalDeviceDefaults = updated
     }
 
-    func captureDeletionSnapshot(profileIDs: Set<UUID>, folderID: UUID? = nil) -> ProfileDeletionSnapshot {
-        ProfileDeletionSnapshot(profiles: profiles.filter { profileIDs.contains($0.id) }, folderID: folderID,
-            organization: organizationHistoryState(), physicalDeviceDefaults: physicalDeviceDefaults.filter { profileIDs.contains($0.profileID) },
-            selectedProfileID: selectedProfileID)
-    }
-
-    func restoreDeletedProfiles(_ snapshot: ProfileDeletionSnapshot) throws {
-        let restoredIDs = Set(snapshot.profiles.map(\.id))
-        guard restoredIDs.count == snapshot.profiles.count,
-              restoredIDs.isDisjoint(with: Set(profiles.map(\.id))),
-              snapshot.profiles.allSatisfy({ ProfileNamePolicy.isAvailable($0.name, in: profiles) }),
-              snapshot.folderID == nil || !folders.contains(where: { $0.id == snapshot.folderID }) else {
-            throw HistoryRestoreError.invalidOrganization
-        }
-        // Build and validate the entire candidate before publishing any part.
-        let combined = profiles + snapshot.profiles
-        let order = snapshot.organization.orderedProfileIDs.filter { id in combined.contains { $0.id == id } }
-            + profiles.map(\.id).filter { !snapshot.organization.orderedProfileIDs.contains($0) }
-        guard Set(order) == Set(combined.map(\.id)), Set(order).count == order.count else {
-            throw HistoryRestoreError.invalidOrganization
-        }
-        var candidateFolders = folders
-        for old in snapshot.organization.folders {
-            if old.id == snapshot.folderID { candidateFolders.append(old); continue }
-            let restoredChildren = old.profileIDs.filter { restoredIDs.contains($0) }
-            guard !restoredChildren.isEmpty else { continue }
-            guard let index = candidateFolders.firstIndex(where: { $0.id == old.id }) else { throw HistoryRestoreError.invalidOrganization }
-            let existing = candidateFolders[index].profileIDs
-            candidateFolders[index].profileIDs = old.profileIDs.filter { restoredIDs.contains($0) || existing.contains($0) }
-                + existing.filter { !old.profileIDs.contains($0) }
-        }
-        let candidateRoot = ProfileRootItem.normalized(snapshot.organization.rootOrder + effectiveRootOrder,
-            profiles: combined, folders: candidateFolders)
-        let children = candidateFolders.flatMap(\.profileIDs)
-        guard Set(candidateFolders.map(\.id)).count == candidateFolders.count,
-              Set(children).count == children.count, Set(children).isSubset(of: Set(order)),
-              Set(candidateRoot).count == candidateRoot.count else {
-            throw HistoryRestoreError.invalidOrganization
-        }
-        let byID = Dictionary(uniqueKeysWithValues: combined.map { ($0.id, $0) })
-        performBatchUpdate {
-            profiles = order.compactMap { byID[$0] }
-            folders = candidateFolders
-            rootOrder = candidateRoot
-            let restoredUIDs = Set(snapshot.physicalDeviceDefaults.map { $0.physicalDevice.uid })
-            physicalDeviceDefaults.removeAll { restoredUIDs.contains($0.physicalDevice.uid) }
-            physicalDeviceDefaults += snapshot.physicalDeviceDefaults
-            if let selected = snapshot.selectedProfileID, restoredIDs.contains(selected) { selectedProfileID = selected }
-        }
-    }
-
     func deleteProfile(id: UUID) {
         let fallback = nearbySurvivingProfile(excluding: [id])
         performBatchUpdate {
@@ -442,8 +356,6 @@ final class ProfileStore: ObservableObject {
     /// Uses the original list's insertion offset, as supplied by sidebar dragging.
     /// Presentation order only: route identities and automatic defaults stay intact.
     func moveProfiles(fromOffsets source: IndexSet, toOffset destination: Int) {
-        let historyBefore = beginOrganizationEdit()
-        defer { endOrganizationEdit(historyBefore) }
         guard !source.isEmpty,
               source.allSatisfy({ profiles.indices.contains($0) }),
               (0...profiles.count).contains(destination) else { return }
@@ -465,16 +377,12 @@ final class ProfileStore: ObservableObject {
 
     @discardableResult
     func addFolder(name: String) -> UUID {
-        let historyBefore = beginOrganizationEdit()
-        defer { endOrganizationEdit(historyBefore) }
         let folder = ProfileFolder(name: ProfileNamePolicy.uniqueName(base: name, existingNames: folders.map(\.name)))
         folders.append(folder)
         return folder.id
     }
 
     func renameFolder(id: UUID, name: String) {
-        let historyBefore = beginOrganizationEdit()
-        defer { endOrganizationEdit(historyBefore) }
         guard let index = folders.firstIndex(where: { $0.id == id }) else { return }
         folders[index].name = ProfileNamePolicy.uniqueName(
             base: name, existingNames: folders.filter { $0.id != id }.map(\.name))
@@ -516,8 +424,6 @@ final class ProfileStore: ObservableObject {
     }
 
     func assignProfiles(ids: Set<UUID>, toFolder folderID: UUID?) {
-        let historyBefore = beginOrganizationEdit()
-        defer { endOrganizationEdit(historyBefore) }
         guard folderID == nil || folders.contains(where: { $0.id == folderID }) else { return }
         let orderedIDs = profiles.map(\.id).filter { ids.contains($0) }
         guard !orderedIDs.isEmpty else { return }
@@ -532,8 +438,6 @@ final class ProfileStore: ObservableObject {
 
     @discardableResult
     func groupProfiles(ids: Set<UUID>, name: String) -> UUID {
-        let historyBefore = beginOrganizationEdit()
-        defer { endOrganizationEdit(historyBefore) }
         var folderID: UUID!
         performBatchUpdate {
             folderID = addFolder(name: name)
@@ -544,8 +448,6 @@ final class ProfileStore: ObservableObject {
 
     /// A drag can both change membership and insert at a visible row boundary.
     func dropProfiles(ids: Set<UUID>, into folderID: UUID?, at destination: Int? = nil) {
-        let historyBefore = beginOrganizationEdit()
-        defer { endOrganizationEdit(historyBefore) }
         guard folderID == nil || folders.contains(where: { $0.id == folderID }) else { return }
         let visible = profiles(in: folderID)
         let offset = destination ?? visible.count
@@ -566,8 +468,6 @@ final class ProfileStore: ObservableObject {
 
     /// Root insertion offsets refer to the order before removal, just like AppKit.
     func dropRootItems(_ items: Set<ProfileRootItem>, at destination: Int?) {
-        let historyBefore = beginOrganizationEdit()
-        defer { endOrganizationEdit(historyBefore) }
         let roots = effectiveRootOrder
         let offset = destination ?? roots.count
         guard (0...roots.count).contains(offset) else { return }
@@ -589,8 +489,6 @@ final class ProfileStore: ObservableObject {
     }
 
     func moveProfiles(in folderID: UUID?, fromOffsets source: IndexSet, toOffset destination: Int) {
-        let historyBefore = beginOrganizationEdit()
-        defer { endOrganizationEdit(historyBefore) }
         let visible = profiles(in: folderID)
         guard !source.isEmpty, source.allSatisfy({ visible.indices.contains($0) }),
               (0...visible.count).contains(destination) else { return }
@@ -763,11 +661,6 @@ final class ProfileStore: ObservableObject {
     /// App termination is already synchronous. Flush the latest in-memory
     /// snapshot after all previously-started writes so the debounce never
     /// sacrifices durability.
-    func persistHistoryChanges() throws {
-        flushPendingSaveSynchronously()
-        if let persistenceError { throw ProfileSettingsError.runtime(persistenceError) }
-    }
-
     func flushPendingSaveSynchronously() {
         guard !isLoading, !protectsUnreadableStorage else { return }
         pendingPersistence?.cancel()

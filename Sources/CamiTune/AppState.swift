@@ -33,18 +33,6 @@ struct AutomaticActivationRetryState: Equatable, Sendable {
 
 @MainActor
 final class AppState: NSObject, ObservableObject {
-    let history = UndoCoordinator()
-    lazy var undoCommands = UndoCommandRouter(history: history)
-    @Published private(set) var historyReplayRevision: UInt64 = 0
-    private(set) var editGeneration: UInt64 = 0
-    private(set) var pendingEditorApplies: Set<UUID> = []
-    func invalidateDeferredEdits() { editGeneration &+= 1 }
-    func publishHistoryReplay() { historyReplayRevision &+= 1 }
-    func markPendingEditorApply(_ id: UUID) { pendingEditorApplies.insert(id) }
-    func clearPendingEditorApply(_ id: UUID) { pendingEditorApplies.remove(id) }
-    var referenceCorrectionSessions: [UUID: ReferenceCorrectionSession] = [:]
-    var speakerEditSessions: [UUID: SpeakerSystemHistoryState] = [:]
-    private var historyErrorObservation: AnyCancellable?
     @Published private(set) var isActive = false
     @Published private(set) var activeVolumeMode: SystemVolumeMode?
     @Published private(set) var activeSession: AudioRuntimeSession?
@@ -83,7 +71,7 @@ final class AppState: NSObject, ObservableObject {
     let meters = AudioRuntimeMonitor()
     let spectrum = SpectrumAnalyzer()
     let pcmRouter = PCMRouter()
-    let perAppAudio: PerAppAudioController
+    let perAppAudio = PerAppAudioController()
     let driverTransport = SystemAudioBridgeTransport()
     let updateChecker = AppUpdateChecker()
 
@@ -133,7 +121,6 @@ final class AppState: NSObject, ObservableObject {
     private var sessionToneDrafts: [UUID: SimpleToneSettings] = [:]
     private var sessionEQDrafts: [UUID: String] = [:]
     private var sessionEQDraftsReplaceDeviceCorrection: Set<UUID> = []
-    private var sessionLegacyCorrection: [UUID: ReferenceCorrectionSession] = [:]
     private var sessionDeviceCorrectionProvenance: [UUID: DeviceCorrectionProfile] = [:]
     private var sessionClearsDeviceCorrectionProvenance: Set<UUID> = []
     private var sessionLimiterDrafts: [UUID: Bool] = [:]
@@ -149,32 +136,20 @@ final class AppState: NSObject, ObservableObject {
     private var coreAudioRoutingObservation: AnyCancellable?
     private var immediateDefaultOutputObservation: AnyCancellable?
 
-    override convenience init() {
-        self.init(profiles: ProfileStore(), perAppAudio: PerAppAudioController(), startServices: true)
-    }
-
-    init(profiles: ProfileStore, perAppAudio: PerAppAudioController, startServices: Bool = false) {
+    override init() {
         let audio = CoreAudioManager()
         let dsp = CamillaDSPManager()
         self.coreAudio = audio
         self.dsp = dsp
         self.dspController = CamillaDSPController(manager: dsp)
-        self.profiles = profiles
-        self.perAppAudio = perAppAudio
+        self.profiles = ProfileStore()
         self.dependencies = DependencyManager(coreAudio: audio)
         super.init()
-        history.restorer = self
-        perAppAudio.history = history
-        perAppAudio.presentationStore.history = history
-        profiles.history = history
-        historyErrorObservation = history.$lastError.compactMap { $0 }.sink { [weak self] in self?.errorMessage = $0 }
-
         profilePersistenceErrorObservation = profiles.$persistenceError
             .compactMap { $0 }
             .sink { [weak self] message in
                 self?.errorMessage = message
             }
-        guard startServices else { return }
         UIRenderPerformance.startMonitoring()
 
         immediateDefaultOutputObservation = audio.$defaultOutputUID
@@ -448,7 +423,6 @@ final class AppState: NSObject, ObservableObject {
             || sessionDeviceCorrectionProvenance[profileID] != nil
             || sessionClearsDeviceCorrectionProvenance.contains(profileID)
             || sessionLimiterDrafts[profileID] != nil
-        sessionLegacyCorrection.removeValue(forKey: profileID)
         sessionToneDrafts.removeValue(forKey: profileID)
         sessionEQDrafts.removeValue(forKey: profileID)
         sessionEQDraftsReplaceDeviceCorrection.remove(profileID)
@@ -561,17 +535,6 @@ final class AppState: NSObject, ObservableObject {
         if hadDraft { publishEQDraftChange(for: profileID) }
     }
 
-    func setGlobalEQHistoryDraft(_ snapshot: GlobalEQHistoryState, for id: UUID) {
-        sessionLegacyCorrection[id] = ReferenceCorrectionSession(draft: snapshot.deviceCorrection)
-        sessionEQDrafts[id] = EqualizerAPOSerializer().serialize(ParsedEQ(preampDB: snapshot.preampDB, bands: snapshot.bands))
-        sessionLimiterDrafts[id] = snapshot.limiterEnabled
-        sessionToneDrafts[id] = snapshot.simpleTone
-        if snapshot.replacesDeviceCorrection { sessionEQDraftsReplaceDeviceCorrection.insert(id) }
-        else { sessionEQDraftsReplaceDeviceCorrection.remove(id) }
-        setDeviceCorrectionProvenanceDraft(snapshot.deviceCorrectionProvenance, for: id)
-        publishEQDraftChange(for: id)
-    }
-
     private func publishEQDraftChange(for profileID: UUID) {
         eqDraftRevision &+= 1
         eqDraftChanges.send(profileID)
@@ -582,7 +545,6 @@ final class AppState: NSObject, ObservableObject {
     /// revert an unsaved draft in another scope.
     func applyingSessionEQDrafts(to profile: DeviceProfile, replacingGlobalEqualizer: Bool = false) throws -> DeviceProfile {
         var updated = profile
-        if let legacy = sessionLegacyCorrection[profile.id] { updated.processing.setDeviceCorrection(legacy.draft) }
         if let tone = sessionToneDrafts[profile.id] { updated.processing.simpleTone = tone }
         if !replacingGlobalEqualizer, let text = sessionEQDrafts[profile.id] {
             let parsed = try EqualizerAPOParser().parse(text)
@@ -720,44 +682,29 @@ final class AppState: NSObject, ObservableObject {
     }
 
     func renameProfile(id: UUID, to requestedName: String) async {
-        guard let profile = profiles.profiles.first(where: { $0.id == id }) else { return }
-        do {
-            try await commitProfileRename(id: id, to: requestedName)
-            guard let renamed = profiles.profiles.first(where: { $0.id == id }) else { return }
-            history.record(actionName: "Rename Profile", contextName: profile.name, target: .profile(id),
-                before: .profileName(profile.name), after: .profileName(renamed.name))
-        } catch { errorMessage = error.localizedDescription }
-    }
-
-    func commitProfileRename(id: UUID, to requestedName: String) async throws {
         let name = requestedName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, let index = profiles.profiles.firstIndex(where: { $0.id == id }) else { throw HistoryRestoreError.missingProfile }
+        guard !name.isEmpty,
+              let index = profiles.profiles.firstIndex(where: { $0.id == id }) else { return }
         guard profiles.profiles[index].name != name else { return }
         guard ProfileNamePolicy.isAvailable(name, in: profiles.profiles, excluding: id) else {
-            throw ProfileSettingsError.runtime("A profile named \"\(name)\" already exists. Profile names must be unique.")
+            errorMessage = "A profile named \"\(name)\" already exists. Profile names must be unique."
+            return
         }
-        let previousName = profiles.profiles[index].name
+
         profiles.profiles[index].name = name
+
         do {
-            try await coreAudio.synchronizeProfileRoutingDevicesWithoutBlockingUI(profiles: profiles.profiles, activeProfileID: activeProfileID)
+            // The driver keeps the profile UID on the same native endpoint, so
+            // renaming changes the selected device without replacing it.
+            try await coreAudio.synchronizeProfileRoutingDevicesWithoutBlockingUI(
+                profiles: profiles.profiles,
+                activeProfileID: activeProfileID
+            )
+
             clearTransientError()
         } catch {
-            if let current = profiles.profiles.firstIndex(where: { $0.id == id }) { profiles.profiles[current].name = previousName }
-            throw error
+            errorMessage = "The profile was renamed, but its macOS audio device could not be updated: \(error.localizedDescription)"
         }
-    }
-
-    func deleteProfileWithHistory(id: UUID) async {
-        guard let profile = profiles.profiles.first(where: { $0.id == id }) else { return }
-        let snapshot = profiles.captureDeletionSnapshot(profileIDs: [id])
-        await setProfileEnabled(id: id, enabled: false)
-        if activeProfileID == id { await deactivate(manual: true) }
-        profiles.deleteProfile(id: id)
-        history.record(actionName: "Delete Profile", contextName: profile.name, target: .profileOrganization,
-            before: .deletion(snapshot, deleted: false), after: .deletion(snapshot, deleted: true))
-        do {
-            try await coreAudio.synchronizeProfileRoutingDevicesWithoutBlockingUI(profiles: profiles.profiles, activeProfileID: activeProfileID)
-        } catch { errorMessage = error.localizedDescription }
     }
 
     /// Delete only the folder membership explicitly shown in the confirmation.
@@ -770,7 +717,6 @@ final class AppState: NSObject, ObservableObject {
             errorMessage = "The folder contents changed. Review the folder and confirm deletion again."
             return false
         }
-        let deletionSnapshot = profiles.captureDeletionSnapshot(profileIDs: confirmedProfileIDs, folderID: id)
         // Remove eligibility before waiting on a startup or route transition.
         // The existing disable path also restores a selected profile endpoint.
         for profileID in confirmedProfileIDs {
@@ -787,8 +733,6 @@ final class AppState: NSObject, ObservableObject {
             return false
         }
         profiles.deleteFolder(id: id)
-        history.record(actionName: "Delete Folder", target: .profileOrganization,
-            before: .deletion(deletionSnapshot, deleted: false), after: .deletion(deletionSnapshot, deleted: true))
         do {
             try await coreAudio.synchronizeProfileRoutingDevicesWithoutBlockingUI(
                 profiles: profiles.profiles, activeProfileID: activeProfileID

@@ -76,8 +76,6 @@ extension AppState {
     func importReferenceToEqualizer(profile original: DeviceProfile, expectedDraft: String?) async throws {
         guard eqDraft(for: original.id) == expectedDraft,
               let correction = original.personalReferenceCorrection else { throw ProfileSettingsError.staleDraft }
-        let before = ReferenceTransferHistoryState(correction: original.personalReferenceCorrection,
-            globalEQ: try globalEQHistoryState(for: original), sectionLayout: original.sectionLayout)
         var draft = ProfileSettingsDraft(profile: original, activation: profiles.activationMode(for: original))
         let current = try applyingSessionEQDrafts(to: original)
         var processing = ReferenceCorrection.transfer(correction, to: try original.resolvedProcessing(),
@@ -94,13 +92,6 @@ extension AppState {
         if layout.equalizer == .simpleTone { layout.equalizer = .both }
         draft.sectionLayout = layout
         try await saveProfileSettings(draft)
-        let latest = try historyProfile(original.id)
-        let after = ReferenceTransferHistoryState(correction: latest.personalReferenceCorrection,
-            globalEQ: try globalEQHistoryState(for: latest), sectionLayout: latest.sectionLayout)
-        referenceCorrectionSessions[original.id] = ReferenceCorrectionSession(draft: latest.personalReferenceCorrection)
-        history.record(actionName: "Import Reference to Equalizer", contextName: original.name, target: .profile(original.id),
-            before: .referenceTransfer(before), after: .referenceTransfer(after))
-
     }
 }
 

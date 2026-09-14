@@ -158,30 +158,6 @@ final class AppPresentationStore: ObservableObject, @unchecked Sendable {
         return document
     }
 
-    @MainActor weak var history: UndoCoordinator?
-    func placementHistoryState() -> AppPlacementHistoryState {
-        let current = currentDocument
-        return AppPlacementHistoryState(orderedApplicationIDs: current.orderedApplicationIDs,
-            hiddenByApplicationID: current.records.mapValues(\.isHiddenInMenuBar))
-    }
-    func restorePlacementHistoryState(_ state: AppPlacementHistoryState) {
-        mutate { document in
-            let existing = Set(document.orderedApplicationIDs)
-            document.orderedApplicationIDs = state.orderedApplicationIDs.filter { existing.contains($0) }
-                + document.orderedApplicationIDs.filter { !state.orderedApplicationIDs.contains($0) }
-            for (id, hidden) in state.hiddenByApplicationID where document.records[id] != nil {
-                document.records[id]?.isHiddenInMenuBar = hidden
-            }
-        }
-    }
-    private func recordPlacement(_ before: AppPlacementHistoryState) {
-        guard Thread.isMainThread else { return }
-        withMainThreadHistory {
-            history?.record(actionName: "Arrange Applications", target: .applicationPresentationDocument,
-                before: .appPlacement(before), after: .appPlacement(placementHistoryState()))
-        }
-    }
-
     var seenIDs: Set<String> { Set(currentDocument.orderedApplicationIDs) }
 
     func observeAudioProvenApplication(_ observation: AppPresentationObservation) {
@@ -210,9 +186,7 @@ final class AppPresentationStore: ObservableObject, @unchecked Sendable {
     /// Visibility and order publish together, without touching application audio settings.
     @discardableResult
     func moveApplication(_ id: String, to section: AppAudioSection, relativeTo target: String? = nil, after: Bool = true) -> Bool {
-        let before = placementHistoryState()
-        defer { recordPlacement(before) }
-        return mutate { document in
+        mutate { document in
             guard document.records[id]?.hasBeenSeen == true else { return }
             if let target {
                 guard target != id, document.orderedApplicationIDs.contains(target),
@@ -235,17 +209,6 @@ final class AppPresentationStore: ObservableObject, @unchecked Sendable {
     }
 
     func setAlias(_ alias: String?, for id: String) {
-        let before = currentDocument.records[id]?.userAlias
-        let context = currentDocument.displayName(for: id)
-        defer {
-            if Thread.isMainThread {
-                withMainThreadHistory {
-                    history?.record(actionName: "Rename Application", contextName: context, target: .applicationPresentation(id),
-                        before: .appAlias(before), after: .appAlias(currentDocument.records[id]?.userAlias))
-                }
-            }
-        }
-
         mutate { document in
             guard document.records[id]?.hasBeenSeen == true else { return }
             document.records[id]?.userAlias = AppPresentationDocument.normalizedAlias(alias)
@@ -263,8 +226,6 @@ final class AppPresentationStore: ObservableObject, @unchecked Sendable {
     func moveDown(_ id: String) { moveAdjacent(id, offset: 1) }
 
     private func moveAdjacent(_ id: String, offset: Int) {
-        let before = placementHistoryState()
-        defer { recordPlacement(before) }
         mutate { document in
             let peers = document.orderedApplicationIDs.filter { document.section(for: $0) == document.section(for: id) }
             guard let peerIndex = peers.firstIndex(of: id), peers.indices.contains(peerIndex + offset),
@@ -276,9 +237,7 @@ final class AppPresentationStore: ObservableObject, @unchecked Sendable {
 
     @discardableResult
     func moveApplication(_ id: String, relativeTo target: String, after: Bool) -> Bool {
-        let before = placementHistoryState()
-        defer { recordPlacement(before) }
-        return mutate { document in
+        mutate { document in
             guard id != target, document.orderedApplicationIDs.contains(id),
                   document.orderedApplicationIDs.contains(target) else { return }
             document.orderedApplicationIDs.removeAll { $0 == id }
@@ -288,8 +247,6 @@ final class AppPresentationStore: ObservableObject, @unchecked Sendable {
     }
 
     func resetOrder(systemNames: [String: String] = [:]) {
-        let before = placementHistoryState()
-        defer { recordPlacement(before) }
         mutate { document in
             let names = document
             document.orderedApplicationIDs.sort {
@@ -339,21 +296,6 @@ final class AppPresentationStore: ObservableObject, @unchecked Sendable {
         } catch {
             let message = "App display preferences could not be saved: \(error.localizedDescription)"
             DispatchQueue.main.async { [weak self] in self?.persistenceError = message }
-        }
-    }
-
-    func persistHistoryChanges() throws {
-        lock.lock()
-        pendingWrite?.cancel()
-        let current = document
-        lock.unlock()
-        guard canWrite else { throw ProfileSettingsError.runtime(persistenceError ?? "App display storage is protected.") }
-        try persistenceQueue.sync {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(current)
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: url, options: .atomic)
         }
     }
 

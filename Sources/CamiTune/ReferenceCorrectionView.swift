@@ -6,10 +6,7 @@ import UniformTypeIdentifiers
 struct ReferenceCorrectionView: View {
     @ObservedObject var state: AppState
     @Binding var profile: DeviceProfile
-    private var draft: DeviceCorrectionProfile? {
-        get { state.referenceCorrectionSessions[profile.id]?.draft ?? (state.referenceCorrectionSessions[profile.id] == nil ? profile.personalReferenceCorrection : nil) }
-        nonmutating set { state.setReferenceCorrectionDraft(newValue, for: profile.id) }
-    }
+    @State private var draft: DeviceCorrectionProfile?
     @State private var snapshot: DeviceProfile?
     @State private var showingCorrection = false
     @State private var importing = false
@@ -43,7 +40,7 @@ struct ReferenceCorrectionView: View {
                     Text("\(correction.filters.count) filters · \(dirty ? "Unsaved" : correction.isEnabled ? "Enabled" : "Disabled")")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Clear") { draft = nil }
+                    Button("Clear") { commit(nil) }
                 }
                 if correction.importedAPOText {
                     Text("Imported correction is separate from User Equalizer. APO Preamp is ignored; use User Preamp instead. Import or paste again to replace these filters.")
@@ -66,19 +63,12 @@ struct ReferenceCorrectionView: View {
                     if dirty {
                         Button("Save Correction") { commit(draft) }
                             .disabled(!ReferenceCorrection.validFilters(correction.filters, sampleRate: Double(profile.sampleRate)))
-                        Button("Discard Edits") { draft = profile.personalReferenceCorrection; reload() }
+                        Button("Discard Edits") { reload() }
                     }
                     Button("Import to Equalizer") { requestTransfer() }.disabled(dirty)
                         .help("Replace User Equalizer bands and remove this correction after a successful save.")
                 }.buttonStyle(.bordered)
                 if dirty { Text("Save your correction edits before transferring to Equalizer.").font(.caption).foregroundStyle(.secondary) }
-            }
-            if draft == nil, dirty {
-                HStack {
-                    Text("Correction cleared · Unsaved").font(.caption)
-                    Button("Save Correction") { commit(nil) }
-                    Button("Discard Edits") { draft = profile.personalReferenceCorrection; reload() }
-                }
             }
             if busy { ProgressView().controlSize(.small) }
             if importOperation.isRunning { ProgressView("Importing correction…").controlSize(.small) }
@@ -87,7 +77,6 @@ struct ReferenceCorrectionView: View {
         .disabled(busy || importOperation.isRunning || state.isSavingProfileSettings || state.transitionInProgress)
         .onAppear { reload() }
         .onDisappear { importOperation.cancel() }
-        .onChange(of: state.historyReplayRevision) { _ in snapshot = profile }
         .onChange(of: profile.id) { _ in reload() }
         .onChange(of: profile) { _ in if !dirty { reload() } }
         .task(id: draft) {
@@ -109,7 +98,7 @@ struct ReferenceCorrectionView: View {
                     correction.filters = filters
                     return ReferenceCorrection.headroomDB(correction, sampleRate: Double(candidate.sampleRate))
                 }, shouldConfirmReplacement: { false }, onCancel: { showingCorrection = false },
-                onLoad: { correction in showingCorrection = false; draft = correction })
+                onLoad: { correction in showingCorrection = false; draft = correction; commit(correction) })
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText]) { result in
             do {
@@ -127,23 +116,18 @@ struct ReferenceCorrectionView: View {
 
     private func reload() {
         importOperation.cancel()
-        snapshot = profile
-        if state.referenceCorrectionSessions[profile.id] == nil {
-            state.referenceCorrectionSessions[profile.id] = ReferenceCorrectionSession(draft: profile.personalReferenceCorrection)
-        }
-        message = nil
+        snapshot = profile; draft = profile.personalReferenceCorrection; message = nil
     }
     private func importText(_ text: String, name: String) {
         beginImport { try ReferenceCorrection.importText(text, name: name) }
     }
     private func beginImport(_ work: @escaping @Sendable () throws -> DeviceCorrectionProfile) {
         let original = profile
-        let generation = state.editGeneration
         message = nil
         importOperation.run(work) { result in
-            guard generation == state.editGeneration, profile == original else { return }
+            guard profile == original else { return }
             switch result {
-            case .success(let correction): draft = correction
+            case .success(let correction): draft = correction; commit(correction)
             case .failure(let error): message = error.localizedDescription
             }
         }

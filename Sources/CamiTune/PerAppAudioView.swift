@@ -339,7 +339,6 @@ private struct PerApplicationIdentityHeader: View {
         .onDisappear { finish(save: true) }
     }
 
-    @MainActor
     private func finish(save: Bool) {
         guard editing else { return }
         editing = false
@@ -472,16 +471,17 @@ private struct PerApplicationEQControls: View, Equatable {
                     Spacer()
                     Button("Reset Tone") {
                         simpleTone = SimpleToneSettings()
-                        controller.editEqualizer(for: applicationID) { $0.simpleTone = simpleTone }
+                        controller.setSimpleTone(simpleTone, for: applicationID)
                     }
                     .disabled(simpleTone.isNeutral)
                 }
                 SimpleEQControlsView(settings: Binding(get: { simpleTone }, set: { tone in
                     simpleTone = tone
-                    controller.editEqualizer(for: applicationID, interactionFinished: !toneIsEditing) { $0.simpleTone = tone }
+                    enableEQForEdit()
+                    controller.setSimpleTone(tone, for: applicationID, interactionFinished: !toneIsEditing)
                 }), onEditingChanged: { editing in
                     toneIsEditing = editing
-                    if !editing { controller.finishAudioInteraction(for: applicationID) }
+                    if !editing { controller.setSimpleTone(simpleTone, for: applicationID) }
                 })
             }
             if presentation == .both { Divider() }
@@ -508,13 +508,12 @@ private struct PerApplicationEQControls: View, Equatable {
                             profileID: editorProfileID, responsePoints: [], setKind: EQEditorSupport.setKind,
                             columnWidth: 96, showsSpectrumLevels: false, onGainEditingChanged: { editing in
                                 bandGainIsEditing = editing
-                                if !editing { controller.finishAudioInteraction(for: applicationID) }
+                                if !editing { controller.setEqualizerBands(bands, for: applicationID, interactionFinished: true) }
                             })
                     }
                 }
             }
         }
-        .onDisappear { controller.finishAudioInteraction(for: applicationID) }
         .onChange(of: settings.simpleTone) { if !toneIsEditing { simpleTone = $0 } }
         .onChange(of: settings.equalizerBands) { updated in
             guard !bandGainIsEditing else { return }
@@ -538,10 +537,17 @@ private struct PerApplicationEQControls: View, Equatable {
         }
     }
 
+    private func enableEQForEdit() {
+        if controller.settings(for: applicationID).eqBypassed {
+            controller.setEQBypassed(false, for: applicationID)
+        }
+    }
+
     private func setBands(_ updated: [EQBand]) {
         guard updated.allSatisfy({ $0.frequency.isFinite && $0.frequency > 0 && $0.frequency < sampleRate / 2 }) else { return }
         bands = updated
-        controller.editEqualizer(for: applicationID, interactionFinished: !bandGainIsEditing) { $0.equalizerBands = updated }
+        enableEQForEdit()
+        controller.setEqualizerBands(updated, for: applicationID, interactionFinished: !bandGainIsEditing)
     }
 }
 
@@ -616,9 +622,6 @@ struct MeteredApplicationVolumeSlider: View {
                     interactionVolume = nil
                 }
             })
-        }
-        .onDisappear {
-            if let interactionVolume { onVolumeChange(interactionVolume, true) }
         }
         .focusable()
         .onMoveCommand { direction in
