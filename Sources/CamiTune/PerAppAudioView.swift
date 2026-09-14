@@ -1,9 +1,11 @@
 import AppKit
 import SwiftUI
 
+@MainActor
 struct PerAppAudioView: View {
     @ObservedObject var state: AppState
-    @ObservedObject var controller: PerAppAudioController
+    let controller: PerAppAudioController
+    @StateObject private var audioPresentation: PerAppAudioPresentation
     @ObservedObject var presentation: AppPresentationStore
     @State private var showingOrder = false
     @StateObject private var reorder: MenuAppReorderCoordinator
@@ -11,12 +13,13 @@ struct PerAppAudioView: View {
     init(state: AppState) {
         self.state = state
         controller = state.perAppAudio
+        _audioPresentation = StateObject(wrappedValue: PerAppAudioPresentation(controller: state.perAppAudio))
         presentation = state.perAppAudio.presentationStore
         _reorder = StateObject(wrappedValue: MenuAppReorderCoordinator(store: state.perAppAudio.presentationStore))
     }
 
     private var activeApplications: [PerAppAudioApplication] {
-        presentation.orderedApplications(controller.applications.filter(\.isActive))
+        audioPresentation.applications.filter(\.isActive)
     }
 
     private var activeProfile: DeviceProfile? {
@@ -48,7 +51,7 @@ struct PerAppAudioView: View {
             .padding(.horizontal, 28)
             .padding(.top, 28)
 
-            if let error = controller.persistenceError ?? presentation.persistenceError {
+            if let error = audioPresentation.persistenceError ?? presentation.persistenceError {
                 Text(error).font(.caption).foregroundStyle(.orange).padding(.horizontal, 28)
             }
             if !state.isActive {
@@ -65,6 +68,7 @@ struct PerAppAudioView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 PerAppAudioList(applications: activeApplications, controller: controller,
+                    meters: audioPresentation,
                     presentation: presentation, reorder: reorder,
                     playbackContext: activeProfile.map(PerAppPlaybackContext.init(profile:)),
                     sampleRate: Double(activeProfile?.sampleRate ?? 48_000),
@@ -86,12 +90,14 @@ struct PerAppAudioView: View {
 
 /// Continuous, unframed rows, separate from AppState so they can also be
 /// inspected with temporary application fixtures without starting audio routing.
+@MainActor
 struct PerAppAudioList: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var expandedEqualizers: Set<String> = []
     @State private var contentHeight: CGFloat = 0
     let applications: [PerAppAudioApplication]
     let controller: PerAppAudioController
+    let meters: PerAppAudioPresentation
     @ObservedObject var presentation: AppPresentationStore
     @ObservedObject var reorder: MenuAppReorderCoordinator
     let playbackContext: PerAppPlaybackContext?
@@ -101,7 +107,7 @@ struct PerAppAudioList: View {
     var body: some View {
         GeometryReader { viewport in
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(AppAudioSection.allCases) { section in
                         applicationSection(section)
                     }
@@ -120,7 +126,16 @@ struct PerAppAudioList: View {
 
     private func applicationSection(_ section: AppAudioSection) -> some View {
         let ordered = presentation.orderedApplications(applications, in: section)
-        return VStack(alignment: .leading, spacing: 0) {
+        return Section {
+            ForEach(ordered) { application in
+                VStack(alignment: .leading, spacing: 0) {
+                    applicationRow(application)
+                    if application.id != ordered.last?.id {
+                        Divider().padding(.leading, 42)
+                    }
+                }
+            }
+        } header: {
             MenuAppDropBridge(section: section, sectionAppend: false, coordinator: reorder) {
                 HStack(spacing: 8) {
                     Text(section.title).font(.headline)
@@ -134,12 +149,7 @@ struct PerAppAudioList: View {
                     Rectangle().fill(Color.accentColor).frame(height: 2).allowsHitTesting(false)
                 }
             }
-            ForEach(ordered) { application in
-                applicationRow(application)
-                if application.id != ordered.last?.id {
-                    Divider().padding(.leading, 42)
-                }
-            }
+        } footer: {
             MenuAppDropBridge(section: section, coordinator: reorder) {
                 Text(ordered.isEmpty
                     ? (section == .shown ? "Drag apps here to show them in the menu bar." : "Drag apps here to hide them from the menu bar. Audio settings still apply.")
@@ -157,6 +167,7 @@ struct PerAppAudioList: View {
                     Rectangle().fill(Color.accentColor).frame(height: 2).allowsHitTesting(false)
                 }
             }
+            .padding(.bottom, 24)
         }
     }
 
@@ -176,8 +187,8 @@ struct PerAppAudioList: View {
                         }
                         .buttonStyle(.borderless)
                         .accessibilityLabel("\(application.settings.isMuted ? "Unmute" : "Mute") \(name)")
-                        MeteredApplicationVolumeSlider(volume: application.settings.volume,
-                            level: application.level, isMuted: application.settings.isMuted) { volume, finished in
+                        LiveApplicationVolumeSlider(meter: meters.meter(for: application.id),
+                            volume: application.settings.volume, isMuted: application.settings.isMuted) { volume, finished in
                             controller.setVolume(volume, for: application.id, interactionFinished: finished)
                         }
                         .frame(minWidth: 100, maxWidth: .infinity).frame(height: 24)
@@ -325,6 +336,7 @@ private struct PerApplicationIdentityHeader: View {
         }
         .help(canRename ? "\(name) — Click name to rename; drag icon or ⌥-drag name to move" : name)
         .onHover { hovering = $0 }
+        .onDisappear { finish(save: true) }
     }
 
     private func finish(save: Bool) {
@@ -536,6 +548,19 @@ private struct PerApplicationEQControls: View, Equatable {
         bands = updated
         enableEQForEdit()
         controller.setEqualizerBands(updated, for: applicationID, interactionFinished: !bandGainIsEditing)
+    }
+}
+
+@MainActor
+private struct LiveApplicationVolumeSlider: View {
+    @ObservedObject var meter: PerAppMeterState
+    let volume: Double
+    let isMuted: Bool
+    let onVolumeChange: (Double, Bool) -> Void
+
+    var body: some View {
+        MeteredApplicationVolumeSlider(volume: volume, level: meter.level,
+            isMuted: isMuted, onVolumeChange: onVolumeChange)
     }
 }
 

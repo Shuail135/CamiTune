@@ -669,6 +669,7 @@ struct NativePEQOptimizer: PEQOptimizer {
         var bestLoss = loss(bands: bands, points: usable, sampleRate: sampleRate)
 
         for _ in 0..<count {
+            guard !Task.isCancelled else { return [] }
             let residual = residuals(bands: bands, points: usable, sampleRate: sampleRate)
             let candidates = candidates(residual: residual, points: usable)
             guard let choice = candidates.map({ candidate in
@@ -745,6 +746,7 @@ struct NativePEQOptimizer: PEQOptimizer {
         for pass in passes {
             for _ in 0..<2 {
                 for index in bands.indices {
+                    guard !Task.isCancelled else { return [] }
                     var variants: [EQBand] = []
                     for delta in [-pass.gain, pass.gain] {
                         var candidate = bands[index]

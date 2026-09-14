@@ -16,6 +16,7 @@ struct ReferenceCorrectionView: View {
     @State private var busy = false
     @State private var message: String?
     @State private var headroom: Double?
+    @StateObject private var importOperation = UIBackgroundOperation<DeviceCorrectionProfile>()
 
     private var dirty: Bool { draft != snapshot?.personalReferenceCorrection }
     private var headphones: Bool { profile.effectiveEndpointKind == .headphones }
@@ -70,10 +71,12 @@ struct ReferenceCorrectionView: View {
                 if dirty { Text("Save your correction edits before transferring to Equalizer.").font(.caption).foregroundStyle(.secondary) }
             }
             if busy { ProgressView().controlSize(.small) }
+            if importOperation.isRunning { ProgressView("Importing correction…").controlSize(.small) }
             if let message { Text(message).font(.caption).foregroundStyle(.orange) }
         }
-        .disabled(busy || state.isSavingProfileSettings || state.transitionInProgress)
+        .disabled(busy || importOperation.isRunning || state.isSavingProfileSettings || state.transitionInProgress)
         .onAppear { reload() }
+        .onDisappear { importOperation.cancel() }
         .onChange(of: profile.id) { _ in reload() }
         .onChange(of: profile) { _ in if !dirty { reload() } }
         .task(id: draft) {
@@ -100,9 +103,7 @@ struct ReferenceCorrectionView: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText]) { result in
             do {
                 let url = try result.get()
-                let access = url.startAccessingSecurityScopedResource()
-                defer { if access { url.stopAccessingSecurityScopedResource() } }
-                importText(try String(contentsOf: url, encoding: .utf8), name: url.lastPathComponent)
+                beginImport { try ReferenceCorrection.importFile(url) }
             } catch { message = error.localizedDescription }
         }
         .alert("Replace User Equalizer bands?", isPresented: $confirmTransfer) {
@@ -114,13 +115,22 @@ struct ReferenceCorrectionView: View {
     }
 
     private func reload() {
+        importOperation.cancel()
         snapshot = profile; draft = profile.personalReferenceCorrection; message = nil
     }
     private func importText(_ text: String, name: String) {
-        do {
-            let correction = try ReferenceCorrection.importText(text, name: name)
-            draft = correction; commit(correction)
-        } catch { message = error.localizedDescription }
+        beginImport { try ReferenceCorrection.importText(text, name: name) }
+    }
+    private func beginImport(_ work: @escaping @Sendable () throws -> DeviceCorrectionProfile) {
+        let original = profile
+        message = nil
+        importOperation.run(work) { result in
+            guard profile == original else { return }
+            switch result {
+            case .success(let correction): draft = correction; commit(correction)
+            case .failure(let error): message = error.localizedDescription
+            }
+        }
     }
     private func commit(_ correction: DeviceCorrectionProfile?) {
         guard let original = snapshot, original.id == profile.id else { return }

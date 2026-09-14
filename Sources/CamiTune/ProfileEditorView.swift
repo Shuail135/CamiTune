@@ -17,6 +17,7 @@ struct ProfileEditorView: View {
     @State private var renamingProfileID: UUID?
     @State private var profileNameDraft = ""
     @State private var focusClearingMonitor: Any?
+    @State private var focusClearingID: UUID?
     @FocusState private var profileNameFocused: Bool
 
 
@@ -210,12 +211,14 @@ struct ProfileEditorView: View {
 
     private func installFocusClearingMonitor() {
         guard focusClearingMonitor == nil else { return }
+        let monitorID = UUID()
+        focusClearingID = monitorID
         focusClearingMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
             guard let keyWindow = NSApp.keyWindow,
                   event.window === keyWindow,
                   let contentView = keyWindow.contentView else { return event }
 
-            let location = contentView.convert(event.locationInWindow, from: nil)
+            let location = contentView.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
             let clickedView = contentView.hitTest(location)
 
             // Do not mutate first-responder/layout state inside the mouse-down
@@ -223,20 +226,18 @@ struct ProfileEditorView: View {
             // the click first; otherwise a focused EQ field can commit/reorder
             // the editor during the same event that starts a slider drag.
             guard !Self.isTextInput(clickedView),
-                  let currentResponder = keyWindow.firstResponder as? NSView,
-                  Self.isTextInput(currentResponder) else { return event }
+                  let request = TextFocusClearRequest(window: keyWindow) else { return event }
 
             DispatchQueue.main.async {
-                guard event.window === keyWindow,
-                      let responder = keyWindow.firstResponder as? NSView,
-                      Self.isTextInput(responder) else { return }
-                keyWindow.makeFirstResponder(nil)
+                guard focusClearingID == monitorID else { return }
+                request.perform()
             }
             return event
         }
     }
 
     private func removeFocusClearingMonitor() {
+        focusClearingID = nil
         guard let focusClearingMonitor else { return }
         NSEvent.removeMonitor(focusClearingMonitor)
         self.focusClearingMonitor = nil
@@ -251,4 +252,28 @@ struct ProfileEditorView: View {
         return false
     }
 
+}
+
+/// A window reuses the same NSTextView for several fields. Compare its delegate
+/// as well as the responder, so a delayed background click can't blur a new field.
+@MainActor
+final class TextFocusClearRequest {
+    private weak var window: NSWindow?
+    private weak var editor: NSTextView?
+    private weak var delegate: AnyObject?
+
+    init?(window: NSWindow) {
+        guard let editor = window.firstResponder as? NSTextView,
+              editor.isFieldEditor, let delegate = editor.delegate else { return nil }
+        self.window = window
+        self.editor = editor
+        self.delegate = delegate
+    }
+
+    func perform() {
+        guard let window, let editor, let delegate,
+              window.firstResponder === editor,
+              (editor.delegate as AnyObject?) === delegate else { return }
+        window.makeFirstResponder(nil)
+    }
 }

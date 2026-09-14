@@ -11,6 +11,7 @@ struct PerChannelProcessingView: View {
     @State var pendingBandCount: Int?
     @State var showBandReductionConfirmation = false
     @StateObject var runtime = PerChannelEditorRuntime()
+    @StateObject var bandReduction = UIBackgroundOperation<[EQBand]>()
     @State var runtimeVisualsActive = false
 
     var profileIsActive: Bool {
@@ -34,6 +35,7 @@ struct PerChannelProcessingView: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
+                if bandReduction.isRunning { ProgressView("Fitting bands…").controlSize(.small) }
                 PerChannelHeader(
                     status: runtime.status,
                     onReset: resetSelectedChannel,
@@ -109,7 +111,7 @@ struct PerChannelProcessingView: View {
                 }
             }
             .padding(6)
-            .disabled(editableChannels.isEmpty)
+            .disabled(editableChannels.isEmpty || bandReduction.isRunning)
         }
         .alert("Recalculate Equalizer Bands?", isPresented: $showBandReductionConfirmation) {
             Button("Cancel", role: .cancel) {
@@ -133,8 +135,9 @@ struct PerChannelProcessingView: View {
             if !channels.contains(where: { $0.index == selectedChannelIndex }) { selectedChannelIndex = channels.first?.index ?? 0 }
             loadSelectedChannel()
         }
-        .onChange(of: profile.sampleRate) { _ in updateResponses() }
+        .onChange(of: profile.sampleRate) { _ in bandReduction.cancel(); updateResponses() }
         .onDisappear {
+            bandReduction.cancel()
             runtimeVisualsActive = false
         }
     }

@@ -212,7 +212,7 @@ final class CamiTunePresentationCoordinator {
             let rootView = ContentView(state: state, commands: commands)
                 .task { self.state.startAfterPresentation() }
             let controller = NSHostingController(rootView: rootView)
-            let created = NSWindow(contentViewController: controller)
+            let created = CamiTuneMainWindow(contentViewController: controller)
             created.title = "CamiTune"
             created.styleMask = [
                 .titled,
@@ -284,6 +284,75 @@ final class CamiTunePresentationCoordinator {
 }
 
 
+@MainActor
+final class CamiTuneMainWindow: NSWindow {
+    override func fieldEditor(_ createFlag: Bool, for object: Any?) -> NSText? {
+        let editor = super.fieldEditor(createFlag, for: object)
+        TextEditingCompatibility.prepare(editor)
+        return editor
+    }
+}
+
+/// SwiftUI sheets and popovers own windows that aren't CamiTuneMainWindow.
+/// Prepare their field editors before AppKit starts text-selection tracking too.
+@MainActor
+final class TextEditingCompatibility: NSObject {
+    private var eventMonitor: Any?
+
+    static func prepare(_ editor: NSText?) {
+        if #unavailable(macOS 14) {
+            // The macOS 13 profile-rename hang was sampled inside TextKit 2's
+            // NSTextSelectionNavigation. Accessing layoutManager opts into
+            // Apple's TextKit 1 compatibility mode without replacing the editor.
+            _ = (editor as? NSTextView)?.layoutManager
+        }
+    }
+
+    func start() {
+        guard #unavailable(macOS 14), eventMonitor == nil else { return }
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { event in
+            guard let window = event.window else { return event }
+            Self.prepare(window.firstResponder as? NSTextView)
+            if event.type != .keyDown, let content = window.contentView {
+                let point = content.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+                var target = content.hitTest(point)
+                while let view = target {
+                    if let editor = view as? NSTextView {
+                        Self.prepare(editor)
+                        break
+                    }
+                    if let field = view as? NSTextField, field.isEditable || field.isSelectable {
+                        Self.prepare(window.fieldEditor(true, for: field))
+                        break
+                    }
+                    target = view.superview
+                }
+            }
+            // Preserve the original event and focus; AppKit handles the click.
+            return event
+        }
+        NotificationCenter.default.addObserver(self, selector: #selector(editingDidBegin(_:)),
+            name: NSControl.textDidBeginEditingNotification, object: nil)
+    }
+
+    @objc private func editingDidBegin(_ notification: Notification) {
+        // AppKit posts this synchronously on the main thread. Also cover
+        // editing initiated without a mouse or key event.
+        Self.prepare((notification.object as? NSTextField)?.currentEditor())
+    }
+
+    func stop() {
+        if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
+        NotificationCenter.default.removeObserver(self)
+        eventMonitor = nil
+    }
+
+    deinit {
+        if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
+        NotificationCenter.default.removeObserver(self)
+    }
+}
+
 private struct CamiTuneMenuBarLabel: View {
     var isActive: Bool
 
@@ -305,8 +374,10 @@ final class CamiTuneAppDelegate: NSObject, NSApplicationDelegate {
     private let closeHintKey = "hideCloseKeepsRunningHint"
     private var instanceLockFileDescriptor: Int32 = -1
     private var rejectedDuplicateInstance = false
+    @MainActor private lazy var textEditingCompatibility = TextEditingCompatibility()
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        textEditingCompatibility.start()
         let supportDirectory = CamiTunePaths.supportDirectory
         do {
             try FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
@@ -377,6 +448,7 @@ final class CamiTuneAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        textEditingCompatibility.stop()
         DistributedNotificationCenter.default().removeObserver(self)
         if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
         if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }

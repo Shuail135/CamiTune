@@ -100,7 +100,7 @@ struct SpeakerSystemView: View {
             if newPosition { updateDistances() }
             publishDraft()
         }
-        .onChange(of: selected) { _ in renamingTitle = false }
+        .onChange(of: selected) { _ in commitTitle() }
         .onChange(of: titleFocused) { focused in if !focused && renamingTitle { commitTitle() } }
         .onChange(of: draft) { _ in publishDraft() }
         .onChange(of: seat) { _ in publishDraft() }
@@ -118,7 +118,7 @@ struct SpeakerSystemView: View {
             listener: SpatialVector3(x: seat?.roomX ?? 0, y: seat?.roomY ?? 0, z: 0),
             selected: selected, playing: audition.output, extent: boardExtent,
             locked: busy, listeningOnly: listeningOnly,
-            select: { selected = $0 },
+            select: { selectSpeaker($0) },
             audition: { audition.toggle($0, topology: topology, audio: state.coreAudio) },
             moveSpeaker: { id, point in
                 audition.stop()
@@ -164,7 +164,7 @@ struct SpeakerSystemView: View {
                     .font(.title2.bold()).textFieldStyle(.plain)
                     .focused($titleFocused)
                     .onSubmit { commitTitle() }
-                    .onExitCommand { renamingTitle = false }
+                    .onExitCommand { cancelTitle() }
             } else {
                 Button {
                     renamingID = endpoint.id; titleDraft = endpoint.displayName; renamingTitle = true; titleFocused = true
@@ -183,14 +183,27 @@ struct SpeakerSystemView: View {
     }
 
     private func commitTitle() {
-        guard let index = draft?.endpoints.firstIndex(where: { $0.id == renamingID }) else { return }
+        guard renamingTitle else { return }
+        let id = renamingID
         let title = String(titleDraft.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        cancelTitle()
+        guard let index = draft?.endpoints.firstIndex(where: { $0.id == id }) else { return }
         if !title.isEmpty { draft?.endpoints[index].displayName = title }
+    }
+    private func cancelTitle() {
         renamingTitle = false
+        renamingID = nil
+        titleFocused = false
+        titleDraft = ""
+    }
+    private func selectSpeaker(_ id: PhysicalOutputID?) {
+        guard selected != id else { return }
+        commitTitle()
+        selected = id
     }
     private func setRole(_ role: ChannelRole?, for id: PhysicalOutputID) {
+        commitTitle()
         guard var topology = draft else { return }
-        renamingTitle = false
         SpeakerLayoutGeometry.setRole(role, for: id, in: &topology)
         draft = topology; selected = id
         updateDistances()
@@ -270,6 +283,7 @@ struct SpeakerSystemView: View {
     }
 
     private func discover() {
+        commitTitle()
         busy = true; message = nil
         let uid = profile.outputDeviceUID
         Task {

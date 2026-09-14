@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CA3800000000000000000001 = {isa = PBXBuildFile; fileRef = CA3800000000000000000002; };
+		CA3800000000000000000003 = {isa = PBXBuildFile; fileRef = CA3800000000000000000004; };
 		CA3700000000000000000001 = {isa = PBXBuildFile; fileRef = CA3700000000000000000002; };
 		CA3600000000000000000105 = {isa = PBXBuildFile; fileRef = CA3600000000000000000205; };
 		CA3600000000000000000104 = {isa = PBXBuildFile; fileRef = CA3600000000000000000204; };
@@ -558,6 +560,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CA3800000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIBackgroundOperation.swift; sourceTree = "<group>"; };
+		CA3800000000000000000004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerAppAudioPresentation.swift; sourceTree = "<group>"; };
 		CA3700000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/MainWindowCommandCoordinator.swift"; sourceTree = SOURCE_ROOT; };
 		CA3600000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/MenuAppDragBridge.swift"; sourceTree = SOURCE_ROOT; };
 		CA3600000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/MenuAppReorderCoordinator.swift"; sourceTree = SOURCE_ROOT; };
@@ -1572,6 +1576,8 @@
 			    EF906983DF7B1A16BAF6B42E,
 			    0F6D7D15F18B55DABB360EDB,
 			    9921C9EBAADF67A16CDDC6AF,
+			    CA3800000000000000000002,
+			    CA3800000000000000000004,
 			    2B1FF247511D3BC1C71AB018,
 			    68E6D4EBFC10B7451E6F61F2,
 			    183363314F878C9B69E2A155,
@@ -1959,6 +1965,8 @@
 			    44F88181A401C63820D8CC5C,
 			    A3072837EA10693843941059,
 			    EE4A5684E848611F7843501D,
+			    CA3800000000000000000001,
+			    CA3800000000000000000003,
 			    5573C1A6D9065B3100EBE6D4,
 			    C2ACF77A1A999ACC4000D794,
 			    A9DBD461ACA04B76EA7AB692,

@@ -79,10 +79,13 @@ private struct SimpleEQKnob: View {
                         onEditingChanged(false)
                     }
             )
-            .onTapGesture(count: 2) {
-                guard isEnabled else { return }
-                setValue(0)
-            }
+            .simultaneousGesture(
+                TapGesture(count: 2)
+                    .onEnded {
+                        guard isEnabled else { return }
+                        setValue(0)
+                    }
+            )
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(range.title)
             .accessibilityValue(isEnabled ? formattedValue : "No matching bands")

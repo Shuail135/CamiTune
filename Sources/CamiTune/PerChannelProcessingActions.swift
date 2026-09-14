@@ -9,6 +9,7 @@ extension PerChannelProcessingView {
 
     func selectChannel(_ index: Int) {
         guard index != selectedChannelIndex else { return }
+        bandReduction.cancel()
         runtime.liveApplyTask?.cancel()
         preserveSelectedDraft()
         selectedChannelIndex = index
@@ -38,17 +39,24 @@ extension PerChannelProcessingView {
     func applyPendingBandReduction() {
         guard let target = pendingBandCount else { return }
         pendingBandCount = nil
-        runtime.bands.replace(
-            with: EQEditorSupport.responseFittedBands(
-                runtime.bands.values,
-                count: target,
-                sampleRate: Double(profile.sampleRate)
-            )
-        )
-        channelSettingsChanged()
+        let originalBands = runtime.bands.values
+        let profileID = profile.id
+        let channelIndex = selectedChannelIndex
+        let sampleRate = profile.sampleRate
+        bandReduction.run {
+            EQEditorSupport.responseFittedBands(originalBands, count: target, sampleRate: Double(sampleRate))
+        } completion: { result in
+            guard profile.id == profileID, selectedChannelIndex == channelIndex,
+                  profile.sampleRate == sampleRate, runtime.bands.values == originalBands else { return }
+            if case .success(let fitted) = result {
+                runtime.bands.replace(with: fitted)
+                channelSettingsChanged()
+            }
+        }
     }
 
     func loadSelectedChannel() {
+        bandReduction.cancel()
         runtime.suppressChanges = true
         if !editableChannels.contains(where: { $0.index == selectedChannelIndex }) { selectedChannelIndex = editableChannels.first?.index ?? 0 }
         runtime.liveApplyTask?.cancel()

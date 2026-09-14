@@ -25,6 +25,7 @@ struct GlobalEqualizerEditorView: View {
     @State var simpleTone = SimpleToneSettings()
     @State var eqIsSaved = true
     @StateObject var runtime = GlobalEQEditorRuntime()
+    @StateObject var bandReduction = UIBackgroundOperation<[EQBand]>()
 
     var profileIsActive: Bool {
         state.isActive && state.activeProfileID == profile.id
@@ -35,6 +36,7 @@ struct GlobalEqualizerEditorView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text("Equalizer").font(.title3.bold())
+                    if bandReduction.isRunning { ProgressView("Fitting bands…").controlSize(.small) }
                     Text(eqIsSaved ? "Saved" : "Not saved")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(eqIsSaved ? Color.green : Color.secondary)
@@ -142,6 +144,7 @@ struct GlobalEqualizerEditorView: View {
             .padding(6)
         }
         .onAppear { loadGraphicEQIfNeeded() }
+        .onDisappear { bandReduction.cancel() }
         .onChange(of: needsResponseGraph) { _ in updateGraphResponses() }
         .onChange(of: presentation) { _ in updateGraphResponses() }
         .onChange(of: profile.id) { _ in
@@ -152,13 +155,13 @@ struct GlobalEqualizerEditorView: View {
         .onChange(of: limiterEnabled) { _ in graphicEQChanged() }
         .onChange(of: graphicBands) { _ in graphicEQChanged() }
         .onChange(of: simpleTone) { _ in graphicEQChanged() }
-        .onChange(of: profile.sampleRate) { _ in updateGraphResponses() }
+        .onChange(of: profile.sampleRate) { _ in bandReduction.cancel(); updateGraphResponses() }
         .onChange(of: profile.processing) { _ in updateAutomaticSystemHeadroom() }
         .onReceive(state.equalizerReplacementChanges.filter { $0 == profile.id }) { _ in
             if let latest = state.profiles.profiles.first(where: { $0.id == profile.id }) { profile = latest }
             loadGraphicEQ()
         }
-        .disabled(state.isSavingProfileSettings)
+        .disabled(state.isSavingProfileSettings || bandReduction.isRunning)
         .onReceive(state.eqDraftChanges.filter { $0 == profile.id }) { _ in
             updateAutomaticSystemHeadroom()
         }

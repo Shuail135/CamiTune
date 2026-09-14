@@ -9,6 +9,7 @@ extension GlobalEqualizerEditorView {
     }
 
     func loadGraphicEQ() {
+        bandReduction.cancel()
         let draft = state.eqDraft(for: profile.id)
         let limiterDraft = state.limiterDraft(for: profile.id)
         let parsed: ParsedEQ
@@ -216,11 +217,16 @@ extension GlobalEqualizerEditorView {
     func applyPendingBandReduction() {
         guard let target = pendingBandCount else { return }
         pendingBandCount = nil
-        graphicBands = EQEditorSupport.responseFittedBands(
-            graphicBands,
-            count: target,
-            sampleRate: Double(profile.sampleRate)
-        )
+        let originalBands = graphicBands
+        let profileID = profile.id
+        let sampleRate = profile.sampleRate
+        bandReduction.run {
+            EQEditorSupport.responseFittedBands(originalBands, count: target, sampleRate: Double(sampleRate))
+        } completion: { result in
+            guard profile.id == profileID, profile.sampleRate == sampleRate,
+                  graphicBands == originalBands else { return }
+            if case .success(let fitted) = result { graphicBands = fitted }
+        }
     }
 
     func updateGraphResponses() {

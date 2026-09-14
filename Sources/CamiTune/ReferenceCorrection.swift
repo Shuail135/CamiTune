@@ -2,6 +2,16 @@ import Foundation
 
 /// Shared policy for catalog entry filtering, imports and explicit EQ transfer.
 enum ReferenceCorrection {
+    /// Call from a background operation; keep access alive through reading and parsing.
+    static func importFile(_ url: URL) throws -> DeviceCorrectionProfile {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        try Task.checkCancellation()
+        let text = try String(contentsOf: url, encoding: .utf8)
+        try Task.checkCancellation()
+        return try importText(text, name: url.lastPathComponent)
+    }
+
     static func catalog(_ entries: [DeviceCatalogEntry], endpoint: ProfileEndpointKind) -> [DeviceCatalogEntry] {
         entries.compactMap { entry in
             let references = entry.measurements.filter { reference in
