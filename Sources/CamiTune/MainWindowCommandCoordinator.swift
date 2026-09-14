@@ -6,6 +6,7 @@ import SwiftUI
 /// presentation facts cross this bridge; AppState remains the runtime owner.
 @MainActor
 final class MainWindowCommandCoordinator: ObservableObject {
+    @Published var settingsCategory = "General"
     struct Context: Equatable {
         var destination: SidebarDestination = .empty
         var profileID: UUID?
@@ -72,7 +73,7 @@ final class MainWindowCommandCoordinator: ObservableObject {
         // Reserve before showing the window: repeated shortcuts cannot race
         // the asynchronous output discovery or sheet attachment.
         switch intent {
-        case .addOutput, .openSetup, .profileSettings: modalReservation = true
+        case .addOutput, .profileSettings: modalReservation = true
         default: break
         }
         showMainWindow()

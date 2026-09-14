@@ -17,10 +17,14 @@ final class AppUpdateChecker: ObservableObject {
     @Published private(set) var availableUpdate: AvailableAppUpdate?
     @Published private(set) var isDownloadingUpdate = false
     @Published var notice: AppUpdateNotice?
+    @Published var automaticallyChecksForUpdates: Bool {
+        didSet { defaults.set(automaticallyChecksForUpdates, forKey: Keys.automaticallyChecksForUpdates) }
+    }
 
     var installedVersion: String { Self.currentVersion }
 
     private enum Keys {
+        static let automaticallyChecksForUpdates = "appUpdate.automaticallyChecksForUpdates"
         static let skippedVersion = "appUpdate.skippedVersion"
         static let remindAfter = "appUpdate.remindAfter"
     }
@@ -93,6 +97,7 @@ final class AppUpdateChecker: ObservableObject {
     init(defaults: UserDefaults = .standard, session: URLSession = .shared) {
         self.defaults = defaults
         self.session = session
+        automaticallyChecksForUpdates = defaults.object(forKey: Keys.automaticallyChecksForUpdates) as? Bool ?? true
     }
 
     func start() {
@@ -104,10 +109,12 @@ final class AppUpdateChecker: ObservableObject {
     }
 
     func checkOnLaunch() async {
+        guard automaticallyChecksForUpdates else { return }
         await fetchLatestRelease()
     }
 
     func checkAfterReminderIfNeeded(now: Date = Date()) async {
+        guard automaticallyChecksForUpdates else { return }
         guard let reminderDate = defaults.object(forKey: Keys.remindAfter) as? Date,
               now >= reminderDate else { return }
         await fetchLatestRelease()

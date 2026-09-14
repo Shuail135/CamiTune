@@ -4,23 +4,27 @@ import Foundation
 
 @MainActor
 struct SettingsView: View {
+    @EnvironmentObject private var commands: MainWindowCommandCoordinator
     let state: AppState
     @ObservedObject private var store: ProfileStore
     @ObservedObject private var loginItem: LoginItemManager
-    @State private var category = "General"
+    @ObservedObject private var updateChecker: AppUpdateChecker
+    private var category: String { commands.settingsCategory }
     @State private var type: ProfileEndpointKind = .speakers
     @State private var showingApply = false
     @State private var selectedProfiles: Set<UUID> = []
+    @AppStorage("hideCloseKeepsRunningHint") private var hideCloseKeepsRunningHint = false
     private let categories = ["General", "Section Layout", "Drivers & Components", "Confirmations"]
 
     init(state: AppState) {
         self.state = state
         _store = ObservedObject(wrappedValue: state.profiles)
         _loginItem = ObservedObject(wrappedValue: state.loginItem)
+        _updateChecker = ObservedObject(wrappedValue: state.updateChecker)
     }
     var body: some View {
         HStack(spacing: 0) {
-            List(categories, id: \.self, selection: $category) { Text($0).tag($0) }
+            List(categories, id: \.self, selection: $commands.settingsCategory) { Text($0).tag($0) }
                 .listStyle(.sidebar).frame(width: 185)
             Divider()
             VStack(alignment: .leading, spacing: 16) {
@@ -31,6 +35,15 @@ struct SettingsView: View {
                         get: { loginItem.isEnabled }, set: { loginItem.setEnabled($0) }))
                         .disabled(loginItem.isUpdating)
                     Text(loginItem.statusMessage).font(.callout).foregroundStyle(.secondary)
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle("Automatically check for updates", isOn: $updateChecker.automaticallyChecksForUpdates)
+                            Text("Check for new CamiTune versions when the app starts and when update reminders are due.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding(6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 case "Section Layout":
                     Picker("Device Type", selection: $type) {
                         ForEach(ProfileEndpointKind.allCases, id: \.self) { Text($0.displayName).tag($0) }
@@ -47,8 +60,28 @@ struct SettingsView: View {
                 case "Drivers & Components":
                     SetupView(state: state, embedded: true)
                 case "Confirmations":
-                    Toggle("Show profile enabled explanation", isOn: $store.showProfileEnabledExplanation)
-                    Text("Show an explanation when you manually enable a profile.").foregroundStyle(.secondary)
+                    Text("Choose which pop-ups to show. Turn an option back on here after selecting “Do not show this again.”")
+                        .foregroundStyle(.secondary)
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle("Show profile enabled explanation", isOn: $store.showProfileEnabledExplanation)
+                            Text("Show an explanation when you manually enable a profile.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding(6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle("Show window closing reminder", isOn: Binding(
+                                get: { !hideCloseKeepsRunningHint },
+                                set: { hideCloseKeepsRunningHint = !$0 }))
+                            Text("Remind you that CamiTune keeps running when you close its window.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding(6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 default: EmptyView()
                 }
                 Spacer(minLength: 0)

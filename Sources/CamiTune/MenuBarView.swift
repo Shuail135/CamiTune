@@ -161,6 +161,20 @@ final class MenuBarViewModel: ObservableObject {
         }
     }
 
+    func selectOutputProfile(_ id: UUID) {
+        guard !actionInFlight, !state.transitionInProgress,
+              !state.isSavingProfileSettings, state.spatialCalibrationContext == nil,
+              let profile = state.profiles.profiles.first(where: { $0.id == id && $0.isEnabled }),
+              !(state.isActive && state.activeProfileID == id) else { return }
+        pendingOffProfileID = nil
+        beginAction(profile: profile)
+        Task {
+            defer { finishAction() }
+            guard let current = state.profiles.profiles.first(where: { $0.id == id && $0.isEnabled }) else { return }
+            await state.activate(profile: current)
+        }
+    }
+
     func setPlaybackMode(_ mode: PlaybackMode) {
         guard !actionInFlight,
               !state.transitionInProgress,
@@ -277,9 +291,9 @@ struct MenuBarRootView: View {
                     .foregroundStyle(model.isActive ? Color.green : Color.secondary)
             }
             if let profile = model.profile {
-                HStack {
-                    Text(profile.name).font(.headline).lineLimit(1)
-                    Spacer()
+                HStack(spacing: 8) {
+                    outputProfileMenu(title: profile.name)
+                    Spacer(minLength: 0)
                     MenuBarRuntimeControl(
                         isActive: model.runtimeControlSelection,
                         isVisuallyEnabled:
@@ -306,9 +320,69 @@ struct MenuBarRootView: View {
                     .disabled(model.actionInFlight || model.state.transitionInProgress || model.state.isSavingProfileSettings || model.state.spatialCalibrationContext != nil)
                 }
             } else {
-                Text("No output profile").foregroundStyle(.secondary)
+                outputProfileMenu(title: "No output profile")
             }
         }
+    }
+
+    private func outputProfileMenu(title: String) -> some View {
+        outputProfileLabel(title: title)
+            .overlay {
+                Menu {
+                    ForEach(model.state.profiles.effectiveRootOrder, id: \.self) { item in
+                        switch item {
+                        case .profile(let id):
+                            if let profile = model.state.profiles.profiles.first(where: { $0.id == id && $0.isEnabled }) {
+                                outputProfileOption(profile)
+                            }
+                        case .folder(let id):
+                            if let folder = model.state.profiles.folders.first(where: { $0.id == id }) {
+                                let profiles = folder.profileIDs.compactMap { id in
+                                    model.state.profiles.profiles.first { $0.id == id && $0.isEnabled }
+                                }
+                                if !profiles.isEmpty {
+                                    Menu(folder.name) {
+                                        ForEach(profiles) { profile in outputProfileOption(profile) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !model.state.profiles.profiles.contains(where: \.isEnabled) {
+                        Text("No enabled profiles")
+                    }
+                } label: {
+                    Color.clear
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .accessibilityLabel("Output profile: \(title)")
+            }
+        .disabled(model.actionInFlight || model.state.transitionInProgress
+            || model.state.isSavingProfileSettings || model.state.spatialCalibrationContext != nil)
+    }
+
+    private func outputProfileLabel(title: String) -> some View {
+        HStack(spacing: 5) {
+            Text(title).font(.headline).lineLimit(1)
+                .truncationMode(.tail)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 10)
+                .fixedSize()
+                .layoutPriority(1)
+        }
+        .frame(maxWidth: 238, minHeight: 24, alignment: .leading)
+    }
+
+    private func outputProfileOption(_ profile: DeviceProfile) -> some View {
+        Toggle(profile.name, isOn: Binding(
+            get: { model.state.isActive && model.state.activeProfileID == profile.id },
+            set: { _ in model.selectOutputProfile(profile.id) }
+        ))
     }
 }
 
