@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct DeviceCorrectionEditorView: View {
     let existing: DeviceCorrectionProfile?
     let sampleRate: Double
+    let referenceEndpoint: ProfileEndpointKind?
     let automaticHeadroom: @MainActor ([EQBand]) -> Double
     let shouldConfirmReplacement: @MainActor () -> Bool
     let onCancel: @MainActor () -> Void
@@ -40,6 +41,7 @@ struct DeviceCorrectionEditorView: View {
     init(
         existing: DeviceCorrectionProfile?,
         sampleRate: Double,
+        referenceEndpoint: ProfileEndpointKind? = nil,
         automaticHeadroom: @escaping @MainActor ([EQBand]) -> Double,
         shouldConfirmReplacement: @escaping @MainActor () -> Bool,
         onCancel: @escaping @MainActor () -> Void,
@@ -47,6 +49,7 @@ struct DeviceCorrectionEditorView: View {
     ) {
         self.existing = existing
         self.sampleRate = sampleRate
+        self.referenceEndpoint = referenceEndpoint
         self.automaticHeadroom = automaticHeadroom
         self.shouldConfirmReplacement = shouldConfirmReplacement
         self.onCancel = onCancel
@@ -288,11 +291,14 @@ struct DeviceCorrectionEditorView: View {
                     }
 
                     if let generated {
-                        GroupBox("Preview") {
+                        GroupBox("Graph") {
                             VStack(alignment: .leading, spacing: 10) {
-                                CorrectionResponseGraph(profile: generated, sampleRate: sampleRate)
-                                    .equatable()
-                                    .frame(height: 260)
+                                if ReferenceCorrection.validFilters(generated.filters, sampleRate: sampleRate) {
+                                    CorrectionResponseGraph(profile: generated, sampleRate: sampleRate)
+                                        .equatable().frame(height: 260)
+                                } else {
+                                    Text("Enter a valid frequency below Nyquist, finite gain, and positive Q.").foregroundStyle(.orange)
+                                }
                                 HStack(spacing: 16) {
                                     Label("Measurement", systemImage: "minus")
                                         .foregroundStyle(.secondary)
@@ -326,9 +332,9 @@ struct DeviceCorrectionEditorView: View {
             HStack {
                 Spacer()
                 Button("Cancel") { onCancel() }
-                Button("Load into Equalizer") { requestLoadIntoEqualizer() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(generated == nil || trimmedDeviceName.isEmpty)
+                Button(referenceEndpoint == nil ? "Load into Equalizer" : "Load Correction") { requestLoadIntoEqualizer() }
+                    .buttonStyle(.bordered)
+                    .disabled(generated == nil || trimmedDeviceName.isEmpty || !ReferenceCorrection.validFilters(generated?.filters ?? [], sampleRate: sampleRate))
             }
             .padding(16)
         }

@@ -8,8 +8,6 @@ struct ProfileEditorView: View {
     let coreAudio: CoreAudioManager
     @ObservedObject private var store: ProfileStore
     @State private var showingSettings = false
-    @State private var showingSpeakers = false
-    @State private var openSpeakersAfterSettings = false
     @Binding var profile: DeviceProfile
     @StateObject private var graphModel = ProfileEditorGraphModel()
     @State private var isRenamingProfile = false
@@ -105,15 +103,9 @@ struct ProfileEditorView: View {
             seedGraphIfNeeded()
             installFocusClearingMonitor()
         }
-        .sheet(isPresented: $showingSettings, onDismiss: {
-            if openSpeakersAfterSettings {
-                openSpeakersAfterSettings = false
-                DispatchQueue.main.async { showingSpeakers = true }
-            }
-        }) {
-            ProfileSettingsView(state: state, profile: profile) { openSpeakersAfterSettings = true }
+        .sheet(isPresented: $showingSettings) {
+            ProfileSettingsView(state: state, profile: profile)
         }
-        .sheet(isPresented: $showingSpeakers) { SpeakerSystemView(state: state, profile: $profile) }
         .onChange(of: layout) { _ in
             updateVisuals()
             if sections.contains(.equalizer) || sections.contains(.spectrum) {

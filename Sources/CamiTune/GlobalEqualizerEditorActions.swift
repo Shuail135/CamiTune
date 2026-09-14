@@ -13,24 +13,11 @@ extension GlobalEqualizerEditorView {
         let limiterDraft = state.limiterDraft(for: profile.id)
         let parsed: ParsedEQ
         let persistedLimiterEnabled: Bool
-        var migratedDeviceCorrection = false
         do {
             let processing = try profile.resolvedProcessing()
             persistedLimiterEnabled = processing.limiterEnabled
             if let draft {
                 parsed = try EqualizerAPOParser().parse(draft)
-            } else if processing.deviceCorrection != nil {
-                parsed = processing.globalEqualizerIncludingDeviceCorrection
-                migratedDeviceCorrection = true
-                state.setDeviceCorrectionProvenanceDraft(
-                    processing.deviceCorrection,
-                    for: profile.id
-                )
-                state.markEQDraftAsReplacingDeviceCorrection(for: profile.id)
-                state.setEQDraft(
-                    EqualizerAPOSerializer().serialize(parsed),
-                    for: profile.id
-                )
             } else {
                 parsed = processing.globalEqualizer
             }
@@ -51,7 +38,7 @@ extension GlobalEqualizerEditorView {
         )
         runtime.loadedProfileID = profile.id
         updateGraphResponses()
-        eqIsSaved = draft == nil && limiterDraft == nil && !migratedDeviceCorrection
+        eqIsSaved = draft == nil && limiterDraft == nil
         DispatchQueue.main.async { runtime.suppressChanges = false }
     }
 
@@ -64,6 +51,7 @@ extension GlobalEqualizerEditorView {
             runtime.commitPendingAfterContinuousEdit = true
             return
         }
+        publishCurrentEQDraft()
         scheduleDeferredGraphicEQCommit(milliseconds: 250)
     }
 
@@ -78,7 +66,15 @@ extension GlobalEqualizerEditorView {
         guard runtime.continuousEditDepth == 0,
               runtime.commitPendingAfterContinuousEdit else { return }
         runtime.commitPendingAfterContinuousEdit = false
+        publishCurrentEQDraft()
         scheduleDeferredGraphicEQCommit(milliseconds: 60)
+    }
+
+    private func publishCurrentEQDraft() {
+        // Replacement confirmation must see completed edits immediately, even
+        // while the audio-application debounce is still pending.
+        state.setEQDraft(serializeGraphicEQ(), for: profile.id)
+        state.setLimiterDraft(limiterEnabled, for: profile.id)
     }
 
     func scheduleDeferredGraphicEQCommit(milliseconds: Int) {
@@ -255,7 +251,6 @@ extension GlobalEqualizerEditorView {
         preampDB = 0
         graphicBands = organizedBands
         parsedForGraph = ParsedEQ(preampDB: 0, bands: organizedBands, warnings: [])
-        state.markEQDraftAsReplacingDeviceCorrection(for: profile.id)
         state.setDeviceCorrectionProvenanceDraft(correction, for: profile.id)
         state.setEQDraft(serializeGraphicEQ(), for: profile.id)
         eqIsSaved = false
@@ -312,7 +307,6 @@ extension GlobalEqualizerEditorView {
         state.deviceCorrectionProvenance(
             for: profile.id,
             persisted: profile.processing.globalEqualizerProvenance
-                ?? profile.processing.deviceCorrection
         )
     }
 

@@ -153,10 +153,9 @@ struct ProcessingProfile: Codable, Hashable, Sendable {
         limiter?.isEnabled ?? false
     }
 
-    /// Presents a legacy Device Correction stage as ordinary editable global EQ.
-    /// Biquads and gain stages are linear and can be flattened without changing
-    /// their response. New corrections enter the editor in this representation
-    /// and are persisted only when the normal EQ Save action is used.
+    /// Combined response for explicit legacy export and compatibility checks.
+    /// Opening User Equalizer must use globalEqualizer so correction remains
+    /// separate until the user explicitly transfers it.
     var globalEqualizerIncludingDeviceCorrection: ParsedEQ {
         var result = globalEqualizer
         guard let correction = deviceCorrection, correction.isEnabled else { return result }
@@ -525,7 +524,7 @@ private extension Array where Element == ProcessingStage {
     }
 
     var firstEqualizerStage: (isEnabled: Bool, bands: [EQBand])? {
-        for stage in self {
+        for stage in self where stage.id != SpatialRoomCorrection.stageID {
             if case .equalizer(let equalizer) = stage.processor {
                 return (stage.isEnabled, equalizer.bands)
             }
@@ -619,6 +618,7 @@ private extension Array where Element == ProcessingStage {
 
     mutating func upsertEqualizer(bands: [EQBand]) {
         if let index = firstIndex(where: {
+            guard $0.id != SpatialRoomCorrection.stageID else { return false }
             if case .equalizer = $0.processor { return true }
             return false
         }) {

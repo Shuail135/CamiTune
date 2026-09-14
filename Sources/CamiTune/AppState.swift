@@ -58,6 +58,7 @@ final class AppState: NSObject, ObservableObject {
     /// AppState used to invalidate the entire navigation tree, menu-bar UI,
     /// profile editor, and every visible control for each pointer event.
     private(set) var eqDraftRevision: UInt64 = 0
+    let equalizerReplacementChanges = PassthroughSubject<UUID, Never>()
     let eqDraftChanges = PassthroughSubject<UUID, Never>()
 
     var activeProfileID: UUID? { activeSession?.profileID }
@@ -517,9 +518,9 @@ final class AppState: NSObject, ObservableObject {
     /// Produces the profile currently being auditioned without persisting drafts.
     /// Global and per-channel editors both use this so changing one scope cannot
     /// revert an unsaved draft in another scope.
-    func applyingSessionEQDrafts(to profile: DeviceProfile) throws -> DeviceProfile {
+    func applyingSessionEQDrafts(to profile: DeviceProfile, replacingGlobalEqualizer: Bool = false) throws -> DeviceProfile {
         var updated = profile
-        if let text = sessionEQDrafts[profile.id] {
+        if !replacingGlobalEqualizer, let text = sessionEQDrafts[profile.id] {
             let parsed = try EqualizerAPOParser().parse(text)
             updated.setGlobalEqualizer(preampDB: parsed.preampDB, bands: parsed.bands)
             if sessionEQDraftsReplaceDeviceCorrection.contains(profile.id) {
@@ -529,7 +530,7 @@ final class AppState: NSObject, ObservableObject {
         if let limiterEnabled = sessionLimiterDrafts[profile.id] {
             updated.processing.setLimiterEnabled(limiterEnabled)
         }
-        applyDeviceCorrectionProvenanceDraft(to: &updated.processing, for: profile.id)
+        if !replacingGlobalEqualizer { applyDeviceCorrectionProvenanceDraft(to: &updated.processing, for: profile.id) }
         let channelEQDrafts = sessionChannelEQDrafts[profile.id] ?? [:]
         let channelLimiterDrafts = sessionChannelLimiterDrafts[profile.id] ?? [:]
         let channelDelayDrafts = sessionChannelDelayDrafts[profile.id] ?? [:]
@@ -815,12 +816,13 @@ final class AppState: NSObject, ObservableObject {
         let wasActive = isActive && activeProfileID == original.id
         let originalPreviousDefaultUID = previousDefaultUID
         let oldRuntime = try applyingSessionEQDrafts(to: original)
-        let newRuntime = try applyingSessionEQDrafts(to: candidate)
+        let newRuntime = try applyingSessionEQDrafts(to: candidate, replacingGlobalEqualizer: draft.replacesUserEqualizer)
         let changesRendering = original.endpointKind != candidate.endpointKind
             || original.sampleRate != candidate.sampleRate || original.outputDevice != candidate.outputDevice
             || original.playbackMode != candidate.playbackMode
             || original.speakerTopology != candidate.speakerTopology
             || original.spatialSettings != candidate.spatialSettings
+            || original.processing != candidate.processing
         var touchedRuntime = false
         var touchedRouting = false
         func checkCurrent() throws {
@@ -903,6 +905,10 @@ final class AppState: NSObject, ObservableObject {
                     profiles: profiles.profiles, activeProfileID: activeProfileID)
             }
         }
+        if draft.replacesUserEqualizer {
+            clearEQDraft(for: candidate.id)
+            equalizerReplacementChanges.send(candidate.id)
+        }
         if draft.activation != draft.originalActivation || candidate.outputDevice != original.outputDevice {
             automaticActivationRetry = nil
             if suppressedAutoUID == candidate.outputDeviceUID { suppressedAutoUID = nil }
@@ -911,13 +917,12 @@ final class AppState: NSObject, ObservableObject {
     }
 
     func setPlaybackMode(profileID: UUID, mode: PlaybackMode) async {
-        guard !isSavingProfileSettings else { return }
-        guard !transitionInProgress, spatialCalibrationContext == nil,
-              var profile = profiles.profiles.first(where: { $0.id == profileID }),
+        guard let profile = profiles.profiles.first(where: { $0.id == profileID }),
               profile.availablePlaybackModes.contains(mode) else { return }
-        profile.setPlaybackMode(mode)
-        profiles.update(profile)
-        if isActive && activeProfileID == profileID { await apply(profile: profile) }
+        var draft = ProfileSettingsDraft(profile: profile, activation: profiles.activationMode(for: profile))
+        draft.requestedMode = mode
+        do { try await saveProfileSettings(draft) }
+        catch { presentError(error) }
     }
 
     func setActivationMode(profileID: UUID, mode: ProfileActivationMode) async {
@@ -1391,19 +1396,19 @@ final class AppState: NSObject, ObservableObject {
 
     func selectListeningPosition(profileID: UUID, positionID: UUID?, delete: Bool = false) async {
         guard spatialCalibrationContext == nil,
-              var profile = profiles.profiles.first(where: { $0.id == profileID }) else { return }
+              let profile = profiles.profiles.first(where: { $0.id == profileID }) else { return }
+        var draft = ProfileSettingsDraft(profile: profile, activation: profiles.activationMode(for: profile))
         if delete, let positionID {
-            profile.spatialSettings.listeningPositions.removeAll { $0.id == positionID }
-            if profile.spatialSettings.selectedPositionID == positionID { profile.spatialSettings.selectedPositionID = nil }
+            draft.spatialSettings.listeningPositions.removeAll { $0.id == positionID }
+            if draft.spatialSettings.selectedPositionID == positionID { draft.spatialSettings.selectedPositionID = nil }
         } else {
-            guard positionID == nil || profile.spatialSettings.listeningPositions.contains(where: {
+            guard positionID == nil || draft.spatialSettings.listeningPositions.contains(where: {
                 $0.id == positionID && $0.outputDeviceUID == profile.outputDeviceUID
             }) else { return }
-            profile.spatialSettings.selectedPositionID = positionID
+            draft.spatialSettings.selectedPositionID = positionID
         }
-        profile.synchronizeListeningPositionCorrection()
-        profiles.update(profile)
-        if activeProfileID == profileID { await apply(profile: profile) }
+        do { try await saveProfileSettings(draft) }
+        catch { presentError(error) }
     }
 
     func saveListeningPosition(context: SpatialCalibrationContext, position: SpatialSeatingCalibration) async -> Bool {
@@ -1494,7 +1499,7 @@ final class AppState: NSObject, ObservableObject {
         let profile = pending.profile
         let request = pending.request
         guard isActive, activeProfileID == profile.id else { return }
-        if activeSampleRate != profile.sampleRate || activeReferenceTopology != (profile.usesReferenceSpeakers ? profile.speakerTopology : nil) {
+        if activeSampleRate != profile.sampleRate || activeReferenceTopology != (try? profile.validatedReferenceTopology()) {
             if let problem = await processingSampleRateProblemWithoutBlockingUI(
                 rate: profile.sampleRate,
                 outputUID: profile.outputDeviceUID

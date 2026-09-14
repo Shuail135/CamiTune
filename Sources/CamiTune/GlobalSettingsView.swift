@@ -253,11 +253,9 @@ struct ProfileSettingsView: View {
     @State private var recovery: AppErrorRecovery?
     @State private var showingRepair = false
     @Environment(\.dismiss) private var dismiss
-    let onOpenSpeaker: () -> Void
 
-    init(state: AppState, profile: DeviceProfile, onOpenSpeaker: @escaping () -> Void) {
+    init(state: AppState, profile: DeviceProfile) {
         self.state = state
-        self.onOpenSpeaker = onOpenSpeaker
         _store = ObservedObject(wrappedValue: state.profiles)
         _audio = ObservedObject(wrappedValue: state.coreAudio)
         _draft = State(initialValue: ProfileSettingsDraft(profile: profile, activation: state.profiles.activationMode(for: profile)))
@@ -309,7 +307,7 @@ struct ProfileSettingsView: View {
                                 Text("\(Double($0) / 1000, specifier: "%g") kHz").tag($0)
                             }
                         }
-                        Text("48 kHz is recommended. Changing the rate of an active profile restarts its audio session.")
+                        Text("48 kHz is the recommended default. Higher rates increase CPU and bandwidth use but do not improve lower rate source audio.")
                             .foregroundStyle(.secondary)
                     case "Activation":
                         Picker("Activation Mode", selection: $draft.activation) {
@@ -329,12 +327,14 @@ struct ProfileSettingsView: View {
                         Button("Reset to Global Defaults") { draft.sectionLayout = nil }
                             .disabled(draft.sectionLayout == nil)
                     case "Speaker & Listening Position":
-                        Text("Configure the physical speaker system and listening position used by this profile.")
-                        Button("Speaker and Listening Position…") {
-                            onOpenSpeaker()
-                            dismiss()
-                        }.disabled(hasChanges)
-                        if hasChanges { Text("Save your settings before opening the speaker editor.").foregroundStyle(.secondary) }
+                        ScrollView {
+                            SpeakerSystemView(state: state, profile: Binding(
+                                get: { (try? draft.candidate()) ?? draft.original },
+                                set: { value in
+                                    draft.speakerTopology = value.speakerTopology
+                                    draft.spatialSettings = value.spatialSettings
+                                }), draftOnly: true, embedded: true)
+                        }
                     default: EmptyView()
                     }
                     Spacer(minLength: 0)
@@ -366,7 +366,7 @@ struct ProfileSettingsView: View {
                 }
             }.padding(16)
         }
-        .frame(width: 780, height: 620)
+        .frame(width: category == "Speaker & Listening Position" ? 960 : 780, height: category == "Speaker & Listening Position" ? 760 : 620)
         .disabled(saving)
         .interactiveDismissDisabled(hasChanges || saving)
         .sheet(isPresented: $showingRepair) { SetupPanel(state: state) }

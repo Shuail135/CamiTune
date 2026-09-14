@@ -9,7 +9,6 @@ struct AddOutputDraft {
     var connectedEndpoint: ProfileEndpointKind?
     var leftOutput: Int?
     var rightOutput: Int?
-    var speakerConfigurationConfirmed = false
 
     var needsSpeakers: Bool { deviceType == .speakers || (deviceType == .audioInterface && connectedEndpoint == .speakers) }
     var canAdd: Bool { (try? candidate()) != nil }
@@ -22,7 +21,6 @@ struct AddOutputDraft {
         discovered = nil
         leftOutput = nil
         rightOutput = nil
-        speakerConfigurationConfirmed = false
     }
 
     func candidate() throws -> DeviceProfile {
@@ -46,7 +44,7 @@ struct AddOutputDraft {
             candidate.audioInterface = assignment
         }
         if needsSpeakers {
-            guard speakerConfigurationConfirmed, var topology = candidate.speakerTopology,
+            guard var topology = candidate.speakerTopology,
                   topology.deviceUID == candidate.outputDeviceUID,
                   topology.sampleRate == Double(candidate.sampleRate),
                   let seat = candidate.spatialSettings.seating,
@@ -87,9 +85,25 @@ struct AddOutputProfileSheet: View {
     @State private var movingForward = true
     @State private var busy = false
     @State private var message: String?
-    @State private var showingSpeakerEditor = false
     @FocusState private var nameFocused: Bool
-    private let steps = ["Choose Output", "Quick Configuration", "Device Configuration", "Review"]
+    @State private var nameHovered = false
+    @State private var pageContentHeight: CGFloat = 0
+    @State private var deviceTypePickerWidth: CGFloat?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let pageTitles = ["Choose an output and configure its profile.", "Device Configuration"]
+    private var lastStep: Int {
+        switch draft.deviceType {
+        case .headphones, .iem, .custom: return 0
+        default: return 1
+        }
+    }
+    private var selectedDevice: Binding<String?> {
+        Binding(get: { draft.profile.outputDeviceUID.isEmpty ? nil : draft.profile.outputDeviceUID }, set: { uid in
+            guard let device = audio.physicalOutputDevices.first(where: { $0.id == uid }),
+                  device.id != draft.profile.outputDeviceUID else { return }
+            draft.selectDevice(device, name: ProfileNamePolicy.uniqueName(base: device.name, existingNames: store.profiles.map(\.name)))
+        })
+    }
 
     init(state: AppState, initialUID: String?, onCancel: @escaping @MainActor () -> Void, onAdded: @escaping @MainActor (UUID) -> Void) {
         self.state = state
@@ -98,7 +112,8 @@ struct AddOutputProfileSheet: View {
         self.onCancel = onCancel
         self.onAdded = onAdded
         var initial = AddOutputDraft()
-        if let device = state.coreAudio.physicalOutputDevices.first(where: { $0.id == initialUID }) {
+        let devices = state.coreAudio.physicalOutputDevices
+        if let device = devices.first(where: { $0.id == initialUID }) ?? devices.first {
             initial.selectDevice(device, name: ProfileNamePolicy.uniqueName(base: device.name, existingNames: state.profiles.profiles.map(\.name)))
         }
         _draft = State(initialValue: initial)
@@ -107,145 +122,236 @@ struct AddOutputProfileSheet: View {
     private var connected: Bool { audio.physicalOutputDevices.contains { $0.id == draft.profile.outputDeviceUID } }
     private var canProceed: Bool {
         switch step {
-        case 0: return connected
-        case 1: return draft.deviceType != nil && !draft.profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case 0: return connected && draft.deviceType != nil && !draft.profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (lastStep != 0 || draft.canAdd)
         default: return connected && draft.canAdd
         }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Add Output Profile").font(.title.bold())
-            Text("Step \(step + 1) of 4 · \(steps[step])").font(.headline)
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "speaker.wave.2.circle.fill")
+                    .font(.system(size: 38)).foregroundStyle(Color.accentColor)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Add Output Profile").font(.title2.bold())
+                    Text(pageTitles[step]).font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }.padding(24)
             Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) { stepContent }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(2)
+            ZStack(alignment: .topLeading) {
+                stepPage
                     .id(step)
-                    .transition(.asymmetric(insertion: .move(edge: movingForward ? .trailing : .leading).combined(with: .opacity),
-                                            removal: .move(edge: movingForward ? .leading : .trailing).combined(with: .opacity)))
+                    .transition(reduceMotion ? .opacity : .asymmetric(
+                        insertion: .move(edge: movingForward ? .trailing : .leading).combined(with: .opacity),
+                        removal: .move(edge: movingForward ? .leading : .trailing).combined(with: .opacity)))
             }
-            if let message { Text(message).foregroundStyle(.red).textSelection(.enabled) }
-            if !connected { Text("Connect the selected output device to continue.").foregroundStyle(.secondary) }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .animation(.easeInOut(duration: reduceMotion ? 0.15 : 0.3), value: step)
+            if let message {
+                Text(message).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 24).padding(.bottom, 12)
+            }
+            if !connected && !draft.profile.outputDeviceUID.isEmpty {
+                Text("Connect the selected output device to continue.").font(.callout).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 24).padding(.bottom, 12)
+            }
             Divider()
-            HStack {
-                Button("Cancel", action: onCancel).keyboardShortcut(.cancelAction)
+            HStack(spacing: 12) {
+                Button("Cancel") { onCancel() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
-                if step > 0 { Button("Back") { move(to: step - 1) } }
-                if step == 3 {
-                    Button("Add Profile") { add() }
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(!canProceed)
-                } else {
-                    Button("Next") {
-                        guard canProceed else { incomplete(); return }
-                        move(to: step + 1)
-                    }.keyboardShortcut(.defaultAction).disabled(!canProceed)
+                if step > 0 { Button("Back") { move(to: step - 1) }.frame(minWidth: 70) }
+                Button(step == lastStep ? "Add Profile" : "Next") {
+                    guard canProceed else { incomplete(); return }
+                    if step == lastStep { add() } else { move(to: step + 1) }
                 }
-            }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canProceed)
+            }.controlSize(.regular).padding(.horizontal, 24).padding(.vertical, 16)
         }
-        .padding(24).frame(width: 650, height: 570)
+        .frame(width: 780, height: 760)
+        .background(Color(nsColor: .windowBackgroundColor))
         .disabled(busy)
         .interactiveDismissDisabled(busy)
-        .sheet(isPresented: $showingSpeakerEditor) {
-            SpeakerSystemView(state: state, profile: $draft.profile, draftOnly: true)
-        }
-        .onSubmit { if step == 3 { add() } }
-        .onChange(of: draft.profile.speakerTopology) { _ in draft.speakerConfigurationConfirmed = false }
-        .onChange(of: draft.deviceType) { _ in draft.speakerConfigurationConfirmed = false }
-        .onChange(of: draft.connectedEndpoint) { _ in draft.speakerConfigurationConfirmed = false }
-        .onChange(of: draft.leftOutput) { _ in draft.speakerConfigurationConfirmed = false }
-        .onChange(of: draft.rightOutput) { _ in draft.speakerConfigurationConfirmed = false }
         .onChange(of: draft.profile.sampleRate) { rate in
             draft.profile.speakerTopology?.sampleRate = Double(rate)
-            draft.speakerConfigurationConfirmed = false
         }
     }
 
-    @ViewBuilder private var stepContent: some View {
-        switch step {
-        case 0:
-            Text("Choose the physical audio output for this profile.")
-            if audio.physicalOutputDevices.isEmpty {
-                Text("No physical outputs are connected.").foregroundStyle(.secondary)
-            }
-            ForEach(audio.physicalOutputDevices) { device in
-                Button {
-                    draft.selectDevice(device, name: ProfileNamePolicy.uniqueName(base: device.name, existingNames: store.profiles.map(\.name)))
-                } label: {
-                    HStack {
-                        Image(systemName: "speaker.wave.2")
-                        Text(device.name)
-                        Spacer()
-                        if draft.profile.outputDeviceUID == device.id { Image(systemName: "checkmark") }
-                    }.padding(8).contentShape(Rectangle())
+    private var stepPage: some View {
+        GeometryReader { viewport in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if step == 0 {
+                        profileSettings
+                    } else {
+                        deviceConfiguration
+                    }
                 }
-                .buttonStyle(.bordered)
-            }
-            Button("Refresh Outputs") { Task { await audio.refreshWithoutBlockingUI() } }
-        case 1:
-            TextField("Profile name", text: $draft.profile.name).focused($nameFocused)
-            Picker("Device Type", selection: $draft.deviceType) {
-                Text("Choose a device type").tag(ProfileEndpointKind?.none)
-                ForEach(ProfileEndpointKind.allCases, id: \.self) { Text($0.displayName).tag(Optional($0)) }
-            }
-            Picker("Processing Sample Rate", selection: $draft.profile.sampleRate) {
-                ForEach([44100, 48000, 88200, 96000, 176400, 192000], id: \.self) {
-                    Text("\(Double($0) / 1000, specifier: "%g") kHz").tag($0)
-                }
-            }
-            Text("48 kHz is recommended. Device support is checked before the profile is added.").foregroundStyle(.secondary)
-        case 2:
-            if draft.deviceType == .audioInterface {
-                Text("Choose the stereo pair of hardware outputs used by this profile. All other interface outputs remain silent for this profile.")
-                discoveryControls
-                if let topology = draft.discovered {
-                    Picker("Left Output", selection: $draft.leftOutput) { outputOptions(topology) }
-                    Picker("Right Output", selection: $draft.rightOutput) { outputOptions(topology) }
-                }
-                Picker("Connected Device", selection: $draft.connectedEndpoint) {
-                    Text("Choose what is connected").tag(ProfileEndpointKind?.none)
-                    ForEach(ProfileEndpointKind.allCases.filter { $0 != .audioInterface }, id: \.self) {
-                        Text($0.displayName).tag(Optional($0))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(24)
+                .background {
+                    GeometryReader { content in
+                        Color.clear.preference(key: OutputProfilePageHeightKey.self, value: content.size.height)
                     }
                 }
             }
-            if draft.needsSpeakers {
-                if draft.deviceType == .speakers { discoveryControls }
-                Button("Speaker and Listening Position…") { showingSpeakerEditor = true }
-                    .disabled(draft.profile.speakerTopology == nil)
-                Text("Place the detected speakers relative to your listening position and assign a role or position to each output in use.")
-                    .foregroundStyle(.secondary)
-                if draft.profile.spatialSettings.seating != nil {
-                    TextField("Listening position", text: Binding(
-                        get: { draft.profile.spatialSettings.seating?.name ?? "Primary" },
-                        set: { draft.profile.spatialSettings.seating?.name = $0 }))
-                    distanceField("Left speaker distance (m)", left: true)
-                    distanceField("Right speaker distance (m)", left: false)
+            .scrollDisabled(pageContentHeight <= viewport.size.height)
+            .onPreferenceChange(OutputProfilePageHeightKey.self) { pageContentHeight = $0 }
+        }
+    }
+
+    private var outputChooser: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            List(selection: selectedDevice) {
+                ForEach(audio.physicalOutputDevices) { device in
+                    Label(device.name, systemImage: "speaker.wave.2")
+                        .padding(.vertical, 8)
+                        .tag(device.id)
                 }
-                Toggle("Speaker layout and listening position are configured", isOn: $draft.speakerConfigurationConfirmed)
+            }
+            // The device list can overflow independently of the page.
+            .environment(\.isScrollEnabled, true)
+            .listStyle(.inset)
+            .frame(height: min(228, max(163, CGFloat(audio.physicalOutputDevices.count) * 40 + 12)))
+            .overlay {
+                if audio.physicalOutputDevices.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "speaker.slash").font(.largeTitle).foregroundStyle(.secondary)
+                        Text("No Audio Outputs").font(.headline)
+                        Text("Connect an audio device, then click Refresh.").foregroundStyle(.secondary)
+                    }.allowsHitTesting(false)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .accessibilityLabel("Available audio outputs")
+            HStack {
+                Text("Choose the device this profile will play through.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    Task { await audio.refreshWithoutBlockingUI() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .accessibilityLabel("Refresh audio outputs")
+                .buttonStyle(.borderless)
+                .controlSize(.regular)
+                .fixedSize()
+                .help("Refresh connected audio outputs")
+            }
+
+        }
+    }
+
+    private var profileSettings: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            GroupBox { outputChooser.padding(8) } label: { Text("Audio Output") }
+            GroupBox {
+                VStack(spacing: 0) {
+                    HStack(spacing: 16) {
+                        Text("Profile Name")
+                        TextField("Choose an output", text: $draft.profile.name)
+                            .labelsHidden()
+                            .textFieldStyle(.plain)
+                            .multilineTextAlignment(.trailing)
+                            .focused($nameFocused)
+                            .frame(maxWidth: .infinity)
+                            .accessibilityLabel("Profile Name")
+                        Image(systemName: "pencil")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .opacity(nameHovered || nameFocused ? 1 : 0.6)
+                            .accessibilityHidden(true)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 12)
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+                    .onTapGesture { nameFocused = true }
+                    .onHover { nameHovered = $0 }
+                    .background(Color.primary.opacity(0.065))
+                    Divider()
+                    HStack {
+                        Text("Device Type")
+                        Spacer()
+                        WizardDeviceTypePicker(selection: $draft.deviceType).fixedSize()
+                            .background {
+                                GeometryReader { picker in
+                                    Color.clear.preference(key: OutputProfilePickerWidthKey.self, value: picker.size.width)
+                                }
+                            }
+                    }.padding(.horizontal, 12).padding(.vertical, 10)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            } label: { Text("Profile") }
+            GroupBox {
+                HStack {
+                    Text("Sample Rate")
+                    Spacer()
+                    Picker("Sample Rate", selection: $draft.profile.sampleRate) {
+                        ForEach([44100, 48000, 88200, 96000, 176400, 192000], id: \.self) {
+                            Text("\(Double($0) / 1000, specifier: "%g") kHz").tag($0)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: deviceTypePickerWidth)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 10)
+            } label: { Text("Audio") }
+            Text("48 kHz is the recommended default. Higher rates increase CPU and bandwidth use but do not improve lower rate source audio.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .onPreferenceChange(OutputProfilePickerWidthKey.self) { deviceTypePickerWidth = $0 > 0 ? $0 : nil }
+    }
+
+    @ViewBuilder private var deviceConfiguration: some View {
+            if draft.deviceType == .audioInterface {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Choose the stereo output pair and the device connected to it.")
+                            .font(.callout).foregroundStyle(.secondary)
+                        Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 12) {
+                            if let topology = draft.discovered {
+                                GridRow {
+                                    Text("Left Output")
+                                    Picker("Left Output", selection: $draft.leftOutput) { outputOptions(topology) }
+                                        .labelsHidden()
+                                }
+                                GridRow {
+                                    Text("Right Output")
+                                    Picker("Right Output", selection: $draft.rightOutput) { outputOptions(topology) }
+                                        .labelsHidden()
+                                }
+                            }
+                            GridRow {
+                                Text("Connected Device")
+                                Picker("Connected Device", selection: $draft.connectedEndpoint) {
+                                    Text("Choose what is connected").tag(ProfileEndpointKind?.none)
+                                    ForEach(ProfileEndpointKind.allCases.filter { $0 != .audioInterface }, id: \.self) {
+                                        Text($0.displayName).tag(Optional($0))
+                                    }
+                                }.labelsHidden()
+                            }
+                        }
+                        Divider()
+                        discoveryControls
+                    }.padding(8)
+                } label: { Label("Audio Interface", systemImage: "hifispeaker") }
+            }
+            if draft.needsSpeakers {
+                if draft.profile.speakerTopology != nil {
+                    SpeakerSystemView(state: state, profile: $draft.profile, draftOnly: true, embedded: true)
+                } else if !busy {
+                    Text("Outputs could not be discovered. Check the connection and try again.").foregroundStyle(.secondary)
+                    Button("Discover Outputs") { discover() }
+                }
             } else if draft.deviceType != .audioInterface {
                 Text("No additional configuration is required for \(draft.deviceType?.displayName ?? "this output").")
                 Text("The profile starts in Direct. You can adjust its processing after adding it.").foregroundStyle(.secondary)
             }
-        default:
-            LabeledContent("Profile", value: draft.profile.name)
-            LabeledContent("Output Device", value: draft.profile.outputDeviceName)
-            LabeledContent("Device Type", value: draft.deviceType?.displayName ?? "Not selected")
-            LabeledContent("Processing Sample Rate", value: "\(Double(draft.profile.sampleRate) / 1000) kHz")
-            LabeledContent("Mode", value: "Direct")
-            if draft.deviceType == .audioInterface {
-                LabeledContent("Hardware Outputs", value: "Left: \((draft.leftOutput ?? -1) + 1), Right: \((draft.rightOutput ?? -1) + 1)")
-                LabeledContent("Connected Device", value: draft.connectedEndpoint?.displayName ?? "Not selected")
-            }
-            if draft.needsSpeakers {
-                LabeledContent("Listening Position", value: draft.profile.spatialSettings.seating?.name ?? "Primary")
-            }
-            Text("The completed profile will be added when you choose Add Profile.").foregroundStyle(.secondary)
-        }
     }
 
     @ViewBuilder private func outputOptions(_ topology: SpeakerTopology) -> some View {
@@ -255,29 +361,25 @@ struct AddOutputProfileSheet: View {
         }
     }
     private var discoveryControls: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button("Discover Outputs") { discover() }
-            if let discovered = draft.discovered { Text("\(discovered.declaredChannelCount) independently addressable outputs").foregroundStyle(.secondary) }
+        HStack {
+            if let discovered = draft.discovered {
+                Text("\(discovered.declaredChannelCount) hardware outputs").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Refresh Outputs") { discover() }.controlSize(.small)
         }
-    }
-    private func distanceField(_ title: String, left: Bool) -> some View {
-        TextField(title, value: Binding<Float>(
-            get: { left ? (draft.profile.spatialSettings.seating?.leftDistanceMeters ?? 1) : (draft.profile.spatialSettings.seating?.rightDistanceMeters ?? 1) },
-            set: {
-                if left { draft.profile.spatialSettings.seating?.leftDistanceMeters = $0 }
-                else { draft.profile.spatialSettings.seating?.rightDistanceMeters = $0 }
-                draft.speakerConfigurationConfirmed = false
-            }), format: .number)
     }
     private func move(to next: Int) {
         movingForward = next > step
         message = nil
-        withAnimation(.easeInOut(duration: 0.18)) { step = next }
+        step = next
+        if next == 1, draft.discovered == nil,
+           draft.deviceType == .speakers || draft.deviceType == .audioInterface { discover() }
     }
     private func incomplete() {
         message = AddOutputDraft.incompleteMessage
         if draft.profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            step = 1; nameFocused = true
+            step = 0; nameFocused = true
         }
     }
     private func discover() {
@@ -292,21 +394,125 @@ struct AddOutputProfileSheet: View {
                 guard draft.profile.outputDeviceUID == uid else { return }
                 topology.sampleRate = Double(draft.profile.sampleRate)
                 draft.discovered = topology
-                draft.profile.speakerTopology = topology
-                draft.profile.spatialSettings.seating = SpatialSeatingCalibration(outputDeviceUID: uid, name: "Primary")
+                draft.profile.speakerTopology = SpeakerLayoutGeometry.arrangedForEditing(topology)
+                draft.profile.spatialSettings.seating = SpatialSeatingCalibration(outputDeviceUID: uid, name: "Default")
                 draft.leftOutput = nil; draft.rightOutput = nil
-                draft.speakerConfigurationConfirmed = false
             } catch { message = error.localizedDescription }
         }
     }
     private func add() {
         guard !busy else { return }
-        guard canProceed else { incomplete(); return }
+        guard connected && draft.canAdd else { incomplete(); return }
         busy = true; message = nil
         Task {
             defer { busy = false }
             do { onAdded(try await state.addProfile(from: draft)) }
             catch { message = error.localizedDescription }
         }
+    }
+}
+
+/// Keep native menu tracking independent of SwiftUI's grouped-form Picker bridge.
+/// Selecting a type also changes wizard navigation, so publish after tracking exits.
+@MainActor
+struct WizardDeviceTypePicker: NSViewRepresentable {
+    @Binding var selection: ProfileEndpointKind?
+
+    func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
+    func makeNSView(context: Context) -> NSPopUpButton { context.coordinator.makeButton() }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> CGSize? {
+        nsView.intrinsicContentSize
+    }
+    func updateNSView(_ button: NSPopUpButton, context: Context) {
+        context.coordinator.selection = $selection
+        context.coordinator.updateSelection(button)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSMenuDelegate {
+        var selection: Binding<ProfileEndpointKind?>
+        private var tracking = false
+        private var pendingIndex: Int?
+        private weak var button: NSPopUpButton?
+
+        init(selection: Binding<ProfileEndpointKind?>) { self.selection = selection }
+
+        func makeButton() -> NSPopUpButton {
+            let button = WizardDeviceTypePopUpButton(frame: .zero, pullsDown: false)
+            button.controlSize = .regular
+            button.addItems(withTitles: ["Choose a device type"] + ProfileEndpointKind.allCases.map(\.displayName))
+            button.fitAllTitles()
+            button.autoenablesItems = false
+            button.target = self
+            button.action = #selector(choseType(_:))
+            button.menu?.delegate = self
+            button.setAccessibilityLabel("Device Type")
+            self.button = button
+            updateSelection(button)
+            return button
+        }
+
+        func updateSelection(_ button: NSPopUpButton) {
+            guard !tracking else { return }
+            let index = selection.wrappedValue.flatMap { ProfileEndpointKind.allCases.firstIndex(of: $0) }.map { $0 + 1 } ?? 0
+            if button.indexOfSelectedItem != index { button.selectItem(at: index) }
+        }
+
+        func menuWillOpen(_ menu: NSMenu) { tracking = true }
+        func menuDidClose(_ menu: NSMenu) {
+            tracking = false
+            publishPendingSelection()
+        }
+
+        @objc func choseType(_ sender: NSPopUpButton) {
+            pendingIndex = sender.indexOfSelectedItem - 1
+            publishPendingSelection()
+        }
+
+        private func publishPendingSelection() {
+            guard !tracking, pendingIndex != nil else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.tracking, let index = self.pendingIndex else { return }
+                self.pendingIndex = nil
+                self.selection.wrappedValue = ProfileEndpointKind.allCases.indices.contains(index)
+                    ? ProfileEndpointKind.allCases[index] : nil
+                if let button = self.button { self.updateSelection(button) }
+            }
+        }
+    }
+}
+
+/// Use AppKit's own title/arrow/bezel measurement, fixed to the widest option.
+@MainActor
+final class WizardDeviceTypePopUpButton: NSPopUpButton {
+    private var fittedWidth: CGFloat?
+    override var intrinsicContentSize: NSSize {
+        let native = super.intrinsicContentSize
+        return NSSize(width: fittedWidth ?? native.width, height: native.height)
+    }
+    func fitAllTitles() {
+        let original = indexOfSelectedItem
+        var width: CGFloat = 0
+        for index in 0..<numberOfItems {
+            selectItem(at: index)
+            width = max(width, super.intrinsicContentSize.width)
+        }
+        selectItem(at: original)
+        fittedWidth = ceil(width)
+        invalidateIntrinsicContentSize()
+    }
+}
+
+private struct OutputProfilePageHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct OutputProfilePickerWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }

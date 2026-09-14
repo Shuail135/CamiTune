@@ -119,12 +119,14 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     var spatialSettings = SpatialRenderSettings()
     var speakerTopology: SpeakerTopology?
     var usesReferenceSpeakers: Bool {
-        get { playbackMode == .referencePlayback }
+        get { playbackMode == .referencePlayback && !isPersonalListening }
         set {
             if newValue { setPlaybackMode(.referencePlayback) }
             else if playbackMode == .referencePlayback { setPlaybackMode(.direct) }
         }
     }
+
+    var isPersonalListening: Bool { [.headphones, .iem].contains(effectiveEndpointKind) }
 
     var effectiveEndpointKind: ProfileEndpointKind {
         endpointKind == .audioInterface ? (audioInterface?.connectedEndpoint ?? .custom) : endpointKind
@@ -139,12 +141,8 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     var availablePlaybackModes: [PlaybackMode] {
         var modes: [PlaybackMode]
         switch effectiveEndpointKind {
-        case .headphones, .iem:
-            modes = [.direct, .spatialRender]
-        case .speakers:
-            modes = speakerTopology == nil
-                ? [.direct, .spatialRender]
-                : [.direct, .referencePlayback, .spatialRender]
+        case .headphones, .iem, .speakers:
+            modes = [.direct, .referencePlayback, .spatialRender]
         case .audioInterface, .custom:
             // These require an endpoint assignment before enabling a renderer.
             modes = [.direct]
@@ -165,12 +163,16 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
 
     func validatedReferenceTopology() throws -> SpeakerTopology? {
         guard usesReferenceSpeakers else { return nil }
-        guard let topology = speakerTopology, topology.deviceUID == outputDeviceUID else {
-            throw SpeakerTopologyError.invalidDeviceUID
+        guard let topology = speakerTopology else {
+            throw ProfileSettingsError.runtime("Configure Speaker and Listening Position in Profile Settings before using Reference.")
         }
+        guard topology.deviceUID == outputDeviceUID else { throw SpeakerTopologyError.invalidDeviceUID }
         try topology.validate()
         guard topology.sampleRate == Double(sampleRate) else { throw SpeakerTopologyError.invalidSampleRate }
-        return topology
+        guard topology.endpoints.contains(where: { ($0.connectionState == .confirmedByUser || $0.connectionState == .acousticallyDetected) && ($0.role != .unknown || $0.position != nil) }) else {
+            throw ProfileSettingsError.runtime("Configure Speaker and Listening Position in Profile Settings before using Reference.")
+        }
+        return SpeakerLayoutGeometry.relativeTopology(topology, seat: effectiveSpatialSettings.seating)
     }
 
     var effectiveSpatialSettings: SpatialRenderSettings {
@@ -181,6 +183,9 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         case .audioInterface, .custom: break
         }
         if settings.seating?.outputDeviceUID != outputDeviceUID { settings.seating = nil }
+        if settings.seating == nil {
+            settings.selectedPositionID = settings.listeningPositions.first { $0.outputDeviceUID == outputDeviceUID }?.id
+        }
         return settings
     }
     var effectiveSpatialRenderingMode: SpatialRenderingMode {
@@ -275,6 +280,11 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
                 unmigratedEqualizerAPOText = newValue
             }
         }
+    }
+
+    mutating func replaceProcessing(_ value: ProcessingProfile) {
+        processing = value
+        unmigratedEqualizerAPOText = nil
     }
 
     mutating func setGlobalEqualizer(preampDB: Double, bands: [EQBand]) {
@@ -623,6 +633,9 @@ struct ProfileSettingsDraft {
     var sectionLayout: ProfileSectionLayout?
     var speakerTopology: SpeakerTopology?
     var spatialSettings: SpatialRenderSettings
+    var requestedMode: PlaybackMode?
+    var processing: ProcessingProfile?
+    var replacesUserEqualizer = false
 
     init(profile: DeviceProfile, activation: ProfileActivationMode) {
         original = profile
@@ -650,6 +663,10 @@ struct ProfileSettingsDraft {
         if spatialSettings != original.spatialSettings {
             result.spatialSettings = spatialSettings
             result.synchronizeListeningPositionCorrection()
+        }
+        if let requestedMode { result.setPlaybackMode(requestedMode) }
+        if let processing {
+            result.replaceProcessing(processing)
         }
         return result
     }

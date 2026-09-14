@@ -853,6 +853,7 @@ struct DeviceCorrectionProfile: Codable, Hashable, Sendable, Identifiable {
     var filters: [EQBand]
     var preampDB: Double
     var createdAt: Date
+    var importedAPOText = false
 
     init(
         schemaVersion: Int = DeviceCorrectionProfile.currentSchemaVersion,
@@ -908,6 +909,7 @@ struct DeviceCorrectionProfile: Codable, Hashable, Sendable, Identifiable {
         case filters
         case preampDB
         case createdAt
+        case importedAPOText
     }
 
     init(from decoder: Decoder) throws {
@@ -956,6 +958,7 @@ struct DeviceCorrectionProfile: Codable, Hashable, Sendable, Identifiable {
         _ = try values.decodeIfPresent(Double.self, forKey: .preampDB)
         preampDB = 0
         createdAt = try values.decode(Date.self, forKey: .createdAt)
+        importedAPOText = try values.decodeIfPresent(Bool.self, forKey: .importedAPOText) ?? false
 
         // Version-one profiles contained an already calculated response and remain valid.
         // Decoding upgrades the envelope so the runtime compiler can safely accept it.
@@ -980,6 +983,7 @@ struct DeviceCorrectionProfile: Codable, Hashable, Sendable, Identifiable {
         try values.encode(filters, forKey: .filters)
         try values.encode(preampDB, forKey: .preampDB)
         try values.encode(createdAt, forKey: .createdAt)
+        try values.encode(importedAPOText, forKey: .importedAPOText)
     }
 }
 

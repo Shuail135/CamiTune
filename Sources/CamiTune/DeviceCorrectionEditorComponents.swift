@@ -112,29 +112,10 @@ extension DeviceCorrectionEditorView {
                     .font(.caption.monospacedDigit().weight(.medium))
             }
 
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 5) {
-                GridRow {
-                    Text("Filter")
-                    Text("Type")
-                    Text("Frequency")
-                    Text("Gain")
-                    Text("Q")
-                }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-                ForEach(profile.filters.indices, id: \.self) { index in
-                    let band = profile.filters[index]
-                    GridRow {
-                        Text("\(index + 1)")
-                        Text(filterLabel(band.kind))
-                        Text("\(band.frequency, format: .number.precision(.fractionLength(0...1))) Hz")
-                        Text("\(band.gain ?? 0, format: .number.precision(.fractionLength(1))) dB")
-                        Text("\(band.q ?? 0.707, format: .number.precision(.fractionLength(2)))")
-                    }
-                    .font(.caption.monospacedDigit())
-                }
-            }
+            CorrectionFilterTable(filters: Binding(get: { generated?.filters ?? [] }, set: { filters in
+                generated?.filters = filters
+                generatedAutomaticHeadroomDB = automaticHeadroom(filters)
+            }))
         }
     }
 

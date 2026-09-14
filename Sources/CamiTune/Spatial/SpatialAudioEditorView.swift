@@ -5,6 +5,7 @@ struct SpatialAudioEditorView: View {
     @ObservedObject var state: AppState
     @Binding var profile: DeviceProfile
     @State private var showingSpeakerSystem = false
+    @State private var modePreview: PlaybackMode?
     @State private var channelContext: SpatialCalibrationContext?
     @State private var creatingPosition = false
     @State private var showingListeningPosition = false
@@ -17,19 +18,27 @@ struct SpatialAudioEditorView: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Playback").font(.title3.bold())
-                Picker("Playback mode", selection: playbackMode) {
+                Text("Mode").font(.title3.bold())
+                Picker("Mode", selection: playbackMode) {
                     ForEach(profile.availablePlaybackModes, id: \.self) { mode in
                         Label(mode.compactDisplayName, systemImage: mode.systemImageName).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
                 .labelStyle(.titleAndIcon)
-                .disabled(state.transitionInProgress || state.spatialCalibrationContext != nil)
+                .tint(.blue)
+                .disabled(state.transitionInProgress || state.isSavingProfileSettings || state.spatialCalibrationContext != nil)
                 Text(playbackModeDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                if modePreview == .referencePlayback && profile.playbackMode != .referencePlayback {
+                    Text("Finish Speaker and Listening Position in Profile Settings to use Reference. The saved mode is still \(profile.playbackMode.compactDisplayName).")
+                        .font(.callout).foregroundStyle(.orange)
+                }
+                if profile.isPersonalListening && (profile.playbackMode == .referencePlayback || profile.processing.deviceCorrection != nil) {
+                    ReferenceCorrectionView(state: state, profile: $profile)
+                }
                 if profile.playbackMode == .spatialRender {
                     HStack {
                         Text("Spatial").font(.callout)
@@ -59,7 +68,20 @@ struct SpatialAudioEditorView: View {
                     }
                 }
                 if profile.playbackMode == .spatialRender && profile.effectiveEndpointKind == .speakers {
-                    Button("Speaker and Listening Position…") { showingSpeakerSystem = true }
+                    Button("Speaker and Listening Position") { showingSpeakerSystem = true; showingListeningPosition = false }
+                }
+                if profile.playbackMode == .spatialRender && profile.isPersonalListening {
+                    Text("Personal-listening Spatial is still in development; the current renderer provides the supported effects shown here.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        let diagnostics = state.pcmRouter.spatialRenderDiagnostics
+                        let rendering = active && diagnostics?.renderer == .headphones
+                        let binaural = rendering && diagnostics?.hrtfProfile != nil
+                        Text(binaural ? "Spatial renderer running" : rendering
+                             ? "Limited stereo fallback; the binaural renderer is unavailable at this sample rate."
+                             : "Spatial renderer not running")
+                            .font(.caption).foregroundStyle(binaural ? Color.green : Color.secondary)
+                    }
                 }
                 if profile.playbackMode == .spatialRender {
                     DisclosureGroup("Advanced & Calibration") {
@@ -75,10 +97,12 @@ struct SpatialAudioEditorView: View {
                                 }
                                     Button("New Position…") {
                                         creatingPosition = true
+                                        showingSpeakerSystem = false
                                         showingListeningPosition = true
                                     }.disabled(profile.speakerTopology == nil)
                                     Button("Adjust Position…") {
                                         creatingPosition = false
+                                        showingSpeakerSystem = false
                                         showingListeningPosition = true
                                     }.disabled(profile.speakerTopology == nil || profile.effectiveSpatialSettings.seating == nil)
                                     if let seat = profile.effectiveSpatialSettings.seating {
@@ -124,11 +148,18 @@ struct SpatialAudioEditorView: View {
                     }.padding(.top, 6)
                     }.font(.callout)
                 }
+                if showingSpeakerSystem {
+                    Divider()
+                    SpeakerSystemView(state: state, profile: $profile, embedded: true,
+                        onClose: { showingSpeakerSystem = false })
+                }
+                if showingListeningPosition {
+                    Divider()
+                    SpeakerSystemView(state: state, profile: $profile, listeningOnly: true,
+                        newPosition: creatingPosition, embedded: true,
+                        onClose: { showingListeningPosition = false })
+                }
             }.padding(4)
-        }
-        .sheet(isPresented: $showingSpeakerSystem) { SpeakerSystemView(state: state, profile: $profile) }
-        .sheet(isPresented: $showingListeningPosition) {
-            SpeakerSystemView(state: state, profile: $profile, listeningOnly: true, newPosition: creatingPosition)
         }
         .sheet(item: $seatingContext) { context in
             SpatialSeatingCalibrationView(state: state, profile: $profile, context: context, newPosition: creatingPosition)
@@ -142,6 +173,8 @@ struct SpatialAudioEditorView: View {
             SpatialMicrophoneCalibrationView(state: state, context: context, profile: profile, roomCorrection: true)
                 .id(context.id)
         }
+        .onChange(of: profile.id) { _ in modePreview = nil }
+        .onChange(of: profile.playbackMode) { _ in modePreview = nil }
         .onChange(of: profile.spatialSettings) { _ in
             guard profile.playbackMode == .spatialRender else { return }
             guard active, state.spatialCalibrationContext == nil else { return }
@@ -151,16 +184,28 @@ struct SpatialAudioEditorView: View {
         }
     }
     private var playbackMode: Binding<PlaybackMode> {
-        Binding(get: { profile.playbackMode }, set: { mode in
+        Binding(get: { modePreview ?? profile.playbackMode }, set: { mode in
+            if mode == .referencePlayback && !profile.isPersonalListening {
+                var candidate = profile; candidate.setPlaybackMode(mode)
+                if (try? candidate.validatedReferenceTopology()) == nil {
+                    modePreview = mode; return
+                }
+            }
+            modePreview = nil
             let id = profile.id
             Task { await state.setPlaybackMode(profileID: id, mode: mode) }
         })
     }
     private var playbackModeDescription: String {
-        switch profile.playbackMode {
+        switch modePreview ?? profile.playbackMode {
         case .direct:
             return "No automatic adjustment for audio devices."
         case .referencePlayback:
+            if profile.isPersonalListening {
+                return profile.effectiveEndpointKind == .iem
+                    ? "Fine-tunes your earphones to sound closer to your selected target."
+                    : "Fine-tunes your headphones using your loaded correction filters."
+            }
             return "Preserves source positions through the configured speaker map without creating surround or height content."
         case .spatialRender:
             return "Automatically make audio spatial and immersive."

@@ -39,15 +39,15 @@ struct GlobalEqualizerEditorView: View {
                     Spacer()
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 8) {
-                            Button("Device Correction…") {
-                                showDeviceCorrectionEditor = true
+                            if !profile.isPersonalListening {
+                                Button("Device Correction…") { showDeviceCorrectionEditor = true }
                             }
                             Button("Import .txt") { showTextImporter = true }
                             Button("Paste APO Text") { importFromClipboard() }
                         }
                         Menu("Actions") {
-                            Button("Device Correction…") {
-                                showDeviceCorrectionEditor = true
+                            if !profile.isPersonalListening {
+                                Button("Device Correction…") { showDeviceCorrectionEditor = true }
                             }
                             Button("Import .txt") { showTextImporter = true }
                             Button("Paste APO Text") { importFromClipboard() }
@@ -142,6 +142,11 @@ struct GlobalEqualizerEditorView: View {
         .onChange(of: graphicBands) { _ in graphicEQChanged() }
         .onChange(of: profile.sampleRate) { _ in updateGraphResponses() }
         .onChange(of: profile.processing) { _ in updateAutomaticSystemHeadroom() }
+        .onReceive(state.equalizerReplacementChanges.filter { $0 == profile.id }) { _ in
+            if let latest = state.profiles.profiles.first(where: { $0.id == profile.id }) { profile = latest }
+            loadGraphicEQ()
+        }
+        .disabled(state.isSavingProfileSettings)
         .onReceive(state.eqDraftChanges.filter { $0 == profile.id }) { _ in
             updateAutomaticSystemHeadroom()
         }

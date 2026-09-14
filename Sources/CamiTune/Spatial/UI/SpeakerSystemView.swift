@@ -7,7 +7,10 @@ struct SpeakerSystemView: View {
     var draftOnly = false
     var listeningOnly = false
     var newPosition = false
+    var embedded = false
+    var onClose: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var audition = SpeakerOutputAudition()
     @State private var draft: SpeakerTopology?
     @State private var seat: SpatialSeatingCalibration?
     @State private var originalSeat: SpatialSeatingCalibration?
@@ -15,213 +18,168 @@ struct SpeakerSystemView: View {
     @State private var selected: PhysicalOutputID?
     @State private var busy = false
     @State private var message: String?
-    @State private var context: SpatialCalibrationContext?
-    @State private var playing: PhysicalOutputID?
-    @State private var request = UUID()
     @State private var confirmClose = false
-    @State private var editingTitle: PhysicalOutputID?
-    @FocusState private var titleFocused: PhysicalOutputID?
+    @State private var titleHovered = false
+    @State private var renamingTitle = false
+    @State private var titleDraft = ""
+    @State private var renamingID: PhysicalOutputID?
+    @State private var canvasID = UUID()
+    @State private var graphZoom: CGFloat = 1.25
+    @FocusState private var titleFocused: Bool
+    @State private var boardExtent: Float = 1
 
     private var saved: Bool { draft == profile.speakerTopology && seat == originalSeat }
-    private var canTest: Bool {
-        !draftOnly && saved && profile.playbackMode == .referencePlayback
-            && state.isActive && state.activeProfileID == profile.id && !busy
-    }
+    private var editingLocked: Bool { busy || audition.output != nil }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(listeningOnly ? "Listening Position" : "Speaker and Listening Position").font(.title2.bold())
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(draft.map { "\($0.declaredChannelCount) physical outputs" } ?? "Discover the outputs on this device.")
-                    .foregroundStyle(.secondary)
+                Text(listeningOnly ? "Listening Position" : "Speaker and Listening Position").font(.title3.bold())
                 Spacer()
-                if !listeningOnly { Button("Discover Outputs") { discover() }.disabled(busy || playing != nil) }
+                if !listeningOnly && (!draftOnly || draft == nil) {
+                    Button("Discover Outputs") { discover() }.disabled(editingLocked)
+                }
             }
+            Text("Configure speaker position and user position for best performance.")
+                .font(.callout).foregroundStyle(.secondary)
             if let draft {
                 roomMap(draft)
-                Text(listeningOnly
-                     ? "Drag the listener to adjust this position. Speaker positions are locked."
-                     : "Drag a speaker by its title to place it. Click its icon to play or stop identification audio.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if !listeningOnly && !canTest {
-                    Text("To identify outputs, save your changes and activate Reference on this profile.")
+                HStack {
+                    Text(listeningOnly ? "Drag the listener. Drag empty space to pan."
+                         : "Drag a speaker to place it. Click to test; use its arrow to assign a role. Drag empty space to pan.")
                         .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button { graphZoom = max(0.25, graphZoom / 1.25) } label: {
+                        Image(systemName: "minus.magnifyingglass")
+                    }.help("Zoom out").accessibilityLabel("Zoom out").disabled(graphZoom <= 0.25)
+                    Text("\(Int((graphZoom * 100).rounded()))%")
+                        .font(.caption.monospacedDigit()).frame(width: 42)
+                    Button { graphZoom = min(4, graphZoom * 1.25) } label: {
+                        Image(systemName: "plus.magnifyingglass")
+                    }.help("Zoom in").accessibilityLabel("Zoom in").disabled(graphZoom >= 4)
+                    Button("Reset View") { graphZoom = 1.25; canvasID = UUID() }.controlSize(.small)
                 }
+                Text("Alignment guides appear nearby. Hold Option to move freely.")
+                    .font(.caption).foregroundStyle(.secondary)
                 if let index = draft.endpoints.firstIndex(where: { $0.id == selected }), !listeningOnly {
+                    speakerTitle(draft.endpoints[index])
                     heightEditor(index: index)
                 }
-                if seat != nil {
-                    HStack {
-                        Text("Listening Position")
-                        TextField("Position name", text: Binding(get: { seat?.name ?? "" }, set: { seat?.name = String($0.prefix(80)) }))
-                        if let seat {
-                            Text("L \(seat.leftDistanceMeters, specifier: "%.2f") m · R \(seat.rightDistanceMeters, specifier: "%.2f") m")
-                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        }
-                    }
+            } else {
+                Text("Discover the physical outputs to configure this room.").foregroundStyle(.secondary)
+            }
+            if audition.preparing { ProgressView("Preparing test…").controlSize(.small) }
+            if busy { ProgressView().controlSize(.small) }
+            if let detail = message ?? audition.message { Text(detail).font(.callout).foregroundStyle(.orange) }
+            if !draftOnly {
+                HStack {
+                    Spacer()
+                    Button("Save") { save(close: false) }.disabled(draft == nil || editingLocked || saved)
+                    Button("Close") { close() }.disabled(busy)
                 }
             }
-            if busy { ProgressView().controlSize(.small) }
-            if let message { Text(message).font(.callout).foregroundStyle(.orange) }
-            HStack {
-                Spacer()
-                Button("Save") { save(close: false) }.disabled(draft == nil || busy || playing != nil || saved)
-                Button("Close") { close() }.keyboardShortcut(.cancelAction).disabled(busy)
-            }
-        }.padding(24).frame(width: 720)
-        .onAppear {
-            originalProfile = profile
-            draft = profile.speakerTopology
-            let existing = profile.effectiveSpatialSettings.seating
-            seat = newPosition ? SpatialSeatingCalibration(outputDeviceUID: profile.outputDeviceUID) : existing
-            if seat == nil { seat = SpatialSeatingCalibration(outputDeviceUID: profile.outputDeviceUID, name: "Primary") }
-            originalSeat = newPosition ? nil : existing
         }
-        .onDisappear { stop() }
-        .interactiveDismissDisabled(!saved || busy)
+        .padding(embedded ? 0 : 24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            originalProfile = profile; draft = profile.speakerTopology
+            let existing = profile.effectiveSpatialSettings.seating
+            seat = newPosition ? SpatialSeatingCalibration(outputDeviceUID: profile.outputDeviceUID, name: "Default") : existing
+            if seat == nil { seat = SpatialSeatingCalibration(outputDeviceUID: profile.outputDeviceUID, name: "Default") }
+            if seat?.name == "Primary" || seat?.name == "My listening position" { seat?.name = "Default" }
+            originalSeat = newPosition ? nil : existing
+            selected = draft?.endpoints.first?.id
+            if let draft { fitBoard(draft) }
+            if newPosition { updateDistances() }
+            publishDraft()
+        }
+        .onChange(of: selected) { _ in renamingTitle = false }
+        .onChange(of: titleFocused) { focused in if !focused && renamingTitle { commitTitle() } }
+        .onChange(of: draft) { _ in publishDraft() }
+        .onChange(of: seat) { _ in publishDraft() }
+        .onDisappear { audition.stop() }
+        .onChange(of: state.isSavingProfileSettings) { saving in if saving { audition.stop() } }
         .confirmationDialog("Save changes before closing?", isPresented: $confirmClose, titleVisibility: .visible) {
             Button("Save Changes") { save(close: true) }
-            Button("Discard Changes", role: .destructive) { dismiss() }
+            Button("Discard Changes", role: .destructive) { finishClose() }
             Button("Cancel", role: .cancel) {}
-        }
-        .onChange(of: state.spatialCalibrationContext?.id) { id in
-            if let context, id != context.id { request = UUID(); playing = nil; self.context = nil }
         }
     }
 
     private func roomMap(_ topology: SpeakerTopology) -> some View {
-        GeometryReader { geometry in
-            let scale = min(geometry.size.width / 12, geometry.size.height / 10)
-            ZStack {
-                RoundedRectangle(cornerRadius: 20).fill(Color.secondary.opacity(0.07))
-                VStack(spacing: 2) {
-                    Image(systemName: "tv").font(.title2)
-                    Text("FRONT / SCREEN").font(.caption2)
-                }.position(x: geometry.size.width / 2, y: 28)
-                ForEach(Array(topology.endpoints.enumerated()), id: \.element.id) { item in
-                    let endpoint = item.element
-                    let vector = SpeakerLayoutGeometry.vector(endpoint.position)
-                    let point = endpoint.position == nil
-                        ? CGPoint(x: 40 + CGFloat(item.offset % 12) * 50, y: geometry.size.height - 35)
-                        : CGPoint(x: geometry.size.width / 2 + CGFloat(vector.x) * scale,
-                                  y: geometry.size.height / 2 - CGFloat(vector.y) * scale)
-                    speakerNode(endpoint)
-                        .position(point)
-                        .highPriorityGesture(DragGesture(minimumDistance: 8, coordinateSpace: .named("speakerRoom"))
-                            .onChanged { value in
-                                guard !listeningOnly, !busy, playing == nil,
-                                      let index = draft?.endpoints.firstIndex(where: { $0.id == endpoint.id }) else { return }
-                                selected = endpoint.id
-                                let x = Float((value.location.x - geometry.size.width / 2) / scale)
-                                let y = Float((geometry.size.height / 2 - value.location.y) / scale)
-                                draft?.endpoints[index].position = SpeakerLayoutGeometry.position(
-                                    x: min(5.5, max(-5.5, x)), y: min(4, max(-4, y)), height: vector.z)
-                                draft?.endpoints[index].positionSource = .userPlacement
-                                updateDistances()
-                            }, including: listeningOnly ? .subviews : .all)
-                }
-                Image(systemName: "person.fill").font(.title2)
-                    .foregroundStyle(Color.accentColor)
-                    .padding(10).background(.background, in: Circle())
-                    .position(x: geometry.size.width / 2 + CGFloat(seat?.roomX ?? 0) * scale,
-                              y: geometry.size.height / 2 - CGFloat(seat?.roomY ?? 0) * scale)
-                    .gesture(DragGesture(minimumDistance: 8, coordinateSpace: .named("speakerRoom"))
-                        .onChanged { value in
-                            guard !busy, playing == nil else { return }
-                            seat?.roomX = min(5, max(-5, Float((value.location.x - geometry.size.width / 2) / scale)))
-                            seat?.roomY = min(4, max(-4, Float((geometry.size.height / 2 - value.location.y) / scale)))
-                            seat?.useMeasuredAlignment = false
-                            updateDistances()
-                        })
-                    .accessibilityLabel("Listener position")
-            }.coordinateSpace(name: "speakerRoom")
-        }.frame(height: 370)
+        SpeakerRoomCanvas(topology: topology,
+            listener: SpatialVector3(x: seat?.roomX ?? 0, y: seat?.roomY ?? 0, z: 0),
+            selected: selected, playing: audition.output, extent: boardExtent,
+            locked: busy, listeningOnly: listeningOnly,
+            select: { selected = $0 },
+            audition: { audition.toggle($0, topology: topology, audio: state.coreAudio) },
+            moveSpeaker: { id, point in
+                audition.stop()
+                guard let index = draft?.endpoints.firstIndex(where: { $0.id == id }) else { return }
+                draft?.endpoints[index].position = SpeakerLayoutGeometry.position(x: point.x, y: point.y, height: point.z)
+                draft?.endpoints[index].positionSource = .userPlacement
+                updateDistances()
+            }, moveListener: { point in
+                audition.stop()
+                seat?.roomX = point.x; seat?.roomY = point.y
+                seat?.useMeasuredAlignment = false
+                updateDistances()
+            }, assignRole: { id, role in audition.stop(); setRole(role, for: id) }, zoom: graphZoom, zoomChanged: { graphZoom = $0 })
+            .id(canvasID)
+            .frame(height: 370)
     }
 
-    private func speakerNode(_ endpoint: SpeakerEndpoint) -> some View {
-        VStack(spacing: 3) {
-            HStack(spacing: 2) {
-                Button {
-                    selected = endpoint.id
-                    if playing == endpoint.id { stop() }
-                    else if canTest { stop(); audition(endpoint.id) }
-                } label: {
-                    Image(systemName: playing == endpoint.id ? "stop.circle.fill" : "speaker.wave.2.fill")
-                        .foregroundStyle(playing == endpoint.id ? Color.orange : Color.accentColor)
-                }.buttonStyle(.plain)
-                    .help(playing == endpoint.id ? "Stop identification" : "Identify output \(endpoint.id.channelIndex + 1)")
-                    .accessibilityLabel(playing == endpoint.id ? "Stop identification" : "Identify \(endpoint.displayName)")
-                if !listeningOnly {
-                    Menu {
-                        Button("Disabled") { setRole(nil, for: endpoint.id) }
-                        Divider()
-                        ForEach(ChannelRole.allCases, id: \.self) { role in
-                            Button(role == .unknown ? "Custom / Unknown" : role.displayName) { setRole(role, for: endpoint.id) }
-                        }
-                    } label: { Image(systemName: "chevron.down").font(.caption2) }
-                    .menuStyle(.borderlessButton).fixedSize().disabled(playing != nil || busy)
-                }
-            }
-            if editingTitle == endpoint.id {
-                TextField("Speaker title", text: titleBinding(endpoint.id))
-                    .textFieldStyle(.plain).frame(width: 110).focused($titleFocused, equals: endpoint.id)
-                    .onSubmit { editingTitle = nil }
-                    .onExitCommand { editingTitle = nil }
+    private func speakerTitle(_ endpoint: SpeakerEndpoint) -> some View {
+        HStack {
+            if renamingTitle {
+                TextField("Speaker title", text: $titleDraft)
+                    .font(.title2.bold()).textFieldStyle(.plain)
+                    .focused($titleFocused)
+                    .onSubmit { commitTitle() }
+                    .onExitCommand { renamingTitle = false }
             } else {
-                HStack(spacing: 3) {
-                    Text(endpoint.displayName).lineLimit(1)
-                    if !listeningOnly {
-                        Button { editingTitle = endpoint.id; titleFocused = endpoint.id } label: {
-                            Image(systemName: "pencil")
-                        }.buttonStyle(.plain).help("Rename speaker")
-                    }
-                }.font(.caption).frame(maxWidth: 115)
+                Button {
+                    renamingID = endpoint.id; titleDraft = endpoint.displayName; renamingTitle = true; titleFocused = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(endpoint.displayName).font(.title2.bold())
+                        Image(systemName: "pencil").foregroundStyle(.secondary)
+                            .opacity(titleHovered ? 1 : 0)
+                    }.contentShape(Rectangle())
+                }.buttonStyle(.plain).onHover { titleHovered = $0 }
+                    .accessibilityLabel("Rename \(endpoint.displayName)")
+                    .help("Rename this speaker")
             }
-            if selected == endpoint.id {
-                Text("≈ \(SpeakerLayoutGeometry.distance(from: endpoint.position, listenerX: seat?.roomX ?? 0, listenerY: seat?.roomY ?? 0), specifier: "%.2f") m")
-                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-            }
-        }.padding(5)
-            .background(selected == endpoint.id ? Color.accentColor.opacity(0.1) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
-            .opacity(endpoint.connectionState == .disabledByUser ? 0.4 : 1)
-            .onTapGesture { selected = endpoint.id }
+            Spacer()
+        }.disabled(busy)
     }
 
-    private func titleBinding(_ id: PhysicalOutputID) -> Binding<String> {
-        Binding(get: { draft?.endpoints.first(where: { $0.id == id })?.displayName ?? "" }, set: { value in
-            guard let index = draft?.endpoints.firstIndex(where: { $0.id == id }) else { return }
-            draft?.endpoints[index].displayName = String(value.prefix(80))
-        })
+    private func commitTitle() {
+        guard let index = draft?.endpoints.firstIndex(where: { $0.id == renamingID }) else { return }
+        let title = String(titleDraft.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        if !title.isEmpty { draft?.endpoints[index].displayName = title }
+        renamingTitle = false
     }
-
     private func setRole(_ role: ChannelRole?, for id: PhysicalOutputID) {
-        guard let index = draft?.endpoints.firstIndex(where: { $0.id == id }), var endpoint = draft?.endpoints[index] else { return }
-        SpeakerLayoutGeometry.setRole(role, on: &endpoint)
-        draft?.endpoints[index] = endpoint
-        selected = id
+        guard var topology = draft else { return }
+        renamingTitle = false
+        SpeakerLayoutGeometry.setRole(role, for: id, in: &topology)
+        draft = topology; selected = id
         updateDistances()
     }
-
     private func heightEditor(index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Height relative to your head")
-                TextField("Metres", value: Binding(get: {
-                    SpeakerLayoutGeometry.vector(draft?.endpoints[index].position).z
-                }, set: { height in
-                    guard height.isFinite else { return }
-                    let point = SpeakerLayoutGeometry.vector(draft?.endpoints[index].position)
-                    draft?.endpoints[index].position = SpeakerLayoutGeometry.position(x: point.x, y: point.y, height: min(10, max(-10, height)))
-                    draft?.endpoints[index].positionSource = .userPlacement
-                    updateDistances()
-                }), format: .number.precision(.fractionLength(2))).frame(width: 70)
-                Text("m").foregroundStyle(.secondary)
-            }
-            Text("Estimate how much higher (+) or lower (−) the speaker is than your head.")
-                .font(.caption).foregroundStyle(.secondary)
-        }.disabled(playing != nil || busy)
+        let height = Binding<Float>(get: { SpeakerLayoutGeometry.vector(draft?.endpoints[index].position).z }, set: { value in
+            let point = SpeakerLayoutGeometry.vector(draft?.endpoints[index].position)
+            draft?.endpoints[index].position = SpeakerLayoutGeometry.position(x: point.x, y: point.y, height: value)
+            draft?.endpoints[index].positionSource = .userPlacement
+            updateDistances()
+        })
+        return HStack {
+            Text("Height relative to your head").font(.callout)
+            Slider(value: height, in: -10...10).accessibilityLabel("Height relative to your head")
+            Text(String(format: "%+.2f m", height.wrappedValue)).font(.caption.monospacedDigit()).frame(width: 65)
+        }.disabled(editingLocked)
     }
-
     private func updateDistances() {
         guard let draft else { return }
         for endpoint in draft.endpoints where endpoint.connectionState != .disabledByUser {
@@ -230,14 +188,23 @@ struct SpeakerSystemView: View {
             if endpoint.role == .right { seat?.rightDistanceMeters = distance }
         }
     }
-
-    private func close() {
-        stop()
-        if saved { dismiss() } else { confirmClose = true }
+    private func fitBoard(_ topology: SpeakerTopology) {
+        boardExtent = max(1, topology.endpoints.compactMap(\.position).map {
+            let point = SpeakerLayoutGeometry.screenCoordinates(SpeakerLayoutGeometry.vector($0))
+            return max(abs(point.x), abs(point.y)) + 0.25
+        }.max() ?? 1)
     }
+    private func publishDraft() {
+        guard draftOnly, let draft else { return }
+        profile.speakerTopology = draft
+        if let seat { profile.spatialSettings.seating = seat }
+    }
+    private func finishClose() { if let onClose { onClose() } else { dismiss() } }
+    private func close() { if renamingTitle { commitTitle() }; audition.stop(); if saved { finishClose() } else { confirmClose = true } }
 
     private func save(close: Bool) {
-        stop()
+        if renamingTitle { commitTitle() }
+        audition.stop()
         guard var value = draft, let seat else { return }
         do {
             guard let originalProfile, originalProfile.id == profile.id,
@@ -250,12 +217,12 @@ struct SpeakerSystemView: View {
             guard !seat.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw ProfileSettingsError.runtime("Enter a listening-position name.")
             }
-            value.updatedAt = Date()
+            if !listeningOnly { value.updatedAt = Date() }
             if draftOnly {
                 profile.speakerTopology = value
                 profile.spatialSettings.seating = seat
                 draft = value; originalSeat = seat; self.originalProfile = profile
-                if close { dismiss() }
+                if close { finishClose() }
             } else {
                 var settings = ProfileSettingsDraft(profile: profile, activation: state.profiles.activationMode(for: profile))
                 settings.speakerTopology = value
@@ -266,7 +233,7 @@ struct SpeakerSystemView: View {
                     do {
                         try await state.saveProfileSettings(settings)
                         draft = value; originalSeat = seat; self.originalProfile = state.profiles.profiles.first { $0.id == profile.id }
-                        if close { dismiss() }
+                        if close { finishClose() }
                     } catch { message = error.localizedDescription }
                 }
             }
@@ -286,33 +253,12 @@ struct SpeakerSystemView: View {
                 guard profile.outputDeviceUID == uid else { return }
                 // Use the profile's requested processing rate; activation negotiates it.
                 found.sampleRate = Double(profile.sampleRate)
+                found = SpeakerLayoutGeometry.arrangedForEditing(found, previous: draft)
                 draft = found; selected = found.endpoints.first?.id
+                canvasID = UUID()
+                fitBoard(found)
             } catch { message = error.localizedDescription }
         }
     }
 
-    private func audition(_ output: PhysicalOutputID) {
-        guard canTest, let topology = draft, let context = state.beginSpatialCalibration(profileID: profile.id) else {
-            message = "Activate this saved profile before testing its outputs."; return
-        }
-        self.context = context
-        let token = UUID(); request = token; playing = output
-        state.pcmRouter.holdSpatialMeasurement(id: context.id, enabled: true)
-        Task {
-            let clip = await Task.detached(priority: .userInitiated) { SpatialCalibrationClip(physicalOutput: output, topology: topology) }.value
-            guard request == token else { return }
-            guard let clip, state.playSpatialCalibration(context: context, clip: clip, tuning: .neutral, completion: {
-                Task { @MainActor in if request == token { stop() } }
-            }) else { stop(); message = "The output changed or this channel is disabled. Save and activate the profile again."; return }
-        }
-    }
-
-    private func stop() {
-        request = UUID(); playing = nil
-        if let context {
-            state.pcmRouter.stopSpatialCalibrationSample(id: context.id)
-            state.endSpatialCalibration(id: context.id)
-        }
-        context = nil
-    }
 }

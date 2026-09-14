@@ -201,7 +201,8 @@ extension DeviceCorrectionEditorView {
         isLoadingCatalog = true
         defer { isLoadingCatalog = false }
         do {
-            catalogEntries = try await catalog.entries()
+            let entries = try await catalog.entries()
+            catalogEntries = referenceEndpoint.map { ReferenceCorrection.catalog(entries, endpoint: $0) } ?? entries
         } catch {
             errorMessage = "Online device data is unavailable. You can still import a custom CSV."
         }

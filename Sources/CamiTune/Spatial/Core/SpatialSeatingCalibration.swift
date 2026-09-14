@@ -5,7 +5,7 @@ import Foundation
 struct SpatialSeatingCalibration: Codable, Hashable, Sendable, Identifiable {
     var id = UUID()
     var outputDeviceUID: String
-    var name = "My listening position"
+    var name = "Default"
     var leftDistanceMeters: Float = 1
     var rightDistanceMeters: Float = 1
     var roomX: Float = 0
@@ -26,7 +26,7 @@ struct SpatialSeatingCalibration: Codable, Hashable, Sendable, Identifiable {
         case measuredArrivalDifferenceMS, measuredLevelDifferenceDB, useMeasuredAlignment
         case measuredAt, microphoneName, measurementConfidence, roomCorrectionBands
     }
-    init(outputDeviceUID: String, name: String = "My listening position",
+    init(outputDeviceUID: String, name: String = "Default",
          leftDistanceMeters: Float = 1, rightDistanceMeters: Float = 1) {
         self.outputDeviceUID = outputDeviceUID; self.name = name
         self.leftDistanceMeters = leftDistanceMeters; self.rightDistanceMeters = rightDistanceMeters
@@ -35,7 +35,7 @@ struct SpatialSeatingCalibration: Codable, Hashable, Sendable, Identifiable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         outputDeviceUID = try c.decode(String.self, forKey: .outputDeviceUID)
-        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "My listening position"
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Default"
         leftDistanceMeters = Self.distance(try c.decodeIfPresent(Float.self, forKey: .leftDistanceMeters) ?? 1)
         rightDistanceMeters = Self.distance(try c.decodeIfPresent(Float.self, forKey: .rightDistanceMeters) ?? 1)
         roomX = try c.decodeIfPresent(Float.self, forKey: .roomX) ?? 0
