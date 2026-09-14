@@ -4,6 +4,11 @@ import Darwin
 import CoreImage
 import Combine
 
+private var isCamiTuneTestHost: Bool {
+    ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        || NSClassFromString("XCTestCase") != nil
+}
+
 @main
 struct CamiTuneMain: App {
     @NSApplicationDelegateAdaptor(CamiTuneAppDelegate.self) private var appDelegate
@@ -26,7 +31,7 @@ struct CamiTuneMain: App {
         .menuBarExtraStyle(.window)
         .commands {
             CamiTuneCommands(coordinator: CamiTunePresentationCoordinator.shared.commands,
-                showLicense: AppLicense.show)
+                undo: state.undoCommands, showLicense: AppLicense.show)
         }
     }
 }
@@ -133,7 +138,14 @@ private enum AppIcon {
 final class CamiTunePresentationCoordinator {
     static let shared = CamiTunePresentationCoordinator()
 
-    let state = AppState()
+    let state: AppState = {
+        guard isCamiTuneTestHost else { return AppState() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CamiTuneTestHost-\(UUID())")
+        let profiles = ProfileStore(storageURL: directory.appendingPathComponent("profiles.json"),
+            userDefaults: UserDefaults(suiteName: "CamiTuneTestHost-\(UUID())")!)
+        let audio = PerAppAudioController(settingsURL: directory.appendingPathComponent("apps.json"), monitorsRunningApplications: false)
+        return AppState(profiles: profiles, perAppAudio: audio)
+    }()
     lazy var commands: MainWindowCommandCoordinator = {
         let bridge = MainWindowCommandCoordinator()
         bridge.showMainWindow = { [weak self] in self?.showMainWindow() }
@@ -378,6 +390,7 @@ final class CamiTuneAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         textEditingCompatibility.start()
+        guard !isCamiTuneTestHost else { return }
         let supportDirectory = CamiTunePaths.supportDirectory
         do {
             try FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
@@ -402,7 +415,7 @@ final class CamiTuneAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard !rejectedDuplicateInstance else { return }
+        guard !rejectedDuplicateInstance, !isCamiTuneTestHost else { return }
         NSApp.applicationIconImage = AppIcon.image
         DistributedNotificationCenter.default().addObserver(
             self,

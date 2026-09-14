@@ -28,6 +28,7 @@ enum SidebarDestination: Hashable, Sendable {
 @MainActor
 struct ContentView: View {
     let state: AppState
+    @ObservedObject private var history: UndoCoordinator
     @ObservedObject var commands: MainWindowCommandCoordinator
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var discoveringOutput = false
@@ -39,6 +40,7 @@ struct ContentView: View {
     init(state: AppState, commands: MainWindowCommandCoordinator? = nil) {
         self.commands = commands ?? MainWindowCommandCoordinator()
         self.state = state
+        self.history = state.history
         let saved = UserDefaults.standard.string(forKey: "lastSidebarSelection")
         let restored = SidebarDestination.restore(saved,
             profileIDs: Set(state.profiles.profiles.map(\.id)),
@@ -63,6 +65,7 @@ struct ContentView: View {
             )
         }
         .environmentObject(commands)
+        .disabled(history.isReplaying)
         .onAppear { commands.selection = selection }
         .onChange(of: columnVisibility) { commands.sidebarVisible = $0 != .detailOnly }
         .onReceive(commands.$request) { request in

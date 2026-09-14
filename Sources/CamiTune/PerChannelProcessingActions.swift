@@ -11,6 +11,10 @@ extension PerChannelProcessingView {
         guard index != selectedChannelIndex else { return }
         bandReduction.cancel()
         runtime.liveApplyTask?.cancel()
+        if runtime.continuousEditDepth > 0 {
+            runtime.continuousEditDepth = 1
+            continuousEditingChanged(false)
+        }
         preserveSelectedDraft()
         selectedChannelIndex = index
         loadSelectedChannel()
@@ -24,6 +28,7 @@ extension PerChannelProcessingView {
             showBandReductionConfirmation = true
             return
         }
+        runtime.historyActionName = "Change Channel Band Count"
         runtime.bands.replace(
             with: EQEditorSupport.resizedBands(currentBands, count: count)
         )
@@ -39,6 +44,7 @@ extension PerChannelProcessingView {
     func applyPendingBandReduction() {
         guard let target = pendingBandCount else { return }
         pendingBandCount = nil
+        let editGeneration = state.editGeneration
         let originalBands = runtime.bands.values
         let profileID = profile.id
         let channelIndex = selectedChannelIndex
@@ -46,9 +52,10 @@ extension PerChannelProcessingView {
         bandReduction.run {
             EQEditorSupport.responseFittedBands(originalBands, count: target, sampleRate: Double(sampleRate))
         } completion: { result in
-            guard profile.id == profileID, selectedChannelIndex == channelIndex,
+            guard editGeneration == state.editGeneration, profile.id == profileID, selectedChannelIndex == channelIndex,
                   profile.sampleRate == sampleRate, runtime.bands.values == originalBands else { return }
             if case .success(let fitted) = result {
+                runtime.historyActionName = "Recalculate Channel EQ"
                 runtime.bands.replace(with: fitted)
                 channelSettingsChanged()
             }
@@ -56,6 +63,9 @@ extension PerChannelProcessingView {
     }
 
     func loadSelectedChannel() {
+        if let oldID = runtime.loadedProfileID, let channel = runtime.loadedChannelIndex {
+            state.history.cancelGesture(key: GestureKey(target: .profileChannel(oldID, channel), control: "channel"))
+        }
         bandReduction.cancel()
         runtime.suppressChanges = true
         if !editableChannels.contains(where: { $0.index == selectedChannelIndex }) { selectedChannelIndex = editableChannels.first?.index ?? 0 }
@@ -108,9 +118,11 @@ extension PerChannelProcessingView {
         runtime.delay.value = delayMilliseconds
         runtime.limiter.value = limiterEnabled
         runtime.loadedProfileID = profile.id
+        runtime.loadedChannelIndex = selectedChannelIndex
         runtime.updateStatus(isSaved: draft == nil && limiterDraft == nil && delayDraft == nil && toneDraft == nil)
         updateResponses()
 
+        runtime.historyBaseline = runtime.snapshot
         DispatchQueue.main.async { runtime.suppressChanges = false }
     }
 
@@ -127,6 +139,8 @@ extension PerChannelProcessingView {
             return
         }
 
+        recordChannelEdit()
+        preserveSelectedDraft()
         scheduleDeferredChannelCommit(milliseconds: 250)
     }
 
@@ -134,21 +148,30 @@ extension PerChannelProcessingView {
     /// and DSP work is never allowed to begin while the pointer is held down.
     func continuousEditingChanged(_ isEditing: Bool) {
         if isEditing {
+            if runtime.continuousEditDepth == 0 {
+                state.history.beginGesture(key: channelGestureKey, actionName: "Adjust Channel", contextName: profile.name,
+                    target: .profileChannel(profile.id, selectedChannelIndex), before: .channel(runtime.snapshot))
+            }
             runtime.continuousEditDepth += 1
             runtime.liveApplyTask?.cancel()
             return
         }
 
         runtime.continuousEditDepth = max(0, runtime.continuousEditDepth - 1)
-        guard runtime.continuousEditDepth == 0,
-              runtime.commitPendingAfterContinuousEdit else { return }
+        guard runtime.continuousEditDepth == 0 else { return }
+        state.history.endGesture(key: channelGestureKey, after: .channel(runtime.snapshot))
+        runtime.historyBaseline = runtime.snapshot
+        guard runtime.commitPendingAfterContinuousEdit else { return }
+        preserveSelectedDraft()
         runtime.commitPendingAfterContinuousEdit = false
         scheduleDeferredChannelCommit(milliseconds: 60)
     }
 
     func scheduleDeferredChannelCommit(milliseconds: Int) {
+        state.markPendingEditorApply(profile.id)
         runtime.liveApplyTask?.cancel()
 
+        let editGeneration = state.editGeneration
         let profileID = profile.id
         let channelIndex = selectedChannelIndex
         let snapshot = runtime.snapshot
@@ -165,6 +188,7 @@ extension PerChannelProcessingView {
                 return
             }
             guard !Task.isCancelled,
+                  editGeneration == state.editGeneration,
                   runtime.continuousEditDepth == 0,
                   profile.id == profileID,
                   selectedChannelIndex == channelIndex else { return }
@@ -174,6 +198,7 @@ extension PerChannelProcessingView {
                 EqualizerAPOSerializer().serialize(parsed)
             }.value
             guard !Task.isCancelled,
+                  editGeneration == state.editGeneration,
                   runtime.continuousEditDepth == 0,
                   profile.id == profileID,
                   selectedChannelIndex == channelIndex else { return }
@@ -195,6 +220,7 @@ extension PerChannelProcessingView {
     }
 
     func saveSelectedChannel() {
+        recordChannelEdit()
         runtime.liveApplyTask?.cancel()
         runtime.commitPendingAfterContinuousEdit = false
         let snapshot = runtime.snapshot
@@ -226,6 +252,7 @@ extension PerChannelProcessingView {
     }
 
     func resetSelectedChannel() {
+        runtime.historyActionName = "Reset Channel"
         runtime.liveApplyTask?.cancel()
         runtime.simpleTone.value = SimpleToneSettings()
         runtime.gain.value = 0
@@ -255,12 +282,29 @@ extension PerChannelProcessingView {
     }
 
     func applySessionDraftsLive() {
-        do {
-            let liveProfile = try state.applyingSessionEQDrafts(to: profile)
-            Task { await state.apply(profile: liveProfile) }
-        } catch {
-            state.errorMessage = error.localizedDescription
+        let generation = state.editGeneration
+        let id = profile.id
+        state.markPendingEditorApply(id)
+        Task {
+            guard generation == state.editGeneration else { return }
+            do { try await state.applyHistoryProfileIfActive(id) }
+            catch { state.errorMessage = error.localizedDescription }
         }
+    }
+
+    var channelGestureKey: GestureKey {
+        GestureKey(target: .profileChannel(profile.id, selectedChannelIndex), control: "channel")
+    }
+    func recordChannelEdit() {
+        if let before = runtime.historyBaseline {
+            let target = HistoryTarget.profileChannel(profile.id, selectedChannelIndex)
+            let control = runtime.historyActionName == nil ? runtime.snapshot.numericControl(changedFrom: before) : nil
+            state.history.record(actionName: runtime.historyActionName ?? "Edit Channel", contextName: profile.name,
+                target: target, before: .channel(before), after: .channel(runtime.snapshot),
+                coalescingKey: control.map { GestureKey(target: target, control: $0) })
+        }
+        runtime.historyBaseline = runtime.snapshot
+        runtime.historyActionName = nil
     }
 
     func updateResponses() {

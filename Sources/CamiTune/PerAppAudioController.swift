@@ -697,17 +697,74 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         stateLock.unlock()
     }
 
+    @MainActor weak var history: UndoCoordinator?
+    @MainActor private var pendingHistory: [String: PerAppAudioSettings] = [:]
+
+    private func recordAudioEdit(_ id: String, name: String, finished: Bool, edit: () -> Void) {
+        guard Thread.isMainThread else { edit(); return }
+        withMainThreadHistory {
+            guard history?.isReplaying != true else { return }
+            let before = pendingHistory[id] ?? settings(for: id)
+            let key = GestureKey(target: .application(id), control: "audio")
+            if !finished, pendingHistory[id] == nil {
+                history?.beginGesture(key: key, actionName: name,
+                    contextName: presentationStore.currentDocument.displayName(for: id), target: .application(id), before: .perAppAudio(before))
+            }
+            edit()
+            guard finished else { pendingHistory[id] = before; return }
+            if pendingHistory.removeValue(forKey: id) != nil {
+                history?.endGesture(key: key, after: .perAppAudio(settings(for: id)))
+            } else {
+                history?.record(actionName: name, contextName: presentationStore.currentDocument.displayName(for: id),
+                    target: .application(id), before: .perAppAudio(before), after: .perAppAudio(settings(for: id)),
+                    coalescingKey: name == "Adjust Volume" ? GestureKey(target: .application(id), control: "volume") : nil)
+            }
+        }
+    }
+    @MainActor
+    func finishAudioInteraction(for id: String) {
+        guard pendingHistory[id] != nil else { return }
+        recordAudioEdit(id, name: "Edit App Audio", finished: true) {
+            replaceSettings(settings(for: id), for: id)
+        }
+    }
+    func replaceSettings(_ settings: PerAppAudioSettings, for applicationID: String) {
+        var validated = settings
+        validated.volume = settings.volume.isFinite ? min(max(settings.volume, 0), 1) : 1
+        updateSettings(for: applicationID, resetFilterState: true, resetHeadroom: true) { $0 = validated }
+    }
+
+    func replaceSettingsBatch(_ replacements: [String: PerAppAudioSettings]) {
+        stateLock.lock()
+        for (id, var value) in replacements {
+            value.volume = value.volume.isFinite ? min(max(value.volume, 0), 1) : 1
+            settingsByApplication[id] = value
+            settingsRevisionByApplication[id, default: 0] &+= 1
+        }
+        let current = settingsByApplication
+        stateLock.unlock()
+        schedulePersistence(current)
+        publishApplications(force: true)
+    }
+
     func setPlaybackModeOverride(_ mode: PlaybackMode?, for applicationID: String) {
-        updateSettings(for: applicationID) { $0.playbackModeOverride = mode }
+        recordAudioEdit(applicationID, name: "Change Playback Mode", finished: true) {
+            updateSettings(for: applicationID) { $0.playbackModeOverride = mode }
+        }
     }
     
     func setPlaybackModeForAllApplications(_ mode: PlaybackMode) {
         let applicationIDs = applications.map(\.id)
-        for applicationID in applicationIDs {
-            setPlaybackModeOverride(
-                mode,
-                for: applicationID
-            )
+        let before = Dictionary(uniqueKeysWithValues: applicationIDs.map { ($0, settings(for: $0)) })
+        let after = before.mapValues { value in
+            var updated = value; updated.playbackModeOverride = mode; return updated
+        }
+        replaceSettingsBatch(after)
+        if Thread.isMainThread {
+            withMainThreadHistory {
+                history?.record(actionName: "Change All App Playback Modes", target: .applicationPresentationDocument,
+                    before: .perAppBatch(before), after: .perAppBatch(after))
+            }
         }
     }
 
@@ -723,12 +780,14 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         for applicationID: String,
         interactionFinished: Bool = true
     ) {
-        updateSettings(
-            for: applicationID,
-            persistChanges: interactionFinished,
-            forcePublication: interactionFinished
-        ) {
-            $0.volume = min(max(volume, 0), 1)
+        recordAudioEdit(applicationID, name: "Adjust Volume", finished: interactionFinished) {
+            updateSettings(
+                for: applicationID,
+                persistChanges: interactionFinished,
+                forcePublication: interactionFinished
+            ) {
+                $0.volume = min(max(volume, 0), 1)
+            }
         }
     }
 
@@ -763,20 +822,26 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     }
 
     func setMuted(_ muted: Bool, for applicationID: String) {
-        updateSettings(for: applicationID) { $0.isMuted = muted }
+        recordAudioEdit(applicationID, name: "Toggle Mute", finished: true) {
+            updateSettings(for: applicationID) { $0.isMuted = muted }
+        }
     }
 
     func setEQBypassed(_ bypassed: Bool, for applicationID: String) {
-        updateSettings(
-            for: applicationID,
-            resetFilterState: true,
-            resetHeadroom: true
-        ) { $0.eqBypassed = bypassed }
+        recordAudioEdit(applicationID, name: "Toggle Equalizer", finished: true) {
+            updateSettings(
+                for: applicationID,
+                resetFilterState: true,
+                resetHeadroom: true
+            ) { $0.eqBypassed = bypassed }
+        }
     }
 
     func setSimpleTone(_ tone: SimpleToneSettings, for applicationID: String, interactionFinished: Bool = true) {
-        guard (try? tone.validate()) != nil else { return }
-        updateSettings(for: applicationID, resetFilterState: true, resetHeadroom: true, persistChanges: interactionFinished, forcePublication: interactionFinished, performDeferredCleanup: interactionFinished) { $0.simpleTone = tone }
+        recordAudioEdit(applicationID, name: "Adjust Tone", finished: interactionFinished) {
+            guard (try? tone.validate()) != nil else { return }
+            updateSettings(for: applicationID, resetFilterState: true, resetHeadroom: true, persistChanges: interactionFinished, forcePublication: interactionFinished, performDeferredCleanup: interactionFinished) { $0.simpleTone = tone }
+        }
     }
 
     func setEqualizerBands(
@@ -784,14 +849,28 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         for applicationID: String,
         interactionFinished: Bool = true
     ) {
-        updateSettings(
-            for: applicationID,
-            resetFilterState: true,
-            resetHeadroom: true,
-            persistChanges: interactionFinished,
-            forcePublication: interactionFinished,
-            performDeferredCleanup: interactionFinished
-        ) { $0.equalizerBands = bands }
+        recordAudioEdit(applicationID, name: "Edit App Equalizer", finished: interactionFinished) {
+            updateSettings(
+                for: applicationID,
+                resetFilterState: true,
+                resetHeadroom: true,
+                persistChanges: interactionFinished,
+                forcePublication: interactionFinished,
+                performDeferredCleanup: interactionFinished
+            ) { $0.equalizerBands = bands }
+        }
+    }
+
+    func editEqualizer(for applicationID: String, interactionFinished: Bool = true,
+                       _ edit: (inout PerAppAudioSettings) -> Void) {
+        recordAudioEdit(applicationID, name: "Edit App Equalizer", finished: interactionFinished) {
+            updateSettings(for: applicationID, resetFilterState: true, resetHeadroom: true,
+                persistChanges: interactionFinished, forcePublication: interactionFinished,
+                performDeferredCleanup: interactionFinished) {
+                $0.eqBypassed = false
+                edit(&$0)
+            }
+        }
     }
 
     func ingest(_ packet: PerAppAudioPacket) -> PCMFrame? {
@@ -2173,6 +2252,15 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         presentationObservationQueue.async {
             for observation in observations { store.observeAudioProvenApplication(observation) }
         }
+    }
+
+    func persistHistoryChanges() throws {
+        stateLock.lock()
+        pendingPersistence?.cancel()
+        let current = settingsByApplication
+        stateLock.unlock()
+        let error = persistenceQueue.sync { Self.persist(current, to: settingsURL) }
+        if let error { throw ProfileSettingsError.runtime(error) }
     }
 
     func flushPendingSaveSynchronously() {

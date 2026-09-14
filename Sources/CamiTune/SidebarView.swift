@@ -159,6 +159,7 @@ struct SidebarView: View {
                     }
                 }
             )
+            DeletionUndoNotice(history: state.history)
             Divider()
             Button {
                 selection = .settings
@@ -233,8 +234,7 @@ struct SidebarView: View {
             }
         case .deleteProfile(let id):
             Task {
-                if state.activeProfileID == id { await state.deactivate(manual: true) }
-                profileStore.deleteProfile(id: id)
+                await state.deleteProfileWithHistory(id: id)
                 if selection == .profile(id) {
                     selection = profileStore.selectedProfileID.map(SidebarDestination.profile) ?? .empty
                 }
@@ -271,8 +271,8 @@ private struct FolderDeletionAlert: NSViewRepresentable {
             let alert = NSAlert()
             alert.messageText = "Delete “\(request.name)”?"
             alert.informativeText = request.profiles.isEmpty
-                ? "This folder will be deleted. This can’t be undone."
-                : "This folder and all \(request.profiles.count) profiles inside it will be deleted. This can’t be undone."
+                ? "This folder will be deleted. Use Edit → Undo to restore it."
+                : "This folder and all \(request.profiles.count) profiles inside it will be deleted. Use Edit → Undo to restore it."
             let cancel = alert.addButton(withTitle: "Cancel")
             cancel.keyEquivalent = "\r"
             let delete = alert.addButton(withTitle: "Delete")
@@ -882,4 +882,27 @@ private var minimumSidebarWidth: CGFloat {
         max(appAudioWidth, outputProfilesWidth)
         + tableAllowance
     )
+}
+
+@MainActor
+private struct DeletionUndoNotice: View {
+    @ObservedObject var history: UndoCoordinator
+    @State private var visibleEntry: UUID?
+    var body: some View {
+        Group {
+            if let entry = history.undoStack.last, entry.id == visibleEntry,
+               case .deletion(_, deleted: true) = entry.after {
+                HStack {
+                    Text("Deleted").font(.caption)
+                    Spacer()
+                    Button("Undo") { Task { await history.undo() } }.disabled(!history.canUndo)
+                }.padding(10)
+            }
+        }
+        .task(id: history.undoStack.last?.id) {
+            visibleEntry = history.undoStack.last?.id
+            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            visibleEntry = nil
+        }
+    }
 }
