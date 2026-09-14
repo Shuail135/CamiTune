@@ -10,6 +10,8 @@ DerivedData/
 *.xcuserstate
 *.dSYM/
 *.xcarchive/
+IDEWorkspaceChecks.plist
+*.xcresult/
 
 # Generated application and release output
 dist/
@@ -17,6 +19,24 @@ build/
 tmp/
 *.zip
 *.sha256
+/SHA256SUMS
+*.app/
+*.pkg
+*.dmg
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+!.env.sample
+*.p12
+*.p8
+*.mobileprovision
+*.provisionprofile
+
+# Python helper caches
+__pycache__/
+*.pyc
 
 # Local-only tests and test runner
 /Tests/
