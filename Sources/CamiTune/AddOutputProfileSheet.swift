@@ -9,6 +9,7 @@ struct AddOutputDraft {
     var connectedEndpoint: ProfileEndpointKind?
     var leftOutput: Int?
     var rightOutput: Int?
+    var selectedOutputs: Set<Int> = []
 
     var needsSpeakers: Bool { deviceType == .speakers || (deviceType == .audioInterface && connectedEndpoint == .speakers) }
     var canAdd: Bool { (try? candidate()) != nil }
@@ -21,6 +22,7 @@ struct AddOutputDraft {
         discovered = nil
         leftOutput = nil
         rightOutput = nil
+        selectedOutputs = []
     }
 
     func candidate() throws -> DeviceProfile {
@@ -34,12 +36,12 @@ struct AddOutputDraft {
         candidate.endpointKind = deviceType
         candidate.setPlaybackMode(.direct)
         if deviceType == .audioInterface {
-            guard let discovered, let connectedEndpoint, let leftOutput, let rightOutput else {
+            guard let discovered, let connectedEndpoint else {
                 throw ProfileSettingsError.runtime(Self.incompleteMessage)
             }
             let assignment = AudioInterfaceConfiguration(deviceUID: discovered.deviceUID,
                 hardwareChannelCount: discovered.declaredChannelCount,
-                outputChannels: [leftOutput, rightOutput], connectedEndpoint: connectedEndpoint)
+                outputChannels: selectedOutputs.isEmpty ? [leftOutput, rightOutput].compactMap { $0 } : selectedOutputs.sorted(), connectedEndpoint: connectedEndpoint)
             try assignment.validate(deviceUID: candidate.outputDeviceUID)
             candidate.audioInterface = assignment
         }
@@ -64,7 +66,16 @@ struct AddOutputDraft {
             guard !enabled.isEmpty, enabled.allSatisfy({ $0.role != .unknown || $0.position != nil }) else {
                 throw ProfileSettingsError.runtime(Self.incompleteMessage)
             }
-            for index in topology.endpoints.indices where topology.endpoints[index].connectionState == .unknown {
+            // Add Profile accepts the roles shown in the room editor. Keep names,
+            // positions, and explicit role choices exactly as configured.
+            let displayedRoles = SpeakerLayoutGeometry.layoutRoles(topology)
+            for index in topology.endpoints.indices where topology.endpoints[index].connectionState != .disabledByUser {
+                if topology.endpoints[index].role == .unknown,
+                   topology.endpoints[index].connectionState != .confirmedByUser {
+                    topology.endpoints[index].role = displayedRoles[index]
+                    topology.endpoints[index].layer = displayedRoles[index].speakerLayer
+                    topology.endpoints[index].isSubwooferLike = displayedRoles[index] == .lowFrequencyEffects
+                }
                 topology.endpoints[index].connectionState = .confirmedByUser
             }
             candidate.speakerTopology = topology
@@ -311,18 +322,18 @@ struct AddOutputProfileSheet: View {
             if draft.deviceType == .audioInterface {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 14) {
-                        Text("Choose the stereo output pair and the device connected to it.")
+                        Text("Choose the stereo channel pair and the device connected to it.")
                             .font(.callout).foregroundStyle(.secondary)
                         Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 12) {
                             if let topology = draft.discovered {
                                 GridRow {
-                                    Text("Left Output")
-                                    Picker("Left Output", selection: $draft.leftOutput) { outputOptions(topology) }
+                                    Text("Left Channel")
+                                    Picker("Left Channel", selection: $draft.leftOutput) { outputOptions(topology) }
                                         .labelsHidden()
                                 }
                                 GridRow {
-                                    Text("Right Output")
-                                    Picker("Right Output", selection: $draft.rightOutput) { outputOptions(topology) }
+                                    Text("Right Channel")
+                                    Picker("Right Channel", selection: $draft.rightOutput) { outputOptions(topology) }
                                         .labelsHidden()
                                 }
                             }
@@ -336,6 +347,14 @@ struct AddOutputProfileSheet: View {
                                 }.labelsHidden()
                             }
                         }
+                        if draft.connectedEndpoint == .speakers, let topology = draft.discovered {
+                            Text("Selected Speaker Channels").font(.headline)
+                            ForEach(topology.endpoints) { endpoint in
+                                Toggle("Channel \(endpoint.id.channelIndex + 1)", isOn: Binding(
+                                    get: { draft.selectedOutputs.contains(endpoint.id.channelIndex) },
+                                    set: { if $0 { draft.selectedOutputs.insert(endpoint.id.channelIndex) } else { draft.selectedOutputs.remove(endpoint.id.channelIndex) } }))
+                            }
+                        }
                         Divider()
                         discoveryControls
                     }.padding(8)
@@ -345,8 +364,8 @@ struct AddOutputProfileSheet: View {
                 if draft.profile.speakerTopology != nil {
                     SpeakerSystemView(state: state, profile: $draft.profile, draftOnly: true, embedded: true)
                 } else if !busy {
-                    Text("Outputs could not be discovered. Check the connection and try again.").foregroundStyle(.secondary)
-                    Button("Discover Outputs") { discover() }
+                    Text("Channels could not be discovered. Check the connection and try again.").foregroundStyle(.secondary)
+                    Button("Discover Channels") { discover() }
                 }
             } else if draft.deviceType != .audioInterface {
                 Text("No additional configuration is required for \(draft.deviceType?.displayName ?? "this output").")
@@ -355,7 +374,7 @@ struct AddOutputProfileSheet: View {
     }
 
     @ViewBuilder private func outputOptions(_ topology: SpeakerTopology) -> some View {
-        Text("Choose an output").tag(Int?.none)
+        Text("Choose a channel").tag(Int?.none)
         ForEach(topology.endpoints) { endpoint in
             Text("\(endpoint.id.channelIndex + 1) · \(endpoint.displayName)").tag(Optional(endpoint.id.channelIndex))
         }
@@ -363,10 +382,10 @@ struct AddOutputProfileSheet: View {
     private var discoveryControls: some View {
         HStack {
             if let discovered = draft.discovered {
-                Text("\(discovered.declaredChannelCount) hardware outputs").font(.caption).foregroundStyle(.secondary)
+                Text("\(discovered.declaredChannelCount) hardware channels").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Refresh Outputs") { discover() }.controlSize(.small)
+            Button("Refresh Channels") { discover() }.controlSize(.small)
         }
     }
     private func move(to next: Int) {

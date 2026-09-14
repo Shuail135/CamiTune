@@ -23,6 +23,7 @@ struct SpatialRenderSettings: Codable, Hashable, Sendable {
     var music = MusicSpatialIntent()
     var cinema = CinemaSpatialIntent()
     var listeningPositions: [SpatialSeatingCalibration] = []
+    var primaryPositionID: UUID?
     var selectedPositionID: UUID?
     var seating: SpatialSeatingCalibration? {
         get { listeningPositions.first { $0.id == selectedPositionID } }
@@ -31,11 +32,12 @@ struct SpatialRenderSettings: Codable, Hashable, Sendable {
             if let index = listeningPositions.firstIndex(where: { $0.id == seat.id }) { listeningPositions[index] = seat }
             else { listeningPositions.append(seat) }
             selectedPositionID = seat.id
+            if primaryPositionID == nil { primaryPositionID = seat.id }
         }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, enabled, outputSelection, contentSelection, music, cinema, seating, listeningPositions, selectedPositionID
+        case version, enabled, outputSelection, contentSelection, music, cinema, seating, listeningPositions, selectedPositionID, primaryPositionID
     }
 
     init() {}
@@ -62,6 +64,8 @@ struct SpatialRenderSettings: Codable, Hashable, Sendable {
             }
             if !listeningPositions.contains(where: { $0.id == selectedPositionID }) { selectedPositionID = nil }
         }
+        primaryPositionID = try values.decodeIfPresent(UUID.self, forKey: .primaryPositionID) ?? listeningPositions.first?.id
+        if !listeningPositions.contains(where: { $0.id == primaryPositionID }) { primaryPositionID = listeningPositions.first?.id }
         music.amount = SpatialSafety.unit(music.amount)
         cinema.amount = SpatialSafety.unit(cinema.amount)
         cinema.dialogueFocus = SpatialSafety.unit(cinema.dialogueFocus)
@@ -76,6 +80,7 @@ struct SpatialRenderSettings: Codable, Hashable, Sendable {
         try c.encode(music, forKey: .music); try c.encode(cinema, forKey: .cinema)
         try c.encode(listeningPositions, forKey: .listeningPositions)
         try c.encodeIfPresent(selectedPositionID, forKey: .selectedPositionID)
+        try c.encodeIfPresent(primaryPositionID, forKey: .primaryPositionID)
     }
 
     static func migrated(from mode: SpatialRenderingMode) -> Self {

@@ -90,11 +90,7 @@ enum PlaybackMode: String, Codable, CaseIterable, Hashable, Sendable {
     }
 
     var displayName: String {
-        switch self {
-        case .direct: return "Direct"
-        case .referencePlayback: return "Reference Playback"
-        case .spatialRender: return "Spatial Render"
-        }
+        compactDisplayName
     }
 }
 
@@ -105,6 +101,8 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     /// User-described use, independent of hardware identity and DSP selection.
     var endpointKind: ProfileEndpointKind = .custom
     /// Inactive contexts retain their mode without duplicating shared DSP/geometry.
+    var physicalChannelProcessing: [PhysicalOutputID: ProcessingChain] = [:]
+    var personalReferenceCorrections: [String: DeviceCorrectionProfile] = [:]
     var audioInterface: AudioInterfaceConfiguration?
     var sectionLayout: ProfileSectionLayout?
     var playbackModesByEndpoint: [String: PlaybackMode] = [:]
@@ -157,8 +155,62 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         spatialRenderingMode = mode == .spatialRender ? .spatialAudio : .standard
     }
 
-    var processingChannelCount: Int {
-        usesReferenceSpeakers ? (speakerTopology?.declaredChannelCount ?? 2) : 2
+    var hasPhysicalSpeakerRoute: Bool { !isPersonalListening && speakerTopology != nil }
+    var configuredPhysicalChannelCount: Int {
+        if hasPhysicalSpeakerRoute { return speakerTopology!.declaredChannelCount }
+        return endpointKind == .audioInterface ? (audioInterface?.hardwareChannelCount ?? 2) : 2
+    }
+    var processingChannelCount: Int { hasPhysicalSpeakerRoute ? configuredPhysicalChannelCount : 2 }
+    var supportsCrossfeed: Bool { isPersonalListening && processingChannelCount == 2 }
+
+    var personalReferenceCorrection: DeviceCorrectionProfile? {
+        personalReferenceCorrections[effectiveEndpointKind.rawValue]
+    }
+    mutating func setPersonalReferenceCorrection(_ correction: DeviceCorrectionProfile?) {
+        personalReferenceCorrections[effectiveEndpointKind.rawValue] = correction
+    }
+
+    func playbackReadiness(_ mode: PlaybackMode) -> PlaybackModeReadiness {
+        guard availablePlaybackModes.contains(mode) else { return .unavailable("This mode is not supported by the connected device type.") }
+        if [.custom, .audioInterface].contains(effectiveEndpointKind), mode != .direct {
+            return .unavailable("Choose the connected device type in Profile Settings before using this mode.")
+        }
+        if endpointKind == .audioInterface {
+            guard audioInterface != nil, (try? validatedInterfaceConfiguration()) != nil else { return .unavailable("Configure the interface channels in Profile Settings.") }
+        }
+        if hasPhysicalSpeakerRoute {
+            do { _ = try validatedPhysicalSpeakerTopology() } catch { return .unavailable(error.localizedDescription) }
+        } else if mode == .referencePlayback && !isPersonalListening {
+            return .unavailable("Configure Speaker and Listening Position in Profile Settings.")
+        }
+        if mode == .referencePlayback && !isPersonalListening {
+            var candidate = self; candidate.setPlaybackMode(mode)
+            do { _ = try candidate.validatedReferenceTopology() } catch { return .unavailable(error.localizedDescription) }
+        }
+        if mode == .referencePlayback && isPersonalListening {
+            guard let correction = personalReferenceCorrection else {
+                return .unavailable("Load Reference correction filters first.")
+            }
+            guard correction.schemaVersion == DeviceCorrectionProfile.currentSchemaVersion,
+                  ReferenceCorrection.validFilters(correction.filters, sampleRate: Double(sampleRate)) else {
+                return .unavailable("Reference correction contains unsupported or invalid filters.")
+            }
+        }
+        return .ready
+    }
+
+    func validatedPhysicalSpeakerTopology() throws -> SpeakerTopology? {
+        guard hasPhysicalSpeakerRoute else { return nil }
+        guard var topology = speakerTopology else { return nil }
+        guard topology.deviceUID == outputDeviceUID else { throw SpeakerTopologyError.invalidDeviceUID }
+        try topology.validate()
+        guard topology.sampleRate == Double(sampleRate) else { throw SpeakerTopologyError.invalidSampleRate }
+        if let assignment = try validatedInterfaceConfiguration() {
+            for index in topology.endpoints.indices where !assignment.outputChannels.contains(topology.endpoints[index].id.channelIndex) {
+                topology.endpoints[index].connectionState = .disabledByUser
+            }
+        }
+        return SpeakerLayoutGeometry.relativeTopology(topology, seat: effectiveSpatialSettings.seating)
     }
 
     func validatedReferenceTopology() throws -> SpeakerTopology? {
@@ -172,7 +224,7 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         guard topology.endpoints.contains(where: { ($0.connectionState == .confirmedByUser || $0.connectionState == .acousticallyDetected) && ($0.role != .unknown || $0.position != nil) }) else {
             throw ProfileSettingsError.runtime("Configure Speaker and Listening Position in Profile Settings before using Reference.")
         }
-        return SpeakerLayoutGeometry.relativeTopology(topology, seat: effectiveSpatialSettings.seating)
+        return try validatedPhysicalSpeakerTopology()
     }
 
     var effectiveSpatialSettings: SpatialRenderSettings {
@@ -180,11 +232,12 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         switch effectiveEndpointKind {
         case .headphones, .iem: settings.outputSelection = .headphones
         case .speakers: settings.outputSelection = .speakers
-        case .audioInterface, .custom: break
+        case .audioInterface, .custom: settings.outputSelection = .speakers
         }
         if settings.seating?.outputDeviceUID != outputDeviceUID { settings.seating = nil }
         if settings.seating == nil {
-            settings.selectedPositionID = settings.listeningPositions.first { $0.outputDeviceUID == outputDeviceUID }?.id
+            settings.selectedPositionID = settings.listeningPositions.first { $0.id == settings.primaryPositionID && $0.outputDeviceUID == outputDeviceUID }?.id
+                ?? settings.listeningPositions.first { $0.outputDeviceUID == outputDeviceUID }?.id
         }
         return settings
     }
@@ -298,8 +351,10 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         gainDB: Double,
         bands: [EQBand],
         delayMilliseconds: Double? = nil,
-        limiterEnabled: Bool? = nil
+        limiterEnabled: Bool? = nil,
+        simpleTone: SimpleToneSettings? = nil
     ) throws {
+        captureLegacyPhysicalChannels()
         processing = try resolvedProcessing()
         processing.setChannelProcessing(
             index: index,
@@ -307,8 +362,11 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
             gainDB: gainDB,
             bands: bands,
             delayMilliseconds: delayMilliseconds,
-            limiterEnabled: limiterEnabled
+            limiterEnabled: limiterEnabled,
+            simpleTone: simpleTone
         )
+        if let physical = configuredProcessingChannels.first(where: { $0.index == index })?.physicalOutputID,
+           let channel = processing.channels.first(where: { $0.index == index }) { physicalChannelProcessing[physical] = channel.chain }
         unmigratedEqualizerAPOText = nil
     }
 
@@ -316,7 +374,14 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         if let text = unmigratedEqualizerAPOText {
             return ProcessingProfile.imported(from: try Self.parseImportableEqualizerAPOText(text))
         }
-        return processing
+        var result = processing
+        if !physicalChannelProcessing.isEmpty {
+            result.channels = configuredProcessingChannels.map { channel in
+                ChannelProcessing(index: channel.index, role: channel.role,
+                    chain: physicalChannelProcessing[channel.physicalOutputID] ?? ProcessingChain())
+            }
+        }
+        return result
     }
 
     private static func parseImportableEqualizerAPOText(_ text: String) throws -> ParsedEQ {
@@ -344,7 +409,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
 
     private enum CodingKeys: String, CodingKey {
         case id, name, outputDevice, outputDeviceUID, outputDeviceName, isEnabled, endpointKind
-        case autoActivateWhenProfileDeviceSelected, playbackModesByEndpoint, sectionLayout, audioInterface
+        case autoActivateWhenProfileDeviceSelected, playbackModesByEndpoint, sectionLayout, audioInterface, personalReferenceCorrections, physicalChannelProcessing
         case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize, playbackMode
         case spatialRenderingMode, spatialContentMode, spatialListenerProfile, spatialAcousticProfile, equalizerAPOText, processing
         case virtualSurroundLayout, spatialSettings, speakerTopology, usesReferenceSpeakers
@@ -370,6 +435,9 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         }
         isEnabled = try values.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
         endpointKind = try values.decodeIfPresent(ProfileEndpointKind.self, forKey: .endpointKind) ?? .custom
+        physicalChannelProcessing = try values.decodeIfPresent([PhysicalOutputID: ProcessingChain].self, forKey: .physicalChannelProcessing) ?? [:]
+        for id in physicalChannelProcessing.keys { try id.validate() }
+        personalReferenceCorrections = try values.decodeIfPresent([String: DeviceCorrectionProfile].self, forKey: .personalReferenceCorrections) ?? [:]
         audioInterface = try values.decodeIfPresent(AudioInterfaceConfiguration.self, forKey: .audioInterface)
         sectionLayout = try values.decodeIfPresent(ProfileSectionLayout.self, forKey: .sectionLayout)
         playbackModesByEndpoint = try values.decodeIfPresent(
@@ -461,6 +529,8 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         try values.encode(spatialSettings, forKey: .spatialSettings)
         try values.encodeIfPresent(speakerTopology, forKey: .speakerTopology)
         try values.encode(usesReferenceSpeakers, forKey: .usesReferenceSpeakers)
+        try values.encode(personalReferenceCorrections, forKey: .personalReferenceCorrections)
+        try values.encode(physicalChannelProcessing, forKey: .physicalChannelProcessing)
         try values.encodeIfPresent(spatialListenerProfile, forKey: .spatialListenerProfile)
         try values.encodeIfPresent(spatialAcousticProfile, forKey: .spatialAcousticProfile)
         try values.encode(spatialContentMode, forKey: .spatialContentMode)
@@ -565,14 +635,14 @@ enum ProfileSection: String, Codable, CaseIterable, Identifiable, Sendable {
         }
     }
     func applies(to type: ProfileEndpointKind) -> Bool {
-        self != .crossfeed || type == .headphones || type == .iem || type == .custom || type == .audioInterface
+        self != .crossfeed || type == .headphones || type == .iem
     }
 }
 
 enum EqualizerPresentation: String, Codable, CaseIterable, Identifiable, Sendable {
     case simpleTone, bands, both
     var id: Self { self }
-    var title: String { self == .bands ? "Bands" : self == .simpleTone ? "Simple Tone" : "Both" }
+    var title: String { self == .bands ? "Bands" : self == .simpleTone ? "Simple" : "Both" }
 }
 
 struct SectionPresentationPreference: Codable, Hashable, Sendable {
@@ -633,6 +703,8 @@ struct ProfileSettingsDraft {
     var sectionLayout: ProfileSectionLayout?
     var speakerTopology: SpeakerTopology?
     var spatialSettings: SpatialRenderSettings
+    var audioInterface: AudioInterfaceConfiguration?
+    var personalReferenceCorrections: [String: DeviceCorrectionProfile]?
     var requestedMode: PlaybackMode?
     var processing: ProcessingProfile?
     var replacesUserEqualizer = false
@@ -648,28 +720,58 @@ struct ProfileSettingsDraft {
         sectionLayout = profile.sectionLayout
         speakerTopology = profile.speakerTopology
         spatialSettings = profile.spatialSettings
+        audioInterface = profile.audioInterface
     }
-    func candidate() throws -> DeviceProfile {
-        var typeDraft = ProfileDeviceTypeDraft(profile: original)
-        typeDraft.selectedType = selectedType
-        var result = try typeDraft.prepare { _ in }
-        result.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    func candidate() throws -> DeviceProfile { try candidate(applyingTo: original) }
+
+    func candidate(applyingTo current: DeviceProfile) throws -> DeviceProfile {
+        guard current.id == original.id else { throw ProfileSettingsError.staleDraft }
+        // Only fields edited in this session are owned. A conflicting edit to the
+        // same field is rejected; unrelated mode/EQ/volume changes survive.
+        func merge<T: Equatable>(_ old: T, _ edited: T, _ fresh: T) throws -> T {
+            guard edited != old else { return fresh }
+            guard fresh == old || fresh == edited else { throw ProfileSettingsError.staleDraft }
+            return edited
+        }
+        var result = current
+        if outputDevice != original.outputDevice || audioInterface != original.audioInterface || selectedType != original.endpointKind { result.captureLegacyPhysicalChannels() }
+        let type = try merge(original.endpointKind, selectedType, current.endpointKind)
+        if type != current.endpointKind {
+            var typeDraft = ProfileDeviceTypeDraft(profile: result)
+            typeDraft.selectedType = type
+            result = try typeDraft.prepare { _ in }
+        }
+        result.name = try merge(original.name, name.trimmingCharacters(in: .whitespacesAndNewlines), current.name)
         guard !result.name.isEmpty else { throw ProfileSettingsError.invalidName }
-        result.outputDevice = outputDevice
-        result.sampleRate = sampleRate
-        result.sectionLayout = sectionLayout
-        result.speakerTopology = speakerTopology
-        // A type change owns enabled/output mode; geometry and seats remain shared.
+        result.outputDevice = try merge(original.outputDevice, outputDevice, current.outputDevice)
+        result.sampleRate = try merge(original.sampleRate, sampleRate, current.sampleRate)
+        result.sectionLayout = try merge(original.sectionLayout, sectionLayout, current.sectionLayout)
+        result.speakerTopology = try merge(original.speakerTopology, speakerTopology, current.speakerTopology)
+        if sampleRate != original.sampleRate, result.speakerTopology?.deviceUID == result.outputDeviceUID {
+            result.speakerTopology?.sampleRate = Double(result.sampleRate)
+        }
+        result.audioInterface = try merge(original.audioInterface, audioInterface, current.audioInterface)
         if spatialSettings != original.spatialSettings {
-            result.spatialSettings = spatialSettings
+            result.spatialSettings = try merge(original.spatialSettings, spatialSettings, current.spatialSettings)
             result.synchronizeListeningPositionCorrection()
         }
-        if let requestedMode { result.setPlaybackMode(requestedMode) }
+        if result.endpointKind == .audioInterface {
+            guard result.audioInterface != nil else { throw ProfileSettingsError.runtime("Configure the interface channels before saving.") }
+            _ = try result.validatedInterfaceConfiguration()
+        }
+        if let requestedMode {
+            _ = try merge(original.playbackMode, requestedMode, current.playbackMode)
+            result.setPlaybackMode(requestedMode)
+        }
         if let processing {
-            result.replaceProcessing(processing)
+            result.replaceProcessing(try merge(original.processing, processing, current.processing))
+        }
+        if let personalReferenceCorrections {
+            result.personalReferenceCorrections = try merge(original.personalReferenceCorrections, personalReferenceCorrections, current.personalReferenceCorrections)
         }
         return result
     }
+
 }
 
 enum ProfileSettingsError: LocalizedError {
@@ -716,10 +818,61 @@ struct AudioInterfaceConfiguration: Codable, Hashable, Sendable {
 
     func validate(deviceUID: String) throws {
         guard self.deviceUID == deviceUID, (2...32).contains(hardwareChannelCount),
-              outputChannels.count == 2, Set(outputChannels).count == 2,
+              !outputChannels.isEmpty, Set(outputChannels).count == outputChannels.count,
+              (connectedEndpoint == .speakers || outputChannels.count == 2),
               outputChannels.allSatisfy({ (0..<hardwareChannelCount).contains($0) }),
               connectedEndpoint != .audioInterface else {
-            throw ProfileSettingsError.runtime("Choose two distinct hardware outputs and identify what is connected to them.")
+            throw ProfileSettingsError.runtime("Choose distinct hardware channels and identify what is connected to them. Personal and unspecified endpoints require two channels.")
+        }
+    }
+}
+
+
+enum PlaybackModeReadiness: Equatable, Sendable {
+    case ready, unavailable(String)
+    var isReady: Bool { self == .ready }
+    var reason: String? { if case .unavailable(let reason) = self { return reason }; return nil }
+}
+
+
+struct ConfiguredProcessingChannel: Identifiable, Hashable {
+    var index: Int
+    var role: ChannelRole
+    var physicalOutputID: PhysicalOutputID
+    var displayName: String
+    var id: PhysicalOutputID { physicalOutputID }
+}
+extension DeviceProfile {
+    var configuredProcessingChannels: [ConfiguredProcessingChannel] {
+        if hasPhysicalSpeakerRoute, let topology = speakerTopology {
+            return topology.endpoints.filter {
+                ($0.connectionState == .confirmedByUser || $0.connectionState == .acousticallyDetected)
+                    && (endpointKind != .audioInterface || audioInterface?.outputChannels.contains($0.id.channelIndex) == true)
+            }.sorted { $0.id.channelIndex < $1.id.channelIndex }.map {
+                ConfiguredProcessingChannel(index: $0.id.channelIndex, role: $0.role,
+                    physicalOutputID: $0.id, displayName: $0.displayName)
+            }
+        }
+        let assignment = endpointKind == .audioInterface ? audioInterface?.outputChannels : nil
+        return (0..<min(2, assignment?.count ?? 2)).map { index in
+            let physical = assignment?[index] ?? index
+            return ConfiguredProcessingChannel(index: index, role: index == 0 ? .left : .right,
+                physicalOutputID: PhysicalOutputID(deviceUID: outputDeviceUID, channelIndex: physical),
+                displayName: "Channel \(physical + 1)")
+        }
+    }
+}
+
+
+extension DeviceProfile {
+    mutating func captureLegacyPhysicalChannels() {
+        guard physicalChannelProcessing.isEmpty else { return }
+        for channel in processing.channels {
+            let index: Int
+            if endpointKind == .audioInterface, !hasPhysicalSpeakerRoute, let outputs = audioInterface?.outputChannels,
+               outputs.indices.contains(channel.index) { index = outputs[channel.index] }
+            else { index = channel.index }
+            physicalChannelProcessing[PhysicalOutputID(deviceUID: outputDeviceUID, channelIndex: index)] = channel.chain
         }
     }
 }

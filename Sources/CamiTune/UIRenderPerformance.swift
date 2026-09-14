@@ -3,11 +3,26 @@ import os.signpost
 
 @MainActor
 enum UIRenderPerformance {
-    private static let log = OSLog(subsystem: "CamiTune", category: "UI Performance")
+    nonisolated private static let log = OSLog(subsystem: "CamiTune", category: "UI Performance")
 
     static func recordProfilePresentation() {
         os_signpost(.event, log: log, name: "Profile Presentation")
     }
+
+    nonisolated static func recordAppPublication() {
+        os_signpost(.event, log: log, name: "App Audio Publication")
+    }
+    nonisolated static func recordAppPresentationMutation() {
+        os_signpost(.event, log: log, name: "App Presentation Mutation")
+    }
+    static func recordVisualDemand() {
+        os_signpost(.event, log: log, name: "Visual Demand Changed")
+    }
+    static func beginEQApply() { os_signpost(.begin, log: log, name: "EQ Apply") }
+    static func endEQApply() { os_signpost(.end, log: log, name: "EQ Apply") }
+    static func beginSpeakerDrag() { os_signpost(.begin, log: log, name: "Speaker Drag") }
+    static func endSpeakerDrag() { os_signpost(.end, log: log, name: "Speaker Drag") }
+    static func recordSpeakerSave() { os_signpost(.event, log: log, name: "Speaker Save") }
 
     private static var monitoringStarted = false
     private static var liveScrollDepth = 0

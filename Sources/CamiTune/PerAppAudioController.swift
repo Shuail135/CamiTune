@@ -9,24 +9,68 @@ struct PerAppAudioSettings: Codable, Hashable, Sendable {
     var eqBypassed = true
     var equalizerBands: [EQBand] = []
     var playbackModeOverride: PlaybackMode?
+    var simpleTone = SimpleToneSettings()
+    /// Flat gain bands and disabled filters do not light the per-app EQ indicator.
+    var isEqualizerActive: Bool {
+        !eqBypassed && (!simpleTone.isNeutral
+            || EQEditorSupport.hasMeaningfulProcessing(ParsedEQ(bands: equalizerBands)))
+    }
+    var hasEqualizerProcessing: Bool { !equalizerBands.isEmpty || !simpleTone.isNeutral }
+    func processingBands(sampleRate: Double) -> [EQBand] {
+        equalizerBands + (simpleTone.isNeutral ? [] : ((try? SimpleToneFilterFactory.filters(for: simpleTone, sampleRate: sampleRate)) ?? []))
+    }
+    enum CodingKeys: String, CodingKey { case volume, isMuted, eqBypassed, equalizerBands, playbackModeOverride, simpleTone }
+}
+
+extension PerAppAudioSettings {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        volume = try c.decodeIfPresent(Double.self, forKey: .volume) ?? 1
+        isMuted = try c.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
+        eqBypassed = try c.decodeIfPresent(Bool.self, forKey: .eqBypassed) ?? true
+        equalizerBands = try c.decodeIfPresent([EQBand].self, forKey: .equalizerBands) ?? []
+        playbackModeOverride = try c.decodeIfPresent(PlaybackMode.self, forKey: .playbackModeOverride)
+        simpleTone = try c.decodeIfPresent(SimpleToneSettings.self, forKey: .simpleTone) ?? SimpleToneSettings()
+        try simpleTone.validate()
+    }
+}
+
+/// Versioned routing settings; presentation identity/order remain in their own document.
+struct PerAppAudioDocument: Codable {
+    static let currentVersion = 1
+    var schemaVersion = currentVersion
+    var settings: [String: PerAppAudioSettings]
+
+    static func decode(_ data: Data) throws -> [String: PerAppAudioSettings] {
+        struct Header: Decodable { var schemaVersion: Int? }
+        let decoder = JSONDecoder()
+        let header = try decoder.decode(Header.self, from: data)
+        if let version = header.schemaVersion {
+            guard version == currentVersion else {
+                throw DecodingError.dataCorrupted(.init(codingPath: [],
+                    debugDescription: "Unsupported per-app settings version."))
+            }
+            return try decoder.decode(Self.self, from: data).settings
+        }
+        return try decoder.decode([String: PerAppAudioSettings].self, from: data)
+    }
 }
 
 struct PerAppPlaybackContext: Sendable {
     var profileMode: PlaybackMode
+    var visibleModes: [PlaybackMode]
+    var readiness: [PlaybackMode: PlaybackModeReadiness]
     var availableModes: Set<PlaybackMode>
 
     init(profile: DeviceProfile) {
+        visibleModes = profile.availablePlaybackModes
+        readiness = Dictionary(uniqueKeysWithValues: visibleModes.map { ($0, profile.playbackReadiness($0)) })
         profileMode = profile.playbackMode
-        availableModes = Set(profile.availablePlaybackModes)
+        availableModes = Set(profile.availablePlaybackModes.filter { profile.playbackReadiness($0).isReady })
     }
 
     func effectiveMode(for override: PlaybackMode?) -> PlaybackMode {
-        guard let override, availableModes.contains(override) else { return profileMode }
-        // Reference owns an N-channel DSP graph. A stereo override cannot
-        // change that graph while other applications are playing through it.
-        guard (override == .referencePlayback) == (profileMode == .referencePlayback) else {
-            return profileMode
-        }
+        guard let override, availableModes.contains(override) else { return availableModes.contains(profileMode) ? profileMode : .direct }
         return override
     }
 }
@@ -218,8 +262,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     // runtime lock. No 600-point response calculation may run while this lock
     // (or `audioLock`) is held.
     private let headroomLock = NSLock()
+    @Published private(set) var persistenceError: String?
     private let settingsURL: URL
-    private let audioHistoryURL: URL
+    let presentationStore: AppPresentationStore
+    private let presentationObservationQueue = DispatchQueue(label: "CamiTune.AppObservations", qos: .utility)
     private let monitorsRunningApplications: Bool
     private let persistenceQueue = DispatchQueue(
         label: "CamiTune.PerAppAudioSettings",
@@ -297,7 +343,6 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     private var pendingMixesByDevice: [UInt32: PendingMix] = [:]
     private var lastEmittedEndSampleTimeByDevice: [UInt32: Int64] = [:]
     private var pendingPersistence: DispatchWorkItem?
-    private var pendingHistoryPersistence: DispatchWorkItem?
     private var pendingRunningApplicationRefresh: DispatchWorkItem?
     private var identityRetryWorkItem: DispatchWorkItem?
     private var identityRetryExhaustedClientKeys: Set<PerAppTransportClientKey> = []
@@ -306,6 +351,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     // the MainActor publication callback can never wait for controller state.
     private var pendingApplicationSnapshot: [PerAppAudioApplication]?
     private var mainPublishScheduled = false
+    private var submittedPresentationMetadata: [String: AppPresentationObservation] = [:]
     private var lastPublishDate = Date.distantPast
     private var identityResolutionRevision: UInt64 = 0
     private var meterPresentationSources: Set<String> = []
@@ -315,16 +361,22 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     init(
         settingsURL: URL = CamiTunePaths.perAppAudioSettingsURL,
         audioHistoryURL: URL? = nil,
-        monitorsRunningApplications: Bool = true
+        monitorsRunningApplications: Bool = true,
+        presentationStore: AppPresentationStore? = nil
     ) {
         self.settingsURL = settingsURL
-        self.audioHistoryURL = audioHistoryURL
-            ?? settingsURL.appendingPathExtension("history")
-        self.monitorsRunningApplications = monitorsRunningApplications
-        settingsByApplication = Self.loadSettings(from: settingsURL)
-        knownAudioApplicationIDs = Self.loadAudioHistory(
-            from: self.audioHistoryURL
+        let presentation = presentationStore ?? AppPresentationStore(
+            url: settingsURL.deletingLastPathComponent().appendingPathComponent(
+                settingsURL.lastPathComponent == "PerAppAudio.json" ? "PerAppPresentation.json" : settingsURL.lastPathComponent + ".presentation"
+            ),
+            legacyHistoryURL: audioHistoryURL ?? settingsURL.appendingPathExtension("history")
         )
+        self.presentationStore = presentation
+        self.monitorsRunningApplications = monitorsRunningApplications
+        let loaded = Self.loadSettings(from: settingsURL)
+        settingsByApplication = loaded.settings
+        persistenceError = loaded.error
+        knownAudioApplicationIDs = presentation.seenIDs
         if monitorsRunningApplications {
             observeWorkspaceApplications()
             scheduleRunningApplicationRefresh(immediate: true)
@@ -334,7 +386,6 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
     deinit {
         pendingPersistence?.cancel()
-        pendingHistoryPersistence?.cancel()
         pendingRunningApplicationRefresh?.cancel()
         identityRetryWorkItem?.cancel()
         pendingThrottledPublication?.cancel()
@@ -343,13 +394,12 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             notificationCenter.removeObserver(observer)
         }
         let settings = settingsByApplication
-        let audioHistory = knownAudioApplicationIDs
         let url = settingsURL
-        let historyURL = audioHistoryURL
-        persistenceQueue.sync {
+        _ = persistenceQueue.sync {
             Self.persist(settings, to: url)
-            Self.persistAudioHistory(audioHistory, to: historyURL)
         }
+        presentationObservationQueue.sync {}
+        presentationStore.flushPendingSaveSynchronously()
     }
 
     func updateClients(_ clients: [PerAppDriverClient]) {
@@ -511,9 +561,13 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         if !hasAnotherRetry { identityRetryWorkItem = nil }
 
         var settingsChanged = false
-        var audioHistoryChanged = false
+        var presentationObservations: [AppPresentationObservation] = []
         var runtimeMigrations: [(from: String, to: String)] = []
-        for client in clients {
+        // Simultaneous identity retries use transport order, never dictionary
+        // iteration, when several audio-proven temporary owners become stable.
+        for client in clients.sorted(by: {
+            $0.deviceObjectID == $1.deviceObjectID ? $0.clientID < $1.clientID : $0.deviceObjectID < $1.deviceObjectID
+        }) {
             guard let identity = resolved[client.transportKey] else { continue }
             if var source = observedAudioSourcesByKey[client.transportKey],
                source.processID <= 0 || source.processID == client.processID {
@@ -557,17 +611,20 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                     if Self.isPersistentApplicationID(identity.id) {
                         knownAudioApplicationIDs.insert(identity.id)
                     }
-                    audioHistoryChanged = true
                 }
                 runtimeMigrations.append((temporaryID, identity.id))
             }
+            if observedAudioIDs.contains(identity.id) || knownAudioApplicationIDs.contains(identity.id) {
+                if Self.isPersistentApplicationID(identity.id) { knownAudioApplicationIDs.insert(identity.id) }
+                presentationObservations.append(AppPresentationObservation(applicationID: identity.id,
+                    systemDisplayName: identity.displayName, bundleID: identity.bundleID))
+            }
         }
         let savedSettings = settingsByApplication
-        let savedAudioHistory = knownAudioApplicationIDs
         stateLock.unlock()
 
         if settingsChanged { schedulePersistence(savedSettings) }
-        if audioHistoryChanged { scheduleAudioHistoryPersistence(savedAudioHistory) }
+        observeForPresentation(presentationObservations)
         if !runtimeMigrations.isEmpty {
             audioMaintenanceQueue.async { [weak self] in
                 guard let self else { return }
@@ -661,26 +718,6 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         return (context ?? PerAppPlaybackContext(profile: fallbackProfile)).effectiveMode(for: override)
     }
 
-    func rankedMenuApplicationIDs() -> [String] {
-        audioLock.lock()
-        let audibleDates = lastAudibleDateByApplication
-        audioLock.unlock()
-        let now = Date()
-        return applications.filter { $0.isActive }.sorted { lhs, rhs in
-            func rank(_ app: PerAppAudioApplication) -> Int {
-                if let date = audibleDates[app.id], now.timeIntervalSince(date) < 2 { return 0 }
-                if let date = audibleDates[app.id], now.timeIntervalSince(date) < 300 { return 1 }
-                return app.settings != PerAppAudioSettings() ? 2 : 3
-            }
-            let l = rank(lhs), r = rank(rhs)
-            if l != r { return l < r }
-            if l < 2, audibleDates[lhs.id] != audibleDates[rhs.id] {
-                return (audibleDates[lhs.id] ?? .distantPast) > (audibleDates[rhs.id] ?? .distantPast)
-            }
-            return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
-        }.map(\.id)
-    }
-
     func setVolume(
         _ volume: Double,
         for applicationID: String,
@@ -735,6 +772,11 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             resetFilterState: true,
             resetHeadroom: true
         ) { $0.eqBypassed = bypassed }
+    }
+
+    func setSimpleTone(_ tone: SimpleToneSettings, for applicationID: String, interactionFinished: Bool = true) {
+        guard (try? tone.validate()) != nil else { return }
+        updateSettings(for: applicationID, resetFilterState: true, resetHeadroom: true, persistChanges: interactionFinished, forcePublication: interactionFinished, performDeferredCleanup: interactionFinished) { $0.simpleTone = tone }
     }
 
     func setEqualizerBands(
@@ -843,7 +885,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         let rawPeak = processed.reduce(0.0) { max($0, Double(abs($1))) }
         let now = Date()
         let eqHeadroom: Float
-        if settings.isMuted || settings.eqBypassed || settings.equalizerBands.isEmpty {
+        if settings.isMuted || settings.eqBypassed || !settings.hasEqualizerProcessing {
             eqHeadroom = 1
         } else {
             eqHeadroom = headroomScalarForIngest(
@@ -884,14 +926,14 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         if rawPeak >= Self.applicationActivityFloor {
             lastAudibleDateByApplication[applicationID] = now
         }
-        if !settings.isMuted && !settings.eqBypassed && !settings.equalizerBands.isEmpty {
+        if !settings.isMuted && !settings.eqBypassed && settings.hasEqualizerProcessing {
             var bank = filterBanks[dspClientKey] ?? PerAppFilterBank()
             bank.process(
                 &processed,
                 channelCount: packet.channelCount,
                 sampleRate: packet.sampleRate,
                 bands: settings.equalizerBands,
-                settingsRevision: settingsRevision
+                settingsRevision: settingsRevision, tone: settings.simpleTone
             )
             filterBanks[dspClientKey] = bank
         }
@@ -928,7 +970,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         let presentationLevel = levelsByApplication[applicationID] ?? 0
         audioLock.unlock()
 
-        var audioHistoryToPersist: Set<String>?
+        var presentationObservation: AppPresentationObservation?
         stateLock.lock()
         if publishedSourceDiagnostics.count >= 256, let oldest = publishedSourceDiagnostics.keys.first {
             publishedSourceDiagnostics.removeValue(forKey: oldest)
@@ -952,13 +994,12 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             )
             if Self.isPersistentApplicationID(applicationID),
                knownAudioApplicationIDs.insert(applicationID).inserted {
-                audioHistoryToPersist = knownAudioApplicationIDs
+                presentationObservation = AppPresentationObservation(applicationID: applicationID,
+                    systemDisplayName: sourceIdentity?.displayName, bundleID: sourceIdentity?.bundleID)
             }
         }
         stateLock.unlock()
-        if let audioHistoryToPersist {
-            scheduleAudioHistoryPersistence(audioHistoryToPersist)
-        }
+        if let presentationObservation { observeForPresentation([presentationObservation]) }
         publishApplications()
         return completed
     }
@@ -1569,6 +1610,18 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             // is pending. This preserves the old coalescing behavior without
             // making the UI reacquire `stateLock`.
             self.pendingApplicationSnapshot = snapshot
+            // Metadata changes are uncommon. Keep their diff on the publication
+            // queue so meter cadence never republishes or persists presentation.
+            var observations: [AppPresentationObservation] = []
+            for app in snapshot where Self.isPersistentApplicationID(app.id) {
+                let observation = AppPresentationObservation(applicationID: app.id,
+                    systemDisplayName: app.displayName, bundleID: app.bundleID)
+                if self.submittedPresentationMetadata[app.id] != observation {
+                    self.submittedPresentationMetadata[app.id] = observation
+                    observations.append(observation)
+                }
+            }
+            self.observeForPresentation(observations)
             self.scheduleMainPublicationIfNeeded()
         }
     }
@@ -1586,7 +1639,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
             // Intentionally lock-free on MainActor. `snapshot` is immutable and
             // all coalescing bookkeeping stays on `publicationQueue`.
-            self.applications = snapshot
+            UIRenderPerformance.recordAppPublication()
+                self.applications = snapshot
 
             self.publicationQueue.async { [weak self] in
                 guard let self else { return }
@@ -1913,21 +1967,14 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         !isEphemeralApplicationID(id)
     }
 
-    private static func loadSettings(from url: URL) -> [String: PerAppAudioSettings] {
-        guard let data = try? Data(contentsOf: url),
-              let settings = try? JSONDecoder().decode(
-                [String: PerAppAudioSettings].self,
-                from: data
-              ) else { return [:] }
-        return settings.filter { isPersistentApplicationID($0.key) }
-    }
-
-    private static func loadAudioHistory(from url: URL) -> Set<String> {
-        guard let data = try? Data(contentsOf: url),
-              let identifiers = try? JSONDecoder().decode([String].self, from: data) else {
-            return []
+    private static func loadSettings(from url: URL) -> (settings: [String: PerAppAudioSettings], error: String?) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return ([:], nil) }
+        do {
+            let settings = try PerAppAudioDocument.decode(Data(contentsOf: url))
+            return (settings.filter { isPersistentApplicationID($0.key) }, nil)
+        } catch {
+            return ([:], "Per-application settings could not be read. The original file is preserved; changes cannot be saved until it is restored or opened by a compatible version.")
         }
-        return Set(identifiers.filter(isPersistentApplicationID))
     }
 
     private func headroomScalarForIngest(
@@ -2027,7 +2074,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         _ settings: PerAppAudioSettings
     ) -> Float {
         var maximumBoostDB = 0.0
-        for band in settings.equalizerBands where band.enabled {
+        for band in settings.processingBands(sampleRate: 48_000) where band.enabled {
             let gain = (band.gain ?? 0).isFinite ? (band.gain ?? 0) : 0
             let qValue = band.q ?? 0.70710678
             let q = qValue.isFinite && qValue > 0 ? qValue : 0.70710678
@@ -2070,9 +2117,9 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         _ settings: PerAppAudioSettings,
         sampleRate: Double
     ) -> Double {
-        guard !settings.eqBypassed, !settings.equalizerBands.isEmpty else { return 0 }
+        guard !settings.eqBypassed, settings.hasEqualizerProcessing else { return 0 }
         let response = EQResponseCalculator().calculate(
-            parsed: ParsedEQ(bands: settings.equalizerBands),
+            parsed: ParsedEQ(bands: settings.processingBands(sampleRate: sampleRate)),
             sampleRate: sampleRate,
             count: 600
         )
@@ -2083,58 +2130,72 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     private func schedulePersistence(_ settings: [String: PerAppAudioSettings]) {
         pendingPersistence?.cancel()
         let url = settingsURL
-        let work = DispatchWorkItem {
-            Self.persist(settings, to: url)
+        let work = DispatchWorkItem { [weak self] in
+            let error = Self.persist(settings, to: url)
+            self?.publishPersistenceError(error)
         }
         pendingPersistence = work
         persistenceQueue.asyncAfter(deadline: .now() + 0.25, execute: work)
     }
 
-    private func scheduleAudioHistoryPersistence(_ identifiers: Set<String>) {
-        let url = audioHistoryURL
-        let work = DispatchWorkItem {
-            Self.persistAudioHistory(identifiers, to: url)
-        }
-        stateLock.lock()
-        pendingHistoryPersistence?.cancel()
-        pendingHistoryPersistence = work
-        stateLock.unlock()
-        persistenceQueue.asyncAfter(deadline: .now() + 0.25, execute: work)
-    }
-
-    private static func persist(
-        _ settings: [String: PerAppAudioSettings],
-        to settingsURL: URL
-    ) {
+    @discardableResult
+    private static func persist(_ settings: [String: PerAppAudioSettings], to settingsURL: URL) -> String? {
         let persistentSettings = settings.filter { isPersistentApplicationID($0.key) }
-        guard let data = try? JSONEncoder().encode(persistentSettings) else { return }
-        try? FileManager.default.createDirectory(
-            at: settingsURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try? data.write(to: settingsURL, options: .atomic)
+        do {
+            if FileManager.default.fileExists(atPath: settingsURL.path) {
+                // Never replace newer or unreadable data, including a file changed
+                // by another version while this process was running.
+                let previous = try PerAppAudioDocument.decode(Data(contentsOf: settingsURL))
+                if previous.filter({ isPersistentApplicationID($0.key) }) == persistentSettings { return nil }
+            } else if persistentSettings.isEmpty { return nil }
+            let data = try JSONEncoder().encode(PerAppAudioDocument(settings: persistentSettings))
+            try FileManager.default.createDirectory(at: settingsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: settingsURL, options: .atomic)
+            return nil
+        } catch {
+            return "Per-application settings were not saved. Check storage access and file compatibility. The previous file is preserved."
+        }
     }
 
-    private static func persistAudioHistory(
-        _ identifiers: Set<String>,
-        to historyURL: URL
-    ) {
-        let persistentIdentifiers = identifiers.filter(isPersistentApplicationID)
-        guard let data = try? JSONEncoder().encode(persistentIdentifiers.sorted()) else { return }
-        try? FileManager.default.createDirectory(
-            at: historyURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try? data.write(to: historyURL, options: .atomic)
+    private func publishPersistenceError(_ error: String?) {
+        if Thread.isMainThread {
+            if persistenceError != error { persistenceError = error }
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                if self?.persistenceError != error { self?.persistenceError = error }
+            }
+        }
     }
+
+    private func observeForPresentation(_ observations: [AppPresentationObservation]) {
+        guard !observations.isEmpty else { return }
+        let store = presentationStore
+        presentationObservationQueue.async {
+            for observation in observations { store.observeAudioProvenApplication(observation) }
+        }
+    }
+
+    func flushPendingSaveSynchronously() {
+        stateLock.lock()
+        pendingPersistence?.cancel()
+        let settings = settingsByApplication
+        stateLock.unlock()
+        let error = persistenceQueue.sync { Self.persist(settings, to: settingsURL) }
+        publishPersistenceError(error)
+        publicationQueue.sync {}
+        presentationObservationQueue.sync {}
+        presentationStore.flushPendingSaveSynchronously()
+    }
+
 }
 
-private struct PerAppFilterBank {
+struct PerAppFilterBank {
     private struct Signature: Hashable {
         var channelCount: Int
         var sampleRate: Double
         var bands: [EQBand]
         var settingsRevision: UInt64
+        var tone: SimpleToneSettings
     }
 
     private struct State {
@@ -2161,19 +2222,20 @@ private struct PerAppFilterBank {
         channelCount: Int,
         sampleRate: Double,
         bands: [EQBand],
-        settingsRevision: UInt64
+        settingsRevision: UInt64,
+        tone: SimpleToneSettings = SimpleToneSettings()
     ) {
-        let activeBands = bands.filter {
-            $0.enabled && $0.frequency > 0 && $0.frequency < sampleRate / 2
-        }
         let nextSignature = Signature(
             channelCount: channelCount,
             sampleRate: sampleRate,
-            bands: activeBands,
-            settingsRevision: settingsRevision
+            bands: bands,
+            settingsRevision: settingsRevision, tone: tone
         )
         if signature != nextSignature {
             signature = nextSignature
+            let activeBands = (bands + (tone.isNeutral ? [] : ((try? SimpleToneFilterFactory.filters(for: tone, sampleRate: sampleRate)) ?? []))).filter {
+                $0.enabled && $0.frequency > 0 && $0.frequency < sampleRate / 2
+            }
             coefficients = activeBands.compactMap {
                 Self.coefficients(for: $0, sampleRate: sampleRate)
             }

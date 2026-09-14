@@ -501,6 +501,23 @@ final class ProfileStore: ObservableObject {
         if updated != profiles { profiles = updated }
     }
 
+    /// Keyboard and accessibility movement uses the same insertion semantics as a drop.
+    @discardableResult
+    func moveSidebarItem(_ item: ProfileRootItem, by offset: Int) -> Bool {
+        guard offset == -1 || offset == 1 else { return false }
+        if case .profile(let id) = item, let folder = folderID(for: id) {
+            let children = profiles(in: folder)
+            guard let index = children.firstIndex(where: { $0.id == id }),
+                  children.indices.contains(index + offset) else { return false }
+            moveProfiles(in: folder, fromOffsets: IndexSet(integer: index), toOffset: index + (offset > 0 ? 2 : -1))
+        } else {
+            let roots = effectiveRootOrder
+            guard let index = roots.firstIndex(of: item), roots.indices.contains(index + offset) else { return false }
+            dropRootItems([item], at: index + (offset > 0 ? 2 : -1))
+        }
+        return true
+    }
+
     private func sanitizeFolders() {
         var folderIDs = Set<UUID>()
         var claimedProfiles = Set<UUID>()
@@ -682,7 +699,7 @@ final class ProfileStore: ObservableObject {
 }
 
 private struct StoredProfileConfiguration: Codable, Sendable {
-    static let currentSchemaVersion = 5
+    static let currentSchemaVersion = 6
     var schemaVersion: Int = currentSchemaVersion
     var profiles: [DeviceProfile]
     var physicalDeviceDefaults: [PhysicalDeviceDefaultProfile]

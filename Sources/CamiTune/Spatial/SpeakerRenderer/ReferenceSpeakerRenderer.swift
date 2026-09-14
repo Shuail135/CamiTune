@@ -13,6 +13,7 @@ struct ReferenceSpeakerDiagnostics: Sendable {
 /// Construct on a lifecycle worker. Geometry is immutable for a running route.
 struct ReferenceSpeakerRenderer {
     let topology: SpeakerTopology
+    private let exactRolesOnly: Bool
     private let endpoints: [SpeakerEndpoint]
     private let positioned: [SpeakerEndpoint]
     private let solver: VBAPSolver
@@ -23,7 +24,8 @@ struct ReferenceSpeakerRenderer {
     private var safetyGain: Float = 1
     private(set) var diagnostics = ReferenceSpeakerDiagnostics()
 
-    init(topology: SpeakerTopology) throws {
+    init(topology: SpeakerTopology, exactRolesOnly: Bool = false) throws {
+        self.exactRolesOnly = exactRolesOnly
         try topology.validate()
         self.topology = topology
         endpoints = topology.endpoints.filter {
@@ -115,11 +117,98 @@ struct ReferenceSpeakerRenderer {
                 return (gains, false)
             }
         }
+        if exactRolesOnly {
+            // Core Audio can expose ordinary stereo speakers without role
+            // labels. Direct keeps their hardware channel order; missing
+            // metadata must not turn confirmed physical outputs into silence.
+            // Named routes above still take precedence, and disabled/silent
+            // endpoints were excluded when constructing this renderer.
+            if let endpoint = endpoints.first(where: {
+                $0.role == .unknown && $0.id.channelIndex == object.audioPlaneIndex
+            }) {
+                gains[endpoint.id.channelIndex] = 1
+            }
+            return (gains, false)
+        }
         guard let position = object.position else { return (gains, true) }
         let result = solver.gains(for: position)
         for i in positioned.indices { gains[positioned[i].id.channelIndex] = result.gains[i] }
         // Spread is reserved for an object provider; channel beds always use zero.
         // Unsupported spread is rejected by providers rather than guessed here.
         return (gains, result.fallback)
+    }
+}
+
+
+/// Mode policies share one immutable physical topology and the existing VBAP mapper.
+/// Confined to the PCM writer worker. Spatial adds the existing speaker processor's
+/// wet difference as positioned scene objects; source channel intent is retained.
+final class PhysicalSpeakerModeRenderer {
+    private var direct: ReferenceSpeakerRenderer
+    private var reference: ReferenceSpeakerRenderer
+    private var spatial: ReferenceSpeakerRenderer
+    private let enhancement = SpeakerSpatialRenderer()
+    private var amount = SpatialScalarSmoother()
+    private var cinema = SpatialScalarSmoother()
+    private let rate: Double
+    var diagnostics: ReferenceSpeakerDiagnostics { reference.diagnostics }
+    private(set) var spatialDiagnostics = SpatialRenderDiagnostics()
+
+    init(topology: SpeakerTopology) throws {
+        direct = try ReferenceSpeakerRenderer(topology: topology, exactRolesOnly: true)
+        reference = try ReferenceSpeakerRenderer(topology: topology)
+        spatial = try ReferenceSpeakerRenderer(topology: topology)
+        rate = topology.sampleRate
+        enhancement.prepare(sampleRate: rate)
+        amount.prepare(sampleRate: rate); cinema.prepare(sampleRate: rate, seconds: 0.15)
+    }
+    func reset() {
+        direct.reset(); reference.reset(); spatial.reset(); enhancement.reset()
+        amount.reset(); cinema.reset()
+    }
+    func render(_ frame: PCMFrame, mode: PlaybackMode, settings: SpatialRenderSettings) throws -> PCMFrame {
+        var scene = try ChannelBasedSceneProvider().makeScene(from: frame)
+        switch mode {
+        case .direct: return try direct.render(scene)
+        case .referencePlayback: return try reference.render(scene)
+        case .spatialRender:
+            let start = ProcessInfo.processInfo.systemUptime
+            let isCinema = settings.contentSelection == .cinema || (settings.contentSelection == .automatic && frame.channelCount > 2)
+            let strength = SpatialSafety.unit(isCinema ? settings.cinema.amount : settings.music.amount)
+            let left = frame.channelLayout.roles.firstIndex(of: .left)
+            let right = frame.channelLayout.roles.firstIndex(of: .right)
+            let center = frame.channelLayout.roles.firstIndex(of: .center)
+            let dialogue = isCinema ? 1 + 0.12 * SpatialSafety.unit(settings.cinema.dialogueFocus) : 1
+            let count = frame.channelCount + 2
+            var samples = [Float](repeating: 0, count: frame.frameCount * count)
+            for i in 0..<frame.frameCount {
+                for ch in 0..<frame.channelCount { samples[i * count + ch] = SpatialSafety.sample(frame.interleaved[i * frame.channelCount + ch]) }
+                if let center { samples[i * count + center] *= dialogue }
+                let l = left.map { samples[i * count + $0] } ?? 0
+                let r = right.map { samples[i * count + $0] } ?? 0
+                let shaped = enhancement.process(left: l, right: r, amount: amount.next(strength), cinema: cinema.next(isCinema ? 1 : 0))
+                samples[i * count + frame.channelCount] = shaped.0 - l
+                samples[i * count + frame.channelCount + 1] = shaped.1 - r
+            }
+            // Reuse standard surround intent, then the same authoritative room mapper.
+            let wetRoles: [ChannelRole] = [.leftSurround, .rightSurround]
+            for offset in 0..<2 {
+                scene.objects.append(SpatialObject(id: SpatialObjectID(rawValue: UInt32(frame.channelCount + offset)),
+                    audioPlaneIndex: frame.channelCount + offset,
+                    position: StandardSpeakerPositions.position(for: wetRoles[offset]), role: .generic))
+            }
+            scene.audio = PCMFrame(interleaved: samples, channelCount: count, sampleRate: rate,
+                channelLayout: LPCMChannelLayout(coreAudioTag: 0, roles: frame.channelLayout.roles + wetRoles),
+                sourceBufferedFrames: frame.sourceBufferedFrames, sourceCapacityFrames: frame.sourceCapacityFrames)
+            let rendered = try spatial.render(scene)
+            spatialDiagnostics = SpatialRenderDiagnostics(renderer: .speakers, content: isCinema ? .cinema : .music,
+                inputChannels: frame.channelCount,
+                inputPeak: frame.interleaved.reduce(0) { max($0, abs(SpatialSafety.sample($1))) },
+                outputPeak: rendered.interleaved.reduce(0) { max($0, abs($1)) },
+                appliedHeadroomDB: spatial.diagnostics.headroomDB,
+                processingTimeMicroseconds: (ProcessInfo.processInfo.systemUptime - start) * 1e6,
+                invalidSamples: UInt64(spatial.diagnostics.invalidSamples))
+            return rendered
+        }
     }
 }

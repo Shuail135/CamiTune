@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import Darwin
 import CoreImage
+import Combine
 
 @main
 struct CamiTuneMain: App {
@@ -24,13 +25,8 @@ struct CamiTuneMain: App {
         }
         .menuBarExtraStyle(.window)
         .commands {
-            CommandGroup(after: .appInfo) {
-                Button("License & Warranty") { AppLicense.show() }
-                Divider()
-                Button("Recheck Audio Devices") {
-                    Task { await state.coreAudio.refreshWithoutBlockingUI() }
-                }
-            }
+            CamiTuneCommands(coordinator: CamiTunePresentationCoordinator.shared.commands,
+                showLicense: AppLicense.show)
         }
     }
 }
@@ -138,6 +134,72 @@ final class CamiTunePresentationCoordinator {
     static let shared = CamiTunePresentationCoordinator()
 
     let state = AppState()
+    lazy var commands: MainWindowCommandCoordinator = {
+        let bridge = MainWindowCommandCoordinator()
+        bridge.showMainWindow = { [weak self] in self?.showMainWindow() }
+        bridge.resolveContext = { [weak self] selection, sidebar in
+            guard let self else { return .init() }
+            let profile: DeviceProfile?
+            if case .profile(let id) = selection {
+                profile = self.state.profiles.profiles.first { $0.id == id }
+            } else { profile = nil }
+            return .init(destination: selection, profileID: profile?.id,
+                profileEnabled: profile?.isEnabled ?? false,
+                profileActive: profile?.id == self.state.activeProfileID && self.state.isActive,
+                mode: profile?.playbackMode,
+                readiness: profile.map { profile in Dictionary(uniqueKeysWithValues:
+                    profile.availablePlaybackModes.map { ($0, profile.playbackReadiness($0)) }) } ?? [:],
+                mainWindowVisible: self.mainWindow?.isVisible == true && self.mainWindow?.isMiniaturized == false,
+                modalActive: self.mainWindow?.attachedSheet != nil || NSApp.modalWindow != nil
+                    || self.state.setupPresentation.isPresented
+                    || self.state.profileConfirmations.showEnabledExplanation
+                    || self.state.errorMessage != nil || self.state.updateChecker.isDownloadingUpdate,
+                transitionInProgress: self.state.transitionInProgress || self.state.isSavingProfileSettings,
+                sidebarVisible: sidebar)
+        }
+        bridge.performDomainAction = { [weak self] id, action in
+            guard let self else { return }
+            Task { @MainActor [weak self] in
+                guard let self, !self.state.transitionInProgress, !self.state.isSavingProfileSettings,
+                      let profile = self.state.profiles.profiles.first(where: { $0.id == id }) else { return }
+                switch action {
+                case .setEnabled(let enabled): await self.state.setProfileEnabled(id: id, enabled: enabled)
+                case .setMode(let mode): await self.state.setPlaybackMode(profileID: id, mode: mode)
+                case .setActive(let active):
+                    if active {
+                        guard profile.isEnabled else { return }
+                        await self.state.activate(profile: profile)
+                    } else if self.state.profiles.activationMode(for: profile) == .physicalOutput {
+                        guard let window = self.mainWindow, window.attachedSheet == nil else { return }
+                        let alert = NSAlert()
+                        alert.messageText = "Deactivate CamiTune?"
+                        alert.informativeText = "Activation Mode will change from Physical output to Profile audio device. Audio will return to the original physical output."
+                        alert.addButton(withTitle: "Deactivate")
+                        alert.addButton(withTitle: "Cancel")
+                        alert.beginSheetModal(for: window) { [weak self] response in
+                            guard response == .alertFirstButtonReturn else { return }
+                            Task { @MainActor in
+                                await self?.state.deactivateProfileFromMenu(profileID: id, physicalOutputConfirmed: true)
+                            }
+                        }
+                    } else {
+                        await self.state.deactivateProfileFromMenu(profileID: id, physicalOutputConfirmed: false)
+                    }
+                }
+                self.commands.refresh()
+            }
+        }
+        let publishers = [state.objectWillChange.eraseToAnyPublisher(),
+            state.profiles.objectWillChange.eraseToAnyPublisher(),
+            state.setupPresentation.objectWillChange.eraseToAnyPublisher(),
+            state.profileConfirmations.objectWillChange.eraseToAnyPublisher(),
+            state.updateChecker.objectWillChange.eraseToAnyPublisher()]
+        Publishers.MergeMany(publishers).receive(on: RunLoop.main).sink { [weak bridge] _ in
+            bridge?.refresh()
+        }.store(in: &commandSubscriptions)
+        return bridge
+    }()
+    private var commandSubscriptions: Set<AnyCancellable> = []
     private var mainWindow: NSWindow?
     private var mainWindowVisibilityObservers: [NSObjectProtocol] = []
 
@@ -147,7 +209,7 @@ final class CamiTunePresentationCoordinator {
         if let mainWindow {
             window = mainWindow
         } else {
-            let rootView = ContentView(state: state)
+            let rootView = ContentView(state: state, commands: commands)
                 .task { self.state.startAfterPresentation() }
             let controller = NSHostingController(rootView: rootView)
             let created = NSWindow(contentViewController: controller)
@@ -184,6 +246,9 @@ final class CamiTunePresentationCoordinator {
         let center = NotificationCenter.default
         let willCloseNotification = NSWindow.willCloseNotification
         let names: [Notification.Name] = [
+            NSWindow.willBeginSheetNotification,
+            NSWindow.didEndSheetNotification,
+            NSWindow.didBecomeKeyNotification,
             NSWindow.didMiniaturizeNotification,
             NSWindow.didDeminiaturizeNotification,
             NSWindow.didChangeOcclusionStateNotification,
@@ -200,6 +265,7 @@ final class CamiTunePresentationCoordinator {
                     guard let self, let window = self.mainWindow else { return }
                     if isCloseNotification {
                         self.state.setMainWindowPresentationActive(false)
+                        self.commands.refresh()
                     } else {
                         self.updatePresentation(for: window)
                     }
@@ -213,6 +279,7 @@ final class CamiTunePresentationCoordinator {
             && !window.isMiniaturized
             && window.occlusionState.contains(.visible)
         state.setMainWindowPresentationActive(isPresented)
+        commands.refresh()
     }
 }
 
@@ -386,7 +453,7 @@ private final class WindowCloseDelegateProxy: NSObject, NSWindowDelegate {
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard shouldClose() else { return false }
+        guard sender.attachedSheet == nil, shouldClose() else { return false }
         return original?.windowShouldClose?(sender) ?? true
     }
 

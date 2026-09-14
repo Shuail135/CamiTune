@@ -31,6 +31,8 @@ final class ProfileEditorGraphModel: ObservableObject {
            correction.isEnabled {
             combined.bands.insert(contentsOf: correction.filters, at: 0)
         }
+        let tone = state.toneDraft(for: profile.id) ?? profile.processing.simpleTone
+        combined.bands += (try? SimpleToneFilterFactory.filters(for: tone, sampleRate: Double(profile.sampleRate))) ?? []
         calculate(parsed: combined, sampleRate: Double(profile.sampleRate))
     }
 

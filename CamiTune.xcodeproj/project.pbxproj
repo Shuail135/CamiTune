@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CA3700000000000000000001 = {isa = PBXBuildFile; fileRef = CA3700000000000000000002; };
+		CA3600000000000000000105 = {isa = PBXBuildFile; fileRef = CA3600000000000000000205; };
+		CA3600000000000000000104 = {isa = PBXBuildFile; fileRef = CA3600000000000000000204; };
+		CA3600000000000000000103 = {isa = PBXBuildFile; fileRef = CA3600000000000000000203; };
+		CA3600000000000000000102 = {isa = PBXBuildFile; fileRef = CA3600000000000000000202; };
+		CA3600000000000000000101 = {isa = PBXBuildFile; fileRef = CA3600000000000000000201; };
 		CA3500000000000000000104 = {isa = PBXBuildFile; fileRef = CA3500000000000000000204; };
 		CA3500000000000000000105 = {isa = PBXBuildFile; fileRef = CA3500000000000000000205; };
 		CA3500000000000000000103 = {isa = PBXBuildFile; fileRef = CA3500000000000000000203; };
@@ -552,6 +558,12 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CA3700000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/MainWindowCommandCoordinator.swift"; sourceTree = SOURCE_ROOT; };
+		CA3600000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/MenuAppDragBridge.swift"; sourceTree = SOURCE_ROOT; };
+		CA3600000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/MenuAppReorderCoordinator.swift"; sourceTree = SOURCE_ROOT; };
+		CA3600000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/PerAppPlaybackModeMenu.swift"; sourceTree = SOURCE_ROOT; };
+		CA3600000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/AppOrderView.swift"; sourceTree = SOURCE_ROOT; };
+		CA3600000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/AppPresentationStore.swift"; sourceTree = SOURCE_ROOT; };
 		CA3500000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/UI/SpeakerOutputAudition.swift"; sourceTree = SOURCE_ROOT; };
 		CA3500000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/UI/SpeakerRoomCanvas.swift"; sourceTree = SOURCE_ROOT; };
 		CA3500000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/CorrectionFilterTable.swift"; sourceTree = SOURCE_ROOT; };
@@ -1478,6 +1490,12 @@
 				BA8C33326DE49D7DE7378C40,
 				3F9FD71C6CD44FAF98677C35,
 				CA3500000000000000000204,
+				CA3600000000000000000205,
+				CA3600000000000000000204,
+				CA3700000000000000000002,
+				CA3600000000000000000203,
+				CA3600000000000000000202,
+				CA3600000000000000000201,
 				CA3500000000000000000205,
 				CA3500000000000000000203,
 				CA3500000000000000000202,
@@ -1869,6 +1887,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CA3600000000000000000105,
+				CA3600000000000000000104,
+				CA3700000000000000000001,
+				CA3600000000000000000103,
+				CA3600000000000000000102,
+				CA3600000000000000000101,
                 CA3300000000000000000001,
 				CA3200000000000000000201,
 				CA3200000000000000000202,

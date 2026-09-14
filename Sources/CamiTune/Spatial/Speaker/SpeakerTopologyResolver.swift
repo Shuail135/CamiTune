@@ -72,7 +72,7 @@ struct SpeakerTopologyResolver {
                 positionSource: channel.position != nil ? .coreAudioMetadata :
                     (StandardSpeakerPositions.position(for: channel.role) == nil ? .unknown : .standardLayoutDefault),
                 layer: channel.role.speakerLayer,
-                displayName: channel.name ?? (channel.role == .unknown ? "Output \(index + 1)" : channel.role.displayName),
+                displayName: channel.name ?? (channel.role == .unknown ? "Channel \(index + 1)" : channel.role.displayName),
                 isSubwooferLike: channel.role == .lowFrequencyEffects)
         }
         var topology = SpeakerTopology(deviceUID: deviceUID, sampleRate: sampleRate,

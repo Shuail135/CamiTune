@@ -20,11 +20,12 @@ struct SpatialSeatingCalibration: Codable, Hashable, Sendable, Identifiable {
     var microphoneName: String?
     var measurementConfidence: AcousticMeasurementConfidence?
     var roomCorrectionBands: [EQBand] = []
+    var roomCorrectionTopology: SpeakerTopology?
 
     private enum CodingKeys: String, CodingKey {
         case id, outputDeviceUID, name, leftDistanceMeters, rightDistanceMeters, roomX, roomY, enabled, balanceDB
         case measuredArrivalDifferenceMS, measuredLevelDifferenceDB, useMeasuredAlignment
-        case measuredAt, microphoneName, measurementConfidence, roomCorrectionBands
+        case measuredAt, microphoneName, measurementConfidence, roomCorrectionBands, roomCorrectionTopology
     }
     init(outputDeviceUID: String, name: String = "Default",
          leftDistanceMeters: Float = 1, rightDistanceMeters: Float = 1) {
@@ -49,6 +50,7 @@ struct SpatialSeatingCalibration: Codable, Hashable, Sendable, Identifiable {
         measuredAt = try c.decodeIfPresent(Date.self, forKey: .measuredAt)
         microphoneName = try c.decodeIfPresent(String.self, forKey: .microphoneName)
         measurementConfidence = try c.decodeIfPresent(AcousticMeasurementConfidence.self, forKey: .measurementConfidence)
+        roomCorrectionTopology = try c.decodeIfPresent(SpeakerTopology.self, forKey: .roomCorrectionTopology)
         roomCorrectionBands = try c.decodeIfPresent([EQBand].self, forKey: .roomCorrectionBands) ?? []
     }
 

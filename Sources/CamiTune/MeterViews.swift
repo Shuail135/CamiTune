@@ -2,6 +2,7 @@ import Combine
 import SwiftUI
 
 struct MeterBar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let label: String
     let rms: Double
     let peak: Double
@@ -21,7 +22,7 @@ struct MeterBar: View {
                         .frame(width: geo.size.width, height: geo.size.height)
                         .scaleEffect(x: normalized(rms), y: 1, anchor: .leading)
                         .animation(
-                            .linear(duration: UIRenderPerformance.animatedLevelTransitionDuration),
+                            reduceMotion ? nil : .linear(duration: UIRenderPerformance.animatedLevelTransitionDuration),
                             value: rms
                         )
                     Rectangle()
@@ -29,7 +30,7 @@ struct MeterBar: View {
                         .frame(width: 2)
                         .offset(x: geo.size.width * normalized(peak) - 1)
                         .animation(
-                            .linear(duration: UIRenderPerformance.animatedLevelTransitionDuration),
+                            reduceMotion ? nil : .linear(duration: UIRenderPerformance.animatedLevelTransitionDuration),
                             value: peak
                         )
                 }

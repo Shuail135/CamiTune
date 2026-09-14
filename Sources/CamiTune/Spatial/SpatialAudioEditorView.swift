@@ -19,15 +19,15 @@ struct SpatialAudioEditorView: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Mode").font(.title3.bold())
-                Picker("Mode", selection: playbackMode) {
-                    ForEach(profile.availablePlaybackModes, id: \.self) { mode in
-                        Label(mode.compactDisplayName, systemImage: mode.systemImageName).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelStyle(.titleAndIcon)
-                .tint(.blue)
+                JoinedSegmentedControl(
+                    options: profile.availablePlaybackModes,
+                    selection: playbackMode,
+                    title: { $0.compactDisplayName },
+                    symbol: { $0.systemImageName }
+                )
+                .accessibilityLabel("Mode")
                 .disabled(state.transitionInProgress || state.isSavingProfileSettings || state.spatialCalibrationContext != nil)
+                if let reason = profile.playbackReadiness(modePreview ?? profile.playbackMode).reason { Text(reason).font(.callout).foregroundStyle(.secondary) }
                 Text(playbackModeDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -36,7 +36,7 @@ struct SpatialAudioEditorView: View {
                     Text("Finish Speaker and Listening Position in Profile Settings to use Reference. The saved mode is still \(profile.playbackMode.compactDisplayName).")
                         .font(.callout).foregroundStyle(.orange)
                 }
-                if profile.isPersonalListening && (profile.playbackMode == .referencePlayback || profile.processing.deviceCorrection != nil) {
+                if profile.isPersonalListening && (modePreview == .referencePlayback || profile.playbackMode == .referencePlayback || profile.personalReferenceCorrection != nil) {
                     ReferenceCorrectionView(state: state, profile: $profile)
                 }
                 if profile.playbackMode == .spatialRender {
@@ -185,12 +185,7 @@ struct SpatialAudioEditorView: View {
     }
     private var playbackMode: Binding<PlaybackMode> {
         Binding(get: { modePreview ?? profile.playbackMode }, set: { mode in
-            if mode == .referencePlayback && !profile.isPersonalListening {
-                var candidate = profile; candidate.setPlaybackMode(mode)
-                if (try? candidate.validatedReferenceTopology()) == nil {
-                    modePreview = mode; return
-                }
-            }
+            if !profile.playbackReadiness(mode).isReady { modePreview = mode; return }
             modePreview = nil
             let id = profile.id
             Task { await state.setPlaybackMode(profileID: id, mode: mode) }

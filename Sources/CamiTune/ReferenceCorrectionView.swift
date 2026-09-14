@@ -17,10 +17,11 @@ struct ReferenceCorrectionView: View {
     @State private var message: String?
     @State private var headroom: Double?
 
-    private var dirty: Bool { draft != snapshot?.processing.deviceCorrection }
+    private var dirty: Bool { draft != snapshot?.personalReferenceCorrection }
     private var headphones: Bool { profile.effectiveEndpointKind == .headphones }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if profile.processing.deviceCorrection != nil { Text("Your legacy correction still applies globally. Open Equalizer to edit it.").font(.caption).foregroundStyle(.secondary) }
             if headphones {
                 Text("Measured headphone correction is still in development. You can import compatible filters below.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -77,11 +78,9 @@ struct ReferenceCorrectionView: View {
         .onChange(of: profile) { _ in if !dirty { reload() } }
         .task(id: draft) {
             guard let draft else { headroom = nil; return }
-            var candidate = (try? state.applyingSessionEQDrafts(to: profile)) ?? profile
-            candidate.processing.setDeviceCorrection(draft)
-            let renderCandidate = candidate
+            let sampleRate = Double(profile.sampleRate)
             let result = await Task.detached(priority: .utility) {
-                try? ProcessingGraphBuilder(channelCount: renderCandidate.processingChannelCount).build(profile: renderCandidate).automaticHeadroomDB
+                ReferenceCorrection.headroomDB(draft, sampleRate: sampleRate)
             }.value
             guard !Task.isCancelled else { return }
             headroom = result
@@ -90,12 +89,11 @@ struct ReferenceCorrectionView: View {
             DeviceCorrectionEditorView(existing: draft?.importedAPOText == false ? draft : nil,
                 sampleRate: Double(profile.sampleRate), referenceEndpoint: profile.effectiveEndpointKind,
                 automaticHeadroom: { filters in
-                    var candidate = (try? state.applyingSessionEQDrafts(to: profile)) ?? profile
+                    let candidate = (try? state.applyingSessionEQDrafts(to: profile)) ?? profile
                     var correction = draft ?? DeviceCorrectionProfile(deviceName: "Correction", policy: .recommended,
                         measurement: .flat(), target: .flat(), curve: CorrectionCurve(points: []), filters: [], preampDB: 0)
                     correction.filters = filters
-                    candidate.processing.setDeviceCorrection(correction)
-                    return (try? ProcessingGraphBuilder(channelCount: candidate.processingChannelCount).build(profile: candidate).automaticHeadroomDB) ?? 0
+                    return ReferenceCorrection.headroomDB(correction, sampleRate: Double(candidate.sampleRate))
                 }, shouldConfirmReplacement: { false }, onCancel: { showingCorrection = false },
                 onLoad: { correction in showingCorrection = false; draft = correction; commit(correction) })
         }
@@ -116,7 +114,7 @@ struct ReferenceCorrectionView: View {
     }
 
     private func reload() {
-        snapshot = profile; draft = profile.processing.deviceCorrection; message = nil
+        snapshot = profile; draft = profile.personalReferenceCorrection; message = nil
     }
     private func importText(_ text: String, name: String) {
         do {
@@ -139,7 +137,7 @@ struct ReferenceCorrectionView: View {
         pendingProfile = profile; pendingEQ = state.eqDraft(for: profile.id)
         do {
             let current = try state.applyingSessionEQDrafts(to: profile)
-            if EQEditorSupport.hasMeaningfulProcessing(current.processing.globalEqualizer) { confirmTransfer = true }
+            if EQEditorSupport.hasMeaningfulProcessing(current.processing.globalEqualizerIncludingDeviceCorrection) { confirmTransfer = true }
             else { transfer() }
         } catch { message = error.localizedDescription }
     }

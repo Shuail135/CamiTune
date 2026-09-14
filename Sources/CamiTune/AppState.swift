@@ -118,11 +118,13 @@ final class AppState: NSObject, ObservableObject {
     }
     private var pendingLiveApply: PendingLiveApply?
     private var liveApplyWorker: Task<Void, Never>?
+    private var sessionToneDrafts: [UUID: SimpleToneSettings] = [:]
     private var sessionEQDrafts: [UUID: String] = [:]
     private var sessionEQDraftsReplaceDeviceCorrection: Set<UUID> = []
     private var sessionDeviceCorrectionProvenance: [UUID: DeviceCorrectionProfile] = [:]
     private var sessionClearsDeviceCorrectionProvenance: Set<UUID> = []
     private var sessionLimiterDrafts: [UUID: Bool] = [:]
+    private var sessionChannelToneDrafts: [UUID: [Int: SimpleToneSettings]] = [:]
     private var sessionChannelEQDrafts: [UUID: [Int: String]] = [:]
     private var sessionChannelLimiterDrafts: [UUID: [Int: Bool]] = [:]
     private var sessionChannelDelayDrafts: [UUID: [Int: Double]] = [:]
@@ -302,6 +304,7 @@ final class AppState: NSObject, ObservableObject {
     /// concerns. The DSP/audio route stays active when no profile editor is on
     /// screen, while these visual-only consumers pause.
     func setRuntimeVisuals(profileID: UUID, active: Bool, meters meterVisible: Bool = true, spectrum spectrumVisible: Bool = true) {
+        UIRenderPerformance.recordVisualDemand()
         let previousProfileID = requestedRuntimeVisualProfileID
         if active {
             requestedRuntimeVisualProfileID = profileID
@@ -364,6 +367,13 @@ final class AppState: NSObject, ObservableObject {
         sessionEQDraftsReplaceDeviceCorrection.contains(profileID)
     }
 
+    func toneDraft(for profileID: UUID) -> SimpleToneSettings? { sessionToneDrafts[profileID] }
+    func setToneDraft(_ tone: SimpleToneSettings, for profileID: UUID) {
+        guard sessionToneDrafts[profileID] != tone else { return }
+        sessionToneDrafts[profileID] = tone
+        publishEQDraftChange(for: profileID)
+    }
+
     func limiterDraft(for profileID: UUID) -> Bool? {
         sessionLimiterDrafts[profileID]
     }
@@ -408,17 +418,22 @@ final class AppState: NSObject, ObservableObject {
     }
 
     func clearEQDraft(for profileID: UUID) {
-        let hadDraft = sessionEQDrafts[profileID] != nil
+        let hadDraft = sessionToneDrafts[profileID] != nil || sessionEQDrafts[profileID] != nil
             || sessionEQDraftsReplaceDeviceCorrection.contains(profileID)
             || sessionDeviceCorrectionProvenance[profileID] != nil
             || sessionClearsDeviceCorrectionProvenance.contains(profileID)
             || sessionLimiterDrafts[profileID] != nil
+        sessionToneDrafts.removeValue(forKey: profileID)
         sessionEQDrafts.removeValue(forKey: profileID)
         sessionEQDraftsReplaceDeviceCorrection.remove(profileID)
         sessionDeviceCorrectionProvenance.removeValue(forKey: profileID)
         sessionClearsDeviceCorrectionProvenance.remove(profileID)
         sessionLimiterDrafts.removeValue(forKey: profileID)
         if hadDraft { publishEQDraftChange(for: profileID) }
+    }
+
+    func channelToneDraft(for profileID: UUID, channelIndex: Int) -> SimpleToneSettings? {
+        sessionChannelToneDrafts[profileID]?[channelIndex]
     }
 
     func channelEQDraft(for profileID: UUID, channelIndex: Int) -> String? {
@@ -438,11 +453,16 @@ final class AppState: NSObject, ObservableObject {
         eqText: String,
         limiterEnabled: Bool,
         delayMilliseconds: Double,
+        simpleTone: SimpleToneSettings? = nil,
         for profileID: UUID,
         channelIndex: Int
     ) {
         var changed = false
 
+        if let simpleTone, sessionChannelToneDrafts[profileID]?[channelIndex] != simpleTone {
+            sessionChannelToneDrafts[profileID, default: [:]][channelIndex] = simpleTone
+            changed = true
+        }
         if sessionChannelEQDrafts[profileID]?[channelIndex] != eqText {
             sessionChannelEQDrafts[profileID, default: [:]][channelIndex] = eqText
             changed = true
@@ -492,9 +512,14 @@ final class AppState: NSObject, ObservableObject {
     }
 
     func clearChannelEQDraft(for profileID: UUID, channelIndex: Int) {
-        let hadDraft = sessionChannelEQDrafts[profileID]?[channelIndex] != nil
+        let hadDraft = sessionChannelToneDrafts[profileID]?[channelIndex] != nil
+            || sessionChannelEQDrafts[profileID]?[channelIndex] != nil
             || sessionChannelLimiterDrafts[profileID]?[channelIndex] != nil
             || sessionChannelDelayDrafts[profileID]?[channelIndex] != nil
+        sessionChannelToneDrafts[profileID]?.removeValue(forKey: channelIndex)
+        if sessionChannelToneDrafts[profileID]?.isEmpty == true {
+            sessionChannelToneDrafts.removeValue(forKey: profileID)
+        }
         sessionChannelEQDrafts[profileID]?.removeValue(forKey: channelIndex)
         if sessionChannelEQDrafts[profileID]?.isEmpty == true {
             sessionChannelEQDrafts.removeValue(forKey: profileID)
@@ -520,6 +545,7 @@ final class AppState: NSObject, ObservableObject {
     /// revert an unsaved draft in another scope.
     func applyingSessionEQDrafts(to profile: DeviceProfile, replacingGlobalEqualizer: Bool = false) throws -> DeviceProfile {
         var updated = profile
+        if let tone = sessionToneDrafts[profile.id] { updated.processing.simpleTone = tone }
         if !replacingGlobalEqualizer, let text = sessionEQDrafts[profile.id] {
             let parsed = try EqualizerAPOParser().parse(text)
             updated.setGlobalEqualizer(preampDB: parsed.preampDB, bands: parsed.bands)
@@ -531,14 +557,16 @@ final class AppState: NSObject, ObservableObject {
             updated.processing.setLimiterEnabled(limiterEnabled)
         }
         if !replacingGlobalEqualizer { applyDeviceCorrectionProvenanceDraft(to: &updated.processing, for: profile.id) }
+        let channelToneDrafts = sessionChannelToneDrafts[profile.id] ?? [:]
         let channelEQDrafts = sessionChannelEQDrafts[profile.id] ?? [:]
         let channelLimiterDrafts = sessionChannelLimiterDrafts[profile.id] ?? [:]
         let channelDelayDrafts = sessionChannelDelayDrafts[profile.id] ?? [:]
         let draftedChannelIndexes = Set(channelEQDrafts.keys)
             .union(channelLimiterDrafts.keys)
             .union(channelDelayDrafts.keys)
+            .union(channelToneDrafts.keys)
         for channelIndex in draftedChannelIndexes {
-            let current = updated.processing.settings(forChannel: channelIndex) ?? .identity
+            let current = try updated.resolvedProcessing().settings(forChannel: channelIndex) ?? .identity
             let parsed = try channelEQDrafts[channelIndex].map {
                 try EqualizerAPOParser().parse($0)
             } ?? ParsedEQ(
@@ -556,7 +584,8 @@ final class AppState: NSObject, ObservableObject {
                 delayMilliseconds: channelDelayDrafts[channelIndex]
                     ?? current.delayMilliseconds,
                 limiterEnabled: channelLimiterDrafts[channelIndex]
-                    ?? current.limiterEnabled
+                    ?? current.limiterEnabled,
+                simpleTone: channelToneDrafts[channelIndex] ?? current.simpleTone
             )
         }
         return updated
@@ -809,9 +838,12 @@ final class AppState: NSObject, ObservableObject {
                 }
             }
         }
-        let original = draft.original
-        var candidate = try draft.candidate()
-        candidate.autoActivateWhenProfileDeviceSelected = draft.activation == .profileAudioDevice
+        guard let original = profiles.profiles.first(where: { $0.id == draft.original.id }) else { throw ProfileSettingsError.staleDraft }
+        let originalActivation = profiles.activationMode(for: original)
+        guard draft.activation == draft.originalActivation || originalActivation == draft.originalActivation || originalActivation == draft.activation else { throw ProfileSettingsError.staleDraft }
+        let activation = draft.activation == draft.originalActivation ? originalActivation : draft.activation
+        var candidate = try draft.candidate(applyingTo: original)
+        candidate.autoActivateWhenProfileDeviceSelected = activation == .profileAudioDevice
         let revision = manualDeactivationRevision
         let wasActive = isActive && activeProfileID == original.id
         let originalPreviousDefaultUID = previousDefaultUID
@@ -823,12 +855,25 @@ final class AppState: NSObject, ObservableObject {
             || original.speakerTopology != candidate.speakerTopology
             || original.spatialSettings != candidate.spatialSettings
             || original.processing != candidate.processing
+            || original.personalReferenceCorrections != candidate.personalReferenceCorrections
+        let requiresRestart = original.endpointKind != candidate.endpointKind
+            || original.outputDevice != candidate.outputDevice || original.sampleRate != candidate.sampleRate
+            || original.speakerTopology != candidate.speakerTopology
+            || original.effectiveSpatialSettings.seating != candidate.effectiveSpatialSettings.seating
+            || original.audioInterface != candidate.audioInterface
+        var appliedInPlace = false
+        func applyModeState(_ value: DeviceProfile) {
+            pcmRouter.setPlaybackMode(value.playbackMode, correction: value.personalReferenceCorrection)
+            pcmRouter.setSpatialRenderingMode(value.effectiveSpatialRenderingMode)
+            pcmRouter.setSpatialSettings(value.effectiveSpatialSettings, output: value.effectiveSpatialSettings.resolvedOutput(deviceName: value.outputDeviceName))
+            perAppAudio.setPlaybackContext(PerAppPlaybackContext(profile: value))
+        }
         var touchedRuntime = false
         var touchedRouting = false
         func checkCurrent() throws {
             guard revision == manualDeactivationRevision else { throw ProfileSettingsError.cancelled }
             guard draftRevision == eqDraftRevision else { throw ProfileSettingsError.busy }
-            try profiles.validateSettingsSnapshot(original, activation: draft.originalActivation)
+            try profiles.validateSettingsSnapshot(original, activation: originalActivation)
         }
         try await ProfileSettingsTransaction.run {
             try checkCurrent()
@@ -843,7 +888,7 @@ final class AppState: NSObject, ObservableObject {
                 guard await coreAudio.supportsSampleRateWithoutBlockingUI(uid: device.id, rate: Double(candidate.sampleRate)) else {
                     throw AppError.unsupportedSampleRate(candidate.sampleRate, device.name)
                 }
-                let topology = try candidate.validatedReferenceTopology()
+                let topology = try candidate.validatedPhysicalSpeakerTopology()
                 let assignment = try candidate.validatedInterfaceConfiguration()
                 if topology != nil || assignment != nil {
                     let discovered = try await Task.detached(priority: .userInitiated) {
@@ -865,7 +910,13 @@ final class AppState: NSObject, ObservableObject {
             }
             try checkCurrent()
         } apply: {
-            if wasActive && changesRendering {
+            if wasActive && changesRendering && !requiresRestart {
+                appliedInPlace = true
+                try await dspController.applyGraph(try await buildGraphWithoutBlockingUI(profile: newRuntime))
+                try checkCurrent()
+                applyModeState(newRuntime)
+            }
+            if wasActive && changesRendering && requiresRestart {
                 touchedRuntime = true
                 await deactivate(manual: false)
                 try checkCurrent()
@@ -885,8 +936,12 @@ final class AppState: NSObject, ObservableObject {
         } commit: {
             try checkCurrent()
             try profiles.commitSettings(candidate, expected: original,
-                originalActivation: draft.originalActivation, activation: draft.activation)
+                originalActivation: originalActivation, activation: activation)
         } rollback: {
+            if appliedInPlace && revision == manualDeactivationRevision && isActive && activeProfileID == original.id {
+                try await dspController.applyGraph(try await buildGraphWithoutBlockingUI(profile: oldRuntime))
+                applyModeState(oldRuntime)
+            }
             if touchedRuntime {
                 await deactivate(manual: false)
                 // Never undo an explicit Stop or restart a deleted/changed profile.
@@ -909,7 +964,7 @@ final class AppState: NSObject, ObservableObject {
             clearEQDraft(for: candidate.id)
             equalizerReplacementChanges.send(candidate.id)
         }
-        if draft.activation != draft.originalActivation || candidate.outputDevice != original.outputDevice {
+        if activation != originalActivation || candidate.outputDevice != original.outputDevice {
             automaticActivationRetry = nil
             if suppressedAutoUID == candidate.outputDeviceUID { suppressedAutoUID = nil }
             Task { @MainActor [weak self] in await self?.monitorRouting() }
@@ -919,6 +974,7 @@ final class AppState: NSObject, ObservableObject {
     func setPlaybackMode(profileID: UUID, mode: PlaybackMode) async {
         guard let profile = profiles.profiles.first(where: { $0.id == profileID }),
               profile.availablePlaybackModes.contains(mode) else { return }
+        guard profile.playbackReadiness(mode).isReady else { presentError(ProfileSettingsError.runtime(profile.playbackReadiness(mode).reason ?? "Configure this mode first.")); return }
         var draft = ProfileSettingsDraft(profile: profile, activation: profiles.activationMode(for: profile))
         draft.requestedMode = mode
         do { try await saveProfileSettings(draft) }
@@ -1069,7 +1125,7 @@ final class AppState: NSObject, ObservableObject {
                     throw SpeakerTopologyError.hardwareLayoutChanged
                 }
             }
-            let referenceTopology = try profile.validatedReferenceTopology()
+            let referenceTopology = try profile.validatedPhysicalSpeakerTopology()
             if let referenceTopology {
                 let discovered = try await Task.detached(priority: .userInitiated) {
                     try SpeakerTopologyProbe().probe(output)
@@ -1192,6 +1248,7 @@ final class AppState: NSObject, ObservableObject {
                 spatialSettings: profile.effectiveSpatialSettings,
                 spatialOutput: profile.effectiveSpatialSettings.resolvedOutput(deviceName: output.name),
                 referenceTopology: referenceTopology,
+                playbackMode: profile.playbackMode, referenceCorrection: profile.personalReferenceCorrection,
                 meterConsumer: meters.pcmConsumer(for: runtimeSession),
                 analyzerConsumer: { [weak spectrum] frame in
                     spectrum?.ingest(
@@ -1401,6 +1458,7 @@ final class AppState: NSObject, ObservableObject {
         if delete, let positionID {
             draft.spatialSettings.listeningPositions.removeAll { $0.id == positionID }
             if draft.spatialSettings.selectedPositionID == positionID { draft.spatialSettings.selectedPositionID = nil }
+            if draft.spatialSettings.primaryPositionID == positionID { draft.spatialSettings.primaryPositionID = draft.spatialSettings.listeningPositions.first?.id }
         } else {
             guard positionID == nil || draft.spatialSettings.listeningPositions.contains(where: {
                 $0.id == positionID && $0.outputDeviceUID == profile.outputDeviceUID
@@ -1437,6 +1495,7 @@ final class AppState: NSObject, ObservableObject {
         var seat = profile.effectiveSpatialSettings.seating
             ?? SpatialSeatingCalibration(outputDeviceUID: profile.outputDeviceUID, name: "Measured listening position")
         seat.roomCorrectionBands = bands
+        seat.roomCorrectionTopology = profile.speakerTopology
         seat.measuredAt = measurement.measuredAt
         seat.microphoneName = measurement.microphone.name
         seat.measurementConfidence = measurement.confidence
@@ -1496,10 +1555,12 @@ final class AppState: NSObject, ObservableObject {
     }
 
     private func performLiveApply(_ pending: PendingLiveApply) async {
+        UIRenderPerformance.beginEQApply()
+        defer { UIRenderPerformance.endEQApply() }
         let profile = pending.profile
         let request = pending.request
         guard isActive, activeProfileID == profile.id else { return }
-        if activeSampleRate != profile.sampleRate || activeReferenceTopology != (try? profile.validatedReferenceTopology()) {
+        if activeSampleRate != profile.sampleRate || activeReferenceTopology != (try? profile.validatedPhysicalSpeakerTopology()) {
             if let problem = await processingSampleRateProblemWithoutBlockingUI(
                 rate: profile.sampleRate,
                 outputUID: profile.outputDeviceUID
@@ -1523,6 +1584,7 @@ final class AppState: NSObject, ObservableObject {
             try await dspController.applyGraph(graph)
             guard request == latestApplyRequest else { return }
             let currentProfile = profiles.profiles.first { $0.id == profile.id } ?? profile
+            pcmRouter.setPlaybackMode(currentProfile.playbackMode, correction: currentProfile.personalReferenceCorrection)
             pcmRouter.setSpatialRenderingMode(currentProfile.effectiveSpatialRenderingMode)
             pcmRouter.setSpatialSettings(currentProfile.effectiveSpatialSettings, output: currentProfile.effectiveSpatialSettings.resolvedOutput(deviceName: currentProfile.outputDeviceName))
             pcmRouter.setSpatialListenerTuning(currentProfile.spatialListenerTuning)
@@ -1806,6 +1868,7 @@ final class AppState: NSObject, ObservableObject {
         driverTransport.stop()
         perAppAudio.setPlaybackContext(nil)
         perAppAudio.resetRuntime()
+        perAppAudio.flushPendingSaveSynchronously()
         pcmRouter.stop()
         dsp.closeAudioInput()
         spectrum.stop()

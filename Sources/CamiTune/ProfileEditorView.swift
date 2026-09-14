@@ -4,6 +4,7 @@ import Foundation
 
 @MainActor
 struct ProfileEditorView: View {
+    @EnvironmentObject private var commands: MainWindowCommandCoordinator
     let state: AppState
     let coreAudio: CoreAudioManager
     @ObservedObject private var store: ProfileStore
@@ -27,17 +28,17 @@ struct ProfileEditorView: View {
     }
 
     private var layout: ProfileSectionLayout { store.effectiveLayout(for: profile) }
-    private var sections: [ProfileSection] { layout.visibleSections(for: profile.endpointKind) }
+    private var sections: [ProfileSection] { layout.visibleSections(for: profile.effectiveEndpointKind) }
     private func updateVisuals() {
         // EQ bands and per-channel controls also display spectrum/level data.
-        let demand = layout.visualDemand(for: profile.endpointKind)
+        let demand = layout.visualDemand(for: profile.effectiveEndpointKind)
         state.setRuntimeVisuals(profileID: profile.id, active: true,
             meters: demand.meters, spectrum: demand.spectrum)
         if !demand.spectrum { graphModel.cancel() }
     }
 
     private func seedGraphIfNeeded() {
-        if layout.visualDemand(for: profile.endpointKind).spectrum {
+        if layout.visualDemand(for: profile.effectiveEndpointKind).spectrum {
             graphModel.seed(profile: profile, state: state)
         } else { graphModel.cancel() }
     }
@@ -77,7 +78,13 @@ struct ProfileEditorView: View {
                     Spacer()
                     Button { showingSettings = true } label: {
                         Image(systemName: "gearshape")
+                            .font(.system(size: 20, weight: .regular))
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.borderless)
                     .help("Profile Settings")
                     .accessibilityLabel("Profile Settings")
                     Toggle("Enabled", isOn: Binding(
@@ -103,9 +110,19 @@ struct ProfileEditorView: View {
             seedGraphIfNeeded()
             installFocusClearingMonitor()
         }
-        .sheet(isPresented: $showingSettings) {
+        .onReceive(commands.$request) { request in
+            guard let request else { return }
+            switch request.intent {
+            case .rename(let id) where id == profile.id: beginProfileRename()
+            case .profileSettings(let id) where id == profile.id: showingSettings = true
+            default: return
+            }
+            commands.consume(request.id)
+        }
+        .sheet(isPresented: $showingSettings, onDismiss: { titleFocused = true }) {
             ProfileSettingsView(state: state, profile: profile)
         }
+        .onChange(of: showingSettings) { commands.modalReservation = $0 }
         .onChange(of: layout) { _ in
             updateVisuals()
             if sections.contains(.equalizer) || sections.contains(.spectrum) {
@@ -151,7 +168,10 @@ struct ProfileEditorView: View {
             SpatialAudioEditorView(state: state, profile: $profile)
         case .equalizer:
             GlobalEqualizerEditorView(state: state, profile: $profile, graphModel: graphModel,
-                presentation: layout.equalizer, needsResponseGraph: sections.contains(.spectrum) || layout.equalizer != .simpleTone)
+                presentation: layout.equalizer, needsResponseGraph: sections.contains(.spectrum) || layout.equalizer != .simpleTone,
+                onPresentationChanged: { presentation in
+                    var local = layout; local.equalizer = presentation; profile.sectionLayout = local
+                })
         case .convolution:
             ConvolutionEditorView(state: state, profile: $profile)
         case .crossfeed:

@@ -3,7 +3,7 @@ import SwiftUI
 
 struct GraphicEqualizerBands: View {
     @Binding var bands: [EQBand]
-    let spectrum: SpectrumAnalyzer
+    var spectrum: SpectrumAnalyzer? = nil
     let profileID: UUID
     let responsePoints: [EQResponsePoint]
     let setKind: (EQBand.Kind, inout EQBand) -> Void
@@ -22,7 +22,7 @@ struct GraphicEqualizerBands: View {
 
     @ViewBuilder
     var body: some View {
-        if showsSpectrumLevels {
+        if showsSpectrumLevels, let spectrum {
             SpectrumLevelObserver(
                 spectrum: spectrum,
                 profileID: profileID,

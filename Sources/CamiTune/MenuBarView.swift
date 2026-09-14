@@ -6,7 +6,7 @@ import SwiftUI
 final class MenuBarViewModel: ObservableObject {
     let state: AppState
     @Published private(set) var actionInFlight = false
-    @Published private(set) var orderedApplicationIDs: [String] = []
+    let reorder: MenuAppReorderCoordinator
     @Published var pendingOffProfileID: UUID?
     // Routing can temporarily lose its active profile during a mode change.
     // Keep the controls attached to the same profile until the command finishes.
@@ -48,17 +48,18 @@ final class MenuBarViewModel: ObservableObject {
     private func startDismissalMonitoring() {
         let clicks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: clicks) { [weak self] event in
-            if let self, !self.containsMenuWindow(event.window) { self.dismissMenu() }
+            if let self, self.reorder.draggedApplicationID == nil, !self.containsMenuWindow(event.window) { self.dismissMenu() }
             return event
         }
         globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: clicks) { [weak self] _ in
-            self?.dismissMenu()
+            guard let self, self.reorder.draggedApplicationID == nil else { return }
+            self.dismissMenu()
         }
         deactivateObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification, object: NSApp, queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.isOpen else { return }
+                guard let self, self.isOpen, self.reorder.draggedApplicationID == nil else { return }
                 self.dismissMenu()
             }
         }
@@ -81,21 +82,13 @@ final class MenuBarViewModel: ObservableObject {
 
     init(state: AppState) {
         self.state = state
+        reorder = MenuAppReorderCoordinator(store: state.perAppAudio.presentationStore)
         Publishers.Merge3(state.objectWillChange, state.profiles.objectWillChange,
                           state.coreAudio.objectWillChange)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &subscriptions)
-        state.perAppAudio.$applications.map { $0.filter(\.isActive).map(\.id) }
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] ids in
-                guard let self, self.isOpen else { return }
-                let existing = Set(self.orderedApplicationIDs)
-                let additions = ids.filter { !existing.contains($0) }
-                if !additions.isEmpty { self.orderedApplicationIDs.append(contentsOf: additions) }
-            }
-            .store(in: &subscriptions)
+
     }
 
     var profile: DeviceProfile? {
@@ -129,7 +122,6 @@ final class MenuBarViewModel: ObservableObject {
         guard !isOpen else { return }
         isOpen = true
         startDismissalMonitoring()
-        orderedApplicationIDs = state.perAppAudio.rankedMenuApplicationIDs()
         state.perAppAudio.setMeterPresentationActive(true, source: "menu")
     }
 
@@ -137,7 +129,7 @@ final class MenuBarViewModel: ObservableObject {
         isOpen = false
         stopDismissalMonitoring()
         state.perAppAudio.setMeterPresentationActive(false, source: "menu")
-        orderedApplicationIDs = []
+        reorder.cancel()
     }
 
     func setRuntimeActive(_ enabled: Bool) {
@@ -208,7 +200,8 @@ struct MenuBarRootView: View {
             outputSection.padding(12)
             Divider()
             MenuBarApplicationsSection(controller: model.state.perAppAudio,
-                orderedIDs: model.orderedApplicationIDs, profile: model.profile)
+                presentation: model.state.perAppAudio.presentationStore, reorder: model.reorder,
+                profile: model.isActive ? model.profile : nil)
                 .padding(.horizontal, 12).padding(.vertical, 8)
             Divider()
             VStack(alignment: .leading, spacing: 0) {
@@ -306,9 +299,9 @@ struct MenuBarRootView: View {
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Mode").font(.caption)
-                    MenuBarSegmentedControl(options: profile.availablePlaybackModes, selection: Binding(
+                    JoinedSegmentedControl(options: profile.availablePlaybackModes, selection: Binding(
                         get: { profile.playbackMode }, set: { model.setPlaybackMode($0) }
-                    ), title: { $0.compactDisplayName }, symbol: { $0.systemImageName })
+                    ), title: { $0.compactDisplayName }, symbol: { $0.systemImageName }, unavailableReason: { profile.playbackReadiness($0).reason })
                     .accessibilityLabel("Mode")
                     .disabled(model.actionInFlight || model.state.transitionInProgress || model.state.isSavingProfileSettings || model.state.spatialCalibrationContext != nil)
                 }
@@ -402,11 +395,12 @@ struct MenuBarRuntimeControl: NSViewRepresentable {
 
 /// One joined track keeps icon/text labels and blue selection consistent,
 /// including when the menu window does not have normal key-window emphasis.
-private struct MenuBarSegmentedControl<Value: Hashable>: View {
+struct JoinedSegmentedControl<Value: Hashable>: View {
     let options: [Value]
     @Binding var selection: Value
     let title: (Value) -> String
     var symbol: (Value) -> String? = { _ in nil }
+    var unavailableReason: (Value) -> String? = { _ in nil }
     @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
@@ -428,6 +422,15 @@ private struct MenuBarSegmentedControl<Value: Hashable>: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(selection == option ? .isSelected : [])
+                .disabled(unavailableReason(option) != nil)
+                .help(unavailableReason(option) ?? title(option))
+
+                if option != options.last {
+                    Rectangle()
+                        .fill(Color.gray.opacity(0.4))
+                        .frame(width: 0.5, height: 16)
+                        .accessibilityHidden(true)
+                }
             }
         }
         .background(Color(nsColor: .controlBackgroundColor))
@@ -507,21 +510,19 @@ private struct MenuBarCommandStyle: ButtonStyle {
 private struct MenuBarApplicationsSection: View {
     @EnvironmentObject private var model: MenuBarViewModel
     @ObservedObject var controller: PerAppAudioController
-    let orderedIDs: [String]
+    @ObservedObject var presentation: AppPresentationStore
+    @ObservedObject var reorder: MenuAppReorderCoordinator
     let profile: DeviceProfile?
-    @State private var showingMore = false
-    @State private var hoverTask: Task<Void, Never>?
+    @State private var primaryCount = 6
 
     private var applications: [PerAppAudioApplication] {
-        let active = controller.applications.filter(\.isActive)
-        let byID = Dictionary(uniqueKeysWithValues: active.map { ($0.id, $0) })
-        let known = Set(orderedIDs)
-        return orderedIDs.compactMap { byID[$0] } + active.filter { !known.contains($0.id) }
+        presentation.orderedApplications(controller.applications.filter(\.isActive), in: .shown)
     }
 
-    private var primaryCount: Int {
-        let height = NSScreen.main?.visibleFrame.height ?? 800
-        return min(6, max(1, Int((height - 280) / 30)))
+    private var showingMore: Binding<Bool> {
+        Binding(get: { reorder.showingMoreApps }, set: {
+            if $0 || reorder.draggedApplicationID == nil { reorder.showingMoreApps = $0 }
+        })
     }
 
     var body: some View {
@@ -529,57 +530,57 @@ private struct MenuBarApplicationsSection: View {
             Text("APPLICATIONS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 .padding(.bottom, 5)
             if applications.isEmpty {
-                Text("No eligible applications are running.")
+                Text("No shown apps are playing audio.")
                     .font(.caption).foregroundStyle(.secondary).padding(.vertical, 8)
             }
             ForEach(Array(applications.prefix(primaryCount))) { app in row(app) }
-            if applications.count > primaryCount {
-                Button {
-                    hoverTask?.cancel()
-                    showingMore = true
-                } label: {
-                    HStack {
-                        Text("More Apps")
-                        Spacer()
-                        Image(systemName: "chevron.right")
+            if applications.count > primaryCount, let boundary = applications.prefix(primaryCount).last {
+                MenuAppDropBridge(applicationID: boundary.id, isMoreAppsBridge: true, coordinator: reorder) {
+                    Button { reorder.openMoreApps() } label: {
+                        HStack {
+                            Text("More Apps")
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                        }
                     }
+                    .buttonStyle(MenuBarCommandStyle())
+                    .background(reorder.hoveringBridge && reorder.draggedApplicationID != nil
+                        ? Color.accentColor.opacity(0.12) : Color.clear)
+                    .onHover { reorder.bridgeHover($0) }
                 }
-                .buttonStyle(MenuBarCommandStyle())
-                .onHover { inside in scheduleHover(inside, opening: true) }
-                .popover(isPresented: $showingMore, arrowEdge: .trailing) {
+                .frame(height: 26)
+                .popover(isPresented: showingMore, arrowEdge: .trailing) {
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            ForEach(Array(applications.dropFirst(primaryCount))) { app in row(app) }
+                            ForEach(Array(applications.dropFirst(primaryCount))) { app in row(app, isPopover: true) }
                         }.padding(8)
                     }
                     .frame(width: 360, height: min(330, CGFloat(applications.count - primaryCount) * 30 + 16))
                     .background(Color(nsColor: .windowBackgroundColor))
                     .background(MenuBarPresentationObserver(windowChanged: { model.registerMenuWindow($0) }) { _ in })
-                    .onHover { inside in
-                        // Native pull-down menus can temporarily take the pointer
-                        // outside this content; their interaction must keep it open.
-                        if inside { hoverTask?.cancel() }
-                    }
+                    .onHover { reorder.popoverHover($0) }
                 }
             }
         }
-        .onDisappear {
-            hoverTask?.cancel()
-            showingMore = false
+        .onAppear {
+            let height = NSScreen.main?.visibleFrame.height ?? 800
+            primaryCount = min(6, max(1, Int((height - 280) / 30)))
         }
+        .onDisappear { reorder.cancel() }
     }
 
-    private func row(_ app: PerAppAudioApplication) -> some View {
-        MenuBarApplicationRow(application: app, controller: controller, profile: profile)
-    }
-
-    private func scheduleHover(_ inside: Bool, opening: Bool) {
-        hoverTask?.cancel()
-        if inside && !opening { return }
-        hoverTask = Task { @MainActor in
-            do { try await Task.sleep(for: .milliseconds(inside ? 180 : 300)) }
-            catch { return }
-            showingMore = inside
+    private func row(_ app: PerAppAudioApplication, isPopover: Bool = false) -> some View {
+        MenuAppDropBridge(applicationID: app.id, isPopover: isPopover, coordinator: reorder) {
+            MenuBarApplicationRow(application: app, displayedName: presentation.displayName(for: app),
+                controller: controller, context: profile.map(PerAppPlaybackContext.init(profile:)), reorder: reorder,
+                isLoading: model.actionInFlight || model.state.transitionInProgress)
+        }
+        .frame(height: 30)
+        .opacity(reorder.draggedApplicationID == app.id ? 0.6 : 1)
+        .overlay(alignment: reorder.dropTarget?.after == true ? .bottom : .top) {
+            if reorder.dropTarget?.applicationID == app.id {
+                Rectangle().fill(Color.accentColor).frame(height: 2).allowsHitTesting(false)
+            }
         }
     }
 }
@@ -587,16 +588,16 @@ private struct MenuBarApplicationsSection: View {
 @MainActor
 private struct MenuBarApplicationRow: View {
     let application: PerAppAudioApplication
+    let displayedName: String
     let controller: PerAppAudioController
-    let profile: DeviceProfile?
+    let context: PerAppPlaybackContext?
+    let reorder: MenuAppReorderCoordinator
+    let isLoading: Bool
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(nsImage: PerAppIconCache.icon(for: application))
-                .resizable().frame(width: 24, height: 24)
-            Text(application.displayName).lineLimit(1)
-                .frame(width: 94, alignment: .leading)
-                .help(application.displayName)
+            MenuAppDragSource(application: application, displayedName: displayedName, coordinator: reorder)
+                .frame(width: 124, height: 30)
             Button {
                 controller.setMuted(!application.settings.isMuted, for: application.id)
             } label: {
@@ -604,85 +605,23 @@ private struct MenuBarApplicationRow: View {
                     .frame(width: 22)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(application.settings.isMuted ? "Unmute" : "Mute") \(application.displayName)")
+            .accessibilityLabel("\(application.settings.isMuted ? "Unmute" : "Mute") \(displayedName)")
             HorizontalMeteredVolumeSlider(volume: application.settings.volume,
                 level: application.settings.isMuted ? 0 : application.level,
-                applicationName: application.displayName) { volume, finished in
+                applicationName: displayedName) { volume, finished in
                     controller.setVolume(volume, for: application.id, interactionFinished: finished)
                 }
                 .frame(maxWidth: .infinity).frame(height: 24)
-            if let profile {
-                PlaybackModeMenu(application: application, controller: controller, profile: profile)
-                    .frame(width: 30)
-            }
+            PerAppPlaybackModeMenu(application: application, displayedName: displayedName, controller: controller,
+                context: context, isLoading: isLoading)
+                .frame(width: 30)
         }
         .frame(height: 30)
     }
 }
 
-@MainActor
-private struct PlaybackModeMenu: View {
-    @EnvironmentObject private var model: MenuBarViewModel
-    let application: PerAppAudioApplication
-    let controller: PerAppAudioController
-    let profile: DeviceProfile
-
-    private var displayedMode: PlaybackMode {
-        application.settings.playbackModeOverride
-            ?? profile.playbackMode
-    }
-    
-    private var isLoading: Bool {
-        model.actionInFlight || model.state.transitionInProgress
-    }
-
-    var body: some View {
-        Menu {
-            Toggle(isOn: Binding(
-                get: { application.settings.playbackModeOverride == nil },
-                set: { _ in controller.setPlaybackModeOverride(nil, for: application.id) }
-            )) {
-                Label("Default", systemImage: profile.playbackMode.systemImageName)
-            }
-            ForEach(profile.availablePlaybackModes, id: \.self) { mode in
-                Toggle(isOn: Binding(
-                    get: { application.settings.playbackModeOverride == mode },
-                    set: { _ in controller.setPlaybackModeOverride(mode, for: application.id) }
-                )) {
-                    Label(mode.compactDisplayName, systemImage: mode.systemImageName)
-                }
-            }
-            if let saved = application.settings.playbackModeOverride, saved != displayedMode {
-                Divider()
-                Text("\(saved.compactDisplayName) saved; following profile on this output")
-            }
-        } label: {
-            Color.clear
-                .frame(width: 28, height: 22)
-                .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .overlay {
-            HStack(spacing: 2) {
-                Image(systemName: displayedMode.systemImageName)
-                
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 7, weight: .semibold))
-            }
-            .foregroundStyle(
-                isLoading
-                ? Color.secondary
-                : Color(nsColor: .labelColor)
-            )
-            .opacity(isLoading ? 0.55 : 1.0)
-            .allowsHitTesting(false)
-        }
-        .allowsHitTesting(!isLoading)
-    }
-}
-
 private struct HorizontalMeteredVolumeSlider: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let volume: Double
     let level: Double
     let applicationName: String
@@ -717,9 +656,20 @@ private struct HorizontalMeteredVolumeSlider: View {
         }
         .onAppear { displayedLevel = min(1, max(0, level)) }
         .onChange(of: level) { newLevel in
-            withAnimation(.easeOut(duration: newLevel > displayedLevel ? 0.06 : 0.24)) {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: newLevel > displayedLevel ? 0.06 : 0.24)) {
                 displayedLevel = min(1, max(0, newLevel))
             }
+        }
+        .focusable()
+        .onMoveCommand { direction in
+            let increment: Double
+            switch direction {
+            case .up, .right: increment = 0.01
+            case .down, .left: increment = -0.01
+            default: return
+            }
+            onVolumeChange(min(1, max(0, (interactionVolume ?? volume) + increment)), true)
+            interactionVolume = nil
         }
         .accessibilityElement()
         .accessibilityLabel("\(applicationName) volume")

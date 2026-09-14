@@ -60,25 +60,14 @@ struct AppUpdatePresentationModifier: ViewModifier {
                     dismissButton: .default(Text("OK"))
                 )
             }
-            .overlay {
-                if updateChecker.isDownloadingUpdate {
-                    ZStack {
-                        Color.black.opacity(0.18)
-                            .ignoresSafeArea()
-                        VStack(spacing: 14) {
-                            ProgressView()
-                                .controlSize(.large)
-                            Text("Downloading Update…")
-                                .font(.headline)
-                            Text("CamiTune will validate the download, then close. Reopen it to use the update.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(28)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-                        .shadow(radius: 18)
-                    }
+            .sheet(isPresented: Binding(get: { updateChecker.isDownloadingUpdate }, set: { _ in })) {
+                VStack(alignment: .leading, spacing: 14) {
+                    ProgressView("Downloading Update…")
+                    Text("CamiTune will validate the download, then close. Reopen it to use the update.")
+                        .font(.callout).foregroundStyle(.secondary)
                 }
+                .padding(24).frame(width: 420)
+                .interactiveDismissDisabled(true)
             }
     }
 }

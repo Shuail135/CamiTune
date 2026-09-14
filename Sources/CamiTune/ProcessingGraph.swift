@@ -109,19 +109,27 @@ struct ProcessingGraphBuilder {
     }
 
     func build(profile: DeviceProfile) throws -> ProcessingGraph {
-        if let topology = try profile.validatedReferenceTopology(), topology.declaredChannelCount != channelCount {
+        if let topology = try profile.validatedPhysicalSpeakerTopology(), topology.declaredChannelCount != channelCount {
             throw ProcessingGraphError.invalidChannelCount
+        }
+        _ = try profile.validatedReferenceTopology()
+        if profile.isPersonalListening, let correction = profile.personalReferenceCorrection {
+            guard correction.schemaVersion == DeviceCorrectionProfile.currentSchemaVersion,
+                  ReferenceCorrection.validFilters(correction.filters, sampleRate: Double(profile.sampleRate)) else {
+                throw ProfileSettingsError.runtime("Reference correction contains unsupported or invalid filters.")
+            }
         }
         guard profile.sampleRate > 0 else { throw ProcessingGraphError.invalidSampleRate }
         guard profile.chunkSize > 0 else { throw ProcessingGraphError.invalidChunkSize }
         guard channelCount > 0 else { throw ProcessingGraphError.invalidChannelCount }
 
         var processing = try profile.resolvedProcessing()
-        if profile.usesReferenceSpeakers {
+        if profile.hasPhysicalSpeakerRoute {
             // Legacy L/R room measurements have no physical topology identity.
             // Preserve them in the profile but never apply them to a new map.
             processing.global.stages.removeAll { $0.id == SpatialRoomCorrection.stageID }
         }
+        if !profile.supportsCrossfeed { processing.global.stages.removeAll { if case .crossfeed = $0.processor { return true }; return false } }
         guard processing.schemaVersion == ProcessingProfile.currentSchemaVersion else {
             throw ProcessingGraphError.unsupportedSchemaVersion(processing.schemaVersion)
         }
@@ -139,13 +147,34 @@ struct ProcessingGraphBuilder {
             pipeline: []
         )
         var usedStageIDs = Set<UUID>()
+        if profile.hasPhysicalSpeakerRoute,
+           let seat = profile.effectiveSpatialSettings.seating,
+           let measuredTopology = seat.roomCorrectionTopology,
+           measuredTopology == profile.speakerTopology,
+           !seat.roomCorrectionBands.isEmpty {
+            let measuredChannels = profile.configuredProcessingChannels.filter { $0.role == .left || $0.role == .right }.map(\.index)
+            if !measuredChannels.isEmpty {
+                try append(ProcessingChain(stages: [ProcessingStage(id: SpatialRoomCorrection.stageID,
+                    processor: .equalizer(EqualizerProcessor(bands: seat.roomCorrectionBands)))]),
+                    identifierScope: "measured_front_outputs", pipelineScope: .global, channels: measuredChannels,
+                    sampleRate: profile.sampleRate, usedStageIDs: &usedStageIDs, to: &graph)
+            }
+        }
 
         // A global limiter is a terminal safety stage. Keep it after channel
         // processing even though it is persisted with the global chain.
-        let regularGlobal = ProcessingChain(stages: processing.global.stages.filter {
+        var regularGlobal = ProcessingChain(stages: processing.global.stages.filter {
             if case .limiter = $0.processor { return false }
             return true
         })
+        let tone = try SimpleToneFilterFactory.filters(for: processing.simpleTone, sampleRate: Double(profile.sampleRate))
+        if !processing.simpleTone.isNeutral {
+            let insertion = regularGlobal.stages.firstIndex {
+                switch $0.processor { case .convolution, .crossfeed: return true; default: return false }
+            } ?? regularGlobal.stages.count
+            regularGlobal.stages.insert(ProcessingStage(id: SimpleToneFilterFactory.stageID,
+                processor: .equalizer(EqualizerProcessor(bands: tone))), at: insertion)
+        }
         try append(
             regularGlobal,
             identifierScope: "global",
@@ -158,7 +187,8 @@ struct ProcessingGraphBuilder {
 
         var usedChannelIndexes = Set<Int>()
         for channel in processing.channels.sorted(by: { $0.index < $1.index }) {
-            if profile.usesReferenceSpeakers && channel.index >= channelCount && channel.chain.stages.isEmpty { continue }
+            if profile.hasPhysicalSpeakerRoute, !profile.configuredProcessingChannels.contains(where: { $0.index == channel.index }) { continue }
+            if profile.hasPhysicalSpeakerRoute && channel.index >= channelCount && channel.chain.stages.isEmpty { continue }
             guard (0..<channelCount).contains(channel.index) else {
                 throw ProcessingGraphError.channelOutOfRange(channel.index, channelCount)
             }
@@ -167,10 +197,20 @@ struct ProcessingGraphBuilder {
             }
             // Each channel limiter is terminal within that channel path. A
             // separately enabled global limiter still runs after every channel.
-            let regularChannel = ProcessingChain(stages: channel.chain.stages.filter {
+            var regularChannel = ProcessingChain(stages: channel.chain.stages.filter {
                 if case .limiter = $0.processor { return false }
                 return true
             })
+            let channelTone = channel.chain.simpleTone ?? SimpleToneSettings()
+            let channelToneBands = try SimpleToneFilterFactory.filters(
+                for: channelTone, sampleRate: Double(profile.sampleRate)
+            )
+            if !channelTone.isNeutral {
+                regularChannel.stages.append(ProcessingStage(
+                    id: ProcessingProfile.toneStageID(forChannel: channel.index),
+                    processor: .equalizer(EqualizerProcessor(bands: channelToneBands))
+                ))
+            }
             try append(
                 regularChannel,
                 identifierScope: "channel_\(channel.index)",
@@ -243,7 +283,7 @@ struct ProcessingGraphBuilder {
             graph.mixers.append(.init(id: mixerID, sourceStageID: stageID,
                 inputChannelCount: channelCount, outputChannelCount: assignment.hardwareChannelCount,
                 mappings: assignment.outputChannels.enumerated().map { logical, physical in
-                    .init(destination: physical, sources: [.init(channel: profile.usesReferenceSpeakers ? physical : logical)])
+                    .init(destination: physical, sources: [.init(channel: profile.hasPhysicalSpeakerRoute ? physical : logical)])
                 }))
             graph.pipeline.append(.init(id: stageID, kind: .mixer(id: mixerID), scope: .global,
                 channels: [], processorIDs: []))

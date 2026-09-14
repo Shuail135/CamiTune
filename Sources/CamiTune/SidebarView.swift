@@ -38,6 +38,9 @@ struct SidebarRow: Equatable {
             SidebarRow(kind: .navigation(.applications), title: "App Audio"),
             SidebarRow(kind: .heading, title: "Output Profiles"),
         ]
+        if profiles.isEmpty {
+            rows.append(SidebarRow(kind: .addOutput, title: "Add Output"))
+        }
         func appendProfiles(_ profiles: [DeviceProfile], folder: UUID?) {
             for (index, profile) in profiles.enumerated() {
                 rows.append(SidebarRow(kind: .profile(profile.id), title: profile.name,
@@ -236,6 +239,7 @@ struct SidebarView: View {
                     selection = profileStore.selectedProfileID.map(SidebarDestination.profile) ?? .empty
                 }
             }
+        case .moveItem(let item, let offset): profileStore.moveSidebarItem(item, by: offset)
         case .moveToFolder(let ids, let folder): profileStore.assignProfiles(ids: ids, toFolder: folder)
         }
     }
@@ -302,7 +306,8 @@ private struct SidebarInlineEditRequest {
 
 private enum SidebarAction {
     case addOutput, toggleFolder(UUID), newFolder(Set<UUID>), renameFolder(UUID), removeFolder(UUID)
-    case renameProfile(UUID), toggleProfile(UUID), deleteProfile(UUID), moveToFolder(Set<UUID>, UUID)
+    case renameProfile(UUID), toggleProfile(UUID), deleteProfile(UUID), moveToFolder(Set<UUID>, UUID?)
+    case moveItem(ProfileRootItem, Int)
 }
 
 /// One AppKit table owns range selection and all dragging, across every group.
@@ -575,6 +580,20 @@ private struct NativeProfileSidebar: NSViewRepresentable {
                     self.parent.onAction(.addOutput)
                 }
             )
+            if let item = rootItem(at: row) {
+                var actions = [-1, 1].map { offset in
+                    NSAccessibilityCustomAction(name: offset < 0 ? "Move Up" : "Move Down", handler: { [weak self] in
+                        self?.parent.state.profiles.moveSidebarItem(item, by: offset) ?? false
+                    })
+                }
+                if case .folder(let id) = item {
+                    actions.append(NSAccessibilityCustomAction(name: displayedRows[row].expanded ? "Collapse Folder" : "Expand Folder", handler: { [weak self] in
+                        guard let self else { return false }
+                        self.parent.onAction(.toggleFolder(id)); return true
+                    }))
+                }
+                cell.setAccessibilityCustomActions(actions)
+            } else { cell.setAccessibilityCustomActions([]) }
             return cell
         }
 
@@ -646,6 +665,10 @@ private struct NativeProfileSidebar: NSViewRepresentable {
             if displayedRows.indices.contains(row), case .profile(let id) = displayedRows[row].kind, !ids.contains(id) { ids = [id] }
             add(ids.isEmpty ? "New Folder" : "New Folder with Selection", .newFolder(ids))
             guard displayedRows.indices.contains(row) else { return menu }
+            if let item = rootItem(at: row) {
+                add("Move Up", .moveItem(item, -1))
+                add("Move Down", .moveItem(item, 1))
+            }
             switch displayedRows[row].kind {
             case .folder(let id):
                 add("Rename Folder", .renameFolder(id))
@@ -667,11 +690,17 @@ private struct NativeProfileSidebar: NSViewRepresentable {
                     item.submenu = destinations
                     menu.addItem(item)
                 }
+                add("Move Out of Folder", .moveToFolder(ids, nil))
                 add("Rename", .renameProfile(id))
                 add("Delete", .deleteProfile(id))
             default: break
             }
             return menu
+        }
+        func moveSelected(by offset: Int) {
+            guard let table, table.selectedRowIndexes.count == 1,
+                  let item = rootItem(at: table.selectedRow) else { return }
+            parent.onAction(.moveItem(item, offset))
         }
         @objc func menuAction(_ sender: NSMenuItem) {
             guard menuActions.indices.contains(sender.tag) else { return }
@@ -687,6 +716,16 @@ private final class SidebarTable: NSTableView {
         sidebarCoordinator?.menu(for: row(at: convert(event.locationInWindow, from: nil)))
     }
     override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .control],
+           event.keyCode == 125 || event.keyCode == 126 {
+            sidebarCoordinator?.moveSelected(by: event.keyCode == 126 ? -1 : 1)
+            return
+        }
+        if event.keyCode == 96, event.modifierFlags.contains(.shift), selectedRow >= 0,
+           let menu = sidebarCoordinator?.menu(for: selectedRow) {
+            menu.popUp(positioning: nil, at: rect(ofRow: selectedRow).origin, in: self)
+            return
+        }
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
            event.charactersIgnoringModifiers?.lowercased() == "g" {
             sidebarCoordinator?.groupSelection()
@@ -790,7 +829,7 @@ private final class SidebarCell: NSTableCellView {
         switch row.kind {
         case .navigation(let id):
             symbol = id == .applications ? "square.stack.3d.up.fill" : "gearshape"
-        case .addOutput: symbol = "plus.circle.fill"; icon.contentTintColor = .controlAccentColor
+        case .addOutput: symbol = "plus"
         case .heading:
             symbol = "hifispeaker.2"
             title.font = .systemFont(ofSize: 12,weight: .semibold)
@@ -805,7 +844,15 @@ private final class SidebarCell: NSTableCellView {
             dot.isHidden = activeID != id
         }
         icon.image = symbol.isEmpty ? nil : NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        setAccessibilityLabel(row.title + (dot.isHidden ? "" : ", Active"))
+        switch row.kind {
+        case .profile:
+            setAccessibilityLabel(row.title + ", profile, " + (row.enabled ? "Enabled" : "Disabled") + (dot.isHidden ? "" : ", Active"))
+        case .folder:
+            setAccessibilityLabel(row.title + ", folder, " + (row.expanded ? "expanded" : "collapsed"))
+        default: setAccessibilityLabel(row.title)
+        }
+        icon.setAccessibilityElement(false)
+        dot.setAccessibilityElement(false)
     }
 }
 

@@ -28,6 +28,7 @@ extension GlobalEqualizerEditorView {
         runtime.suppressChanges = true
         runtime.liveApplyTask?.cancel()
         let organizedBands = EQEditorSupport.organizedBands(parsed.bands)
+        simpleTone = state.toneDraft(for: profile.id) ?? profile.processing.simpleTone
         preampDB = parsed.preampDB
         limiterEnabled = limiterDraft ?? persistedLimiterEnabled
         graphicBands = organizedBands
@@ -38,7 +39,7 @@ extension GlobalEqualizerEditorView {
         )
         runtime.loadedProfileID = profile.id
         updateGraphResponses()
-        eqIsSaved = draft == nil && limiterDraft == nil
+        eqIsSaved = draft == nil && limiterDraft == nil && state.toneDraft(for: profile.id) == nil
         DispatchQueue.main.async { runtime.suppressChanges = false }
     }
 
@@ -75,6 +76,7 @@ extension GlobalEqualizerEditorView {
         // while the audio-application debounce is still pending.
         state.setEQDraft(serializeGraphicEQ(), for: profile.id)
         state.setLimiterDraft(limiterEnabled, for: profile.id)
+        state.setToneDraft(simpleTone, for: profile.id)
     }
 
     func scheduleDeferredGraphicEQCommit(milliseconds: Int) {
@@ -118,6 +120,7 @@ extension GlobalEqualizerEditorView {
         runtime.liveApplyTask?.cancel()
         profile.setGlobalEqualizer(preampDB: preampDB, bands: graphicBands)
         profile.processing.setLimiterEnabled(limiterEnabled)
+        profile.processing.simpleTone = simpleTone
         if state.eqDraftReplacesDeviceCorrection(for: profile.id) {
             profile.processing.setDeviceCorrection(nil)
         }
@@ -137,6 +140,7 @@ extension GlobalEqualizerEditorView {
         var updated = profile
         updated.setGlobalEqualizer(preampDB: preampDB, bands: graphicBands)
         updated.processing.setLimiterEnabled(limiterEnabled)
+        updated.processing.simpleTone = simpleTone
         return (try? state.applyingSessionEQDrafts(to: updated)) ?? updated
     }
 
@@ -144,6 +148,18 @@ extension GlobalEqualizerEditorView {
         guard !eqIsSaved else { return }
         state.setEQDraft(serializeGraphicEQ(), for: profile.id)
         state.setLimiterDraft(limiterEnabled, for: profile.id)
+        state.setToneDraft(simpleTone, for: profile.id)
+    }
+
+    func editLegacyCorrection() {
+        guard let correction = profile.processing.deviceCorrection else { return }
+        runtime.suppressChanges = true
+        graphicBands = EQEditorSupport.organizedBands(correction.filters + graphicBands)
+        state.markEQDraftAsReplacingDeviceCorrection(for: profile.id)
+        eqIsSaved = false
+        if presentation == .simpleTone { onPresentationChanged(.both) }
+        runtime.suppressChanges = false
+        graphicEQChanged()
     }
 
     func importFromClipboard() {
@@ -159,6 +175,7 @@ extension GlobalEqualizerEditorView {
 
     func importAPOText(_ text: String) throws {
         let preservedUserPreampDB = preampDB
+        if presentation == .simpleTone { onPresentationChanged(.both) }
         let parsed = try EqualizerAPOParser().parse(text, preampPolicy: .ignore)
         state.clearTransientError()
         guard parsed.importedDirectiveCount > 0 else { return }
@@ -214,14 +231,12 @@ extension GlobalEqualizerEditorView {
             return
         }
         let calculator = EQResponseCalculator()
-        var combined = parsedForGraph
-        if !state.eqDraftReplacesDeviceCorrection(for: profile.id),
-           let correction = profile.processing.deviceCorrection,
-           correction.isEnabled {
-            combined.bands.insert(contentsOf: correction.filters, at: 0)
-        }
-        let filterOnly = ParsedEQ(preampDB: 0, bands: graphicBands, warnings: [])
         let sampleRate = Double(profile.sampleRate)
+        var combined = ParsedEQ(preampDB: parsedForGraph.preampDB,
+            bands: presentation == .simpleTone ? [] : parsedForGraph.bands)
+        if presentation != .bands {
+            combined.bands += (try? SimpleToneFilterFactory.filters(for: simpleTone, sampleRate: Double(profile.sampleRate))) ?? []
+        }
         let profileID = profile.id
         graphModel.calculate(parsed: combined, sampleRate: sampleRate)
         runtime.filterResponseTask?.cancel()
@@ -229,6 +244,7 @@ extension GlobalEqualizerEditorView {
             updateAutomaticSystemHeadroom()
             return
         }
+        let filterOnly = ParsedEQ(bands: parsedForGraph.bands)
         runtime.filterResponseTask = Task {
             do {
                 try await Task.sleep(for: .milliseconds(25))
@@ -245,6 +261,7 @@ extension GlobalEqualizerEditorView {
     }
 
     func loadDeviceCorrectionEQ(_ correction: DeviceCorrectionProfile) {
+        if presentation == .simpleTone { onPresentationChanged(.both) }
         runtime.suppressChanges = true
         runtime.liveApplyTask?.cancel()
         let organizedBands = EQEditorSupport.organizedBands(correction.filters)
@@ -267,8 +284,10 @@ extension GlobalEqualizerEditorView {
         do {
             var current = profile
             current.setGlobalEqualizer(preampDB: preampDB, bands: graphicBands)
+            current.processing.simpleTone = simpleTone
             current = try state.applyingSessionEQDrafts(to: current)
             current.setGlobalEqualizer(preampDB: preampDB, bands: graphicBands)
+            current.processing.simpleTone = simpleTone
             candidate = current
         } catch {
             automaticSystemHeadroomDB = 0

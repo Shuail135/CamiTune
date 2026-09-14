@@ -50,6 +50,7 @@ extension PerChannelProcessingView {
 
     func loadSelectedChannel() {
         runtime.suppressChanges = true
+        if !editableChannels.contains(where: { $0.index == selectedChannelIndex }) { selectedChannelIndex = editableChannels.first?.index ?? 0 }
         runtime.liveApplyTask?.cancel()
         runtime.responseCalculationTask?.cancel()
         runtime.continuousEditDepth = 0
@@ -77,25 +78,29 @@ extension PerChannelProcessingView {
             gainDB = parsed.preampDB
             bands = EQEditorSupport.organizedBands(parsed.bands)
             delayMilliseconds = delayDraft
-                ?? profile.processing.settings(forChannel: selectedChannelIndex)?.delayMilliseconds
+                ?? ((try? profile.resolvedProcessing()) ?? profile.processing).settings(forChannel: selectedChannelIndex)?.delayMilliseconds
                 ?? 0
             limiterEnabled = limiterDraft
-                ?? profile.processing.settings(forChannel: selectedChannelIndex)?.limiterEnabled
+                ?? ((try? profile.resolvedProcessing()) ?? profile.processing).settings(forChannel: selectedChannelIndex)?.limiterEnabled
                 ?? false
         } else {
-            let settings = profile.processing.settings(forChannel: selectedChannelIndex) ?? .identity
+            let settings = ((try? profile.resolvedProcessing()) ?? profile.processing).settings(forChannel: selectedChannelIndex) ?? .identity
             gainDB = settings.gainDB
             bands = EQEditorSupport.organizedBands(settings.bands)
             delayMilliseconds = delayDraft ?? settings.delayMilliseconds
             limiterEnabled = limiterDraft ?? settings.limiterEnabled
         }
 
+        let toneDraft = state.channelToneDraft(for: profile.id, channelIndex: selectedChannelIndex)
+        runtime.simpleTone.value = toneDraft
+            ?? ((try? profile.resolvedProcessing()) ?? profile.processing).settings(forChannel: selectedChannelIndex)?.simpleTone
+            ?? SimpleToneSettings()
         runtime.gain.value = gainDB
-        runtime.bands.replace(with: bands)
+        runtime.bands.replace(with: bands.isEmpty ? EQEditorSupport.resizedBands([], count: 8) : bands)
         runtime.delay.value = delayMilliseconds
         runtime.limiter.value = limiterEnabled
         runtime.loadedProfileID = profile.id
-        runtime.updateStatus(isSaved: draft == nil && limiterDraft == nil && delayDraft == nil)
+        runtime.updateStatus(isSaved: draft == nil && limiterDraft == nil && delayDraft == nil && toneDraft == nil)
         updateResponses()
 
         DispatchQueue.main.async { runtime.suppressChanges = false }
@@ -169,6 +174,7 @@ extension PerChannelProcessingView {
                 eqText: serialized,
                 limiterEnabled: snapshot.limiterEnabled,
                 delayMilliseconds: snapshot.delayMilliseconds,
+                simpleTone: snapshot.simpleTone,
                 for: profileID,
                 channelIndex: channelIndex
             )
@@ -193,7 +199,8 @@ extension PerChannelProcessingView {
                 gainDB: snapshot.gainDB,
                 bands: snapshot.bands,
                 delayMilliseconds: snapshot.delayMilliseconds,
-                limiterEnabled: snapshot.limiterEnabled
+                limiterEnabled: snapshot.limiterEnabled,
+                simpleTone: snapshot.simpleTone
             )
         } catch {
             state.errorMessage = error.localizedDescription
@@ -212,6 +219,7 @@ extension PerChannelProcessingView {
 
     func resetSelectedChannel() {
         runtime.liveApplyTask?.cancel()
+        runtime.simpleTone.value = SimpleToneSettings()
         runtime.gain.value = 0
         runtime.delay.value = 0
         runtime.bands.replace(with: [])
@@ -232,6 +240,7 @@ extension PerChannelProcessingView {
             ),
             limiterEnabled: snapshot.limiterEnabled,
             delayMilliseconds: snapshot.delayMilliseconds,
+            simpleTone: snapshot.simpleTone,
             for: profile.id,
             channelIndex: selectedChannelIndex
         )
@@ -260,6 +269,9 @@ extension PerChannelProcessingView {
             // settled edit, load, save, or sample-rate change—not every drag tick.
             let responses = await Task.detached(priority: .userInitiated) {
                 let calculator = EQResponseCalculator()
+                let toneBands = (try? SimpleToneFilterFactory.filters(
+                    for: snapshot.simpleTone, sampleRate: sampleRate
+                )) ?? []
                 return (
                     calculator.calculate(
                         parsed: ParsedEQ(
@@ -272,7 +284,7 @@ extension PerChannelProcessingView {
                     calculator.calculate(
                         parsed: ParsedEQ(
                             preampDB: snapshot.gainDB,
-                            bands: snapshot.bands,
+                            bands: snapshot.bands + toneBands,
                             warnings: []
                         ),
                         sampleRate: sampleRate

@@ -51,28 +51,38 @@ enum SpeakerLayoutGeometry {
         horizontalDistanceLabel(metres)
     }
 
-    /// A compact, draggable starting layout. Roles and hardware metadata stay intact.
-    static func arrangedForEditing(_ topology: SpeakerTopology, previous: SpeakerTopology? = nil) -> SpeakerTopology {
-        var result = topology
+    /// Display estimates for unlabeled outputs, using the same order as the starting layout.
+    /// These are not hardware metadata or confirmed routing assignments.
+    static func layoutRoles(_ topology: SpeakerTopology) -> [ChannelRole] {
         let typical: [ChannelRole] = [.left, .right, .center, .lowFrequencyEffects,
             .leftSurround, .rightSurround, .leftRearSurround, .rightRearSurround,
             .topFrontLeft, .topFrontRight, .topRearLeft, .topRearRight,
             .topMiddleLeft, .topMiddleRight, .frontLeftCenter, .frontRightCenter,
             .wideLeft, .wideRight, .topCenter]
-        let known = Set(result.endpoints.map(\.role).filter { $0 != .unknown })
+        let known = Set(topology.endpoints.map(\.role).filter { $0 != .unknown })
         var available = typical.filter { !known.contains($0) }
         // Four/five-channel rooms normally use surrounds rather than a subwoofer.
-        if result.endpoints.count == 4 { available.removeAll { $0 == .center || $0 == .lowFrequencyEffects } }
-        if result.endpoints.count == 5 { available.removeAll { $0 == .lowFrequencyEffects } }
+        if topology.endpoints.count == 1 { available = [.center] }
+        if topology.endpoints.count == 4 { available.removeAll { $0 == .center || $0 == .lowFrequencyEffects } }
+        if topology.endpoints.count == 5 { available.removeAll { $0 == .lowFrequencyEffects } }
+        return topology.endpoints.map { endpoint in
+            endpoint.role == .unknown && endpoint.connectionState != .confirmedByUser
+                ? (available.isEmpty ? .unknown : available.removeFirst()) : endpoint.role
+        }
+    }
+
+    /// A compact, draggable starting layout. Roles and hardware metadata stay intact.
+    static func arrangedForEditing(_ topology: SpeakerTopology, previous: SpeakerTopology? = nil) -> SpeakerTopology {
+        var result = topology
+        let roles = layoutRoles(topology)
         var occurrences: [ChannelRole: Int] = [:]
         for index in result.endpoints.indices {
             if let prior = previous?.endpoints.first(where: { $0.id == result.endpoints[index].id }), prior.position != nil {
                 result.endpoints[index].position = prior.position
                 result.endpoints[index].positionSource = prior.positionSource
             } else if result.endpoints[index].positionSource != .coreAudioMetadata {
-                let role = result.endpoints[index].role
                 // Unknown channels get useful initial locations, without inventing hardware roles.
-                let layoutRole = role == .unknown ? (available.isEmpty ? .unknown : available.removeFirst()) : role
+                let layoutRole = roles[index]
                 let duplicate = occurrences[layoutRole, default: 0]
                 occurrences[layoutRole] = duplicate + 1
                 var point = defaultPoint(for: layoutRole)

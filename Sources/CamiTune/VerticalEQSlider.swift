@@ -2,6 +2,7 @@ import Combine
 import SwiftUI
 
 struct VerticalEQSlider: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var gain: Double
     let audioDB: Double
     let responseDB: Double
@@ -62,7 +63,7 @@ struct VerticalEQSlider: View {
                     .shadow(color: .black.opacity(0.2), radius: 1.5, y: 1)
                     .position(x: track.midX, y: thumbY)
             }
-            .animation(.easeOut(duration: 0.12), value: responseDB)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: responseDB)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             .contentShape(Rectangle())
             .highPriorityGesture(

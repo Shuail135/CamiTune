@@ -8,6 +8,7 @@ struct SpeakerSystemView: View {
     var listeningOnly = false
     var newPosition = false
     var embedded = false
+    var compact = false
     var onClose: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @StateObject private var audition = SpeakerOutputAudition()
@@ -32,41 +33,47 @@ struct SpeakerSystemView: View {
     private var editingLocked: Bool { busy || audition.output != nil }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(listeningOnly ? "Listening Position" : "Speaker and Listening Position").font(.title3.bold())
-                Spacer()
-                if !listeningOnly && (!draftOnly || draft == nil) {
-                    Button("Discover Outputs") { discover() }.disabled(editingLocked)
+        VStack(alignment: .leading, spacing: compact ? 8 : 10) {
+            // Profile Settings already supplies the section heading.
+            if !compact || (!listeningOnly && (!draftOnly || draft == nil)) {
+                HStack {
+                    if !compact {
+                        Text(listeningOnly ? "Listening Position" : "Speaker and Listening Position").font(.title3.bold())
+                    }
+                    Spacer()
+                    if !listeningOnly && (!draftOnly || draft == nil) {
+                        Button("Discover Channels") { discover() }.disabled(editingLocked)
+                    }
                 }
             }
             Text("Configure speaker position and user position for best performance.")
                 .font(.callout).foregroundStyle(.secondary)
             if let draft {
                 roomMap(draft)
-                HStack {
-                    Text(listeningOnly ? "Drag the listener. Drag empty space to pan."
-                         : "Drag a speaker to place it. Click to test; use its arrow to assign a role. Drag empty space to pan.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button { graphZoom = max(0.25, graphZoom / 1.25) } label: {
-                        Image(systemName: "minus.magnifyingglass")
-                    }.help("Zoom out").accessibilityLabel("Zoom out").disabled(graphZoom <= 0.25)
-                    Text("\(Int((graphZoom * 100).rounded()))%")
-                        .font(.caption.monospacedDigit()).frame(width: 42)
-                    Button { graphZoom = min(4, graphZoom * 1.25) } label: {
-                        Image(systemName: "plus.magnifyingglass")
-                    }.help("Zoom in").accessibilityLabel("Zoom in").disabled(graphZoom >= 4)
-                    Button("Reset View") { graphZoom = 1.25; canvasID = UUID() }.controlSize(.small)
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        mapInstructions.fixedSize()
+                        Spacer()
+                        zoomControls
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        mapInstructions.fixedSize(horizontal: false, vertical: true)
+                        HStack {
+                            Spacer()
+                            zoomControls
+                        }
+                    }
                 }
-                Text("Alignment guides appear nearby. Hold Option to move freely.")
-                    .font(.caption).foregroundStyle(.secondary)
+                if !listeningOnly {
+                    Text("If the default role is wrong, click the down arrow to change it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if let index = draft.endpoints.firstIndex(where: { $0.id == selected }), !listeningOnly {
                     speakerTitle(draft.endpoints[index])
                     heightEditor(index: index)
                 }
             } else {
-                Text("Discover the physical outputs to configure this room.").foregroundStyle(.secondary)
+                Text("Discover the physical channels to configure this room.").foregroundStyle(.secondary)
             }
             if audition.preparing { ProgressView("Preparing test…").controlSize(.small) }
             if busy { ProgressView().controlSize(.small) }
@@ -75,7 +82,7 @@ struct SpeakerSystemView: View {
                 HStack {
                     Spacer()
                     Button("Save") { save(close: false) }.disabled(draft == nil || editingLocked || saved)
-                    Button("Close") { close() }.disabled(busy)
+                    Button("Close") { close() }.disabled(busy).keyboardShortcut(.cancelAction)
                 }
             }
         }
@@ -126,7 +133,28 @@ struct SpeakerSystemView: View {
                 updateDistances()
             }, assignRole: { id, role in audition.stop(); setRole(role, for: id) }, zoom: graphZoom, zoomChanged: { graphZoom = $0 })
             .id(canvasID)
-            .frame(height: 370)
+            .frame(height: compact ? 270 : 370)
+    }
+
+    private var mapInstructions: some View {
+        Text(listeningOnly ? "Drag the listener. Drag empty space to pan."
+             : "Drag a speaker to place it. Click to test. Drag empty space to pan.")
+            .font(.caption).foregroundStyle(.secondary)
+    }
+
+    private var zoomControls: some View {
+        HStack {
+            Button { graphZoom = max(0.25, graphZoom / 1.25) } label: {
+                Image(systemName: "minus.magnifyingglass")
+            }.help("Zoom out").accessibilityLabel("Zoom out").disabled(graphZoom <= 0.25)
+            Text("\(Int((graphZoom * 100).rounded()))%")
+                .font(.caption.monospacedDigit()).frame(width: 42)
+            Button { graphZoom = min(4, graphZoom * 1.25) } label: {
+                Image(systemName: "plus.magnifyingglass")
+            }.help("Zoom in").accessibilityLabel("Zoom in").disabled(graphZoom >= 4)
+            Button("Reset View") { graphZoom = 1.25; canvasID = UUID() }.controlSize(.small)
+        }
+        .fixedSize()
     }
 
     private func speakerTitle(_ endpoint: SpeakerEndpoint) -> some View {
@@ -203,6 +231,7 @@ struct SpeakerSystemView: View {
     private func close() { if renamingTitle { commitTitle() }; audition.stop(); if saved { finishClose() } else { confirmClose = true } }
 
     private func save(close: Bool) {
+        UIRenderPerformance.recordSpeakerSave()
         if renamingTitle { commitTitle() }
         audition.stop()
         guard var value = draft, let seat else { return }

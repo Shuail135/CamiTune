@@ -8,13 +8,25 @@ struct ContentDetailView: View {
     let coreAudio: CoreAudioManager
     let selection: SidebarDestination
 
+    // SwiftUI may read a departing editor's binding after deletion or reordering.
+    // Resolve by identity and retain a snapshot only for that departing view.
+    static func editorBinding(for profile: DeviceProfile, in store: ProfileStore) -> Binding<DeviceProfile> {
+        Binding(
+            get: { store.profiles.first(where: { $0.id == profile.id }) ?? profile },
+            set: { updated in
+                guard updated.id == profile.id else { return }
+                store.update(updated)
+            }
+        )
+    }
+
     var body: some View {
         switch selection {
         case .empty:
             VStack(spacing: 10) {
                 Image(systemName: "speaker.wave.2").font(.largeTitle)
                 Text("Add an output to get started").font(.title2)
-                Text("Choose Add Output in the sidebar.").foregroundStyle(.secondary)
+                Text("Click + Add Output in the sidebar.").foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .settings:
@@ -22,11 +34,11 @@ struct ContentDetailView: View {
         case .applications:
             PerAppAudioView(state: state)
         case .profile(let id):
-            if let index = profileStore.profiles.firstIndex(where: { $0.id == id }) {
+            if let profile = profileStore.profiles.first(where: { $0.id == id }) {
                 ProfileEditorView(
                     state: state,
                     coreAudio: coreAudio,
-                    profile: $profileStore.profiles[index]
+                    profile: Self.editorBinding(for: profile, in: profileStore)
                 )
                 .id(id)
                 .onAppear { UIRenderPerformance.recordProfilePresentation() }

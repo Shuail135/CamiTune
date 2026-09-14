@@ -102,7 +102,7 @@ struct ProfileRoutingAndDeviceView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.blue)
-                .disabled(!profileIsActive && (activation != .manual || !profile.isEnabled || coreAudio.cachedDevice(uid: profile.outputDeviceUID) == nil))
+                .disabled(activation != .manual || (!profileIsActive && (!profile.isEnabled || coreAudio.cachedDevice(uid: profile.outputDeviceUID) == nil)))
             }
         }
     }

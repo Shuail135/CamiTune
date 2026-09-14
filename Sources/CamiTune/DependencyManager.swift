@@ -308,6 +308,42 @@ final class DependencyManager: ObservableObject {
         }
     }
 
+    func uninstallAudioDriver() async {
+        guard !setupInProgress else { return }
+        setupInProgress = true
+        setupFailed = false
+        setupMessage = "Removing the System Audio Bridge driver…"
+        audioDriverStatus = .working("Waiting for macOS administrator approval…")
+        defer { setupInProgress = false }
+        do {
+            coreAudio.destroyAllProfileRoutingDevices()
+            let targets = [
+                "/Library/Audio/Plug-Ins/HAL/CamillaAudio.driver",
+                "/Library/Audio/Plug-Ins/HAL/CamillaEQAudio.driver",
+                "/Library/Audio/Plug-Ins/HAL/CamillaAudioBridge.driver",
+                "/Library/Audio/Plug-Ins/HAL/SystemAudioBridge.driver"
+            ]
+            let command = [
+                "/bin/rm -rf \(targets.map(shellQuote).joined(separator: " "))",
+                "(/bin/launchctl kickstart -k system/com.apple.audio.coreaudiod || /usr/bin/killall coreaudiod)"
+            ].joined(separator: " && ")
+            let script = "do shell script \(appleScriptQuote(command)) with administrator privileges"
+            _ = try await run("/usr/bin/osascript", ["-e", script])
+            if FileManager.default.fileExists(atPath: managedDriverURL.path) {
+                try FileManager.default.removeItem(at: managedDriverURL)
+            }
+            await coreAudio.refreshWithoutBlockingUI()
+            await refreshWithoutBlockingUI()
+            audioDriverStatus = .missing
+            setupMessage = "System Audio Bridge driver uninstalled. Your profiles and CamillaDSP are kept. Restart the Mac if its audio devices still appear."
+        } catch {
+            await coreAudio.refreshWithoutBlockingUI()
+            await refreshWithoutBlockingUI()
+            setupFailed = true
+            setupMessage = "Driver removal did not complete: \(error.localizedDescription)"
+        }
+    }
+
     func installEverything() async {
         guard !setupInProgress else { return }
         setupInProgress = true

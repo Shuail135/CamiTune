@@ -28,12 +28,16 @@ enum SidebarDestination: Hashable, Sendable {
 @MainActor
 struct ContentView: View {
     let state: AppState
+    @ObservedObject var commands: MainWindowCommandCoordinator
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var discoveringOutput = false
 
     @State private var selection: SidebarDestination
     @State private var showingOutputPicker = false
     @State private var pendingOutputUID: String?
 
-    init(state: AppState) {
+    init(state: AppState, commands: MainWindowCommandCoordinator? = nil) {
+        self.commands = commands ?? MainWindowCommandCoordinator()
         self.state = state
         let saved = UserDefaults.standard.string(forKey: "lastSidebarSelection")
         let restored = SidebarDestination.restore(saved,
@@ -43,7 +47,7 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView(
                 state: state,
                 profileStore: state.profiles,
@@ -58,8 +62,27 @@ struct ContentView: View {
                 selection: selection
             )
         }
+        .environmentObject(commands)
+        .onAppear { commands.selection = selection }
+        .onChange(of: columnVisibility) { commands.sidebarVisible = $0 != .detailOnly }
+        .onReceive(commands.$request) { request in
+            guard let request else { return }
+            switch request.intent {
+            case .settings: selection = .settings
+            case .appAudio: selection = .applications
+            case .addOutput: Task { await beginAddingOutput() }
+            case .openSetup:
+                state.setupPresentation.isPresented = true
+                commands.modalReservation = false
+            case .toggleSidebar: columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+            case .rename, .profileSettings: return // The selected editor owns inline edit and its settings sheet.
+            }
+            commands.consume(request.id)
+        }
+        .onChange(of: showingOutputPicker) { if !$0 { commands.modalReservation = false } }
         .frame(minWidth: 800, minHeight: 620)
         .onChange(of: selection) { newSelection in
+            commands.selection = newSelection
             UserDefaults.standard.set(newSelection.storageValue, forKey: "lastSidebarSelection")
             if case .profile(let id) = newSelection {
                 state.profiles.selectedProfileID = id
@@ -80,6 +103,10 @@ struct ContentView: View {
     }
 
     private func beginAddingOutput() async {
+        guard !discoveringOutput, !showingOutputPicker else { return }
+        discoveringOutput = true
+        commands.modalReservation = true
+        defer { discoveringOutput = false }
         // The HAL/device scan itself runs off-main inside
         // refreshWithoutBlockingUI(); only the small state update returns here.
         await state.coreAudio.refreshWithoutBlockingUI()

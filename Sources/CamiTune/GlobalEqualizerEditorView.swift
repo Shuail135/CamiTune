@@ -10,6 +10,7 @@ struct GlobalEqualizerEditorView: View {
     let graphModel: ProfileEditorGraphModel
     var presentation: EqualizerPresentation = .both
     var needsResponseGraph = true
+    var onPresentationChanged: (EqualizerPresentation) -> Void = { _ in }
 
     @State var parsedForGraph = ParsedEQ()
     @State var filterResponsePoints: [EQResponsePoint] = []
@@ -21,6 +22,7 @@ struct GlobalEqualizerEditorView: View {
     @State var showBandReductionConfirmation = false
     @State var showTextImporter = false
     @State var showDeviceCorrectionEditor = false
+    @State var simpleTone = SimpleToneSettings()
     @State var eqIsSaved = true
     @StateObject var runtime = GlobalEQEditorRuntime()
 
@@ -39,16 +41,12 @@ struct GlobalEqualizerEditorView: View {
                     Spacer()
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 8) {
-                            if !profile.isPersonalListening {
-                                Button("Device Correction…") { showDeviceCorrectionEditor = true }
-                            }
+                            Button("Device Correction…") { showDeviceCorrectionEditor = true }
                             Button("Import .txt") { showTextImporter = true }
                             Button("Paste APO Text") { importFromClipboard() }
                         }
                         Menu("Actions") {
-                            if !profile.isPersonalListening {
-                                Button("Device Correction…") { showDeviceCorrectionEditor = true }
-                            }
+                            Button("Device Correction…") { showDeviceCorrectionEditor = true }
                             Button("Import .txt") { showTextImporter = true }
                             Button("Paste APO Text") { importFromClipboard() }
                         }
@@ -61,6 +59,19 @@ struct GlobalEqualizerEditorView: View {
                             .background(Color.blue, in: RoundedRectangle(cornerRadius: 6))
                     }
                     .buttonStyle(.plain)
+                }
+                JoinedSegmentedControl(
+                    options: EqualizerPresentation.allCases,
+                    selection: Binding(get: { presentation }, set: onPresentationChanged),
+                    title: { $0.title }
+                )
+                .accessibilityLabel("Equalizer controls")
+                .frame(width: 260)
+                if let legacy = profile.processing.deviceCorrection, !state.eqDraftReplacesDeviceCorrection(for: profile.id) {
+                    HStack {
+                        Text("Legacy global correction: \(legacy.deviceName)").font(.caption).foregroundStyle(.secondary)
+                        Button("Edit as User EQ") { editLegacyCorrection() }
+                    }
                 }
                 Text("Imports ON/OFF PK/PEQ, LS/LSC, HS/HSC, LP/LPQ, HP/HPQ, NO, and AP filters using Q, BW Oct, or 6/12 dB shelf slopes. APO Preamp is ignored; use User Preamp instead. Other valid APO commands are skipped.")
                     .font(.caption)
@@ -92,7 +103,7 @@ struct GlobalEqualizerEditorView: View {
                     }
                 }
 
-                if !graphicBands.isEmpty {
+                if !graphicBands.isEmpty || presentation != .bands {
                     if presentation != .simpleTone {
                     let columnWidth = 96.0
                     let contentWidth = GraphicEqualizerBands.requiredContentWidth(
@@ -118,7 +129,7 @@ struct GlobalEqualizerEditorView: View {
                     if presentation == .both { Divider() }
                     if presentation != .bands {
                     SimpleEQControlsView(
-                        bands: $graphicBands,
+                        settings: $simpleTone,
                         onEditingChanged: continuousEditingChanged
                     )
                     }
@@ -140,6 +151,7 @@ struct GlobalEqualizerEditorView: View {
         .onChange(of: preampDB) { _ in graphicEQChanged() }
         .onChange(of: limiterEnabled) { _ in graphicEQChanged() }
         .onChange(of: graphicBands) { _ in graphicEQChanged() }
+        .onChange(of: simpleTone) { _ in graphicEQChanged() }
         .onChange(of: profile.sampleRate) { _ in updateGraphResponses() }
         .onChange(of: profile.processing) { _ in updateAutomaticSystemHeadroom() }
         .onReceive(state.equalizerReplacementChanges.filter { $0 == profile.id }) { _ in

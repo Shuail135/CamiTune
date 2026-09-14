@@ -2,7 +2,7 @@ import Combine
 import SwiftUI
 
 struct SimpleEQControlsView: View {
-    @Binding var bands: [EQBand]
+    @Binding var settings: SimpleToneSettings
     var onEditingChanged: @MainActor (Bool) -> Void = { _ in }
 
     var body: some View {
@@ -11,7 +11,7 @@ struct SimpleEQControlsView: View {
                 SimpleEQKnob(
                     value: binding(for: range),
                     range: range,
-                    isEnabled: SimpleEQControl.value(for: range, in: bands) != nil,
+                    isEnabled: true,
                     onEditingChanged: onEditingChanged
                 )
             }
@@ -22,8 +22,8 @@ struct SimpleEQControlsView: View {
 
     private func binding(for range: SimpleEQRange) -> Binding<Double> {
         Binding(
-            get: { SimpleEQControl.value(for: range, in: bands) ?? 0 },
-            set: { bands = SimpleEQControl.setting($0, for: range, in: bands) }
+            get: { settings[range] },
+            set: { settings[range] = $0 }
         )
     }
 }
@@ -36,7 +36,7 @@ private struct SimpleEQKnob: View {
     @State private var dragOrigin: Double?
 
     private var normalizedValue: Double {
-        let limits = SimpleEQControl.gainRange
+        let limits = SimpleToneSettings.gainRange
         return (value - limits.lowerBound) / (limits.upperBound - limits.lowerBound)
     }
 
@@ -89,8 +89,8 @@ private struct SimpleEQKnob: View {
             .accessibilityAdjustableAction { direction in
                 guard isEnabled else { return }
                 switch direction {
-                case .increment: setValue(value + SimpleEQControl.step)
-                case .decrement: setValue(value - SimpleEQControl.step)
+                case .increment: setValue(value + SimpleToneSettings.step)
+                case .decrement: setValue(value - SimpleToneSettings.step)
                 @unknown default: break
                 }
             }
@@ -110,8 +110,8 @@ private struct SimpleEQKnob: View {
     }
 
     private func setValue(_ newValue: Double) {
-        let limits = SimpleEQControl.gainRange
+        let limits = SimpleToneSettings.gainRange
         let clamped = min(limits.upperBound, max(limits.lowerBound, newValue))
-        value = (clamped / SimpleEQControl.step).rounded() * SimpleEQControl.step
+        value = (clamped / SimpleToneSettings.step).rounded() * SimpleToneSettings.step
     }
 }

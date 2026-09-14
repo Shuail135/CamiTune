@@ -35,6 +35,7 @@ struct CrossfeedEditorView: View {
                         }
                     ))
                     .toggleStyle(.switch)
+                    .labelsHidden().accessibilityLabel("Headphone Crossfeed")
                 }
 
                 Text("Blend delayed, low-frequency sound from each stereo channel into the opposite ear to reduce hard left/right separation on headphones.")

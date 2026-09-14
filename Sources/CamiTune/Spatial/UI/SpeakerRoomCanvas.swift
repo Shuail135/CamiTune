@@ -68,7 +68,7 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         // Reserve room for complete speaker blocks at the default 125% zoom.
         // Snapshot extents once so dragging never causes the canvas to rescale.
         let fitWidth = max(1, graph.width / 2 - 32) / CGFloat(max(0.1, initialHalfWidth))
-        let fitHeight = max(1, graph.height - 85) / CGFloat(max(0.1, initialFront - initialBack))
+        let fitHeight = max(1, graph.height - 100) / CGFloat(max(0.1, initialFront - initialBack))
         let base = min(graph.width / (extent * 2), graph.height / (extent + 0.5),
                        fitWidth / 1.25, fitHeight / 1.25)
         return zoom * max(0.001, base)
@@ -88,8 +88,32 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         return CGPoint(x: graph.minX + 42 + CGFloat(index % 5) * 64 + pan.x,
                        y: graph.maxY - 28 - CGFloat(index / 5) * 44 + pan.y)
     }
-    func nodeRect(_ point: CGPoint) -> CGRect { CGRect(x: point.x - 25, y: point.y - 19, width: 50, height: 38) }
-    func menuRect(_ point: CGPoint) -> CGRect { CGRect(x: point.x + 8, y: point.y - 19, width: 17, height: 38) }
+    // Match the compact room map without making its drag targets too small.
+    // Use the same geometry for drawing, pointer tracking, and accessibility.
+    private var nodeScale: CGFloat { min(1, max(0.75, bounds.height / 370)) }
+
+    private func nodeContentRect(_ point: CGPoint, x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat) -> CGRect {
+        CGRect(x: point.x + x * nodeScale, y: point.y + y * nodeScale,
+               width: width * nodeScale, height: height * nodeScale)
+    }
+
+    func nodeRect(_ point: CGPoint) -> CGRect {
+        nodeContentRect(point, x: -25, y: -26, width: 50, height: 52)
+    }
+    func menuRect(_ point: CGPoint) -> CGRect {
+        nodeContentRect(point, x: 8, y: -26, width: 17, height: 52)
+    }
+
+    private func displayedRole(_ endpoint: SpeakerEndpoint) -> ChannelRole {
+        guard let topology = configuration?.topology,
+              let index = topology.endpoints.firstIndex(where: { $0.id == endpoint.id }) else { return endpoint.role }
+        return SpeakerLayoutGeometry.layoutRoles(topology)[index]
+    }
+
+    private func roleDescription(_ endpoint: SpeakerEndpoint) -> String {
+        let role = displayedRole(endpoint)
+        return endpoint.role == .unknown && role != .unknown ? "Estimated: \(role.displayName)" : role.displayName
+    }
 
     func updateHelp() {
         removeAllToolTips()
@@ -99,14 +123,148 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
             let rect = nodeRect(nodePoint(endpoint, index: index)).intersection(graph)
             if !rect.isEmpty {
                 let tag = addToolTip(rect, owner: self, userData: nil)
-                tooltipText[tag] = "Output \(endpoint.id.channelIndex + 1): \(endpoint.displayName) · \(endpoint.role.displayName)"
+                tooltipText[tag] = "Channel \(endpoint.id.channelIndex + 1): \(endpoint.displayName) · \(roleDescription(endpoint))"
             }
         }
+        updateAccessibilityElements()
         setAccessibilityLabel("Speaker and listening position map")
-        setAccessibilityHelp("Drag speakers or the listener to move them. Drag empty space or scroll to pan. Click a speaker to test it. Use the arrow to assign its role.")
+        setAccessibilityHelp("Drag speakers or the listener to move them. Drag empty space or scroll to pan. Click a speaker to test it. Use the arrow to assign its role. With keyboard focus, use brackets to select a speaker, L for the listener, arrow keys to move, Space to test, and R for roles.")
     }
     func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
         tooltipText[tag] ?? ""
+    }
+
+    private var accessibilityNodes: [String: NSAccessibilityElement] = [:]
+    private var keyboardListenerSelected = false
+
+    /// Reuse virtual elements so VoiceOver focus survives local draft updates.
+    func updateAccessibilityElements() {
+        guard let config = configuration else { setAccessibilityChildren([]); return }
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        var keys: Set<String> = []
+        func element(_ key: String, label: String, value: String, rect: CGRect) -> NSAccessibilityElement {
+            keys.insert(key)
+            let node = accessibilityNodes[key] ?? NSAccessibilityElement()
+            accessibilityNodes[key] = node
+            node.setAccessibilityParent(self)
+            node.setAccessibilityRole(.group)
+            node.setAccessibilityLabel(label)
+            node.setAccessibilityValue(value)
+            node.setAccessibilityFrameInParentSpace(rect)
+            node.setAccessibilityEnabled(!config.locked)
+            node.setAccessibilityCustomActions([])
+            return node
+        }
+        let front = element("front", label: "Front / Screen, fixed reference", value: "", rect: nodeRect(screen))
+        front.setAccessibilityRole(.staticText)
+        let listener = element("listener", label: "Listening Position",
+            value: String(format: "%.2f meters right, %.2f meters forward", config.listener.x, config.listener.y),
+            rect: nodeRect(point(config.listener)))
+        listener.setAccessibilityCustomActions(movementActions(output: nil))
+        var children = [front, listener]
+        for (index, endpoint) in config.topology.endpoints.enumerated() {
+            let position = SpeakerLayoutGeometry.vector(endpoint.position)
+            let distance = SpeakerLayoutGeometry.distance(from: endpoint.position, listenerX: config.listener.x, listenerY: config.listener.y)
+            let disabled = endpoint.connectionState == .disabledByUser || endpoint.connectionState == .silent
+            let node = element(endpoint.id.id, label: "\(endpoint.displayName), \(disabled ? "Disabled" : roleDescription(endpoint))",
+                value: String(format: "%.2f meters from listening position, %.2f meters relative to head height. %@",
+                    distance, position.z, config.playing == endpoint.id ? "Test sound playing" : "Test sound stopped"),
+                rect: nodeRect(nodePoint(endpoint, index: index)))
+            var actions = [NSAccessibilityCustomAction(name: "Select Speaker", handler: { [weak self] in
+                guard let self, let current = self.configuration, !current.locked,
+                      current.topology.endpoints.contains(where: { $0.id == endpoint.id }) else { return false }
+                self.keyboardListenerSelected = false
+                current.select(endpoint.id)
+                return true
+            })]
+            if !disabled {
+                actions.append(NSAccessibilityCustomAction(name: config.playing == endpoint.id ? "Stop Test Sound" : "Test Speaker", handler: { [weak self] in
+                    self?.testSpeaker(endpoint.id) ?? false
+                }))
+            }
+            if !config.listeningOnly {
+                actions += movementActions(output: endpoint.id)
+                actions.append(NSAccessibilityCustomAction(name: "Speaker Role: \(roleDescription(endpoint))", handler: { [weak self] in
+                    guard let self, let current = self.configuration, !current.locked, !current.listeningOnly,
+                          let index = current.topology.endpoints.firstIndex(where: { $0.id == endpoint.id }) else { return false }
+                    self.showRoles(current.topology.endpoints[index], at: self.nodePoint(current.topology.endpoints[index], index: index))
+                    return true
+                }))
+            }
+            node.setAccessibilityCustomActions(actions)
+            children.append(node)
+        }
+        accessibilityNodes = accessibilityNodes.filter { keys.contains($0.key) }
+        setAccessibilityChildren(children)
+    }
+
+    private func movementActions(output: PhysicalOutputID?) -> [NSAccessibilityCustomAction] {
+        guard configuration?.locked == false, output == nil || configuration?.listeningOnly == false else { return [] }
+        let moves: [(String, Float, Float, Float)] = [
+            ("Move Left", -0.05, 0, 0), ("Move Right", 0.05, 0, 0),
+            ("Move Forward", 0, 0.05, 0), ("Move Back", 0, -0.05, 0)
+        ] + (output == nil ? [] : [("Raise Speaker", 0, 0, 0.05), ("Lower Speaker", 0, 0, -0.05)])
+        return moves.map { name, x, y, z in
+            NSAccessibilityCustomAction(name: output == nil ? "Listening Position: \(name)" : name, handler: { [weak self] in
+                self?.moveAccessibly(output: output, x: x, y: y, z: z) ?? false
+            })
+        }
+    }
+
+    @discardableResult
+    func moveAccessibly(output: PhysicalOutputID?, x: Float, y: Float, z: Float = 0) -> Bool {
+        guard let config = configuration, !config.locked, x.isFinite, y.isFinite, z.isFinite else { return false }
+        if let output {
+            guard !config.listeningOnly, let endpoint = config.topology.endpoints.first(where: { $0.id == output }) else { return false }
+            var position = SpeakerLayoutGeometry.vector(endpoint.position)
+            position.x += x; position.y += y; position.z = min(10, max(-10, position.z + z))
+            config.select(output)
+            config.moveSpeaker(output, position)
+        } else {
+            var position = config.listener
+            position.x += x; position.y += y
+            config.moveListener(position)
+        }
+        return true
+    }
+
+    @discardableResult
+    func testSpeaker(_ id: PhysicalOutputID) -> Bool {
+        guard let config = configuration, !config.locked,
+              let endpoint = config.topology.endpoints.first(where: { $0.id == id }),
+              endpoint.connectionState != .disabledByUser, endpoint.connectionState != .silent else { return false }
+        config.select(id); config.audition(id)
+        return true
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard let config = configuration, !config.locked,
+              event.modifierFlags.intersection([.command, .control, .option]).isEmpty else {
+            super.keyDown(with: event); return
+        }
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        if key == "l" { keyboardListenerSelected = true; return }
+        if key == "[" || key == "]", !config.listeningOnly, !config.topology.endpoints.isEmpty {
+            let index = config.topology.endpoints.firstIndex(where: { $0.id == config.selected }) ?? 0
+            let offset = key == "]" ? 1 : -1
+            let next = (index + offset + config.topology.endpoints.count) % config.topology.endpoints.count
+            keyboardListenerSelected = false; config.select(config.topology.endpoints[next].id); return
+        }
+        let output = keyboardListenerSelected || config.listeningOnly ? nil : config.selected
+        switch event.keyCode {
+        case 123: moveAccessibly(output: output, x: -0.05, y: 0)
+        case 124: moveAccessibly(output: output, x: 0.05, y: 0)
+        case 125: moveAccessibly(output: output, x: 0, y: -0.05)
+        case 126: moveAccessibly(output: output, x: 0, y: 0.05)
+        case 49:
+            if let output { testSpeaker(output) }
+        default:
+            if key == "r", let output, !config.listeningOnly,
+               let index = config.topology.endpoints.firstIndex(where: { $0.id == output }) {
+                showRoles(config.topology.endpoints[index], at: nodePoint(config.topology.endpoints[index], index: index))
+            } else { super.keyDown(with: event) }
+        }
     }
 
     override func resetCursorRects() {
@@ -138,14 +296,14 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         screenBaseline.move(to: CGPoint(x: graph.minX, y: screen.y))
         screenBaseline.line(to: CGPoint(x: graph.maxX, y: screen.y))
         NSColor.gray.setStroke(); screenBaseline.lineWidth = 1; screenBaseline.stroke()
-        symbol("tv.fill", rect: CGRect(x: screen.x - 46, y: screen.y - 54, width: 92, height: 54), color: .black)
+        symbol("tv.fill", rect: nodeContentRect(screen, x: -46, y: -54, width: 92, height: 54), color: .black)
         for (index, endpoint) in config.topology.endpoints.enumerated() {
             drawSpeaker(endpoint, index: index)
         }
         let listener = point(config.listener)
         NSColor.windowBackgroundColor.setFill()
-        NSBezierPath(ovalIn: CGRect(x: listener.x - 19, y: listener.y - 19, width: 38, height: 38)).fill()
-        symbol("person.fill", rect: CGRect(x: listener.x - 11, y: listener.y - 13, width: 22, height: 26), color: .controlAccentColor)
+        NSBezierPath(ovalIn: nodeContentRect(listener, x: -19, y: -19, width: 38, height: 38)).fill()
+        symbol("person.fill", rect: nodeContentRect(listener, x: -11, y: -13, width: 22, height: 26), color: .controlAccentColor)
         NSGraphicsContext.restoreGraphicsState()
         NSColor.separatorColor.withAlphaComponent(0.65).setStroke()
         let frame = NSBezierPath(roundedRect: graph.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
@@ -172,23 +330,27 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
                 ? (NSColor.windowBackgroundColor.blended(withFraction: 0.16, of: .controlAccentColor) ?? .windowBackgroundColor)
                 : NSColor.windowBackgroundColor
             background.withAlphaComponent(1).setFill()
-            NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
-            if selected { NSColor.controlAccentColor.setStroke(); NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).stroke() }
+            NSBezierPath(roundedRect: rect, xRadius: 7 * nodeScale, yRadius: 7 * nodeScale).fill()
+            if selected { NSColor.controlAccentColor.setStroke(); NSBezierPath(roundedRect: rect, xRadius: 7 * nodeScale, yRadius: 7 * nodeScale).stroke() }
             symbol(configuration?.playing == endpoint.id ? "stop.circle.fill" : "speaker.wave.2.fill",
-                   rect: CGRect(x: p.x - 20, y: p.y - 11, width: 24, height: 22),
+                   rect: nodeContentRect(p, x: -20, y: -19, width: 24, height: 22),
                    color: configuration?.playing == endpoint.id ? .systemOrange : disabled ? .tertiaryLabelColor : .controlAccentColor)
             if configuration?.listeningOnly == false {
-                symbol("chevron.down", rect: CGRect(x: p.x + 11, y: p.y - 4, width: 9, height: 8), color: .labelColor)
+                symbol("chevron.down", rect: nodeContentRect(p, x: 11, y: -12, width: 9, height: 8), color: .labelColor)
             }
+            let role = displayedRole(endpoint)
+            label(disabled ? "Off" : role.shortName,
+                  rect: nodeContentRect(p, x: -23, y: 7, width: 46, height: 15), alignment: .center,
+                  fontSize: max(9, 10 * nodeScale))
     }
 
     private func ticks(origin: CGFloat, lower: CGFloat, upper: CGFloat, step: CGFloat) -> [CGFloat] {
         Array(stride(from: ceil((lower + 18 - origin) / (scale * step)) * step,
                      through: (upper - 18 - origin) / scale, by: step))
     }
-    private func label(_ text: String, rect: CGRect, alignment: NSTextAlignment) {
+    private func label(_ text: String, rect: CGRect, alignment: NSTextAlignment, fontSize: CGFloat = 10) {
         let style = NSMutableParagraphStyle(); style.alignment = alignment
-        (text as NSString).draw(in: rect, withAttributes: [.font: NSFont.systemFont(ofSize: 10),
+        (text as NSString).draw(in: rect, withAttributes: [.font: NSFont.systemFont(ofSize: fontSize),
             .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: style])
     }
     private func symbol(_ name: String, rect: CGRect, color: NSColor) {
@@ -217,11 +379,12 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         window?.makeFirstResponder(self)
         pointerStart = p; panStart = pan; didDrag = false; pressedArrow = false; snapX = nil; snapY = nil
         if nodeRect(point(config.listener)).contains(p) {
-            target = .listener; worldStart = config.listener; return
+            keyboardListenerSelected = true; target = .listener; worldStart = config.listener; return
         }
         for (index, endpoint) in config.topology.endpoints.enumerated().reversed() {
             let center = nodePoint(endpoint, index: index)
             guard nodeRect(center).contains(p) else { continue }
+            keyboardListenerSelected = false
             config.select(endpoint.id)
             pressedArrow = !config.listeningOnly && menuRect(center).contains(p)
             target = .speaker(endpoint.id)
@@ -236,6 +399,7 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         let p = convert(event.locationInWindow, from: nil)
         let dx = p.x - pointerStart.x, dy = p.y - pointerStart.y
         guard didDrag || hypot(dx, dy) >= 3 else { return }
+        if !didDrag { UIRenderPerformance.beginSpeakerDrag() }
         didDrag = true
         if case .pan = target {
             pan = CGPoint(x: panStart.x + dx, y: panStart.y + dy); needsDisplay = true; return
@@ -262,6 +426,7 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) {
+        if didDrag { UIRenderPerformance.endSpeakerDrag() }
         let completedTarget = target
         let clicked = !didDrag
         let openMenu = pressedArrow
@@ -329,7 +494,8 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         disabled.state = endpoint.connectionState == .disabledByUser ? .on : .off
         menu.addItem(disabled); menu.addItem(.separator())
         for (index, role) in ChannelRole.allCases.enumerated() {
-            let item = NSMenuItem(title: role == .unknown ? "Custom / Unknown" : role.displayName,
+            let estimated = endpoint.role == .unknown && role != .unknown && role == displayedRole(endpoint)
+            let item = NSMenuItem(title: role == .unknown ? "Custom / Unknown" : role.displayName + (estimated ? " (estimated)" : ""),
                                   action: #selector(roleChosen(_:)), keyEquivalent: "")
             item.target = self; item.tag = index
             item.state = endpoint.connectionState != .disabledByUser && endpoint.role == role ? .on : .off

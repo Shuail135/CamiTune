@@ -52,9 +52,9 @@ enum ReferenceCorrection {
 extension AppState {
     func saveReferenceCorrection(profile original: DeviceProfile, correction: DeviceCorrectionProfile?) async throws {
         var draft = ProfileSettingsDraft(profile: original, activation: profiles.activationMode(for: original))
-        var processing = try original.resolvedProcessing()
-        processing.setDeviceCorrection(correction)
-        draft.processing = processing
+        var updated = original
+        updated.setPersonalReferenceCorrection(correction)
+        draft.personalReferenceCorrections = updated.personalReferenceCorrections
         // A legacy explicit EQ replacement draft must be resolved before replacing
         // the correction; otherwise session merging could silently remove it.
         guard !eqDraftReplacesDeviceCorrection(for: original.id) else {
@@ -65,17 +65,31 @@ extension AppState {
 
     func importReferenceToEqualizer(profile original: DeviceProfile, expectedDraft: String?) async throws {
         guard eqDraft(for: original.id) == expectedDraft,
-              let correction = original.processing.deviceCorrection else { throw ProfileSettingsError.staleDraft }
+              let correction = original.personalReferenceCorrection else { throw ProfileSettingsError.staleDraft }
         var draft = ProfileSettingsDraft(profile: original, activation: profiles.activationMode(for: original))
         let current = try applyingSessionEQDrafts(to: original)
         var processing = ReferenceCorrection.transfer(correction, to: try original.resolvedProcessing(),
             userPreampDB: current.processing.globalEqualizer.preampDB)
         if let limiter = limiterDraft(for: original.id) { processing.setLimiterEnabled(limiter) }
+        processing.simpleTone = current.processing.simpleTone
         draft.processing = processing
+        var corrections = original.personalReferenceCorrections
+        corrections.removeValue(forKey: original.effectiveEndpointKind.rawValue)
+        draft.personalReferenceCorrections = corrections
         draft.replacesUserEqualizer = true
         var layout = profiles.effectiveLayout(for: original)
         layout.hidden.remove(.equalizer)
+        if layout.equalizer == .simpleTone { layout.equalizer = .both }
         draft.sectionLayout = layout
         try await saveProfileSettings(draft)
+    }
+}
+
+
+extension ReferenceCorrection {
+    static func headroomDB(_ correction: DeviceCorrectionProfile?, sampleRate: Double) -> Double {
+        guard let correction, correction.isEnabled else { return 0 }
+        return PerAppAudioController.automaticSystemHeadroomDB(
+            PerAppAudioSettings(eqBypassed: false, equalizerBands: correction.filters), sampleRate: sampleRate)
     }
 }

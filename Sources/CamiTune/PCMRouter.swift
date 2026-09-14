@@ -112,6 +112,8 @@ final class PCMRouter: @unchecked Sendable {
         spatialSettings: SpatialRenderSettings = SpatialRenderSettings(),
         spatialOutput: SpatialOutputKind = .speakers,
         referenceTopology: SpeakerTopology? = nil,
+        playbackMode: PlaybackMode? = nil,
+        referenceCorrection: DeviceCorrectionProfile? = nil,
         meterConsumer: MeterConsumer? = nil,
         analyzerConsumer: AnalyzerConsumer? = nil
     ) async {
@@ -124,6 +126,7 @@ final class PCMRouter: @unchecked Sendable {
                 spatialSettings: spatialSettings,
                 spatialOutput: spatialOutput,
             referenceTopology: referenceTopology,
+            playbackMode: playbackMode, referenceCorrection: referenceCorrection,
                 meterConsumer: meterConsumer,
                 analyzerConsumer: analyzerConsumer
             )
@@ -140,6 +143,8 @@ final class PCMRouter: @unchecked Sendable {
         spatialSettings: SpatialRenderSettings,
         spatialOutput: SpatialOutputKind,
         referenceTopology: SpeakerTopology?,
+        playbackMode: PlaybackMode?,
+        referenceCorrection: DeviceCorrectionProfile?,
         meterConsumer: MeterConsumer?,
         analyzerConsumer: AnalyzerConsumer?
     ) {
@@ -153,6 +158,7 @@ final class PCMRouter: @unchecked Sendable {
             spatialSettings: spatialSettings,
             spatialOutput: spatialOutput,
             referenceTopology: referenceTopology,
+            playbackMode: playbackMode, referenceCorrection: referenceCorrection,
             recoveryHandler: { [weak self] droppedFrames in
                 self?.recordCamillaRecovery(droppedFrames: droppedFrames)
             },
@@ -193,6 +199,11 @@ final class PCMRouter: @unchecked Sendable {
     /// once per block and ramps sample-continuously.
     func setSystemMaster(linearGain: Float, muted: Bool) {
         systemMaster.set(linearGain: linearGain, muted: muted)
+    }
+
+    func setPlaybackMode(_ mode: PlaybackMode, correction: DeviceCorrectionProfile?) {
+        state.lock(); defer { state.unlock() }
+        camillaBranch?.setPlaybackMode(mode, correction: correction)
     }
 
     func setSpatialRenderingMode(_ mode: SpatialRenderingMode) {
@@ -569,6 +580,13 @@ private final class CamillaPCMBranch: @unchecked Sendable {
     private var needsContentReset = false
     private let spatialEngine = SpatialAudioEngine()
     private var referenceRenderer: ReferenceSpeakerRenderer?
+    private var physicalModeRenderer: PhysicalSpeakerModeRenderer?
+    private var playbackMode: PlaybackMode
+    private var referenceCorrection: DeviceCorrectionProfile?
+    private var correctionBank = PerAppFilterBank()
+    private var correctionSignature: DeviceCorrectionProfile?
+    private var correctionGain: Float = 1
+    private var busSafetyGain: Float = 1
     private let referenceTopology: SpeakerTopology?
     private let expectedOutputChannelCount: Int
     private var publishedReferenceDiagnostics: ReferenceSpeakerDiagnostics?
@@ -577,7 +595,7 @@ private final class CamillaPCMBranch: @unchecked Sendable {
     private var renderOutput: SpatialOutputKind
     private var virtualSurroundLayout = VirtualSurroundLayout.standard
     private var lastSourceFormat: SpatialSourceFormat?
-    private var hasRenderedSpatialBus = false
+    private var renderedModeBuses: Set<PlaybackMode> = []
     private var spatialRenderingMode: SpatialRenderingMode
     private var spatialListenerTuning: SpatialListenerTuning
     private var calibrationID: UUID?
@@ -601,6 +619,8 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         spatialSettings: SpatialRenderSettings,
         spatialOutput: SpatialOutputKind,
         referenceTopology: SpeakerTopology?,
+        playbackMode: PlaybackMode?,
+        referenceCorrection: DeviceCorrectionProfile?,
         recoveryHandler: @escaping (Int) -> Void,
         failureHandler: @escaping () -> Void,
         adjustmentHandler: @escaping (Double, Int) -> Void
@@ -620,6 +640,9 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         self.renderSettings = spatialSettings
         if spatialRenderingMode == .frontStage || spatialRenderingMode == .virtualSurround { self.renderSettings.enabled = true }
         self.renderOutput = spatialOutput
+        self.playbackMode = playbackMode ?? (referenceTopology != nil ? .referencePlayback : spatialRenderingMode == .standard ? .direct : .spatialRender)
+        self.referenceCorrection = referenceCorrection
+        self.physicalModeRenderer = referenceTopology.flatMap { try? PhysicalSpeakerModeRenderer(topology: $0) }
         self.referenceTopology = referenceTopology
         self.expectedOutputChannelCount = referenceTopology?.declaredChannelCount ?? 2
         self.referenceRenderer = referenceTopology.flatMap { try? ReferenceSpeakerRenderer(topology: $0) }
@@ -642,6 +665,12 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         condition.lock()
         defer { condition.unlock() }
         return publishedRenderDiagnostics
+    }
+
+    func setPlaybackMode(_ mode: PlaybackMode, correction: DeviceCorrectionProfile?) {
+        condition.lock(); defer { condition.unlock() }
+        playbackMode = mode
+        referenceCorrection = correction
     }
 
     func setSpatialSettings(_ settings: SpatialRenderSettings, output: SpatialOutputKind) {
@@ -803,6 +832,66 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         if canCloseHandle { try? handle?.close() }
     }
 
+    private func renderModeBuses(_ frame: PCMFrame, mode: PlaybackMode, settings: SpatialRenderSettings,
+                                 output: SpatialOutputKind, correction: DeviceCorrectionProfile?) -> PCMFrame? {
+        let modes: [PlaybackMode]
+        if frame.playbackModeSamples.isEmpty {
+            modes = [mode]
+        } else {
+            // Continue previously used buses for filter/reverb tails, but do
+            // not run unused Reference/Spatial renderers for Direct playback.
+            renderedModeBuses.formUnion(frame.playbackModeSamples.keys)
+            modes = PlaybackMode.allCases.filter { renderedModeBuses.contains($0) }
+        }
+        var sum: PCMFrame?
+        for busMode in modes {
+            var bus = frame
+            bus.playbackModeSamples = [:]
+            if !frame.playbackModeSamples.isEmpty {
+                bus.interleaved = frame.playbackModeSamples[busMode] ?? [Float](repeating: 0, count: frame.interleaved.count)
+            }
+            let rendered: PCMFrame?
+            if let renderer = physicalModeRenderer {
+                rendered = try? renderer.render(bus, mode: busMode, settings: settings)
+            } else if busMode == .spatialRender {
+                var enabled = settings; enabled.enabled = true
+                rendered = spatialEngine.render(frame: bus, settings: enabled, detectedOutput: output)
+            } else {
+                rendered = sourceRouter.stereoFallback(for: bus)
+            }
+            guard var rendered else { return nil }
+            if busMode == .referencePlayback, physicalModeRenderer == nil {
+                if correctionSignature != correction {
+                    correctionSignature = correction
+                    correctionGain = Float(pow(10, ReferenceCorrection.headroomDB(correction, sampleRate: frame.sampleRate) / 20))
+                    correctionBank = PerAppFilterBank()
+                }
+                if let correction, correction.isEnabled {
+                    correctionBank.process(&rendered.interleaved, channelCount: rendered.channelCount,
+                        sampleRate: rendered.sampleRate, bands: correction.filters, settingsRevision: 0)
+                    for i in rendered.interleaved.indices { rendered.interleaved[i] *= correctionGain }
+                }
+            }
+            if sum == nil { sum = rendered }
+            else {
+                guard sum!.interleaved.count == rendered.interleaved.count else { return nil }
+                for i in rendered.interleaved.indices { sum!.interleaved[i] += rendered.interleaved[i] }
+            }
+        }
+        guard var result = sum else { return nil }
+        // Linked sample-wise safety after summing buses, with release independent of block size.
+        let release = Float(1 - exp(-1 / (frame.sampleRate * 0.2)))
+        for f in 0..<result.frameCount {
+            let offset = f * result.channelCount
+            var peak: Float = 1
+            for c in 0..<result.channelCount { peak = max(peak, abs(SpatialSafety.sample(result.interleaved[offset + c]))) }
+            let target = 1 / peak
+            busSafetyGain = target < busSafetyGain ? target : busSafetyGain + release * (target - busSafetyGain)
+            for c in 0..<result.channelCount { result.interleaved[offset + c] = SpatialSafety.sample(result.interleaved[offset + c]) * busSafetyGain }
+        }
+        return result
+    }
+
     private func run() {
         guard let handle else {
             condition.lock()
@@ -862,6 +951,8 @@ private final class CamillaPCMBranch: @unchecked Sendable {
                 renderSettings.cinema.amount = 1
             }
             let renderOutput = self.renderOutput
+            let currentMode = self.playbackMode
+            let correction = self.referenceCorrection
             let hasSpatialBus = frame.playbackModeSamples[.spatialRender] != nil
             let shouldAnalyzeContent = ((spatialRenderingMode != .standard && renderSettings.enabled) || hasSpatialBus)
                 && calibrationID == nil && !isCalibrationSample
@@ -880,12 +971,12 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             contentEstimateDate = Date()
             condition.unlock()
             if shouldResetRateMatcher {
-                spatialEngine.reset(); referenceRenderer?.reset(); rateController.reset(); resampler.reset()
-                hasRenderedSpatialBus = false
+                spatialEngine.reset(); referenceRenderer?.reset(); physicalModeRenderer?.reset(); correctionBank = PerAppFilterBank(); rateController.reset(); resampler.reset()
+                renderedModeBuses.removeAll()
             }
             if shouldResetSpatialRenderer {
-                spatialEngine.reset(); referenceRenderer?.reset()
-                hasRenderedSpatialBus = false
+                spatialEngine.reset(); referenceRenderer?.reset(); physicalModeRenderer?.reset()
+                renderedModeBuses.removeAll()
             }
             lastSourceFormat = frame.sourceFormat
             // The immutable physical route and backend share one channel count.
@@ -896,44 +987,13 @@ private final class CamillaPCMBranch: @unchecked Sendable {
                 // through the scene renderer or stereo downmixer.
                 renderedFrame = physicalOutput.deviceUID == referenceTopology?.deviceUID
                     && frame.channelCount == expectedOutputChannelCount ? frame : nil
-            } else if referenceTopology != nil {
-                if let scene = try? ChannelBasedSceneProvider().makeScene(from: frame) {
-                    renderedFrame = try? referenceRenderer?.render(scene)
-                } else { renderedFrame = nil }
             } else {
-                if !frame.playbackModeSamples.isEmpty {
-                    // Render both stereo buses on every interval, including
-                    // silence, so spatial filter tails advance on one clock.
-                    var direct = frame
-                    direct.playbackModeSamples = [:]
-                    direct.interleaved = frame.playbackModeSamples[.direct]
-                        ?? [Float](repeating: 0, count: frame.interleaved.count)
-                    var spatial = direct
-                    spatial.interleaved = frame.playbackModeSamples[.spatialRender]
-                        ?? [Float](repeating: 0, count: frame.interleaved.count)
-                    var settings = renderSettings
-                    settings.enabled = true
-                    if !hasSpatialBus && !hasRenderedSpatialBus {
-                        // Ordinary Direct playback needs no spatial DSP work.
-                        renderedFrame = sourceRouter.stereoFallback(for: direct)
-                    } else if var sum = sourceRouter.stereoFallback(for: direct),
-                       let renderedSpatial = spatialEngine.render(frame: spatial, settings: settings, detectedOutput: renderOutput),
-                       sum.interleaved.count == renderedSpatial.interleaved.count {
-                        hasRenderedSpatialBus = true
-                        for index in sum.interleaved.indices {
-                            sum.interleaved[index] += renderedSpatial.interleaved[index]
-                        }
-                        renderedFrame = sum
-                    } else { renderedFrame = nil }
-                } else {
-                    renderedFrame = spatialRenderingMode == .standard
-                        ? sourceRouter.stereoFallback(for: frame)
-                        : spatialEngine.render(frame: frame, settings: renderSettings, detectedOutput: renderOutput)
-                }
+                renderedFrame = renderModeBuses(frame, mode: isAcousticMeasurement ? .direct : currentMode,
+                    settings: renderSettings, output: renderOutput, correction: correction)
             }
             condition.lock()
-            publishedReferenceDiagnostics = referenceRenderer?.diagnostics
-            publishedRenderDiagnostics = spatialRenderingMode == .spatialAudio || hasSpatialBus ? spatialEngine.diagnostics : nil
+            publishedReferenceDiagnostics = physicalModeRenderer?.diagnostics ?? referenceRenderer?.diagnostics
+            publishedRenderDiagnostics = spatialRenderingMode == .spatialAudio || hasSpatialBus ? (physicalModeRenderer?.spatialDiagnostics ?? spatialEngine.diagnostics) : nil
             condition.unlock()
             guard let renderedFrame, renderedFrame.channelCount == expectedOutputChannelCount else {
                 recoveryHandler(frame.frameCount)

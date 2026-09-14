@@ -23,6 +23,10 @@ enum CamiTunePaths {
         supportDirectory.appendingPathComponent("ImpulseResponses", isDirectory: true)
     }
 
+    static var perAppPresentationURL: URL {
+        supportDirectory.appendingPathComponent("PerAppPresentation.json")
+    }
+
     static var perAppAudioSettingsURL: URL {
         supportDirectory.appendingPathComponent("PerAppAudio.json")
     }

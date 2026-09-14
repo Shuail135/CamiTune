@@ -14,11 +14,11 @@ enum SpeakerTopologyError: Error, Equatable, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .hardwareLayoutChanged: return "The device channel layout changed. Discover and check its outputs again."
-        case .invalidDeviceUID, .foreignDevice: return "The speaker map belongs to another output device. Discover this device's outputs again."
+        case .hardwareLayoutChanged: return "The device channel layout changed. Discover and check its channels again."
+        case .invalidDeviceUID, .foreignDevice: return "The speaker map belongs to another output device. Discover this device's channels again."
         case .invalidSampleRate: return "The speaker map uses a different sample rate. Rediscover it at the profile's processing rate."
         case .unsupportedChannelCount(let count): return "This output has \(count) channels. CamiTune supports 1 through 32."
-        case .unsupportedVersion: return "This speaker map uses an unsupported version. Discover the outputs again."
+        case .unsupportedVersion: return "This speaker map uses an unsupported version. Discover the channels again."
         case .invalidChannelIndex, .duplicateOutput: return "The speaker map has invalid or duplicate physical channel indices."
         case .invalidPosition: return "Speaker positions must use finite angles and a positive distance when supplied."
         case .invalidBandwidth: return "The speaker's frequency limits are invalid."

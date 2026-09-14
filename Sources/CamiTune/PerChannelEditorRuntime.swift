@@ -66,9 +66,10 @@ struct PerChannelEditorSnapshot: Sendable {
     let delayMilliseconds: Double
     let limiterEnabled: Bool
     let bands: [EQBand]
+    var simpleTone = SimpleToneSettings()
 
     var canReset: Bool {
-        gainDB != 0 || delayMilliseconds != 0 || limiterEnabled || !bands.isEmpty
+        gainDB != 0 || delayMilliseconds != 0 || limiterEnabled || !bands.isEmpty || !simpleTone.isNeutral
     }
 }
 
@@ -80,6 +81,7 @@ final class PerChannelEditorRuntime: ObservableObject {
     let gain = PerChannelValueState<Double>(0)
     let delay = PerChannelValueState<Double>(0)
     let limiter = PerChannelValueState<Bool>(false)
+    let simpleTone = PerChannelValueState(SimpleToneSettings())
     let bands = PerChannelBandsState()
     let responses = PerChannelResponseState()
     let status = PerChannelStatusState()
@@ -100,7 +102,8 @@ final class PerChannelEditorRuntime: ObservableObject {
             gainDB: gain.value,
             delayMilliseconds: delay.value,
             limiterEnabled: limiter.value,
-            bands: bands.values
+            bands: bands.values,
+            simpleTone: simpleTone.value
         )
     }
 
@@ -108,10 +111,7 @@ final class PerChannelEditorRuntime: ObservableObject {
         if let isSaved, status.isSaved != isSaved {
             status.isSaved = isSaved
         }
-        let canReset = gain.value != 0
-            || delay.value != 0
-            || limiter.value
-            || !bands.isEmpty
+        let canReset = snapshot.canReset
         if status.canReset != canReset {
             status.canReset = canReset
         }

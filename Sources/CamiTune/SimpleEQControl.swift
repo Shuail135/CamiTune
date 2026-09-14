@@ -24,7 +24,7 @@ enum SimpleEQRange: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// A projection over graphic-EQ bands, rather than another persisted processor.
+/// Legacy graphic-EQ projection retained for compatibility tests; not used by live tone controls.
 /// Smooth basis curves avoid hard frequency boundaries. A least-squares fit
 /// recovers the knob values from manual/imported graphic-EQ edits, while knob
 /// movement adds its broad curve without flattening existing detail.
@@ -183,5 +183,46 @@ enum SimpleEQControl {
 
     private static func quantized(_ value: Double) -> Double {
         (value / step).rounded() * step
+    }
+}
+
+
+/// Independent tone controls. Older profiles decode to neutral without projecting User EQ.
+struct SimpleToneSettings: Codable, Hashable, Sendable {
+    static let gainRange = -12.0...12.0
+    static let step = 0.5
+    var bassDB: Double = 0
+    var midsDB: Double = 0
+    var trebleDB: Double = 0
+    var isNeutral: Bool { bassDB == 0 && midsDB == 0 && trebleDB == 0 }
+
+    subscript(_ range: SimpleEQRange) -> Double {
+        get { switch range { case .bass: return bassDB; case .mids: return midsDB; case .treble: return trebleDB } }
+        set {
+            let value = newValue.isFinite ? min(12, max(-12, (newValue / Self.step).rounded() * Self.step)) : 0
+            switch range { case .bass: bassDB = value; case .mids: midsDB = value; case .treble: trebleDB = value }
+        }
+    }
+
+    func validate() throws {
+        guard [bassDB, midsDB, trebleDB].allSatisfy({ $0.isFinite && Self.gainRange.contains($0) }) else {
+            throw ProfileSettingsError.runtime("Tone gains must be between −12 and +12 dB.")
+        }
+    }
+}
+
+enum SimpleToneFilterFactory {
+    static let stageID = UUID(uuidString: "43414D49-5455-4E45-544F-4E4500000000")!
+    /// Fixed broad shelves and a broad midrange bell, shared by both audio paths.
+    static func filters(for settings: SimpleToneSettings, sampleRate: Double) throws -> [EQBand] {
+        try settings.validate()
+        guard sampleRate.isFinite, sampleRate > 0 else { throw ProcessingGraphError.invalidSampleRate }
+        let kinds: [EQBand.Kind] = [.lowShelf, .peaking, .highShelf]
+        let frequencies = [200.0, 1000.0, 4000.0]
+        return SimpleEQRange.allCases.enumerated().map { index, range in
+            EQBand(id: UUID(uuidString: "43414D49-5455-4E45-544F-4E450000000\(index + 1)")!,
+                kind: kinds[index], frequency: min(frequencies[index], sampleRate * 0.4),
+                gain: settings[range], q: index == 1 ? 0.5 : 0.7071067811865476)
+        }
     }
 }

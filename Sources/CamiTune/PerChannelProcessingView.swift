@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @MainActor
@@ -5,6 +6,7 @@ struct PerChannelProcessingView: View {
     let state: AppState
     @Binding var profile: DeviceProfile
 
+    @State private var equalizerPresentation: EqualizerPresentation = .both
     @State var selectedChannelIndex = 0
     @State var pendingBandCount: Int?
     @State var showBandReductionConfirmation = false
@@ -15,18 +17,18 @@ struct PerChannelProcessingView: View {
         state.isActive && state.activeProfileID == profile.id
     }
 
-    var editableChannels: [ChannelProcessing] {
-        (0..<max(1, min(32, profile.processingChannelCount))).map { index in
-            profile.processing.channels.first(where: { $0.index == index })
-                ?? ChannelProcessing(index: index, role: profile.usesReferenceSpeakers
-                    ? (profile.speakerTopology?.endpoints.first(where: { $0.id.channelIndex == index })?.role ?? .unknown)
-                    : (index == 0 ? .left : .right))
-        }
+    var editableChannels: [ConfiguredProcessingChannel] { profile.configuredProcessingChannels }
+    private var channelSelectorWidth: CGFloat {
+        let labelWidth = editableChannels.map {
+            ($0.displayName as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width
+        }.max() ?? 0
+        return CGFloat(editableChannels.count) * max(80, ceil(labelWidth) + 24)
     }
-
-    var selectedChannel: ChannelProcessing {
+    var selectedChannel: ConfiguredProcessingChannel {
         editableChannels.first(where: { $0.index == selectedChannelIndex })
-            ?? editableChannels[0]
+            ?? editableChannels.first
+            ?? ConfiguredProcessingChannel(index: 0, role: .unknown,
+                physicalOutputID: PhysicalOutputID(deviceUID: profile.outputDeviceUID, channelIndex: 0), displayName: "No configured channels")
     }
 
     var body: some View {
@@ -42,25 +44,17 @@ struct PerChannelProcessingView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Picker("Channel", selection: Binding(
-                    get: { selectedChannelIndex },
-                    set: { selectChannel($0) }
-                )) {
-                    ForEach(editableChannels) { channel in
-                        Text("\(channel.role.shortName) · Ch \(channel.index)")
-                            .tag(channel.index)
+                if editableChannels.isEmpty {
+                    Text("Configure enabled physical channels in Profile Settings.").foregroundStyle(.secondary)
+                } else {
+                    OverflowAwareHorizontalScrollView(contentWidth: channelSelectorWidth, height: 40) {
+                        JoinedSegmentedControl(
+                            options: editableChannels,
+                            selection: Binding(get: { selectedChannel }, set: { selectChannel($0.index) }),
+                            title: { $0.displayName }
+                        )
+                        .accessibilityLabel("Channel")
                     }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 360)
-
-                HStack(spacing: 8) {
-                    Text(selectedChannel.role.groupName)
-                        .font(.headline)
-                    Text("\(selectedChannel.role.displayName) (\(selectedChannel.role.shortName))")
-                    Text("Channel \(selectedChannel.index)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
                 }
 
                 PerChannelGainRow(
@@ -86,16 +80,36 @@ struct PerChannelProcessingView: View {
 
                 PerChannelResponseGraph(responses: runtime.responses)
 
-                PerChannelBandsSection(
-                    bands: runtime.bands,
-                    responses: runtime.responses,
-                    requestBandCount: requestBandCount,
-                    setKind: EQEditorSupport.setKind,
-                    onBandChanged: channelSettingsChanged,
-                    onGainEditingChanged: continuousEditingChanged
+                Text("Equalizer").font(.headline)
+                JoinedSegmentedControl(
+                    options: EqualizerPresentation.allCases,
+                    selection: $equalizerPresentation,
+                    title: { $0.title }
                 )
+                .accessibilityLabel("Per-channel equalizer controls")
+                .frame(width: 260)
+
+                if equalizerPresentation != .simpleTone {
+                    PerChannelBandsSection(
+                        bands: runtime.bands,
+                        responses: runtime.responses,
+                        requestBandCount: requestBandCount,
+                        setKind: EQEditorSupport.setKind,
+                        onBandChanged: channelSettingsChanged,
+                        onGainEditingChanged: continuousEditingChanged
+                    )
+                }
+                if equalizerPresentation == .both { Divider() }
+                if equalizerPresentation != .bands {
+                    PerChannelSimpleEQControls(
+                        tone: runtime.simpleTone,
+                        onChanged: channelSettingsChanged,
+                        onEditingChanged: continuousEditingChanged
+                    )
+                }
             }
             .padding(6)
+            .disabled(editableChannels.isEmpty)
         }
         .alert("Recalculate Equalizer Bands?", isPresented: $showBandReductionConfirmation) {
             Button("Cancel", role: .cancel) {
@@ -114,6 +128,10 @@ struct PerChannelProcessingView: View {
         .onChange(of: profile.id) { _ in
             runtime.loadedProfileID = nil
             loadSelectedChannelIfNeeded()
+        }
+        .onChange(of: editableChannels) { channels in
+            if !channels.contains(where: { $0.index == selectedChannelIndex }) { selectedChannelIndex = channels.first?.index ?? 0 }
+            loadSelectedChannel()
         }
         .onChange(of: profile.sampleRate) { _ in updateResponses() }
         .onDisappear {
@@ -324,7 +342,7 @@ private struct PerChannelResponseGraph: View {
                 Text("Combined channel response")
                     .font(.caption.weight(.medium))
                 Spacer()
-                Text("gain + channel filters")
+                Text("gain + EQ bands + Simple")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -366,9 +384,9 @@ private struct PerChannelBandsSection: View {
 
             if bands.isEmpty {
                 HStack {
-                    Text("No channel-specific filters. The channel gain still applies.")
+                    Text("No EQ bands. Simple, gain, and delay still apply.")
                         .foregroundStyle(.secondary)
-                    Button("Add 8 bands") { requestBandCount(8) }
+                    Button("Reset Bands") { requestBandCount(8) }
                 }
                 .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
             } else {
@@ -392,5 +410,26 @@ private struct PerChannelBandsSection: View {
                 }
             }
         }
+    }
+}
+
+/// Observes only tone values so knob edits do not rebuild the channel's band strip.
+private struct PerChannelSimpleEQControls: View {
+    @ObservedObject var tone: PerChannelValueState<SimpleToneSettings>
+    let onChanged: @MainActor () -> Void
+    let onEditingChanged: @MainActor (Bool) -> Void
+
+    var body: some View {
+        SimpleEQControlsView(
+            settings: Binding(
+                get: { tone.value },
+                set: { value in
+                    guard value != tone.value else { return }
+                    tone.value = value
+                    onChanged()
+                }
+            ),
+            onEditingChanged: onEditingChanged
+        )
     }
 }
