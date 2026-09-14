@@ -3,7 +3,7 @@ import SwiftUI
 
 @MainActor
 struct PerChannelProcessingView: View {
-    let state: AppState
+    @ObservedObject var state: AppState
     @Binding var profile: DeviceProfile
 
     @State private var equalizerPresentation: EqualizerPresentation = .both
@@ -123,12 +123,12 @@ struct PerChannelProcessingView: View {
         } message: {
             Text(bandReductionConfirmationMessage)
         }
+        .onChange(of: state.historyReplayRevision) { _ in loadSelectedChannel() }
         .onAppear {
             runtimeVisualsActive = true
             loadSelectedChannelIfNeeded()
         }
         .onChange(of: profile.id) { _ in
-            runtime.loadedProfileID = nil
             loadSelectedChannelIfNeeded()
         }
         .onChange(of: editableChannels) { channels in
@@ -137,6 +137,10 @@ struct PerChannelProcessingView: View {
         }
         .onChange(of: profile.sampleRate) { _ in bandReduction.cancel(); updateResponses() }
         .onDisappear {
+            if runtime.continuousEditDepth > 0 {
+                runtime.continuousEditDepth = 1
+                continuousEditingChanged(false)
+            }
             bandReduction.cancel()
             runtimeVisualsActive = false
         }

@@ -9,6 +9,9 @@ extension GlobalEqualizerEditorView {
     }
 
     func loadGraphicEQ() {
+        if let oldID = runtime.loadedProfileID {
+            state.history.cancelGesture(key: GestureKey(target: .profile(oldID), control: "equalizer"))
+        }
         bandReduction.cancel()
         let draft = state.eqDraft(for: profile.id)
         let limiterDraft = state.limiterDraft(for: profile.id)
@@ -27,6 +30,8 @@ extension GlobalEqualizerEditorView {
             return
         }
         runtime.suppressChanges = true
+        runtime.continuousEditDepth = 0
+        runtime.commitPendingAfterContinuousEdit = false
         runtime.liveApplyTask?.cancel()
         let organizedBands = EQEditorSupport.organizedBands(parsed.bands)
         simpleTone = state.toneDraft(for: profile.id) ?? profile.processing.simpleTone
@@ -41,7 +46,14 @@ extension GlobalEqualizerEditorView {
         runtime.loadedProfileID = profile.id
         updateGraphResponses()
         eqIsSaved = draft == nil && limiterDraft == nil && state.toneDraft(for: profile.id) == nil
+        runtime.historyBaseline = currentHistoryState
         DispatchQueue.main.async { runtime.suppressChanges = false }
+    }
+
+    func editorValuesChanged() {
+        guard !runtime.suppressChanges else { return }
+        if runtime.continuousEditDepth == 0 { recordEQEdit() }
+        graphicEQChanged()
     }
 
     func graphicEQChanged() {
@@ -59,14 +71,21 @@ extension GlobalEqualizerEditorView {
 
     func continuousEditingChanged(_ isEditing: Bool) {
         if isEditing {
+            if runtime.continuousEditDepth == 0 {
+                runtime.historyBaseline = currentHistoryState
+                state.history.beginGesture(key: eqGestureKey, actionName: "Adjust Equalizer", contextName: profile.name,
+                    target: .profile(profile.id), before: .globalEQ(currentHistoryState))
+            }
             runtime.continuousEditDepth += 1
             runtime.liveApplyTask?.cancel()
             return
         }
 
         runtime.continuousEditDepth = max(0, runtime.continuousEditDepth - 1)
-        guard runtime.continuousEditDepth == 0,
-              runtime.commitPendingAfterContinuousEdit else { return }
+        guard runtime.continuousEditDepth == 0 else { return }
+        state.history.endGesture(key: eqGestureKey, after: .globalEQ(currentHistoryState))
+        runtime.historyBaseline = currentHistoryState
+        guard runtime.commitPendingAfterContinuousEdit else { return }
         runtime.commitPendingAfterContinuousEdit = false
         publishCurrentEQDraft()
         scheduleDeferredGraphicEQCommit(milliseconds: 60)
@@ -81,8 +100,10 @@ extension GlobalEqualizerEditorView {
     }
 
     func scheduleDeferredGraphicEQCommit(milliseconds: Int) {
+        state.markPendingEditorApply(profile.id)
         runtime.liveApplyTask?.cancel()
 
+        let editGeneration = state.editGeneration
         let profileID = profile.id
         let parsed = ParsedEQ(preampDB: preampDB, bands: graphicBands, warnings: [])
         let limiter = limiterEnabled
@@ -93,6 +114,7 @@ extension GlobalEqualizerEditorView {
                 return
             }
             guard !Task.isCancelled,
+                  editGeneration == state.editGeneration,
                   runtime.continuousEditDepth == 0,
                   profile.id == profileID else { return }
 
@@ -100,6 +122,7 @@ extension GlobalEqualizerEditorView {
                 EqualizerAPOSerializer().serialize(parsed)
             }.value
             guard !Task.isCancelled,
+                  editGeneration == state.editGeneration,
                   runtime.continuousEditDepth == 0,
                   profile.id == profileID else { return }
 
@@ -109,16 +132,21 @@ extension GlobalEqualizerEditorView {
             updateGraphResponses()
 
             guard profileIsActive else { return }
-            let updatedProfile = profileWithCurrentEQ()
             guard !Task.isCancelled,
+                  editGeneration == state.editGeneration,
                   runtime.continuousEditDepth == 0,
                   profile.id == profileID else { return }
-            await state.apply(profile: updatedProfile)
+            do { try await state.applyHistoryProfileIfActive(profileID) }
+            catch { state.errorMessage = error.localizedDescription }
         }
     }
 
     func saveGraphicEQ() {
+        recordEQEdit()
         runtime.liveApplyTask?.cancel()
+        if let effective = try? state.applyingSessionEQDrafts(to: profile) {
+            profile.processing.setDeviceCorrection(effective.processing.deviceCorrection)
+        }
         profile.setGlobalEqualizer(preampDB: preampDB, bands: graphicBands)
         profile.processing.setLimiterEnabled(limiterEnabled)
         profile.processing.simpleTone = simpleTone
@@ -131,9 +159,16 @@ extension GlobalEqualizerEditorView {
         )
         state.clearEQDraft(for: profile.id)
         eqIsSaved = true
+        runtime.historyBaseline = currentHistoryState
         if profileIsActive {
-            let updated = (try? state.applyingSessionEQDrafts(to: profile)) ?? profile
-            Task { await state.apply(profile: updated) }
+            let generation = state.editGeneration
+            let id = profile.id
+            state.markPendingEditorApply(id)
+            Task {
+                guard generation == state.editGeneration else { return }
+                do { try await state.applyHistoryProfileIfActive(id) }
+                catch { state.errorMessage = error.localizedDescription }
+            }
         }
     }
 
@@ -154,13 +189,14 @@ extension GlobalEqualizerEditorView {
 
     func editLegacyCorrection() {
         guard let correction = profile.processing.deviceCorrection else { return }
+        runtime.historyActionName = "Load Legacy Correction into Equalizer"
         runtime.suppressChanges = true
         graphicBands = EQEditorSupport.organizedBands(correction.filters + graphicBands)
         state.markEQDraftAsReplacingDeviceCorrection(for: profile.id)
         eqIsSaved = false
         if presentation == .simpleTone { onPresentationChanged(.both) }
         runtime.suppressChanges = false
-        graphicEQChanged()
+        editorValuesChanged()
     }
 
     func importFromClipboard() {
@@ -180,6 +216,7 @@ extension GlobalEqualizerEditorView {
         let parsed = try EqualizerAPOParser().parse(text, preampPolicy: .ignore)
         state.clearTransientError()
         guard parsed.importedDirectiveCount > 0 else { return }
+        runtime.historyActionName = "Import Equalizer APO Text"
         runtime.suppressChanges = true
         let organizedBands = EQEditorSupport.organizedBands(parsed.bands)
         preampDB = preservedUserPreampDB
@@ -192,10 +229,12 @@ extension GlobalEqualizerEditorView {
         updateGraphResponses()
         eqIsSaved = false
         state.setDeviceCorrectionProvenanceDraft(nil, for: profile.id)
+        let generation = state.editGeneration
         DispatchQueue.main.async {
+            guard generation == state.editGeneration else { return }
             preampDB = preservedUserPreampDB
             runtime.suppressChanges = false
-            graphicEQChanged()
+            editorValuesChanged()
         }
     }
 
@@ -206,6 +245,7 @@ extension GlobalEqualizerEditorView {
             showBandReductionConfirmation = true
             return
         }
+        runtime.historyActionName = "Change EQ Band Count"
         graphicBands = EQEditorSupport.resizedBands(graphicBands, count: count)
     }
 
@@ -217,15 +257,16 @@ extension GlobalEqualizerEditorView {
     func applyPendingBandReduction() {
         guard let target = pendingBandCount else { return }
         pendingBandCount = nil
+        let editGeneration = state.editGeneration
         let originalBands = graphicBands
         let profileID = profile.id
         let sampleRate = profile.sampleRate
         bandReduction.run {
             EQEditorSupport.responseFittedBands(originalBands, count: target, sampleRate: Double(sampleRate))
         } completion: { result in
-            guard profile.id == profileID, profile.sampleRate == sampleRate,
+            guard editGeneration == state.editGeneration, profile.id == profileID, profile.sampleRate == sampleRate,
                   graphicBands == originalBands else { return }
-            if case .success(let fitted) = result { graphicBands = fitted }
+            if case .success(let fitted) = result { runtime.historyActionName = "Recalculate EQ Bands"; graphicBands = fitted }
         }
     }
 
@@ -267,6 +308,7 @@ extension GlobalEqualizerEditorView {
     }
 
     func loadDeviceCorrectionEQ(_ correction: DeviceCorrectionProfile) {
+        runtime.historyActionName = "Load Device Correction into Equalizer"
         if presentation == .simpleTone { onPresentationChanged(.both) }
         runtime.suppressChanges = true
         runtime.liveApplyTask?.cancel()
@@ -279,9 +321,11 @@ extension GlobalEqualizerEditorView {
         eqIsSaved = false
         showDeviceCorrectionEditor = false
         updateGraphResponses()
+        let generation = state.editGeneration
         DispatchQueue.main.async {
+            guard generation == state.editGeneration else { return }
             runtime.suppressChanges = false
-            graphicEQChanged()
+            editorValuesChanged()
         }
     }
 
@@ -333,6 +377,26 @@ extension GlobalEqualizerEditorView {
             for: profile.id,
             persisted: profile.processing.globalEqualizerProvenance
         )
+    }
+
+    var eqGestureKey: GestureKey { GestureKey(target: .profile(profile.id), control: "equalizer") }
+    var currentHistoryState: GlobalEQHistoryState {
+        GlobalEQHistoryState(preampDB: preampDB, bands: graphicBands, limiterEnabled: limiterEnabled,
+            simpleTone: simpleTone, replacesDeviceCorrection: state.eqDraftReplacesDeviceCorrection(for: profile.id),
+            deviceCorrectionProvenance: currentDeviceCorrectionProvenance,
+            deviceCorrection: state.eqDraftReplacesDeviceCorrection(for: profile.id) ? nil
+                : ((try? state.applyingSessionEQDrafts(to: profile)) ?? profile).processing.deviceCorrection)
+    }
+    func recordEQEdit() {
+        let after = currentHistoryState
+        if let before = runtime.historyBaseline {
+            let control = runtime.historyActionName == nil ? after.numericControl(changedFrom: before) : nil
+            state.history.record(actionName: runtime.historyActionName ?? "Edit Equalizer", contextName: profile.name, target: .profile(profile.id),
+                before: .globalEQ(before), after: .globalEQ(after),
+                coalescingKey: control.map { GestureKey(target: .profile(profile.id), control: $0) })
+        }
+        runtime.historyBaseline = after
+        runtime.historyActionName = nil
     }
 
     func serializeGraphicEQ() -> String {

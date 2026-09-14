@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CA3900000000000000000301 = {isa = PBXBuildFile; fileRef = CA3900000000000000000401; };
+		CA3900000000000000000300 = {isa = PBXBuildFile; fileRef = CA3900000000000000000400; };
+		CA3900000000000000000103 = {isa = PBXBuildFile; fileRef = CA3900000000000000000203; };
+		CA3900000000000000000102 = {isa = PBXBuildFile; fileRef = CA3900000000000000000202; };
+		CA3900000000000000000101 = {isa = PBXBuildFile; fileRef = CA3900000000000000000201; };
+		CA3900000000000000000100 = {isa = PBXBuildFile; fileRef = CA3900000000000000000200; };
 		CA3800000000000000000001 = {isa = PBXBuildFile; fileRef = CA3800000000000000000002; };
 		CA3800000000000000000003 = {isa = PBXBuildFile; fileRef = CA3800000000000000000004; };
 		CA3700000000000000000001 = {isa = PBXBuildFile; fileRef = CA3700000000000000000002; };
@@ -560,6 +566,13 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CA3900000000000000000401 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileRenameEditingTests.swift; sourceTree = "<group>"; };
+		341C724F30589B07009B5620 = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CamiTune.entitlements; sourceTree = SOURCE_ROOT; };
+		CA3900000000000000000400 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UndoHistoryTests.swift; sourceTree = "<group>"; };
+		CA3900000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UndoRestoration.swift; sourceTree = "<group>"; };
+		CA3900000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UndoCommandRouter.swift; sourceTree = "<group>"; };
+		CA3900000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UndoHistoryModels.swift; sourceTree = "<group>"; };
+		CA3900000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UndoCoordinator.swift; sourceTree = "<group>"; };
 		CA3800000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIBackgroundOperation.swift; sourceTree = "<group>"; };
 		CA3800000000000000000004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerAppAudioPresentation.swift; sourceTree = "<group>"; };
 		CA3700000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/MainWindowCommandCoordinator.swift"; sourceTree = SOURCE_ROOT; };
@@ -1435,7 +1448,6 @@
 			children = (
 			    D713469F5B32ED43EDD0BC4A,
 			);
-			name = Resources;
 			path = Resources;
 			sourceTree = "<group>";
 		};
@@ -1445,7 +1457,6 @@
 			    5885191FA6FB287E999E415C,
 			    B0C8D660DE732E4DD2B1CC49,
 			);
-			name = include;
 			path = include;
 			sourceTree = "<group>";
 		};
@@ -1464,7 +1475,6 @@
 			children = (
 			    400107B1A7E5407EEC59B8EF,
 			);
-			name = workflows;
 			path = workflows;
 			sourceTree = "<group>";
 		};
@@ -1473,7 +1483,6 @@
 			children = (
 			    997C1521CD6BD533AD6A7CD3,
 			);
-			name = Scripts;
 			path = Scripts;
 			sourceTree = "<group>";
 		};
@@ -1544,7 +1553,6 @@
 			    984578BB0AD4799495528409,
 			    D2783A0108B44779E0197A65,
 			);
-			name = Spatial;
 			path = Spatial;
 			sourceTree = "<group>";
 		};
@@ -1553,13 +1561,13 @@
 			children = (
 			    959598F39CB0B10275252554,
 			);
-			name = .github;
 			path = .github;
 			sourceTree = "<group>";
 		};
 		CF8D0BD4B75E8C2C174692A5 = {
 			isa = PBXGroup;
 			children = (
+			    341C724F30589B07009B5620,
 			    EBC5D752DAE6939C8C8E3B1D,
 			    12B57DB1B029F6B63B79DBFE,
 			    826F6EFC1EE9CD4FF66D94B3,
@@ -1577,6 +1585,10 @@
 			    0F6D7D15F18B55DABB360EDB,
 			    9921C9EBAADF67A16CDDC6AF,
 			    CA3800000000000000000002,
+			    CA3900000000000000000203,
+			    CA3900000000000000000202,
+			    CA3900000000000000000201,
+			    CA3900000000000000000200,
 			    CA3800000000000000000004,
 			    2B1FF247511D3BC1C71AB018,
 			    68E6D4EBFC10B7451E6F61F2,
@@ -1652,7 +1664,6 @@
 			children = (
 			    7F1508359F4FB2423B9B4CB3,
 			);
-			name = Config;
 			path = Config;
 			sourceTree = "<group>";
 		};
@@ -1677,6 +1688,8 @@
 		EEFE21A1443933CA4DE017DA = {
 			isa = PBXGroup;
 			children = (
+			    CA3900000000000000000400,
+			    CA3900000000000000000401,
 			    CA3200000000000000000301,
 			    CA3200000000000000000302,
 				38CC719DC88135DBDCEF0A80,
@@ -1854,6 +1867,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			    CA3900000000000000000300,
+			    CA3900000000000000000301,
 			    CA3200000000000000000401,
 			    CA3200000000000000000402,
 				2DBE10AACB842FA4770E398C,
@@ -1966,6 +1981,10 @@
 			    A3072837EA10693843941059,
 			    EE4A5684E848611F7843501D,
 			    CA3800000000000000000001,
+			    CA3900000000000000000103,
+			    CA3900000000000000000102,
+			    CA3900000000000000000101,
+			    CA3900000000000000000100,
 			    CA3800000000000000000003,
 			    5573C1A6D9065B3100EBE6D4,
 			    C2ACF77A1A999ACC4000D794,
@@ -2073,10 +2092,7 @@
 			    GENERATE_INFOPLIST_FILE = YES;
 			    PRODUCT_BUNDLE_IDENTIFIER = local.camilla.CamiTuneTests;
 			    PRODUCT_NAME = "$(TARGET_NAME)";
-			    SWIFT_INCLUDE_PATHS = (
-			        "$(inherited)",
-			        "$(SRCROOT)/Sources/SystemAudioBridgeC/include",
-			    );
+			    SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Sources/SystemAudioBridgeC/include";
 			    HEADER_SEARCH_PATHS = (
 			        "$(inherited)",
 			        "$(SRCROOT)/Sources/SystemAudioBridgeC/include",
@@ -2106,6 +2122,7 @@
 		3412FDD5ECECD61BD8B5B2BB = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+			    CODE_SIGN_ENTITLEMENTS = CamiTune.entitlements;
 			    ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 			    CODE_SIGN_IDENTITY = -;
 			    CODE_SIGN_STYLE = Manual;
@@ -2122,10 +2139,7 @@
 			    MARKETING_VERSION = 0.3.0;
 			    PRODUCT_BUNDLE_IDENTIFIER = local.camilla.app;
 			    PRODUCT_NAME = "$(TARGET_NAME)";
-			    SWIFT_INCLUDE_PATHS = (
-			        "$(inherited)",
-			        "$(SRCROOT)/Sources/SystemAudioBridgeC/include",
-			    );
+			    SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Sources/SystemAudioBridgeC/include";
 			    HEADER_SEARCH_PATHS = (
 			        "$(inherited)",
 			        "$(SRCROOT)/Sources/SystemAudioBridgeC/include",
@@ -2137,6 +2151,7 @@
 		AC90D544CD03C7C42D6B6F5F = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+			    CODE_SIGN_ENTITLEMENTS = CamiTune.entitlements;
 			    ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 			    CODE_SIGN_IDENTITY = -;
 			    CODE_SIGN_STYLE = Manual;
@@ -2153,10 +2168,7 @@
 			    MARKETING_VERSION = 0.3.0;
 			    PRODUCT_BUNDLE_IDENTIFIER = local.camilla.app;
 			    PRODUCT_NAME = "$(TARGET_NAME)";
-			    SWIFT_INCLUDE_PATHS = (
-			        "$(inherited)",
-			        "$(SRCROOT)/Sources/SystemAudioBridgeC/include",
-			    );
+			    SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Sources/SystemAudioBridgeC/include";
 			    HEADER_SEARCH_PATHS = (
 			        "$(inherited)",
 			        "$(SRCROOT)/Sources/SystemAudioBridgeC/include",
@@ -2241,10 +2253,7 @@
 			    GENERATE_INFOPLIST_FILE = YES;
 			    PRODUCT_BUNDLE_IDENTIFIER = local.camilla.CamiTuneTests;
 			    PRODUCT_NAME = "$(TARGET_NAME)";
-			    SWIFT_INCLUDE_PATHS = (
-			        "$(inherited)",
-			        "$(SRCROOT)/Sources/SystemAudioBridgeC/include",
-			    );
+			    SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Sources/SystemAudioBridgeC/include";
 			    HEADER_SEARCH_PATHS = (
 			        "$(inherited)",
 			        "$(SRCROOT)/Sources/SystemAudioBridgeC/include",

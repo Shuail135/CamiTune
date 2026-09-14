@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 
 @MainActor
 struct GlobalEqualizerEditorView: View {
-    let state: AppState
+    @ObservedObject var state: AppState
     @Binding var profile: DeviceProfile
     let graphModel: ProfileEditorGraphModel
     var presentation: EqualizerPresentation = .both
@@ -143,18 +143,24 @@ struct GlobalEqualizerEditorView: View {
             }
             .padding(6)
         }
+        .onChange(of: state.historyReplayRevision) { _ in loadGraphicEQ() }
         .onAppear { loadGraphicEQIfNeeded() }
-        .onDisappear { bandReduction.cancel() }
+        .onDisappear {
+            bandReduction.cancel()
+            if runtime.continuousEditDepth > 0 {
+                runtime.continuousEditDepth = 1
+                continuousEditingChanged(false)
+            }
+        }
         .onChange(of: needsResponseGraph) { _ in updateGraphResponses() }
         .onChange(of: presentation) { _ in updateGraphResponses() }
         .onChange(of: profile.id) { _ in
-            runtime.loadedProfileID = nil
             loadGraphicEQIfNeeded()
         }
-        .onChange(of: preampDB) { _ in graphicEQChanged() }
-        .onChange(of: limiterEnabled) { _ in graphicEQChanged() }
-        .onChange(of: graphicBands) { _ in graphicEQChanged() }
-        .onChange(of: simpleTone) { _ in graphicEQChanged() }
+        .onChange(of: preampDB) { _ in editorValuesChanged() }
+        .onChange(of: limiterEnabled) { _ in editorValuesChanged() }
+        .onChange(of: graphicBands) { _ in editorValuesChanged() }
+        .onChange(of: simpleTone) { _ in editorValuesChanged() }
         .onChange(of: profile.sampleRate) { _ in bandReduction.cancel(); updateGraphResponses() }
         .onChange(of: profile.processing) { _ in updateAutomaticSystemHeadroom() }
         .onReceive(state.equalizerReplacementChanges.filter { $0 == profile.id }) { _ in
