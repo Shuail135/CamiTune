@@ -7,6 +7,28 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CA4300000000000000000111 = {isa = PBXBuildFile; fileRef = CA4300000000000000000211; };
+		CA4300000000000000000110 = {isa = PBXBuildFile; fileRef = CA4300000000000000000210; };
+		CA4300000000000000000109 = {isa = PBXBuildFile; fileRef = CA4300000000000000000209; };
+		CA4300000000000000000108 = {isa = PBXBuildFile; fileRef = CA4300000000000000000208; };
+		CA4300000000000000000107 = {isa = PBXBuildFile; fileRef = CA4300000000000000000207; };
+		CA4300000000000000000106 = {isa = PBXBuildFile; fileRef = CA4300000000000000000206; };
+		CA4300000000000000000105 = {isa = PBXBuildFile; fileRef = CA4300000000000000000205; };
+		CA4300000000000000000104 = {isa = PBXBuildFile; fileRef = CA4300000000000000000204; };
+		CA4300000000000000000103 = {isa = PBXBuildFile; fileRef = CA4300000000000000000203; };
+		CA4300000000000000000102 = {isa = PBXBuildFile; fileRef = CA4300000000000000000202; };
+		CA4300000000000000000101 = {isa = PBXBuildFile; fileRef = CA4300000000000000000201; };
+		CA4200000000000000000101 = {isa = PBXBuildFile; fileRef = CA4200000000000000000201; };
+		CA4200000000000000000102 = {isa = PBXBuildFile; fileRef = CA4200000000000000000202; };
+		CA4100000000000000000101 = {isa = PBXBuildFile; fileRef = CA4100000000000000000201; };
+		CA4100000000000000000102 = {isa = PBXBuildFile; fileRef = CA4100000000000000000202; };
+		CA4100000000000000000103 = {isa = PBXBuildFile; fileRef = CA4100000000000000000203; };
+		CA4100000000000000000104 = {isa = PBXBuildFile; fileRef = CA4100000000000000000204; };
+		CA4000000000000000000101 = {isa = PBXBuildFile; fileRef = CA4000000000000000000201; };
+		CA4000000000000000000102 = {isa = PBXBuildFile; fileRef = CA4000000000000000000202; };
+		CA4000000000000000000103 = {isa = PBXBuildFile; fileRef = CA4000000000000000000203; };
+		CA4000000000000000000104 = {isa = PBXBuildFile; fileRef = CA4000000000000000000204; };
+		CA4000000000000000000105 = {isa = PBXBuildFile; fileRef = CA4000000000000000000205; };
 		CA3900000000000000000301 = {isa = PBXBuildFile; fileRef = CA3900000000000000000401; };
 		CA3900000000000000000300 = {isa = PBXBuildFile; fileRef = CA3900000000000000000400; };
 		CA3900000000000000000103 = {isa = PBXBuildFile; fileRef = CA3900000000000000000203; };
@@ -566,6 +588,28 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CA4300000000000000000211 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/SpeakerVerificationView.swift"; sourceTree = SOURCE_ROOT; };
+		CA4300000000000000000210 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/SpeakerVerification.swift"; sourceTree = SOURCE_ROOT; };
+		CA4300000000000000000209 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/SpeakerAuditionProtection.swift"; sourceTree = SOURCE_ROOT; };
+		CA4300000000000000000208 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/MultichannelProcessingView.swift"; sourceTree = SOURCE_ROOT; };
+		CA4300000000000000000207 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/MultichannelGraphCompiler.swift"; sourceTree = SOURCE_ROOT; };
+		CA4300000000000000000206 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/MultichannelProcessingSettings.swift"; sourceTree = SOURCE_ROOT; };
+		CA4300000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/MultichannelMeterLayout.swift"; sourceTree = SOURCE_ROOT; };
+		CA4300000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/GroupProcessing.swift"; sourceTree = SOURCE_ROOT; };
+		CA4300000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/ActiveAudioRoute.swift"; sourceTree = SOURCE_ROOT; };
+		CA4300000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/ProfileEndpointPublication.swift"; sourceTree = SOURCE_ROOT; };
+		CA4300000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/ProcessingGraphValidation.swift"; sourceTree = SOURCE_ROOT; };
+		CA4200000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/HardwareOutputConfiguration.swift"; sourceTree = SOURCE_ROOT; };
+		CA4200000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/InterfaceTopologyMigration.swift"; sourceTree = SOURCE_ROOT; };
+		CA4100000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/Speaker/SpeakerGroup.swift"; sourceTree = SOURCE_ROOT; };
+		CA4100000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/Speaker/SpeakerLayoutTemplate.swift"; sourceTree = SOURCE_ROOT; };
+		CA4100000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/UI/SpeakerSetupControls.swift"; sourceTree = SOURCE_ROOT; };
+		CA4100000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/UI/SpeakerSetupPreview.swift"; sourceTree = SOURCE_ROOT; };
+		CA4000000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioFormatDescriptor.swift; sourceTree = "<group>"; };
+		CA4000000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioBus.swift; sourceTree = "<group>"; };
+		CA4000000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HardwareTopologyFingerprint.swift; sourceTree = "<group>"; };
+		CA4000000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioHardwareTopologyProvider.swift; sourceTree = "<group>"; };
+		CA4000000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRuntimePlan.swift; sourceTree = "<group>"; };
 		CA3900000000000000000401 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileRenameEditingTests.swift; sourceTree = "<group>"; };
 		341C724F30589B07009B5620 = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CamiTune.entitlements; sourceTree = SOURCE_ROOT; };
 		CA3900000000000000000400 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UndoHistoryTests.swift; sourceTree = "<group>"; };
@@ -1567,6 +1611,28 @@
 		CF8D0BD4B75E8C2C174692A5 = {
 			isa = PBXGroup;
 			children = (
+				CA4300000000000000000204,
+				CA4300000000000000000205,
+				CA4300000000000000000211,
+				CA4300000000000000000210,
+				CA4300000000000000000209,
+				CA4300000000000000000208,
+				CA4300000000000000000207,
+				CA4300000000000000000206,
+				CA4300000000000000000203,
+				CA4300000000000000000202,
+				CA4300000000000000000201,
+				CA4200000000000000000201,
+				CA4200000000000000000202,
+				CA4100000000000000000201,
+				CA4100000000000000000202,
+				CA4100000000000000000203,
+				CA4100000000000000000204,
+				CA4000000000000000000201,
+				CA4000000000000000000202,
+				CA4000000000000000000203,
+				CA4000000000000000000204,
+				CA4000000000000000000205,
 			    341C724F30589B07009B5620,
 			    EBC5D752DAE6939C8C8E3B1D,
 			    12B57DB1B029F6B63B79DBFE,
@@ -1908,6 +1974,28 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CA4300000000000000000104,
+				CA4300000000000000000105,
+				CA4300000000000000000111,
+				CA4300000000000000000110,
+				CA4300000000000000000109,
+				CA4300000000000000000108,
+				CA4300000000000000000107,
+				CA4300000000000000000106,
+				CA4300000000000000000103,
+				CA4300000000000000000102,
+				CA4300000000000000000101,
+				CA4200000000000000000101,
+				CA4200000000000000000102,
+				CA4100000000000000000101,
+				CA4100000000000000000102,
+				CA4100000000000000000103,
+				CA4100000000000000000104,
+				CA4000000000000000000101,
+				CA4000000000000000000102,
+				CA4000000000000000000103,
+				CA4000000000000000000104,
+				CA4000000000000000000105,
 				CA3600000000000000000105,
 				CA3600000000000000000104,
 				CA3700000000000000000001,
@@ -2309,6 +2397,7 @@
 			    SDKROOT = macosx;
 			    SWIFT_VERSION = 5.0;
 			    DEBUG_INFORMATION_FORMAT = dwarf;
+			    SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
 			    ENABLE_TESTABILITY = YES;
 			    GCC_OPTIMIZATION_LEVEL = 0;
 			    ONLY_ACTIVE_ARCH = YES;

@@ -46,6 +46,13 @@ typedef struct SABRDriverClient {
     char bundleID[SABR_TRANSPORT_BUNDLE_ID_CAPACITY];
 } SABRDriverClient;
 
+// HAL registers idle observers on every published device. Keep those control-
+// thread registrations outside the bounded shared/real-time audio roster.
+typedef struct SABRRegisteredClient {
+    SABRDriverClient identity;
+    struct SABRRegisteredClient* next;
+} SABRRegisteredClient;
+static SABRRegisteredClient* gRegisteredClients = NULL;
 static SABRDriverClient gClients[SABR_TRANSPORT_CLIENT_CAPACITY];
 
 /*
@@ -626,74 +633,97 @@ void sabr_driver_transport_disconnect(void) {
     pthread_mutex_unlock(&gSessionMutex);
 }
 
-void sabr_driver_transport_add_client(
-    AudioObjectID deviceObjectID,
-    uint32_t clientID,
-    int32_t processID,
-    CFStringRef bundleID
+OSStatus sabr_driver_transport_add_client(
+    AudioObjectID deviceObjectID, uint32_t clientID, int32_t processID, CFStringRef bundleID
 ) {
     pthread_mutex_lock(&gClientMutex);
-    uint32_t slot = SABR_TRANSPORT_CLIENT_CAPACITY;
-    uint32_t emptySlot = SABR_TRANSPORT_CLIENT_CAPACITY;
-    for (uint32_t index = 0; index < SABR_TRANSPORT_CLIENT_CAPACITY; ++index) {
-        if (gClients[index].occupied &&
-            gClients[index].deviceObjectID == deviceObjectID &&
-            gClients[index].clientID == clientID) {
-            slot = index;
-            break;
-        }
-        if (!gClients[index].occupied) {
-            if (emptySlot == SABR_TRANSPORT_CLIENT_CAPACITY) { emptySlot = index; }
-            continue;
-        }
+    SABRRegisteredClient* registration = gRegisteredClients;
+    while (registration && (registration->identity.deviceObjectID != deviceObjectID ||
+                            registration->identity.clientID != clientID)) { registration = registration->next; }
+    if (!registration) {
+        registration = calloc(1, sizeof(*registration));
+        if (!registration) { pthread_mutex_unlock(&gClientMutex); return kAudioHardwareUnspecifiedError; }
+        registration->next = gRegisteredClients; gRegisteredClients = registration;
     }
-    if (slot == SABR_TRANSPORT_CLIENT_CAPACITY) {
-        slot = emptySlot;
+    SABRDriverClient* identity = &registration->identity;
+    identity->occupied = true;
+    identity->clientID = clientID; identity->processID = processID; identity->deviceObjectID = deviceObjectID;
+    memset(identity->bundleID, 0, sizeof(identity->bundleID));
+    identity->identityFlags = SABR_CLIENT_IDENTITY_FLAG_BUNDLE_ID_UNAVAILABLE;
+    if (bundleID && CFStringGetCString(bundleID, identity->bundleID, sizeof(identity->bundleID), kCFStringEncodingUTF8)) {
+        identity->identityFlags = 0;
     }
-    if (slot < SABR_TRANSPORT_CLIENT_CAPACITY) {
-        SABRDriverClient* client = &gClients[slot];
-        const Boolean existing = client->occupied &&
-            client->deviceObjectID == deviceObjectID &&
-            client->clientID == clientID;
-        if (!existing) { memset(client, 0, sizeof(*client)); }
-        client->occupied = true;
-        client->active = true;
-        client->useCount = 1;
-        client->clientID = clientID;
-        client->processID = processID;
-        client->deviceObjectID = deviceObjectID;
-        client->generation = ++gClientGeneration;
-        memset(client->bundleID, 0, sizeof(client->bundleID));
-        client->identityFlags = SABR_CLIENT_IDENTITY_FLAG_BUNDLE_ID_UNAVAILABLE;
-        if (bundleID != NULL) {
-            const Boolean converted = CFStringGetCString(
-                bundleID,
-                client->bundleID,
-                sizeof(client->bundleID),
-                kCFStringEncodingUTF8
-            );
-            if (converted) {
-                client->identityFlags = 0;
-            } else {
-                client->bundleID[0] = '\0';
-            }
+    for (uint32_t i = 0; i < SABR_TRANSPORT_CLIENT_CAPACITY; ++i) {
+        if (gClients[i].occupied && gClients[i].deviceObjectID == deviceObjectID && gClients[i].clientID == clientID) {
+            const uint32_t uses = gClients[i].useCount;
+            gClients[i] = *identity; gClients[i].active = true; gClients[i].useCount = uses;
+            gClients[i].generation = ++gClientGeneration;
+            sabr_publish_realtime_client_locked(i);
         }
-    } else {
-        /* The bounded shared registry never sacrifices an active identity. */
-        gClientRegistryOverflowCount += 1;
-    }
-    if (slot < SABR_TRANSPORT_CLIENT_CAPACITY) {
-        sabr_publish_realtime_client_locked(slot);
     }
     pthread_mutex_unlock(&gClientMutex);
-
     SABRDriverMappedTransport* transport = sabr_acquire_transport();
-    sabr_publish_clients(transport);
-    sabr_release_transport_access();
+    sabr_publish_clients(transport); sabr_release_transport_access();
+    return noErr;
+}
+
+OSStatus sabr_driver_transport_start_client(AudioObjectID deviceObjectID, uint32_t clientID) {
+    OSStatus status = noErr;
+    pthread_mutex_lock(&gClientMutex);
+    SABRRegisteredClient* registration = gRegisteredClients;
+    while (registration && (registration->identity.deviceObjectID != deviceObjectID ||
+                            registration->identity.clientID != clientID)) { registration = registration->next; }
+    uint32_t slot = SABR_TRANSPORT_CLIENT_CAPACITY, empty = SABR_TRANSPORT_CLIENT_CAPACITY;
+    for (uint32_t i = 0; i < SABR_TRANSPORT_CLIENT_CAPACITY; ++i) {
+        if (gClients[i].occupied && gClients[i].deviceObjectID == deviceObjectID && gClients[i].clientID == clientID) { slot = i; break; }
+        if (!gClients[i].occupied && empty == SABR_TRANSPORT_CLIENT_CAPACITY) { empty = i; }
+    }
+    if (!registration) { status = kAudioHardwareIllegalOperationError; }
+    else if (slot < SABR_TRANSPORT_CLIENT_CAPACITY) {
+        if (gClients[slot].useCount == UINT32_MAX) { ++gClientUseCountSaturationCount; status = kAudioHardwareIllegalOperationError; }
+        else { ++gClients[slot].useCount; }
+    } else if (empty < SABR_TRANSPORT_CLIENT_CAPACITY) {
+        slot = empty; gClients[slot] = registration->identity;
+        gClients[slot].active = true; gClients[slot].useCount = 1;
+        gClients[slot].generation = ++gClientGeneration;
+        sabr_publish_realtime_client_locked(slot);
+    } else {
+        ++gClientRegistryOverflowCount;
+        // Refuse IO before it starts rather than delivering unattributed PID-0 audio.
+        status = kAudioHardwareIllegalOperationError;
+    }
+    pthread_mutex_unlock(&gClientMutex);
+    SABRDriverMappedTransport* transport = sabr_acquire_transport();
+    sabr_publish_clients(transport); sabr_release_transport_access();
+    return status;
+}
+
+void sabr_driver_transport_stop_client(AudioObjectID deviceObjectID, uint32_t clientID) {
+    pthread_mutex_lock(&gClientMutex);
+    for (uint32_t i = 0; i < SABR_TRANSPORT_CLIENT_CAPACITY; ++i) {
+        if (!gClients[i].occupied || gClients[i].deviceObjectID != deviceObjectID || gClients[i].clientID != clientID) { continue; }
+        if (gClients[i].useCount > 1) { --gClients[i].useCount; }
+        else {
+            memset(&gClients[i], 0, sizeof(gClients[i])); ++gClientGeneration;
+            sabr_publish_realtime_client_locked(i);
+        }
+        break;
+    }
+    pthread_mutex_unlock(&gClientMutex);
+    SABRDriverMappedTransport* transport = sabr_acquire_transport();
+    sabr_publish_clients(transport); sabr_release_transport_access();
 }
 
 void sabr_driver_transport_remove_client(AudioObjectID deviceObjectID, uint32_t clientID) {
     pthread_mutex_lock(&gClientMutex);
+    SABRRegisteredClient** link = &gRegisteredClients;
+    while (*link) {
+        SABRRegisteredClient* item = *link;
+        if (item->identity.deviceObjectID == deviceObjectID && item->identity.clientID == clientID) {
+            *link = item->next; free(item); break;
+        }
+        link = &item->next;
+    }
     for (uint32_t index = 0; index < SABR_TRANSPORT_CLIENT_CAPACITY; ++index) {
         if (!gClients[index].occupied ||
             gClients[index].deviceObjectID != deviceObjectID ||
@@ -704,6 +734,29 @@ void sabr_driver_transport_remove_client(AudioObjectID deviceObjectID, uint32_t 
         memset(&gClients[index], 0, sizeof(gClients[index]));
         sabr_publish_realtime_client_locked(index);
         break;
+    }
+    pthread_mutex_unlock(&gClientMutex);
+
+    SABRDriverMappedTransport* transport = sabr_acquire_transport();
+    sabr_publish_clients(transport);
+    sabr_release_transport_access();
+}
+
+void sabr_driver_transport_remove_device_clients(AudioObjectID deviceObjectID) {
+    pthread_mutex_lock(&gClientMutex);
+    SABRRegisteredClient** link = &gRegisteredClients;
+    while (*link) {
+        SABRRegisteredClient* item = *link;
+        if (item->identity.deviceObjectID == deviceObjectID) { *link = item->next; free(item); }
+        else { link = &item->next; }
+    }
+    for (uint32_t index = 0; index < SABR_TRANSPORT_CLIENT_CAPACITY; ++index) {
+        if (!gClients[index].occupied || gClients[index].deviceObjectID != deviceObjectID) {
+            continue;
+        }
+        gClientGeneration += 1;
+        memset(&gClients[index], 0, sizeof(gClients[index]));
+        sabr_publish_realtime_client_locked(index);
     }
     pthread_mutex_unlock(&gClientMutex);
 

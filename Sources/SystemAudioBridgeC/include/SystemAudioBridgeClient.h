@@ -71,6 +71,12 @@ OSStatus sabr_client_set_profile_devices(
     CFArrayRef profiles
 );
 
+/* Version 1 requires complete format dictionaries. Older drivers are rejected
+ * before publication rather than silently advertising their compiled width. */
+uint32_t sabr_client_profile_format_version(AudioObjectID deviceObjectID);
+CFArrayRef sabr_client_copy_profile_devices(AudioObjectID deviceObjectID) CF_RETURNS_RETAINED;
+OSStatus sabr_client_set_profile_devices_with_formats(AudioObjectID deviceObjectID, CFArrayRef profiles);
+
 OSStatus sabr_client_transport_disconnect(
     SABRClientTransportRef transport,
     AudioObjectID deviceObjectID

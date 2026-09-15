@@ -59,16 +59,45 @@ enum SpeakerLayoutGeometry {
             .topFrontLeft, .topFrontRight, .topRearLeft, .topRearRight,
             .topMiddleLeft, .topMiddleRight, .frontLeftCenter, .frontRightCenter,
             .wideLeft, .wideRight, .topCenter]
-        let known = Set(topology.endpoints.map(\.role).filter { $0 != .unknown })
-        var available = typical.filter { !known.contains($0) }
+        let enabled = topology.endpoints.filter { $0.connectionState != .disabledByUser }
+        let known = Set(enabled.map(\.role).filter { $0 != .unknown })
+        let defaults = SpeakerLayoutTemplate.defaultRoles(count: enabled.count, known: known) ?? typical
+        var available = defaults.filter { !known.contains($0) }
         // Four/five-channel rooms normally use surrounds rather than a subwoofer.
-        if topology.endpoints.count == 1 { available = [.center] }
-        if topology.endpoints.count == 4 { available.removeAll { $0 == .center || $0 == .lowFrequencyEffects } }
-        if topology.endpoints.count == 5 { available.removeAll { $0 == .lowFrequencyEffects } }
+        if enabled.count == 1 { available = [.center] }
+        if enabled.count == 4 { available.removeAll { $0 == .center || $0 == .lowFrequencyEffects } }
+        if enabled.count == 5 { available.removeAll { $0 == .lowFrequencyEffects } }
         return topology.endpoints.map { endpoint in
-            endpoint.role == .unknown && endpoint.connectionState != .confirmedByUser
+            endpoint.role == .unknown && endpoint.connectionState != .confirmedByUser && endpoint.connectionState != .disabledByUser
                 ? (available.isEmpty ? .unknown : available.removeFirst()) : endpoint.role
         }
+    }
+
+    static func defaultRole(for endpoint: SpeakerEndpoint, in topology: SpeakerTopology) -> ChannelRole {
+        guard let index = topology.endpoints.firstIndex(where: { $0.id == endpoint.id }) else { return endpoint.role }
+        return layoutRoles(topology)[index]
+    }
+
+    /// Accept the displayed defaults when saving setup. An explicit Custom choice
+    /// is already confirmed and stays Custom; hardware metadata stays untouched.
+    static func acceptingDefaultRoles(_ topology: SpeakerTopology) -> SpeakerTopology {
+        var result = topology
+        let estimatedSetup = result.layoutTemplateID == nil ? SpeakerLayoutTemplate.selected(in: topology) : nil
+        if result.layoutTemplateID == nil { result.layoutTemplateID = estimatedSetup?.id }
+        let roles = layoutRoles(topology)
+        for index in result.endpoints.indices where result.endpoints[index].connectionState != .disabledByUser {
+            if result.endpoints[index].role == .unknown && roles[index] != .unknown {
+                result.endpoints[index].role = roles[index]
+                result.endpoints[index].roleOrigin = .user
+                result.endpoints[index].layer = roles[index].speakerLayer
+                if estimatedSetup != nil && roles[index] == .lowFrequencyEffects {
+                    result.endpoints[index].function = .subwoofer
+                }
+            }
+            result.endpoints[index].connectionState = .confirmedByUser
+        }
+        result.refreshStandardGroups()
+        return result
     }
 
     /// A compact, draggable starting layout. Roles and hardware metadata stay intact.
@@ -77,6 +106,13 @@ enum SpeakerLayoutGeometry {
         let roles = layoutRoles(topology)
         var occurrences: [ChannelRole: Int] = [:]
         for index in result.endpoints.indices {
+            if topology.layoutTemplateID == nil,
+               result.endpoints[index].role == .unknown,
+               result.endpoints[index].connectionState != .confirmedByUser,
+               result.endpoints[index].connectionState != .disabledByUser,
+               roles[index] == .lowFrequencyEffects {
+                result.endpoints[index].function = .subwoofer
+            }
             if let prior = previous?.endpoints.first(where: { $0.id == result.endpoints[index].id }), prior.position != nil {
                 result.endpoints[index].position = prior.position
                 result.endpoints[index].positionSource = prior.positionSource
@@ -112,12 +148,12 @@ enum SpeakerLayoutGeometry {
         case .rightSurround: (x, y, z) = (0.80, -0.15, 0)
         case .leftRearSurround: (x, y, z) = (-0.55, -0.65, 0)
         case .rightRearSurround: (x, y, z) = (0.55, -0.65, 0)
-        case .topFrontLeft: (x, y, z) = (-0.28, 0.30, 0.6)
-        case .topFrontRight: (x, y, z) = (0.28, 0.30, 0.6)
+        case .topFrontLeft: (x, y, z) = (-0.28, 0.25, 0.6)
+        case .topFrontRight: (x, y, z) = (0.28, 0.25, 0.6)
         case .topMiddleLeft: (x, y, z) = (-0.45, -0.10, 0.6)
         case .topMiddleRight: (x, y, z) = (0.45, -0.10, 0.6)
-        case .topRearLeft: (x, y, z) = (-0.28, -0.40, 0.6)
-        case .topRearRight: (x, y, z) = (0.28, -0.40, 0.6)
+        case .topRearLeft: (x, y, z) = (-0.25, -0.32, 0.6)
+        case .topRearRight: (x, y, z) = (0.25, -0.32, 0.6)
         case .frontLeftCenter: (x, y, z) = (-0.22, 0.65, 0)
         case .frontRightCenter: (x, y, z) = (0.22, 0.65, 0)
         case .wideLeft: (x, y, z) = (-0.78, 0.20, 0)
@@ -126,6 +162,11 @@ enum SpeakerLayoutGeometry {
         case .unknown: (x, y, z) = (0, 0, 0)
         }
         return SpatialVector3(x: x, y: y, z: z)
+    }
+
+    static func suggestedPosition(for role: ChannelRole) -> SpatialPosition {
+        let point = defaultPoint(for: role)
+        return position(x: point.x, y: point.y, height: point.z)
     }
 
     static func relativeTopology(_ topology: SpeakerTopology, seat: SpatialSeatingCalibration?) -> SpeakerTopology {
@@ -141,8 +182,15 @@ enum SpeakerLayoutGeometry {
 
     static func setRole(_ role: ChannelRole?, for id: PhysicalOutputID, in topology: inout SpeakerTopology) {
         guard let index = topology.endpoints.firstIndex(where: { $0.id == id }) else { return }
+        // Freeze the other displayed defaults before consuming/removing a role.
+        // Editing one output must not shift every still-unconfirmed estimate.
+        let connections = topology.endpoints.map(\.connectionState)
+        topology = acceptingDefaultRoles(topology)
+        for index in topology.endpoints.indices { topology.endpoints[index].connectionState = connections[index] }
         let previousRole = topology.endpoints[index].role
         setRole(role, on: &topology.endpoints[index])
+        topology.layoutTemplateID = .custom
+        topology.refreshStandardGroups()
         guard let role else { return }
         let peers = topology.endpoints.filter { $0.id != id }
         let names = Set(peers.map(\.displayName))
@@ -161,8 +209,8 @@ enum SpeakerLayoutGeometry {
     static func setRole(_ role: ChannelRole?, on endpoint: inout SpeakerEndpoint) {
         guard let role else { endpoint.connectionState = .disabledByUser; return }
         endpoint.role = role
+        endpoint.roleOrigin = .user
         endpoint.layer = role.speakerLayer
-        endpoint.isSubwooferLike = role == .lowFrequencyEffects
         endpoint.connectionState = .confirmedByUser
     }
 }

@@ -9,7 +9,24 @@ private var isCamiTuneTestHost: Bool {
         || NSClassFromString("XCTestCase") != nil
 }
 
+private var isSpeakerSetupPreview: Bool {
+#if DEBUG
+    ProcessInfo.processInfo.arguments.contains("--speaker-setup-preview")
+#else
+    false
+#endif
+}
+
 @main
+enum CamiTuneLauncher {
+    static func main() {
+#if DEBUG
+        if isSpeakerSetupPreview { SpeakerSetupPreviewApp.main(); return }
+#endif
+        CamiTuneMain.main()
+    }
+}
+
 struct CamiTuneMain: App {
     @NSApplicationDelegateAdaptor(CamiTuneAppDelegate.self) private var appDelegate
     @StateObject private var state: AppState
@@ -139,7 +156,7 @@ final class CamiTunePresentationCoordinator {
     static let shared = CamiTunePresentationCoordinator()
 
     let state: AppState = {
-        guard isCamiTuneTestHost else { return AppState() }
+        guard isCamiTuneTestHost || isSpeakerSetupPreview else { return AppState() }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CamiTuneTestHost-\(UUID())")
         let profiles = ProfileStore(storageURL: directory.appendingPathComponent("profiles.json"),
             userDefaults: UserDefaults(suiteName: "CamiTuneTestHost-\(UUID())")!)

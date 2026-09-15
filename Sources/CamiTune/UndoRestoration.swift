@@ -77,6 +77,9 @@ extension AppState: HistoryRestoring {
 
     private func currentHistoryState(matching snapshot: HistoryState, target: HistoryTarget) throws -> HistoryState {
         switch (snapshot, target) {
+        case (.multichannel, .profile(let id)):
+            let profile = try historyProfile(id)
+            return .multichannel(.init(settings: profile.multichannel, topology: profile.speakerTopology))
         case (.globalEQ, .profile(let id)): return .globalEQ(try globalEQHistoryState(for: historyProfile(id)))
         case (.channel, .profileChannel(let id, let channel)):
             let profile = try applyingSessionEQDrafts(to: historyProfile(id))
@@ -86,6 +89,11 @@ extension AppState: HistoryRestoring {
         case (.crossfeed, .profile(let id)):
             let stage = try historyProfile(id).processing.crossfeed
             return .crossfeed(CrossfeedHistoryState(processor: stage?.processor ?? .standard, isEnabled: stage?.isEnabled ?? false))
+        case (.channel, .profileGroup(let id, let group)):
+            let profile = try applyingSessionEQDrafts(to: historyProfile(id))
+            let value = try profile.resolvedProcessing().settings(forGroup: group) ?? .identity
+            return .channel(PerChannelEditorSnapshot(gainDB: value.gainDB, delayMilliseconds: value.delayMilliseconds,
+                limiterEnabled: value.limiterEnabled, bands: value.bands, simpleTone: value.simpleTone))
         case (.convolution, .profile(let id)):
             let stage = try historyProfile(id).processing.convolution
             return .convolution(ConvolutionHistoryState(processor: stage?.processor, isEnabled: stage?.isEnabled ?? false))
@@ -124,6 +132,9 @@ extension AppState: HistoryRestoring {
     private func restoreHistoryValue(_ snapshot: HistoryState, target: HistoryTarget) async throws {
         var applyID: UUID?
         switch (snapshot, target) {
+        case let (.multichannel(value), .profile(id)):
+            try await saveMultichannelSettings(value.settings, profileID: id, topology: value.topology,
+                previewOnly: ProcessInfo.processInfo.arguments.contains("--speaker-setup-preview"), recordHistory: false)
         case let (.globalEQ(value), .profile(id)):
             _ = try historyProfile(id)
             setGlobalEQHistoryDraft(value, for: id)
@@ -137,6 +148,13 @@ extension AppState: HistoryRestoring {
             applyID = id
         case let (.crossfeed(value), .profile(id)):
             try mutateSavedProcessing(profileID: id) { $0.setCrossfeed(value.processor, enabled: value.isEnabled) }
+            applyID = id
+        case let (.channel(value), .profileGroup(id, group)):
+            let profile = try historyProfile(id)
+            guard profile.configuredSpeakerGroups.contains(where: { $0.id == group }) else {
+                throw HistoryRestoreError.invalidStateForTarget
+            }
+            setGroupProcessingDraft(value, for: id, groupID: group)
             applyID = id
         case let (.convolution(value), .profile(id)):
             try mutateSavedProcessing(profileID: id) { $0.setConvolution(value.processor, enabled: value.isEnabled) }

@@ -8,6 +8,7 @@ struct PreampGainControl: View {
     let profileID: UUID
     var title = "User preamp"
     var channelIndex: Int?
+    var channelIndices: [Int]?
     var visualEffectsEnabled = true
     var onEditingChanged: @MainActor (Bool) -> Void = { _ in }
 
@@ -63,6 +64,9 @@ struct PreampGainControl: View {
 
     private var totalPeakDB: Double {
         guard visualEffectsEnabled, profileIsActive else { return -150 }
+        if let channelIndices {
+            return channelIndices.compactMap { meters.playbackPeak.indices.contains($0) ? meters.playbackPeak[$0] : nil }.max() ?? -150
+        }
         if let channelIndex {
             return meters.playbackPeak.indices.contains(channelIndex)
                 ? meters.playbackPeak[channelIndex]
@@ -73,6 +77,7 @@ struct PreampGainControl: View {
 
     private var isClipping: Bool {
         guard limiterEnabled, visualEffectsEnabled, profileIsActive else { return false }
+        if let channelIndices { return channelIndices.contains { meters.channelClippingIsRecent($0) } }
         if let channelIndex {
             return meters.channelClippingIsRecent(channelIndex)
         }

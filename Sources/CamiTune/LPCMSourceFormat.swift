@@ -16,6 +16,9 @@ struct LPCMChannelLayout: Hashable, Sendable {
         roles: [.left, .right]
     )
 
+    static let quad = LPCMChannelLayout(coreAudioTag: UInt32(kAudioChannelLayoutTag_Quadraphonic),
+        roles: [.left, .right, .leftSurround, .rightSurround])
+
     /// ITU/MPEG order: L, R, C, LFE, Ls, Rs.
     static let fivePointOne = LPCMChannelLayout(
         coreAudioTag: UInt32(kAudioChannelLayoutTag_MPEG_5_1_A),
@@ -62,6 +65,7 @@ struct LPCMChannelLayout: Hashable, Sendable {
         guard (1...32).contains(channelCount) else { return nil }
         let roles: [ChannelRole]?
         switch coreAudioTag {
+        case UInt32(kAudioChannelLayoutTag_Quadraphonic): roles = Self.quad.roles
         case UInt32(kAudioChannelLayoutTag_Atmos_9_1_6): roles = Self.ninePointOnePointSix.roles
         case UInt32(kAudioChannelLayoutTag_Atmos_5_1_2): roles = Self.fivePointOnePointTwo.roles
         case UInt32(kAudioChannelLayoutTag_Atmos_5_1_4): roles = Self.fivePointOnePointFour.roles

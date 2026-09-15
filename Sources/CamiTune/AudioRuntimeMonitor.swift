@@ -65,6 +65,8 @@ struct AudioRouteDiagnostics: Equatable, Sendable {
     var camillaQueueRecoveries: UInt64 = 0
     var camillaWriteFailures: UInt64 = 0
     var meterDroppedFrames: UInt64 = 0
+    var rejectedSourceFrames: UInt64 = 0
+    var sourceFormatError: String?
 
     init() {}
 
@@ -88,6 +90,8 @@ struct AudioRouteDiagnostics: Equatable, Sendable {
         camillaQueueRecoveries = router.camillaQueueRecoveries
         camillaWriteFailures = router.camillaWriteFailures
         meterDroppedFrames = router.meterDroppedFrames
+        rejectedSourceFrames = router.rejectedSourceFrames
+        sourceFormatError = router.sourceFormatError
     }
 
     var bridgeFillRatio: Double? {
@@ -232,12 +236,22 @@ final class AudioRuntimeMonitor: ObservableObject {
 
     @Published private(set) var activeSession: AudioRuntimeSession?
     @Published private(set) var levels = SignalLevels.silent
+    @Published private(set) var captureUsesDSPBus = false
     @Published private(set) var status = AudioRuntimeStatus.inactive
 
     var capturePeak: [Double] { levels.capturePeak }
     var captureRMS: [Double] { levels.captureRMS }
     var playbackPeak: [Double] { levels.playbackPeak }
     var playbackRMS: [Double] { levels.playbackRMS }
+
+#if DEBUG
+    /// Silent setup preview only: no polling tasks or audio device lifecycle.
+    func setPreviewLevels(_ levels: SignalLevels, profileID: UUID) {
+        activeSession = AudioRuntimeSession(profileID: profileID)
+        self.levels = levels
+        captureUsesDSPBus = true
+    }
+#endif
 
     private var meterPollingTask: Task<Void, Never>?
     private var diagnosticsPollingTask: Task<Void, Never>?
@@ -355,6 +369,7 @@ final class AudioRuntimeMonitor: ObservableObject {
 
     private func resetObservationState() {
         levels = .silent
+        captureUsesDSPBus = false
         status = .inactive
         if let session = activeSession, presentedProfileID == session.profileID {
             status.engineState = "Starting"
@@ -377,11 +392,8 @@ final class AudioRuntimeMonitor: ObservableObject {
             status.sourceClippedSamples &+= snapshot.clippedSamples
             lastClipAt = Date()
         }
-        let now = Date()
-        for (channelIndex, clipped) in snapshot.clippedSamplesByChannel.enumerated()
-            where clipped > 0 {
-            lastChannelClipAt[channelIndex] = now
-        }
+        // This tap uses source-channel order, not physical output indices.
+        // Only DSP playback peaks may flag a particular speaker as clipping.
 
         // CamillaDSP levels include the real DSP capture/playback boundary. The
         // direct router tap is a fallback when WebSocket metering becomes stale.
@@ -389,6 +401,7 @@ final class AudioRuntimeMonitor: ObservableObject {
             Date().timeIntervalSince($0) < 0.5
         } ?? false
         if !dspLevelsAreFresh {
+            if captureUsesDSPBus { captureUsesDSPBus = false }
             levels.capturePeak = smooth(
                 current: levels.capturePeak,
                 target: snapshot.peak,
@@ -406,6 +419,7 @@ final class AudioRuntimeMonitor: ObservableObject {
     }
 
     private func publishDSPLevels(_ incoming: SignalLevels) {
+        if !captureUsesDSPBus { captureUsesDSPBus = true }
         // The playback peak is updated much more frequently than the cumulative
         // clipped-sample counter. Use it as the immediate overload signal so a
         // short peak above full scale is not missed between diagnostic polls.

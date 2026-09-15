@@ -25,13 +25,18 @@ OSStatus sabr_driver_transport_connect_property_list(
     pid_t clientProcessID
 );
 void sabr_driver_transport_disconnect(void);
-void sabr_driver_transport_add_client(
+OSStatus sabr_driver_transport_add_client(
     AudioObjectID deviceObjectID,
     uint32_t clientID,
     int32_t processID,
     CFStringRef bundleID
 );
+/* Idle registrations do not consume the bounded real-time audio roster. */
+OSStatus sabr_driver_transport_start_client(AudioObjectID deviceObjectID, uint32_t clientID);
+void sabr_driver_transport_stop_client(AudioObjectID deviceObjectID, uint32_t clientID);
 void sabr_driver_transport_remove_client(AudioObjectID deviceObjectID, uint32_t clientID);
+/* Retire every client of an unpublished endpoint, preserving other devices. */
+void sabr_driver_transport_remove_device_clients(AudioObjectID deviceObjectID);
 void sabr_driver_transport_publish_control(
     AudioObjectID deviceObjectID,
     Float32 linearGain,

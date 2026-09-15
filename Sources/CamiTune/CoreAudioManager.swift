@@ -20,9 +20,10 @@ struct OutputVolumeCapabilities: Sendable, Equatable {
 
 @MainActor
 final class CoreAudioManager: ObservableObject {
-    // Driver 0.7.10 releases transport authorization on disconnect, allowing
-    // a new CamiTune process to reconnect to the long-lived driver service.
-    static let minimumPresentationDriverVersion = "0.7.10"
+    // Driver 0.8.2 reserves audio identity slots for running clients and retires
+    // removed endpoints' registrations, preventing registry exhaustion and lost
+    // per-app controls after profile reactivation.
+    static let minimumPresentationDriverVersion = "0.8.2"
 
     @Published private(set) var outputDevices: [AudioDeviceInfo] = []
     @Published private(set) var defaultOutputUID: String?
@@ -437,19 +438,11 @@ final class CoreAudioManager: ObservableObject {
             }
         }
 
-        let profileDevices: [[String: String]] = desired
-            .sorted(by: { $0.uuidString < $1.uuidString })
-            .compactMap { profileID in
-                guard let descriptor = descriptors[profileID] else { return nil }
-                return [
-                    "deviceUID": descriptor.uid,
-                    "displayName": descriptor.name
-                ]
-            }
-        let status = sabr_client_set_profile_devices(bridge.objectID, profileDevices as CFArray)
-        guard status == noErr else {
-            throw AudioError.profileDeviceConfigurationFailed(status)
+        let profileDevices = try desired.sorted(by: { $0.uuidString < $1.uuidString }).compactMap { profileID -> ProfileEndpointState? in
+            guard let descriptor = descriptors[profileID] else { return nil }
+            return try ProfileEndpointState(payload: descriptor.formatPayload())
         }
+        try ProfileEndpointPublication.publish(profileDevices, using: NativeProfileEndpointBackend(bridgeID: bridge.objectID))
         invalidateSystemAudioBridgeReference()
         if migratedDefaultUID != nil {
             refresh()
@@ -490,22 +483,14 @@ final class CoreAudioManager: ObservableObject {
             defaultOutputUID: defaultOutputUID,
             additionallyVisible: additionallyVisible
         )
-        let profileDevices: [[String: String]] = desired
-            .sorted(by: { $0.uuidString < $1.uuidString })
-            .compactMap { profileID in
-                guard let descriptor = descriptors[profileID] else { return nil }
-                return [
-                    "deviceUID": descriptor.uid,
-                    "displayName": descriptor.name
-                ]
-            }
-        let objectID = bridge.objectID
-        let status = await Task.detached(priority: .utility) {
-            sabr_client_set_profile_devices(objectID, profileDevices as CFArray)
-        }.value
-        guard status == noErr else {
-            throw AudioError.profileDeviceConfigurationFailed(status)
+        let profileDevices = try desired.sorted(by: { $0.uuidString < $1.uuidString }).compactMap { profileID -> ProfileEndpointState? in
+            guard let descriptor = descriptors[profileID] else { return nil }
+            return try ProfileEndpointState(payload: descriptor.formatPayload())
         }
+        let objectID = bridge.objectID
+        try await Task.detached(priority: .utility) {
+            try ProfileEndpointPublication.publish(profileDevices, using: NativeProfileEndpointBackend(bridgeID: objectID))
+        }.value
         invalidateSystemAudioBridgeReference()
         return descriptors
     }

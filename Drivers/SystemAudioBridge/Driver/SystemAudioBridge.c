@@ -310,6 +310,10 @@ static CFStringRef                  gProfileDevice_Names[kProfileDevice_Count] =
  * media-key traffic cannot priority-invert the audio thread.
  */
 static _Atomic bool                 gProfileDevice_IsLive[kProfileDevice_Count] = { false };
+static SABRProfileFormat            gProfileDevice_Formats[kProfileDevice_Count] = {0};
+static _Atomic UInt32               gProfileDevice_LayoutTags[kProfileDevice_Count] = {0};
+static _Atomic UInt64               gProfileDevice_RateBits[kProfileDevice_Count] = {0};
+static _Atomic UInt64               gProfileDevice_TicksBits[kProfileDevice_Count] = {0};
 static Float64                      gDevice_SampleRate                  = 48000.0;
 static const UInt32                 kDevice_RingBufferSize              = 16384;
 static Float64                      gDevice_HostTicksPerFrame           = 0.0;
@@ -705,6 +709,53 @@ static AudioObjectID stream_owner_device(AudioObjectID streamObjectID)
         : kObjectID_Device;
 }
 
+static AudioChannelLayoutTag device_channel_layout_tag(void);
+
+/* Atomic snapshots keep format reads out of the control-plane mutex in IO. */
+static UInt32 endpoint_layout_tag(AudioObjectID deviceID)
+{
+    if(is_profile_device_id(deviceID))
+    {
+        UInt32 tag = atomic_load_explicit(&gProfileDevice_LayoutTags[profile_device_index(deviceID)], memory_order_acquire);
+        if(tag != 0) { return tag; }
+    }
+    return device_channel_layout_tag();
+}
+
+static UInt32 endpoint_channel_count(AudioObjectID deviceID) { return endpoint_layout_tag(deviceID) & 0xffff; }
+
+static Float64 endpoint_fixed_sample_rate(AudioObjectID deviceID)
+{
+    return is_profile_device_id(deviceID)
+        ? sabr_bits_to_double(atomic_load_explicit(&gProfileDevice_RateBits[profile_device_index(deviceID)], memory_order_acquire)) : 0;
+}
+
+static Float64 endpoint_sample_rate(AudioObjectID deviceID)
+{
+    Float64 rate = endpoint_fixed_sample_rate(deviceID);
+    if(rate > 0) { return rate; }
+    rate = copy_timing_sample_rate();
+    return rate > 0 ? rate : 48000.0; // Factory property queries may precede Initialize.
+}
+
+static Float64 endpoint_ticks_per_frame(AudioObjectID deviceID)
+{
+    Float64 ticks = is_profile_device_id(deviceID)
+        ? sabr_bits_to_double(atomic_load_explicit(&gProfileDevice_TicksBits[profile_device_index(deviceID)], memory_order_acquire)) : 0;
+    return ticks > 0 ? ticks : copy_timing_effective_ticks_per_frame();
+}
+
+static UInt32 endpoint_rate_count(AudioObjectID deviceID)
+{
+    return endpoint_fixed_sample_rate(deviceID) > 0 ? 1 : kDevice_SampleRatesSize;
+}
+
+static Float64 endpoint_available_rate(AudioObjectID deviceID, UInt32 index)
+{
+    Float64 rate = endpoint_fixed_sample_rate(deviceID);
+    return rate > 0 ? rate : kDevice_SampleRates[index];
+}
+
 static AudioObjectID control_owner_device(AudioObjectID controlObjectID)
 {
     return (is_profile_volume_id(controlObjectID) || is_profile_mute_id(controlObjectID))
@@ -834,6 +885,7 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
 
     CFStringRef requestedUIDs[kProfileDevice_Count] = { NULL };
     CFStringRef requestedNames[kProfileDevice_Count] = { NULL };
+    SABRProfileFormat requestedFormats[kProfileDevice_Count] = {0};
     CFStringRef previousUIDs[kProfileDevice_Count] = { NULL };
     CFStringRef previousNames[kProfileDevice_Count] = { NULL };
     SInt32 requestedSlots[kProfileDevice_Count];
@@ -858,6 +910,17 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
             goto Cleanup;
         }
         CFDictionaryRef profile = (CFDictionaryRef)value;
+        // Legacy name-only commands retain the compiled presentation. Partial
+        // or future versioned payloads must never silently become legacy ones.
+        bool hasFormat = CFDictionaryContainsKey(profile, CFSTR(SABR_PROFILE_KEY_VERSION)) ||
+            CFDictionaryContainsKey(profile, CFSTR(SABR_PROFILE_KEY_CHANNEL_COUNT)) ||
+            CFDictionaryContainsKey(profile, CFSTR(SABR_PROFILE_KEY_LAYOUT_TAG)) ||
+            CFDictionaryContainsKey(profile, CFSTR(SABR_PROFILE_KEY_SAMPLE_RATES));
+        if(hasFormat && !sabr_profile_format_parse(profile, &requestedFormats[index]))
+        {
+            result = kAudioDeviceUnsupportedFormatError;
+            goto Cleanup;
+        }
         CFTypeRef uid = CFDictionaryGetValue(profile, CFSTR(SABR_TRANSPORT_KEY_DEVICE_UID));
         CFTypeRef name = CFDictionaryGetValue(profile, CFSTR(SABR_TRANSPORT_KEY_DISPLAY_NAME));
         if(uid == NULL || CFGetTypeID(uid) != CFStringGetTypeID() ||
@@ -919,6 +982,15 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
         }
         assignedSlots[slot] = true;
         requestedSlots[index] = slot;
+        if(gProfileDevice_UIDs[slot] != NULL &&
+            !sabr_profile_format_equal(gProfileDevice_Formats[slot], requestedFormats[index]))
+        {
+            // HAL owns the lifetime of an advertised stream format. A control
+            // command cannot resize buffers behind an existing client, even idle.
+            result = kAudioHardwareIllegalOperationError;
+            pthread_mutex_unlock(&gPlugIn_StateMutex);
+            goto Cleanup;
+        }
     }
 
     for(UInt32 slot = 0; slot < kProfileDevice_Count; ++slot)
@@ -946,6 +1018,11 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
                 false,
                 memory_order_release
             );
+            // HAL can retire the device before delivering RemoveDeviceClient.
+            // Reclaim its identities now, including the real-time PID snapshot;
+            // otherwise each reactivation leaks a device's entire client roster
+            // until new audio packets lose their owner when the registry fills.
+            sabr_driver_transport_remove_device_clients(profile_device_id(slot));
         }
         gProfileDevice_UIDs[slot] = NULL;
         gProfileDevice_Names[slot] = NULL;
@@ -966,6 +1043,17 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
         addedSlots[slot] = previousUIDs[slot] == NULL;
         if(addedSlots[slot])
         {
+            gProfileDevice_Formats[slot] = requestedFormats[index];
+            atomic_store_explicit(&gProfileDevice_LayoutTags[slot], requestedFormats[index].channelLayoutTag, memory_order_release);
+            atomic_store_explicit(&gProfileDevice_RateBits[slot], sabr_double_to_bits(requestedFormats[index].sampleRate), memory_order_release);
+            Float64 ticks = 0;
+            if(requestedFormats[index].sampleRate > 0)
+            {
+                struct mach_timebase_info timebase;
+                mach_timebase_info(&timebase);
+                ticks = 1e9 * (Float64)timebase.denom / timebase.numer / requestedFormats[index].sampleRate;
+            }
+            atomic_store_explicit(&gProfileDevice_TicksBits[slot], sabr_double_to_bits(ticks), memory_order_release);
             // All profile metadata and persistent IO state are ready before a
             // real-time callback can accept this object ID.
             atomic_store_explicit(
@@ -1049,6 +1137,45 @@ Cleanup:
     return result;
 }
 
+static CFArrayRef copy_profile_descriptors(void)
+{
+    CFMutableArrayRef profiles = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+    if(profiles == NULL) { return NULL; }
+    pthread_mutex_lock(&gPlugIn_StateMutex);
+    for(UInt32 slot = 0; slot < kProfileDevice_Count; ++slot)
+    {
+        if(gProfileDevice_UIDs[slot] == NULL) { continue; }
+        CFMutableDictionaryRef descriptor = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        if(descriptor == NULL) { CFRelease(profiles); profiles = NULL; break; }
+        CFDictionarySetValue(descriptor, CFSTR(SABR_TRANSPORT_KEY_DEVICE_UID), gProfileDevice_UIDs[slot]);
+        CFDictionarySetValue(descriptor, CFSTR(SABR_TRANSPORT_KEY_DISPLAY_NAME), gProfileDevice_Names[slot]);
+        SABRProfileFormat format = gProfileDevice_Formats[slot];
+        if(format.version != 0)
+        {
+            int64_t values[] = {format.version, format.channelCount, format.channelLayoutTag};
+            CFStringRef keys[] = {CFSTR(SABR_PROFILE_KEY_VERSION), CFSTR(SABR_PROFILE_KEY_CHANNEL_COUNT), CFSTR(SABR_PROFILE_KEY_LAYOUT_TAG)};
+            bool allocated = true;
+            for(UInt32 i = 0; i < 3; ++i)
+            {
+                CFNumberRef number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &values[i]);
+                if(number == NULL) { allocated = false; break; }
+                CFDictionarySetValue(descriptor, keys[i], number);
+                CFRelease(number);
+            }
+            CFNumberRef rate = CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &format.sampleRate);
+            CFArrayRef rates = rate != NULL ? CFArrayCreate(kCFAllocatorDefault, (const void**)&rate, 1, &kCFTypeArrayCallBacks) : NULL;
+            if(rates != NULL) { CFDictionarySetValue(descriptor, CFSTR(SABR_PROFILE_KEY_SAMPLE_RATES), rates); CFRelease(rates); }
+            if(rate != NULL) { CFRelease(rate); }
+            if(!allocated || rates == NULL) { CFRelease(descriptor); CFRelease(profiles); profiles = NULL; break; }
+        }
+        CFArrayAppendValue(profiles, descriptor);
+        CFRelease(descriptor);
+    }
+    pthread_mutex_unlock(&gPlugIn_StateMutex);
+    return profiles;
+}
+
 static CFPropertyListRef create_transport_capabilities(void)
 {
     CFMutableDictionaryRef capabilities = CFDictionaryCreateMutable(
@@ -1060,7 +1187,7 @@ static CFPropertyListRef create_transport_capabilities(void)
     if(capabilities == NULL) { return NULL; }
     int64_t protocolValue = SABR_TRANSPORT_PROTOCOL_VERSION;
     int64_t abiValue = SABR_TRANSPORT_ABI_VERSION;
-    int64_t channelCapacityValue = kNumber_Of_Channels;
+    int64_t channelCapacityValue = SABR_TRANSPORT_MAX_CHANNELS;
     CFNumberRef protocolVersion = CFNumberCreate(
         kCFAllocatorDefault,
         kCFNumberSInt64Type,
@@ -1102,6 +1229,15 @@ static CFPropertyListRef create_transport_capabilities(void)
     CFRelease(protocolVersion);
     CFRelease(abiVersion);
     CFRelease(channelCapacity);
+    int64_t formatVersionValue = SABR_PROFILE_FORMAT_VERSION;
+    CFNumberRef formatVersion = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &formatVersionValue);
+    if(formatVersion == NULL) { CFRelease(capabilities); return NULL; }
+    CFDictionarySetValue(capabilities, CFSTR(SABR_PROFILE_KEY_VERSION), formatVersion);
+    CFRelease(formatVersion);
+    CFArrayRef profiles = copy_profile_descriptors();
+    if(profiles == NULL) { CFRelease(capabilities); return NULL; }
+    CFDictionarySetValue(capabilities, CFSTR(SABR_TRANSPORT_KEY_PROFILES), profiles);
+    CFRelease(profiles);
     return capabilities;
 }
 
@@ -1598,48 +1734,48 @@ Done:
 	return theAnswer;
 }
 
-static OSStatus	SystemAudioBridge_AddDeviceClient(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, const AudioServerPlugInClientInfo* inClientInfo)
+static OSStatus SystemAudioBridge_AddDeviceClient(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, const AudioServerPlugInClientInfo* inClientInfo)
 {
-	//	This method is used to inform the driver about a new client that is using the given device.
-	//	This allows the device to act differently depending on who the client is. This driver does
-	//	not need to track the clients using the device, so we just check the arguments and return
-	//	successfully.
-	
-	//	declare the local variables
-	OSStatus theAnswer = 0;
-	
-	//	check the arguments
-	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_AddDeviceClient: bad driver reference");
-	FailWithAction(!is_device_object(inDeviceObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_AddDeviceClient: bad device ID");
-	FailWithAction(inClientInfo == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_AddDeviceClient: missing client info");
-	sabr_driver_transport_add_client(
-		inDeviceObjectID,
-		inClientInfo->mClientID,
-		inClientInfo->mProcessID,
-		inClientInfo->mBundleID
-	);
+    if(inDriver != gAudioServerPlugInDriverRef) { return kAudioHardwareBadObjectError; }
+    if(inClientInfo == NULL) { return kAudioHardwareIllegalOperationError; }
 
-Done:
-	return theAnswer;
+    // Serialize validation and insertion with endpoint retirement. A callback
+    // which passed validation just before removal must not repopulate a dead slot.
+    pthread_mutex_lock(&gPlugIn_StateMutex);
+    if(!is_device_object(inDeviceObjectID))
+    {
+        pthread_mutex_unlock(&gPlugIn_StateMutex);
+        return kAudioHardwareBadObjectError;
+    }
+    OSStatus status = sabr_driver_transport_add_client(
+        inDeviceObjectID,
+        inClientInfo->mClientID,
+        inClientInfo->mProcessID,
+        inClientInfo->mBundleID
+    );
+    pthread_mutex_unlock(&gPlugIn_StateMutex);
+    return status;
 }
 
-static OSStatus	SystemAudioBridge_RemoveDeviceClient(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, const AudioServerPlugInClientInfo* inClientInfo)
+static OSStatus SystemAudioBridge_RemoveDeviceClient(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, const AudioServerPlugInClientInfo* inClientInfo)
 {
-	//	This method is used to inform the driver about a client that is no longer using the given
-	//	device. This driver does not track clients, so we just check the arguments and return
-	//	successfully.
-	
-	//	declare the local variables
-	OSStatus theAnswer = 0;
-	
-	//	check the arguments
-	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_RemoveDeviceClient: bad driver reference");
-	FailWithAction(!is_device_object(inDeviceObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_RemoveDeviceClient: bad device ID");
-	FailWithAction(inClientInfo == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_RemoveDeviceClient: missing client info");
-	sabr_driver_transport_remove_client(inDeviceObjectID, inClientInfo->mClientID);
+    if(inDriver != gAudioServerPlugInDriverRef) { return kAudioHardwareBadObjectError; }
+    if(inClientInfo == NULL) { return kAudioHardwareIllegalOperationError; }
 
-Done:
-	return theAnswer;
+    // HAL may finish client teardown after the profile leaves the device list.
+    // Only teardown accepts retired IDs; new clients and IO require a live device.
+    pthread_mutex_lock(&gPlugIn_StateMutex);
+    const bool deviceWasPublished = inDeviceObjectID == kObjectID_Device ||
+        (is_profile_device_id(inDeviceObjectID) &&
+         gProfileDevice_AssignedUIDs[profile_device_index(inDeviceObjectID)] != NULL);
+    if(!deviceWasPublished)
+    {
+        pthread_mutex_unlock(&gPlugIn_StateMutex);
+        return kAudioHardwareBadObjectError;
+    }
+    sabr_driver_transport_remove_client(inDeviceObjectID, inClientInfo->mClientID);
+    pthread_mutex_unlock(&gPlugIn_StateMutex);
+    return noErr;
 }
 
 static OSStatus	SystemAudioBridge_PerformDeviceConfigurationChange(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, UInt64 inChangeAction, void* inChangeInfo)
@@ -3247,7 +3383,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyDataSize(AudioServerPlugInDri
 			break;
 
 		case kAudioDevicePropertyAvailableNominalSampleRates:
-			*outDataSize = kDevice_SampleRatesSize * sizeof(AudioValueRange);
+			*outDataSize = endpoint_rate_count(inObjectID) * sizeof(AudioValueRange);
 			break;
 		
 		case kAudioDevicePropertyIsHidden:
@@ -3578,7 +3714,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 				configuration->mNumberBuffers = hasOutput ? 1 : 0;
 				if(hasOutput)
 				{
-					configuration->mBuffers[0].mNumberChannels = kNumber_Of_Channels;
+					configuration->mBuffers[0].mNumberChannels = endpoint_channel_count(inObjectID);
 					configuration->mBuffers[0].mDataByteSize = 0;
 					configuration->mBuffers[0].mData = NULL;
 				}
@@ -3599,7 +3735,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			//	only need to take the state lock to get this value.
 			FailWithAction(inDataSize < sizeof(Float64), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetDevicePropertyData: not enough space for the return value of kAudioDevicePropertyNominalSampleRate for the device");
 			pthread_mutex_lock(&gPlugIn_StateMutex);
-			*((Float64*)outData) = gDevice_SampleRate;
+			*((Float64*)outData) = endpoint_sample_rate(inObjectID);
 			pthread_mutex_unlock(&gPlugIn_StateMutex);
 			*outDataSize = sizeof(Float64);
 			break;
@@ -3615,16 +3751,16 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			theNumberItemsToFetch = inDataSize / sizeof(AudioValueRange);
 			
 			//	clamp it to the number of items we have
-			if(theNumberItemsToFetch > kDevice_SampleRatesSize)
+			if(theNumberItemsToFetch > endpoint_rate_count(inObjectID))
 			{
-				theNumberItemsToFetch = kDevice_SampleRatesSize;
+				theNumberItemsToFetch = endpoint_rate_count(inObjectID);
 			}
 			
             //	fill out the return array
             for(UInt32 i = 0; i < theNumberItemsToFetch; i++)
             {
-                ((AudioValueRange*)outData)[i].mMinimum = kDevice_SampleRates[i];
-                ((AudioValueRange*)outData)[i].mMaximum = kDevice_SampleRates[i];
+                ((AudioValueRange*)outData)[i].mMinimum = endpoint_available_rate(inObjectID, i);
+                ((AudioValueRange*)outData)[i].mMaximum = endpoint_available_rate(inObjectID, i);
             }
 
 			//	report how much we wrote
@@ -3655,7 +3791,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			//	data by default. Note that the channel numbers are 1-based.xz
 			FailWithAction(inDataSize < (2 * sizeof(UInt32)), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetDevicePropertyData: not enough space for the return value of kAudioDevicePropertyPreferredChannelsForStereo for the device");
 			((UInt32*)outData)[0] = 1;
-			((UInt32*)outData)[1] = 2;
+			((UInt32*)outData)[1] = endpoint_channel_count(inObjectID) > 1 ? 2 : 1;
 			*outDataSize = 2 * sizeof(UInt32);
 			break;
 
@@ -3667,7 +3803,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 				// property proxy without a variable trailing-description payload.
 				UInt32 theACLSize = offsetof(AudioChannelLayout, mChannelDescriptions);
 				FailWithAction(inDataSize < theACLSize, theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetDevicePropertyData: not enough space for the return value of kAudioDevicePropertyPreferredChannelLayout for the device");
-				((AudioChannelLayout*)outData)->mChannelLayoutTag = device_channel_layout_tag();
+				((AudioChannelLayout*)outData)->mChannelLayoutTag = endpoint_layout_tag(inObjectID);
 				((AudioChannelLayout*)outData)->mChannelBitmap = 0;
 				((AudioChannelLayout*)outData)->mNumberChannelDescriptions = 0;
 				*outDataSize = theACLSize;
@@ -3841,7 +3977,13 @@ static OSStatus	SystemAudioBridge_SetDevicePropertyData(AudioServerPlugInDriverR
 
 			//	check the arguments
 			FailWithAction(inDataSize != sizeof(Float64), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_SetDevicePropertyData: wrong size for the data for kAudioDevicePropertyNominalSampleRate");
-			FailWithAction(!is_valid_sample_rate(*(const Float64*)inData), theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetDevicePropertyData: unsupported value for kAudioDevicePropertyNominalSampleRate");
+			if(endpoint_fixed_sample_rate(inObjectID) > 0)
+            {
+                theAnswer = *(const Float64*)inData == endpoint_fixed_sample_rate(inObjectID)
+                    ? noErr : kAudioDeviceUnsupportedFormatError;
+                goto Done;
+            }
+            FailWithAction(!is_valid_sample_rate(*(const Float64*)inData), theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetDevicePropertyData: unsupported value for kAudioDevicePropertyNominalSampleRate");
 			
 			//	make sure that the new value is different than the old value
 			pthread_mutex_lock(&gPlugIn_StateMutex);
@@ -4021,7 +4163,7 @@ static OSStatus	SystemAudioBridge_GetStreamPropertyDataSize(AudioServerPlugInDri
 
 		case kAudioStreamPropertyAvailableVirtualFormats:
 		case kAudioStreamPropertyAvailablePhysicalFormats:
-			*outDataSize = kDevice_SampleRatesSize * sizeof(AudioStreamRangedDescription);
+			*outDataSize = endpoint_rate_count(stream_owner_device(inObjectID)) * sizeof(AudioStreamRangedDescription);
 			break;
 
 		default:
@@ -4137,14 +4279,15 @@ static OSStatus	SystemAudioBridge_GetStreamPropertyData(AudioServerPlugInDriverR
 			//	format has to be the same as the physical format.
 			FailWithAction(inDataSize < sizeof(AudioStreamBasicDescription), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetStreamPropertyData: not enough space for the return value of kAudioStreamPropertyVirtualFormat for the stream");
 			pthread_mutex_lock(&gPlugIn_StateMutex);
-            ((AudioStreamBasicDescription*)outData)->mSampleRate = gDevice_SampleRate;
+            ((AudioStreamBasicDescription*)outData)->mSampleRate = endpoint_sample_rate(stream_owner_device(inObjectID));
             ((AudioStreamBasicDescription*)outData)->mFormatID = kAudioFormatLinearPCM;
             ((AudioStreamBasicDescription*)outData)->mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagsNativeEndian | kAudioFormatFlagIsPacked;
-            ((AudioStreamBasicDescription*)outData)->mBytesPerPacket = kBytes_Per_Channel * kNumber_Of_Channels;
+            ((AudioStreamBasicDescription*)outData)->mBytesPerPacket = kBytes_Per_Channel * endpoint_channel_count(stream_owner_device(inObjectID));
             ((AudioStreamBasicDescription*)outData)->mFramesPerPacket = 1;
-            ((AudioStreamBasicDescription*)outData)->mBytesPerFrame = kBytes_Per_Channel * kNumber_Of_Channels;
-            ((AudioStreamBasicDescription*)outData)->mChannelsPerFrame = kNumber_Of_Channels;
+            ((AudioStreamBasicDescription*)outData)->mBytesPerFrame = kBytes_Per_Channel * endpoint_channel_count(stream_owner_device(inObjectID));
+            ((AudioStreamBasicDescription*)outData)->mChannelsPerFrame = endpoint_channel_count(stream_owner_device(inObjectID));
             ((AudioStreamBasicDescription*)outData)->mBitsPerChannel = kBits_Per_Channel;
+            ((AudioStreamBasicDescription*)outData)->mReserved = 0;
 			pthread_mutex_unlock(&gPlugIn_StateMutex);
 			*outDataSize = sizeof(AudioStreamBasicDescription);
 			break;
@@ -4160,24 +4303,25 @@ static OSStatus	SystemAudioBridge_GetStreamPropertyData(AudioServerPlugInDriverR
 			theNumberItemsToFetch = inDataSize / sizeof(AudioStreamRangedDescription);
 			
 			//	clamp it to the number of items we have
-			if(theNumberItemsToFetch > kDevice_SampleRatesSize)
+			if(theNumberItemsToFetch > endpoint_rate_count(stream_owner_device(inObjectID)))
 			{
-				theNumberItemsToFetch = kDevice_SampleRatesSize;
+				theNumberItemsToFetch = endpoint_rate_count(stream_owner_device(inObjectID));
 			}
 
             //	fill out the return array
             for(UInt32 i = 0; i < theNumberItemsToFetch; i++)
             {
-                ((AudioStreamRangedDescription*)outData)[i].mFormat.mSampleRate = kDevice_SampleRates[i];
+                ((AudioStreamRangedDescription*)outData)[i].mFormat.mSampleRate = endpoint_available_rate(stream_owner_device(inObjectID), i);
                 ((AudioStreamRangedDescription*)outData)[i].mFormat.mFormatID = kAudioFormatLinearPCM;
                 ((AudioStreamRangedDescription*)outData)[i].mFormat.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagsNativeEndian | kAudioFormatFlagIsPacked;
-                ((AudioStreamRangedDescription*)outData)[i].mFormat.mBytesPerPacket = kBytes_Per_Frame;
+                ((AudioStreamRangedDescription*)outData)[i].mFormat.mBytesPerPacket = (kBytes_Per_Channel * endpoint_channel_count(stream_owner_device(inObjectID)));
                 ((AudioStreamRangedDescription*)outData)[i].mFormat.mFramesPerPacket = 1;
-                ((AudioStreamRangedDescription*)outData)[i].mFormat.mBytesPerFrame = kBytes_Per_Frame;
-                ((AudioStreamRangedDescription*)outData)[i].mFormat.mChannelsPerFrame = kNumber_Of_Channels;
+                ((AudioStreamRangedDescription*)outData)[i].mFormat.mBytesPerFrame = (kBytes_Per_Channel * endpoint_channel_count(stream_owner_device(inObjectID)));
+                ((AudioStreamRangedDescription*)outData)[i].mFormat.mChannelsPerFrame = endpoint_channel_count(stream_owner_device(inObjectID));
                 ((AudioStreamRangedDescription*)outData)[i].mFormat.mBitsPerChannel = kBits_Per_Channel;
-                ((AudioStreamRangedDescription*)outData)[i].mSampleRateRange.mMinimum = kDevice_SampleRates[i];
-                ((AudioStreamRangedDescription*)outData)[i].mSampleRateRange.mMaximum = kDevice_SampleRates[i];
+                ((AudioStreamRangedDescription*)outData)[i].mFormat.mReserved = 0;
+                ((AudioStreamRangedDescription*)outData)[i].mSampleRateRange.mMinimum = endpoint_available_rate(stream_owner_device(inObjectID), i);
+                ((AudioStreamRangedDescription*)outData)[i].mSampleRateRange.mMaximum = endpoint_available_rate(stream_owner_device(inObjectID), i);
             }
 
 			//	report how much we wrote
@@ -4259,10 +4403,10 @@ static OSStatus	SystemAudioBridge_SetStreamPropertyData(AudioServerPlugInDriverR
 			FailWithAction(inDataSize != sizeof(AudioStreamBasicDescription), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_SetStreamPropertyData: wrong size for the data for kAudioStreamPropertyPhysicalFormat");
 			FailWithAction(((const AudioStreamBasicDescription*)inData)->mFormatID != kAudioFormatLinearPCM, theAnswer = kAudioDeviceUnsupportedFormatError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported format ID for kAudioStreamPropertyPhysicalFormat");
 			FailWithAction(((const AudioStreamBasicDescription*)inData)->mFormatFlags != (kAudioFormatFlagIsFloat | kAudioFormatFlagsNativeEndian | kAudioFormatFlagIsPacked), theAnswer = kAudioDeviceUnsupportedFormatError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported format flags for kAudioStreamPropertyPhysicalFormat");
-			FailWithAction(((const AudioStreamBasicDescription*)inData)->mBytesPerPacket != kBytes_Per_Frame, theAnswer = kAudioDeviceUnsupportedFormatError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported bytes per packet for kAudioStreamPropertyPhysicalFormat");
+			FailWithAction(((const AudioStreamBasicDescription*)inData)->mBytesPerPacket != (kBytes_Per_Channel * endpoint_channel_count(stream_owner_device(inObjectID))), theAnswer = kAudioDeviceUnsupportedFormatError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported bytes per packet for kAudioStreamPropertyPhysicalFormat");
 			FailWithAction(((const AudioStreamBasicDescription*)inData)->mFramesPerPacket != 1, theAnswer = kAudioDeviceUnsupportedFormatError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported frames per packet for kAudioStreamPropertyPhysicalFormat");
-			FailWithAction(((const AudioStreamBasicDescription*)inData)->mBytesPerFrame != kBytes_Per_Frame, theAnswer = kAudioDeviceUnsupportedFormatError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported bytes per frame for kAudioStreamPropertyPhysicalFormat");
-			FailWithAction(((const AudioStreamBasicDescription*)inData)->mChannelsPerFrame != kNumber_Of_Channels, theAnswer = kAudioDeviceUnsupportedFormatError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported channels per frame for kAudioStreamPropertyPhysicalFormat");
+			FailWithAction(((const AudioStreamBasicDescription*)inData)->mBytesPerFrame != (kBytes_Per_Channel * endpoint_channel_count(stream_owner_device(inObjectID))), theAnswer = kAudioDeviceUnsupportedFormatError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported bytes per frame for kAudioStreamPropertyPhysicalFormat");
+			FailWithAction(((const AudioStreamBasicDescription*)inData)->mChannelsPerFrame != endpoint_channel_count(stream_owner_device(inObjectID)), theAnswer = kAudioDeviceUnsupportedFormatError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported channels per frame for kAudioStreamPropertyPhysicalFormat");
 			FailWithAction(((const AudioStreamBasicDescription*)inData)->mBitsPerChannel != kBits_Per_Channel, theAnswer = kAudioDeviceUnsupportedFormatError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported bits per channel for kAudioStreamPropertyPhysicalFormat");
 			theRequestedSampleRate = ((const AudioStreamBasicDescription*)inData)->mSampleRate;
 			if(theRequestedSampleRate == 0)
@@ -4270,10 +4414,16 @@ static OSStatus	SystemAudioBridge_SetStreamPropertyData(AudioServerPlugInDriverR
 				// Core Audio can use zero as an unspecified rate while mirroring an
 				// otherwise-identical format through its out-of-process proxy.
 				pthread_mutex_lock(&gPlugIn_StateMutex);
-				theRequestedSampleRate = gDevice_SampleRate;
+				theRequestedSampleRate = endpoint_sample_rate(stream_owner_device(inObjectID));
 				pthread_mutex_unlock(&gPlugIn_StateMutex);
 			}
-			FailWithAction(!is_valid_sample_rate(theRequestedSampleRate), theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported sample rate for kAudioStreamPropertyPhysicalFormat");
+			if(endpoint_fixed_sample_rate(stream_owner_device(inObjectID)) > 0)
+            {
+                theAnswer = theRequestedSampleRate == endpoint_fixed_sample_rate(stream_owner_device(inObjectID))
+                    ? noErr : kAudioDeviceUnsupportedFormatError;
+                goto Done;
+            }
+            FailWithAction(!is_valid_sample_rate(theRequestedSampleRate), theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetStreamPropertyData: unsupported sample rate for kAudioStreamPropertyPhysicalFormat");
 			
 			//	If we made it this far, the requested format is something we support, so make sure the sample rate is actually different
 			pthread_mutex_lock(&gPlugIn_StateMutex);
@@ -5362,6 +5512,9 @@ static OSStatus	SystemAudioBridge_StartIO(AudioServerPlugInDriverRef inDriver, A
 		goto Done;
 	}
 
+	theAnswer = sabr_driver_transport_start_client(inDeviceObjectID, inClientID);
+	if(theAnswer != noErr) { pthread_mutex_unlock(&gPlugIn_StateMutex); goto Done; }
+
 	if(state->runningCount == 0)
 	{
 		pthread_mutex_lock(&state->ioMutex);
@@ -5373,10 +5526,11 @@ static OSStatus	SystemAudioBridge_StartIO(AudioServerPlugInDriverRef inDriver, A
 		state->lastOutputSampleTime = 0;
 		state->lastMixOutputSampleTime = -1;
 		state->isBufferClear = true;
-		state->ringBuffer = calloc(kRing_Buffer_Frame_Size * kNumber_Of_Channels, sizeof(Float32));
+		state->ringBuffer = calloc(kRing_Buffer_Frame_Size * endpoint_channel_count(inDeviceObjectID), sizeof(Float32));
 		if(state->ringBuffer == NULL)
 		{
 			theAnswer = kAudioHardwareUnspecifiedError;
+			sabr_driver_transport_stop_client(inDeviceObjectID, inClientID);
 			pthread_mutex_unlock(&gPlugIn_StateMutex);
 			goto Done;
 		}
@@ -5425,6 +5579,7 @@ static OSStatus	SystemAudioBridge_StopIO(AudioServerPlugInDriverRef inDriver, Au
 		goto Done;
 	}
 	state->runningCount -= 1;
+	sabr_driver_transport_stop_client(inDeviceObjectID, inClientID);
 
 #if kDevice_HasInput
     if(state->runningCount == 0 && state->ringBuffer != NULL)
@@ -5474,7 +5629,7 @@ static OSStatus	SystemAudioBridge_GetZeroTimeStamp(AudioServerPlugInDriverRef in
 	//	get the current host time
 	theCurrentHostTime = mach_absolute_time();
 	//	calculate the next host time
-	theAdjustedTicksPerRingBuffer = copy_timing_effective_ticks_per_frame() *
+	theAdjustedTicksPerRingBuffer = endpoint_ticks_per_frame(inDeviceObjectID) *
 		((Float64)kDevice_RingBufferSize);
     
 	theNextTickOffset = state->previousTicks + theAdjustedTicksPerRingBuffer;
@@ -5575,6 +5730,8 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
 	
 	//	declare the local variables
 	OSStatus theAnswer = 0;
+    const UInt32 channelLayoutTag = endpoint_layout_tag(inDeviceObjectID);
+    const UInt32 channelCount = channelLayoutTag & 0xffff;
 	
 	//	check the arguments
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: bad driver reference");
@@ -5619,26 +5776,26 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
         if (atomic_load_explicit(&gMute_Master_Value, memory_order_relaxed) || state->lastOutputSampleTime - inIOBufferFrameSize < inIOCycleInfo->mInputTime.mSampleTime)
         {
             // Clear the ioMainBuffer
-            vDSP_vclr(ioMainBuffer, 1, inIOBufferFrameSize * kNumber_Of_Channels);
+            vDSP_vclr(ioMainBuffer, 1, inIOBufferFrameSize * channelCount);
             
             // Clear the ring buffer.
             if (!state->isBufferClear)
             {
-                vDSP_vclr(state->ringBuffer, 1, kRing_Buffer_Frame_Size * kNumber_Of_Channels);
+                vDSP_vclr(state->ringBuffer, 1, kRing_Buffer_Frame_Size * channelCount);
                 state->isBufferClear = true;
             }
         }
         else
         {
             // Copy the buffers.
-            memcpy(ioMainBuffer, state->ringBuffer + ringBufferFrameLocationStart * kNumber_Of_Channels, firstPartFrameSize * kNumber_Of_Channels * sizeof(Float32));
-            memcpy((Float32*)ioMainBuffer + firstPartFrameSize * kNumber_Of_Channels, state->ringBuffer, secondPartFrameSize * kNumber_Of_Channels * sizeof(Float32));
+            memcpy(ioMainBuffer, state->ringBuffer + ringBufferFrameLocationStart * channelCount, firstPartFrameSize * channelCount * sizeof(Float32));
+            memcpy((Float32*)ioMainBuffer + firstPartFrameSize * channelCount, state->ringBuffer, secondPartFrameSize * channelCount * sizeof(Float32));
             
             // Finally we'll apply the output volume to the buffer.
 	    if(kEnableVolumeControl)
 	    {
 			Float32 masterVolume = atomic_load_explicit(&gVolume_Master_Value, memory_order_relaxed);
-			vDSP_vsmul(ioMainBuffer, 1, &masterVolume, ioMainBuffer, 1, inIOBufferFrameSize * kNumber_Of_Channels);
+			vDSP_vsmul(ioMainBuffer, 1, &masterVolume, ioMainBuffer, 1, inIOBufferFrameSize * channelCount);
 	    }
 
 		}
@@ -5648,7 +5805,7 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
 	// From Application to SystemAudioBridge
 	if(inOperationID == kAudioServerPlugInIOOperationMixOutput)
 	{
-		const Float64 timingSampleRate = copy_timing_sample_rate();
+		const Float64 timingSampleRate = endpoint_sample_rate(inDeviceObjectID);
 		const bool currentSampleTimeIsValid =
 			(inIOCycleInfo->mCurrentTime.mFlags & kAudioTimeStampSampleTimeValid) != 0;
 		const bool outputSampleTimeIsValid =
@@ -5677,16 +5834,16 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
         if (state->lastMixOutputSampleTime != outputSampleTime)
         {
             vDSP_vclr(
-                state->ringBuffer + ringBufferFrameLocationStart * kNumber_Of_Channels,
+                state->ringBuffer + ringBufferFrameLocationStart * channelCount,
                 1,
-                firstPartFrameSize * kNumber_Of_Channels
+                firstPartFrameSize * channelCount
             );
             if (secondPartFrameSize > 0)
             {
                 vDSP_vclr(
                     state->ringBuffer,
                     1,
-                    secondPartFrameSize * kNumber_Of_Channels
+                    secondPartFrameSize * channelCount
 			);
 			}
 			state->lastMixOutputSampleTime = outputSampleTime;
@@ -5694,22 +5851,22 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
         vDSP_vadd(
             (const Float32*)ioMainBuffer,
             1,
-            state->ringBuffer + ringBufferFrameLocationStart * kNumber_Of_Channels,
+            state->ringBuffer + ringBufferFrameLocationStart * channelCount,
             1,
-            state->ringBuffer + ringBufferFrameLocationStart * kNumber_Of_Channels,
+            state->ringBuffer + ringBufferFrameLocationStart * channelCount,
             1,
-            firstPartFrameSize * kNumber_Of_Channels
+            firstPartFrameSize * channelCount
         );
         if (secondPartFrameSize > 0)
         {
             vDSP_vadd(
-                (const Float32*)ioMainBuffer + firstPartFrameSize * kNumber_Of_Channels,
+                (const Float32*)ioMainBuffer + firstPartFrameSize * channelCount,
                 1,
                 state->ringBuffer,
                 1,
                 state->ringBuffer,
                 1,
-                secondPartFrameSize * kNumber_Of_Channels
+                secondPartFrameSize * channelCount
 			);
 		}
 		#endif
@@ -5722,8 +5879,8 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
         sabr_driver_transport_write(
             (const Float32*)ioMainBuffer,
             inIOBufferFrameSize,
-            kNumber_Of_Channels,
-            device_channel_layout_tag(),
+            channelCount,
+            channelLayoutTag,
 			timingSampleRate,
             inDeviceObjectID,
             inClientID,

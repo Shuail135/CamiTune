@@ -73,12 +73,14 @@ struct SpeakerTopologyResolver {
                     (StandardSpeakerPositions.position(for: channel.role) == nil ? .unknown : .standardLayoutDefault),
                 layer: channel.role.speakerLayer,
                 displayName: channel.name ?? (channel.role == .unknown ? "Channel \(index + 1)" : channel.role.displayName),
-                isSubwooferLike: channel.role == .lowFrequencyEffects)
+                function: channel.role == .lowFrequencyEffects ? .subwoofer : .fullRange,
+                roleOrigin: channel.role == .unknown ? .user : .hardware)
         }
         var topology = SpeakerTopology(deviceUID: deviceUID, sampleRate: sampleRate,
                                        declaredChannelCount: channelCount, endpoints: endpoints)
         topology.hardwareRoles = endpoints.map(\.role)
         topology.hardwarePositions = (0..<channelCount).map { $0 < channels.count ? channels[$0].position : nil }
+        topology.groups = SpeakerGroup.standardGroups(for: endpoints)
         try topology.validate()
         return topology
     }

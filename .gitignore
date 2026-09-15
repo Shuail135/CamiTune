@@ -38,8 +38,13 @@ tmp/
 __pycache__/
 *.pyc
 
-# Local-only tests and test runner
+# Tests and their runners stay local; do not publish them to GitHub.
 /Tests/
+/Scripts/test-*.sh
+/Scripts/check-profile-endpoints.sh
+/Scripts/preview-speakers.sh
+/Tools/ProfileEndpointCheck/
+/Documentation/MULTICHANNEL_TEST_MATRIX.md
 /test-local.sh
 
 /Drivers/SystemAudioBridge/BLACKHOLE_CHANGES.md

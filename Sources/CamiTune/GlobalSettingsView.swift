@@ -492,17 +492,24 @@ struct InterfaceAssignmentEditor: View {
                     VStack(alignment: .leading) {
                         ForEach(0..<value.hardwareChannelCount, id: \.self) { index in
                             Toggle("Channel \(index + 1)", isOn: Binding(
-                                get: { assignment?.outputChannels.contains(index) == true },
+                                get: { assignment?.hardware.enabledHardwareOutputs.contains(index) == true },
                                 set: { selected in
                                     guard var next = assignment else { return }
-                                    next.outputChannels.removeAll { $0 == index }
-                                    if selected { next.outputChannels.append(index) }
-                                    next.outputChannels.sort()
+                                    if selected { next.hardware.enabledHardwareOutputs.insert(index) }
+                                    else { next.hardware.enabledHardwareOutputs.remove(index) }
+                                    next.finishMigration()
                                     assignment = next
+                                    if let endpoint = topology?.endpoints.firstIndex(where: { $0.id.channelIndex == index }) {
+                                        topology?.endpoints[endpoint].connectionState = selected ? .confirmedByUser : .disabledByUser
+                                    }
                                 }))
                         }
                     }
                 }.frame(maxHeight: 180)
+                if value.connectedEndpoint != .speakers {
+                    stereoAssignment(.left, title: "Left")
+                    stereoAssignment(.right, title: "Right")
+                }
                 if let problem = validationProblem { Text(problem).font(.caption).foregroundStyle(.secondary) }
             }
             HStack {
@@ -516,6 +523,28 @@ struct InterfaceAssignmentEditor: View {
         do { try assignment?.validate(deviceUID: output.uid); return nil }
         catch { return error.localizedDescription }
     }
+
+    private func stereoAssignment(_ role: ChannelRole, title: String) -> some View {
+        Picker(title, selection: Binding<Int?>(get: {
+            topology?.endpoints.first {
+                $0.role == role && assignment?.hardware.enabledHardwareOutputs.contains($0.id.channelIndex) == true
+            }?.id.channelIndex
+        }, set: { physical in
+            guard var topology else { return }
+            for index in topology.endpoints.indices where topology.endpoints[index].role == role {
+                topology.endpoints[index].role = .unknown
+            }
+            if let physical, let endpoint = topology.endpoints.first(where: { $0.id.channelIndex == physical }) {
+                SpeakerLayoutGeometry.setRole(role, for: endpoint.id, in: &topology)
+            }
+            self.topology = topology
+        })) {
+            Text("Choose an output").tag(Int?.none)
+            ForEach(assignment?.hardware.enabledHardwareOutputs.sorted() ?? [], id: \.self) {
+                Text("Output \($0 + 1)").tag(Optional($0))
+            }
+        }
+    }
     private func discover() {
         discovering = true; error = nil
         let requested = output
@@ -527,10 +556,12 @@ struct InterfaceAssignmentEditor: View {
                 guard output.uid == requested.uid else { return }
                 found.sampleRate = Double(sampleRate)
                 if assignment?.deviceUID != requested.uid || assignment?.hardwareChannelCount != found.declaredChannelCount {
-                    assignment = AudioInterfaceConfiguration(deviceUID: requested.uid, hardwareChannelCount: found.declaredChannelCount,
-                        outputChannels: [], connectedEndpoint: .custom)
+                    assignment = AudioInterfaceConfiguration(hardware: HardwareOutputConfiguration(deviceUID: requested.uid,
+                        hardwareChannelCount: found.declaredChannelCount, enabledHardwareOutputs: []), connectedEndpoint: .custom)
                 }
-                if topology?.deviceUID != requested.uid { topology = found }
+                if topology == nil || (try? topology?.validateHardware(found)) == nil {
+                    topology = SpeakerLayoutGeometry.arrangedForEditing(found, previous: topology)
+                }
             } catch { self.error = error.localizedDescription }
         }
     }

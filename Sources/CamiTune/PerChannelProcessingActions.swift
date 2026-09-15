@@ -8,7 +8,16 @@ extension PerChannelProcessingView {
     }
 
     func selectChannel(_ index: Int) {
-        guard index != selectedChannelIndex else { return }
+        guard index != selectedChannelIndex || selectedGroup != nil else { return }
+        changeSelection { selectedChannelIndex = index; selectionScope = .speakers }
+    }
+
+    func selectGroup(_ id: SpeakerGroupID) {
+        guard selectedGroup?.id != id else { return }
+        changeSelection { selectedGroupID = id; selectionScope = .groups }
+    }
+
+    func changeSelection(_ update: () -> Void) {
         bandReduction.cancel()
         runtime.liveApplyTask?.cancel()
         if runtime.continuousEditDepth > 0 {
@@ -16,7 +25,7 @@ extension PerChannelProcessingView {
             continuousEditingChanged(false)
         }
         preserveSelectedDraft()
-        selectedChannelIndex = index
+        update()
         loadSelectedChannel()
     }
 
@@ -42,17 +51,18 @@ extension PerChannelProcessingView {
     }
 
     func applyPendingBandReduction() {
-        guard let target = pendingBandCount else { return }
+        guard let targetCount = pendingBandCount else { return }
         pendingBandCount = nil
         let editGeneration = state.editGeneration
         let originalBands = runtime.bands.values
         let profileID = profile.id
         let channelIndex = selectedChannelIndex
+        let target = selectedTarget
         let sampleRate = profile.sampleRate
         bandReduction.run {
-            EQEditorSupport.responseFittedBands(originalBands, count: target, sampleRate: Double(sampleRate))
+            EQEditorSupport.responseFittedBands(originalBands, count: targetCount, sampleRate: Double(sampleRate))
         } completion: { result in
-            guard editGeneration == state.editGeneration, profile.id == profileID, selectedChannelIndex == channelIndex,
+            guard editGeneration == state.editGeneration, profile.id == profileID, selectedChannelIndex == channelIndex, selectedTarget == target,
                   profile.sampleRate == sampleRate, runtime.bands.values == originalBands else { return }
             if case .success(let fitted) = result {
                 runtime.historyActionName = "Recalculate Channel EQ"
@@ -64,7 +74,9 @@ extension PerChannelProcessingView {
 
     func loadSelectedChannel() {
         if let oldID = runtime.loadedProfileID, let channel = runtime.loadedChannelIndex {
-            state.history.cancelGesture(key: GestureKey(target: .profileChannel(oldID, channel), control: "channel"))
+            let target = runtime.loadedGroupID.map { HistoryTarget.profileGroup(oldID, $0) }
+                ?? .profileChannel(oldID, channel)
+            state.history.cancelGesture(key: GestureKey(target: target, control: "channel"))
         }
         bandReduction.cancel()
         runtime.suppressChanges = true
@@ -74,52 +86,38 @@ extension PerChannelProcessingView {
         runtime.continuousEditDepth = 0
         runtime.commitPendingAfterContinuousEdit = false
 
-        let draft = state.channelEQDraft(
-            for: profile.id,
-            channelIndex: selectedChannelIndex
-        )
-        let limiterDraft = state.channelLimiterDraft(
-            for: profile.id,
-            channelIndex: selectedChannelIndex
-        )
-        let delayDraft = state.channelDelayDraft(
-            for: profile.id,
-            channelIndex: selectedChannelIndex
-        )
-
-        let gainDB: Double
-        let bands: [EQBand]
-        let delayMilliseconds: Double
-        let limiterEnabled: Bool
-
-        if let draft, let parsed = try? EqualizerAPOParser().parse(draft) {
-            gainDB = parsed.preampDB
-            bands = EQEditorSupport.organizedBands(parsed.bands)
-            delayMilliseconds = delayDraft
-                ?? ((try? profile.resolvedProcessing()) ?? profile.processing).settings(forChannel: selectedChannelIndex)?.delayMilliseconds
-                ?? 0
-            limiterEnabled = limiterDraft
-                ?? ((try? profile.resolvedProcessing()) ?? profile.processing).settings(forChannel: selectedChannelIndex)?.limiterEnabled
-                ?? false
+        let processing = (try? profile.resolvedProcessing()) ?? profile.processing
+        let settings: ChannelProcessingSettings
+        let hasDraft: Bool
+        if let group = selectedGroup {
+            let draft = state.groupProcessingDraft(for: profile.id, groupID: group.id)
+            settings = draft?.processingSettings ?? processing.settings(forGroup: group.id) ?? .identity
+            hasDraft = draft != nil
         } else {
-            let settings = ((try? profile.resolvedProcessing()) ?? profile.processing).settings(forChannel: selectedChannelIndex) ?? .identity
-            gainDB = settings.gainDB
-            bands = EQEditorSupport.organizedBands(settings.bands)
-            delayMilliseconds = delayDraft ?? settings.delayMilliseconds
-            limiterEnabled = limiterDraft ?? settings.limiterEnabled
+            var value = processing.settings(forChannel: selectedChannelIndex) ?? .identity
+            let text = state.channelEQDraft(for: profile.id, channelIndex: selectedChannelIndex)
+            let limiter = state.channelLimiterDraft(for: profile.id, channelIndex: selectedChannelIndex)
+            let delay = state.channelDelayDraft(for: profile.id, channelIndex: selectedChannelIndex)
+            let tone = state.channelToneDraft(for: profile.id, channelIndex: selectedChannelIndex)
+            if let text, let parsed = try? EqualizerAPOParser().parse(text) {
+                value.gainDB = parsed.preampDB; value.bands = parsed.bands
+            }
+            value.limiterEnabled = limiter ?? value.limiterEnabled
+            value.delayMilliseconds = delay ?? value.delayMilliseconds
+            value.simpleTone = tone ?? value.simpleTone
+            settings = value
+            hasDraft = text != nil || limiter != nil || delay != nil || tone != nil
         }
-
-        let toneDraft = state.channelToneDraft(for: profile.id, channelIndex: selectedChannelIndex)
-        runtime.simpleTone.value = toneDraft
-            ?? ((try? profile.resolvedProcessing()) ?? profile.processing).settings(forChannel: selectedChannelIndex)?.simpleTone
-            ?? SimpleToneSettings()
-        runtime.gain.value = gainDB
+        runtime.simpleTone.value = settings.simpleTone
+        runtime.gain.value = settings.gainDB
+        let bands = EQEditorSupport.organizedBands(settings.bands)
         runtime.bands.replace(with: bands.isEmpty ? EQEditorSupport.resizedBands([], count: 8) : bands)
-        runtime.delay.value = delayMilliseconds
-        runtime.limiter.value = limiterEnabled
+        runtime.delay.value = settings.delayMilliseconds
+        runtime.limiter.value = settings.limiterEnabled
         runtime.loadedProfileID = profile.id
         runtime.loadedChannelIndex = selectedChannelIndex
-        runtime.updateStatus(isSaved: draft == nil && limiterDraft == nil && delayDraft == nil && toneDraft == nil)
+        runtime.loadedGroupID = selectedGroup?.id
+        runtime.updateStatus(isSaved: !hasDraft)
         updateResponses()
 
         runtime.historyBaseline = runtime.snapshot
@@ -149,8 +147,8 @@ extension PerChannelProcessingView {
     func continuousEditingChanged(_ isEditing: Bool) {
         if isEditing {
             if runtime.continuousEditDepth == 0 {
-                state.history.beginGesture(key: channelGestureKey, actionName: "Adjust Channel", contextName: profile.name,
-                    target: .profileChannel(profile.id, selectedChannelIndex), before: .channel(runtime.snapshot))
+                state.history.beginGesture(key: channelGestureKey, actionName: selectedGroup == nil ? "Adjust Channel" : "Adjust Group", contextName: profile.name,
+                    target: selectedTarget, before: .channel(runtime.snapshot))
             }
             runtime.continuousEditDepth += 1
             runtime.liveApplyTask?.cancel()
@@ -174,6 +172,7 @@ extension PerChannelProcessingView {
         let editGeneration = state.editGeneration
         let profileID = profile.id
         let channelIndex = selectedChannelIndex
+        let target = selectedTarget
         let snapshot = runtime.snapshot
         let parsed = ParsedEQ(
             preampDB: snapshot.gainDB,
@@ -191,7 +190,7 @@ extension PerChannelProcessingView {
                   editGeneration == state.editGeneration,
                   runtime.continuousEditDepth == 0,
                   profile.id == profileID,
-                  selectedChannelIndex == channelIndex else { return }
+                  selectedChannelIndex == channelIndex, selectedTarget == target else { return }
 
             // APO formatting is pure CPU work; keep it off MainActor.
             let serialized = await Task.detached(priority: .utility) {
@@ -201,16 +200,15 @@ extension PerChannelProcessingView {
                   editGeneration == state.editGeneration,
                   runtime.continuousEditDepth == 0,
                   profile.id == profileID,
-                  selectedChannelIndex == channelIndex else { return }
+                  selectedChannelIndex == channelIndex, selectedTarget == target else { return }
 
-            state.setChannelProcessingDraft(
-                eqText: serialized,
-                limiterEnabled: snapshot.limiterEnabled,
-                delayMilliseconds: snapshot.delayMilliseconds,
-                simpleTone: snapshot.simpleTone,
-                for: profileID,
-                channelIndex: channelIndex
-            )
+            if let group = selectedGroup {
+                state.setGroupProcessingDraft(snapshot, for: profileID, groupID: group.id)
+            } else {
+                state.setChannelProcessingDraft(eqText: serialized, limiterEnabled: snapshot.limiterEnabled,
+                    delayMilliseconds: snapshot.delayMilliseconds, simpleTone: snapshot.simpleTone,
+                    for: profileID, channelIndex: channelIndex)
+            }
 
             // One response update and one live graph apply per settled edit.
             updateResponses(using: snapshot)
@@ -227,32 +225,29 @@ extension PerChannelProcessingView {
 
         var updated = profile
         do {
-            try updated.setChannelProcessing(
-                index: selectedChannel.index,
-                role: selectedChannel.role,
-                gainDB: snapshot.gainDB,
-                bands: snapshot.bands,
-                delayMilliseconds: snapshot.delayMilliseconds,
-                limiterEnabled: snapshot.limiterEnabled,
-                simpleTone: snapshot.simpleTone
-            )
+            if let group = selectedGroup {
+                try updated.setGroupProcessing(id: group.id, settings: snapshot.processingSettings)
+            } else {
+                try updated.setChannelProcessing(index: selectedChannel.index, role: selectedChannel.role,
+                    gainDB: snapshot.gainDB, bands: snapshot.bands, delayMilliseconds: snapshot.delayMilliseconds,
+                    limiterEnabled: snapshot.limiterEnabled, simpleTone: snapshot.simpleTone)
+            }
         } catch {
             state.errorMessage = error.localizedDescription
             return
         }
 
         profile = updated
-        state.clearChannelEQDraft(
-            for: profile.id,
-            channelIndex: selectedChannel.index
-        )
+        if let group = selectedGroup {
+            state.clearGroupProcessingDraft(for: profile.id, groupID: group.id)
+        } else { state.clearChannelEQDraft(for: profile.id, channelIndex: selectedChannel.index) }
         runtime.updateStatus(isSaved: true)
         updateResponses(using: snapshot)
         if profileIsActive { applySessionDraftsLive() }
     }
 
     func resetSelectedChannel() {
-        runtime.historyActionName = "Reset Channel"
+        runtime.historyActionName = selectedGroup == nil ? "Reset Channel" : "Reset Group"
         runtime.liveApplyTask?.cancel()
         runtime.simpleTone.value = SimpleToneSettings()
         runtime.gain.value = 0
@@ -265,6 +260,10 @@ extension PerChannelProcessingView {
     func preserveSelectedDraft() {
         guard !runtime.status.isSaved else { return }
         let snapshot = runtime.snapshot
+        if let group = selectedGroup {
+            state.setGroupProcessingDraft(snapshot, for: profile.id, groupID: group.id)
+            return
+        }
         state.setChannelProcessingDraft(
             eqText: EqualizerAPOSerializer().serialize(
                 ParsedEQ(
@@ -293,13 +292,13 @@ extension PerChannelProcessingView {
     }
 
     var channelGestureKey: GestureKey {
-        GestureKey(target: .profileChannel(profile.id, selectedChannelIndex), control: "channel")
+        GestureKey(target: selectedTarget, control: "channel")
     }
     func recordChannelEdit() {
         if let before = runtime.historyBaseline {
-            let target = HistoryTarget.profileChannel(profile.id, selectedChannelIndex)
+            let target = selectedTarget
             let control = runtime.historyActionName == nil ? runtime.snapshot.numericControl(changedFrom: before) : nil
-            state.history.record(actionName: runtime.historyActionName ?? "Edit Channel", contextName: profile.name,
+            state.history.record(actionName: runtime.historyActionName ?? (selectedGroup == nil ? "Edit Channel" : "Edit Group"), contextName: profile.name,
                 target: target, before: .channel(before), after: .channel(runtime.snapshot),
                 coalescingKey: control.map { GestureKey(target: target, control: $0) })
         }
@@ -315,6 +314,7 @@ extension PerChannelProcessingView {
         let sampleRate = Double(profile.sampleRate)
         let profileID = profile.id
         let channelIndex = selectedChannelIndex
+        let target = selectedTarget
         runtime.responseCalculationTask?.cancel()
         runtime.responseCalculationTask = Task {
             // Keep all filter math off MainActor. This task is only created for a
@@ -345,7 +345,7 @@ extension PerChannelProcessingView {
             }.value
             guard !Task.isCancelled,
                   profile.id == profileID,
-                  selectedChannelIndex == channelIndex else { return }
+                  selectedChannelIndex == channelIndex, selectedTarget == target else { return }
             runtime.responses.filterResponse = responses.0
             runtime.responses.totalResponse = responses.1
         }

@@ -45,25 +45,39 @@ struct MeterBar: View {
 
 struct SignalMetersView: View {
     let meters: AudioRuntimeMonitor
-    let profileID: UUID
+    let profile: DeviceProfile
+    @State private var showAllChannels = false
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 24) {
-                meterGroup("Audio In", source: .capture)
-                meterGroup("Audio Out", source: .playback)
+        let layout = MultichannelMeterLayout(profile: profile)
+        VStack(alignment: .leading, spacing: 12) {
+            if layout.usesGroups {
+                Toggle("Show All Channels", isOn: $showAllChannels)
+                    .toggleStyle(.checkbox)
+                if !showAllChannels {
+                    Text("Group peak shows the loudest speaker; RMS shows average power.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
-            VStack(alignment: .leading, spacing: 16) {
-                meterGroup("Audio In", source: .capture)
-                meterGroup("Audio Out", source: .playback)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 24) {
+                    meterGroup("Audio In", capture: true, layout: layout)
+                    meterGroup("Audio Out", capture: false, layout: layout)
+                }
+                VStack(alignment: .leading, spacing: 16) {
+                    meterGroup("Audio In", capture: true, layout: layout)
+                    meterGroup("Audio Out", capture: false, layout: layout)
+                }
             }
-        }
+        }.onChange(of: profile.id) { _ in showAllChannels = false }
     }
 
-    private func meterGroup(_ title: String, source: LiveStereoMeterBars.Source) -> some View {
+    private func meterGroup(_ title: String, capture: Bool, layout: MultichannelMeterLayout) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.headline)
-            LiveStereoMeterBars(meters: meters, profileID: profileID, source: source)
+            LiveChannelMeterBars(meters: meters, profileID: profile.id, capture: capture,
+                rows: capture && layout.sourceChannels != nil ? layout.sourceChannels! : (layout.usesGroups && !showAllChannels ? layout.groups : layout.channels),
+                requiresDSPCapture: layout.requiresDSPCapture)
         }.frame(maxWidth: .infinity)
     }
 }
@@ -168,12 +182,13 @@ struct AudioRuntimeStatusView: View {
 
     private var deliveryValue: String {
         let route = activeStatus.route
-        let dropped = route.bridgeDroppedFrames + route.camillaDroppedFrames
+        let dropped = route.bridgeDroppedFrames + route.camillaDroppedFrames + route.rejectedSourceFrames
         return "\(dropped) dropped"
     }
 
     private var deliveryDetail: String {
         let route = activeStatus.route
+        if let error = route.sourceFormatError { return error }
         return "\(route.bridgeConsumerOverrunCount) consumer overruns · \(route.bridgeMalformedPacketCount) malformed recoveries · \(route.camillaQueueRecoveries) queue recoveries"
     }
 
@@ -207,34 +222,35 @@ private struct RuntimeMetricValue: View {
     }
 }
 
-private struct LiveStereoMeterBars: View {
-    enum Source {
-        case capture
-        case playback
-    }
-
+private struct LiveChannelMeterBars: View {
     @ObservedObject var meters: AudioRuntimeMonitor
     let profileID: UUID
-    let source: Source
+    let capture: Bool
+    let rows: [MultichannelMeterLayout.Row]
+    let requiresDSPCapture: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            MeterBar(label: "L", rms: rms[safe: 0] ?? -150, peak: peak[safe: 0] ?? -150)
-            MeterBar(label: "R", rms: rms[safe: 1] ?? -150, peak: peak[safe: 1] ?? -150)
+            ForEach(rows) { row in
+                let level = row.level(peak: peak, rms: rms, capture: capture)
+                MeterBar(label: row.label, rms: level.rms, peak: level.peak)
+            }
+            if profileIsActive && capture && requiresDSPCapture && !meters.captureUsesDSPBus {
+                Text("Input levels unavailable").font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
     private var profileIsActive: Bool { meters.activeSession?.profileID == profileID }
+    private var levelsAvailable: Bool {
+        profileIsActive && (!capture || !requiresDSPCapture || meters.captureUsesDSPBus)
+    }
     private var rms: [Double] {
-        guard profileIsActive else { return [-150, -150] }
-        return source == .capture ? meters.captureRMS : meters.playbackRMS
+        guard levelsAvailable else { return [] }
+        return capture ? meters.captureRMS : meters.playbackRMS
     }
     private var peak: [Double] {
-        guard profileIsActive else { return [-150, -150] }
-        return source == .capture ? meters.capturePeak : meters.playbackPeak
+        guard levelsAvailable else { return [] }
+        return capture ? meters.capturePeak : meters.playbackPeak
     }
-}
-
-private extension Array {
-    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }

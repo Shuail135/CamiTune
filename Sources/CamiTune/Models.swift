@@ -102,6 +102,9 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     var endpointKind: ProfileEndpointKind = .custom
     /// Inactive contexts retain their mode without duplicating shared DSP/geometry.
     var physicalChannelProcessing: [PhysicalOutputID: ProcessingChain] = [:]
+    var speakerTopologyNeedsReview = false
+    var multichannel = MultichannelProcessingSettings()
+    var speakerVerification: SpeakerVerificationRecord?
     var personalReferenceCorrections: [String: DeviceCorrectionProfile] = [:]
     var audioInterface: AudioInterfaceConfiguration?
     var sectionLayout: ProfileSectionLayout?
@@ -155,7 +158,10 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         spatialRenderingMode = mode == .spatialRender ? .spatialAudio : .standard
     }
 
-    var hasPhysicalSpeakerRoute: Bool { !isPersonalListening && speakerTopology != nil }
+    var hasPhysicalSpeakerRoute: Bool {
+        if endpointKind == .audioInterface && effectiveEndpointKind != .speakers { return false }
+        return !isPersonalListening && speakerTopology != nil
+    }
     var configuredPhysicalChannelCount: Int {
         if hasPhysicalSpeakerRoute { return speakerTopology!.declaredChannelCount }
         return endpointKind == .audioInterface ? (audioInterface?.hardwareChannelCount ?? 2) : 2
@@ -171,6 +177,8 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     }
 
     func playbackReadiness(_ mode: PlaybackMode) -> PlaybackModeReadiness {
+        if usesSourceProcessingBus && mode != .direct { return .unavailable("Bass management, custom routing and active crossovers currently use Direct playback.") }
+        if speakerTopologyNeedsReview { return .unavailable("Review the speaker setup before using this profile.") }
         guard availablePlaybackModes.contains(mode) else { return .unavailable("This mode is not supported by the connected device type.") }
         if [.custom, .audioInterface].contains(effectiveEndpointKind), mode != .direct {
             return .unavailable("Choose the connected device type in Profile Settings before using this mode.")
@@ -200,13 +208,16 @@ struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     }
 
     func validatedPhysicalSpeakerTopology() throws -> SpeakerTopology? {
+        guard !speakerTopologyNeedsReview else {
+            throw ProfileSettingsError.runtime("The saved speaker setup could not be read. Review Speakers before activating this profile.")
+        }
         guard hasPhysicalSpeakerRoute else { return nil }
         guard var topology = speakerTopology else { return nil }
         guard topology.deviceUID == outputDeviceUID else { throw SpeakerTopologyError.invalidDeviceUID }
         try topology.validate()
         guard topology.sampleRate == Double(sampleRate) else { throw SpeakerTopologyError.invalidSampleRate }
         if let assignment = try validatedInterfaceConfiguration() {
-            for index in topology.endpoints.indices where !assignment.outputChannels.contains(topology.endpoints[index].id.channelIndex) {
+            for index in topology.endpoints.indices where !assignment.hardware.enabledHardwareOutputs.contains(topology.endpoints[index].id.channelIndex) {
                 topology.endpoints[index].connectionState = .disabledByUser
             }
         }
@@ -409,10 +420,10 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
 
     private enum CodingKeys: String, CodingKey {
         case id, name, outputDevice, outputDeviceUID, outputDeviceName, isEnabled, endpointKind
-        case autoActivateWhenProfileDeviceSelected, playbackModesByEndpoint, sectionLayout, audioInterface, personalReferenceCorrections, physicalChannelProcessing
+        case autoActivateWhenProfileDeviceSelected, playbackModesByEndpoint, sectionLayout, audioInterface, personalReferenceCorrections, physicalChannelProcessing, speakerTopologyNeedsReview
         case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize, playbackMode
         case spatialRenderingMode, spatialContentMode, spatialListenerProfile, spatialAcousticProfile, equalizerAPOText, processing
-        case virtualSurroundLayout, spatialSettings, speakerTopology, usesReferenceSpeakers
+        case virtualSurroundLayout, spatialSettings, speakerTopology, usesReferenceSpeakers, multichannel, speakerVerification
     }
 
     private enum LegacyCodingKeys: String, CodingKey {
@@ -435,6 +446,8 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         }
         isEnabled = try values.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
         endpointKind = try values.decodeIfPresent(ProfileEndpointKind.self, forKey: .endpointKind) ?? .custom
+        multichannel = try values.decodeIfPresent(MultichannelProcessingSettings.self, forKey: .multichannel) ?? .init()
+        speakerVerification = try values.decodeIfPresent(SpeakerVerificationRecord.self, forKey: .speakerVerification)
         physicalChannelProcessing = try values.decodeIfPresent([PhysicalOutputID: ProcessingChain].self, forKey: .physicalChannelProcessing) ?? [:]
         for id in physicalChannelProcessing.keys { try id.validate() }
         personalReferenceCorrections = try values.decodeIfPresent([String: DeviceCorrectionProfile].self, forKey: .personalReferenceCorrections) ?? [:]
@@ -457,8 +470,14 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
             SpatialRenderingMode.self,
             forKey: .spatialRenderingMode
         ) ?? .standard
-        speakerTopology = try? values.decodeIfPresent(SpeakerTopology.self, forKey: .speakerTopology)
-        if let topology = speakerTopology, (try? topology.validate()) == nil { speakerTopology = nil }
+        speakerTopologyNeedsReview = try values.decodeIfPresent(Bool.self, forKey: .speakerTopologyNeedsReview) ?? false
+        do {
+            speakerTopology = try values.decodeIfPresent(SpeakerTopology.self, forKey: .speakerTopology)
+            try speakerTopology?.validate()
+        } catch {
+            speakerTopology = nil
+            speakerTopologyNeedsReview = true
+        }
         let legacyUsesReferenceSpeakers =
             (try? values.decodeIfPresent(Bool.self, forKey: .usesReferenceSpeakers)) ?? false
         // Preserve intent on stale device/rate mappings; activation surfaces the
@@ -507,6 +526,8 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
             seat.roomCorrectionBands = eq.bands
             spatialSettings.seating = seat
         }
+        do { try migrateInterfaceTopology() }
+        catch { speakerTopologyNeedsReview = true }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -515,6 +536,8 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         try values.encode(name, forKey: .name)
         try values.encode(outputDevice, forKey: .outputDevice)
         try values.encode(endpointKind, forKey: .endpointKind)
+        try values.encode(multichannel, forKey: .multichannel)
+        try values.encodeIfPresent(speakerVerification, forKey: .speakerVerification)
         try values.encode(playbackModesByEndpoint, forKey: .playbackModesByEndpoint)
         try values.encodeIfPresent(sectionLayout, forKey: .sectionLayout)
         try values.encodeIfPresent(audioInterface, forKey: .audioInterface)
@@ -531,6 +554,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         try values.encode(usesReferenceSpeakers, forKey: .usesReferenceSpeakers)
         try values.encode(personalReferenceCorrections, forKey: .personalReferenceCorrections)
         try values.encode(physicalChannelProcessing, forKey: .physicalChannelProcessing)
+        try values.encode(speakerTopologyNeedsReview, forKey: .speakerTopologyNeedsReview)
         try values.encodeIfPresent(spatialListenerProfile, forKey: .spatialListenerProfile)
         try values.encodeIfPresent(spatialAcousticProfile, forKey: .spatialAcousticProfile)
         try values.encode(spatialContentMode, forKey: .spatialContentMode)
@@ -620,7 +644,7 @@ struct ProfileDeviceTypeDraft {
 
 // Presentation preferences are separate from processing and routing identity.
 enum ProfileSection: String, Codable, CaseIterable, Identifiable, Sendable {
-    case deviceSetup, meters, spectrum, mode, equalizer, convolution, crossfeed, perChannel
+    case deviceSetup, meters, spectrum, mode, equalizer, convolution, crossfeed, perChannel, multichannel
     var id: Self { self }
     var title: String {
         switch self {
@@ -632,10 +656,12 @@ enum ProfileSection: String, Codable, CaseIterable, Identifiable, Sendable {
         case .convolution: return "FIR / Convolution"
         case .crossfeed: return "Headphone Crossfeed"
         case .perChannel: return "Per-channel EQ, Gain & Delay"
+        case .multichannel: return "Bass & Routing"
         }
     }
     func applies(to type: ProfileEndpointKind) -> Bool {
-        self != .crossfeed || type == .headphones || type == .iem
+        if self == .multichannel { return type == .speakers }
+        return self != .crossfeed || type == .headphones || type == .iem
     }
 }
 
@@ -708,6 +734,8 @@ struct ProfileSettingsDraft {
     var requestedMode: PlaybackMode?
     var processing: ProcessingProfile?
     var replacesUserEqualizer = false
+    var multichannel: MultichannelProcessingSettings?
+    var speakerVerification: SpeakerVerificationRecord?
 
     init(profile: DeviceProfile, activation: ProfileActivationMode) {
         original = profile
@@ -747,10 +775,15 @@ struct ProfileSettingsDraft {
         result.sampleRate = try merge(original.sampleRate, sampleRate, current.sampleRate)
         result.sectionLayout = try merge(original.sectionLayout, sectionLayout, current.sectionLayout)
         result.speakerTopology = try merge(original.speakerTopology, speakerTopology, current.speakerTopology)
+        if speakerTopology != original.speakerTopology, let topology = speakerTopology {
+            try topology.validate()
+            result.speakerTopologyNeedsReview = false
+        }
         if sampleRate != original.sampleRate, result.speakerTopology?.deviceUID == result.outputDeviceUID {
             result.speakerTopology?.sampleRate = Double(result.sampleRate)
         }
         result.audioInterface = try merge(original.audioInterface, audioInterface, current.audioInterface)
+        try result.migrateInterfaceTopology()
         if spatialSettings != original.spatialSettings {
             result.spatialSettings = try merge(original.spatialSettings, spatialSettings, current.spatialSettings)
             result.synchronizeListeningPositionCorrection()
@@ -758,6 +791,7 @@ struct ProfileSettingsDraft {
         if result.endpointKind == .audioInterface {
             guard result.audioInterface != nil else { throw ProfileSettingsError.runtime("Configure the interface channels before saving.") }
             _ = try result.validatedInterfaceConfiguration()
+            _ = try result.validatedInterfaceOutputIndices()
         }
         if let requestedMode {
             _ = try merge(original.playbackMode, requestedMode, current.playbackMode)
@@ -765,6 +799,13 @@ struct ProfileSettingsDraft {
         }
         if let processing {
             result.replaceProcessing(try merge(original.processing, processing, current.processing))
+        }
+        if let speakerVerification {
+            guard let topology = result.speakerTopology, speakerVerification.matches(topology) else { throw ProfileSettingsError.staleDraft }
+            result.speakerVerification = speakerVerification
+        }
+        if let multichannel {
+            result.multichannel = try merge(original.multichannel, multichannel, current.multichannel)
         }
         if let personalReferenceCorrections {
             result.personalReferenceCorrections = try merge(original.personalReferenceCorrections, personalReferenceCorrections, current.personalReferenceCorrections)
@@ -810,17 +851,65 @@ enum ProfileSettingsTransaction {
 }
 
 struct AudioInterfaceConfiguration: Codable, Hashable, Sendable {
-    var deviceUID: String
-    var hardwareChannelCount: Int
-    /// Ordered physical destinations for the logical left and right channels.
-    var outputChannels: [Int]
+    var hardware: HardwareOutputConfiguration
     var connectedEndpoint: ProfileEndpointKind
+    /// Only used while decoding an old profile or accepting an old-style setup
+    /// edit. DeviceProfile consumes this order into physical endpoint roles.
+    private(set) var legacyOutputChannels: [Int]?
+
+    var deviceUID: String { hardware.deviceUID }
+    var hardwareChannelCount: Int { hardware.hardwareChannelCount }
+
+    /// Compatibility surface for existing setup controls, never the runtime's
+    /// routing authority. New hardware settings are an unordered set of slots.
+    var outputChannels: [Int] {
+        get { legacyOutputChannels ?? hardware.enabledHardwareOutputs.sorted() }
+        set {
+            legacyOutputChannels = newValue
+            hardware.enabledHardwareOutputs = Set(newValue)
+        }
+    }
+
+    init(deviceUID: String, hardwareChannelCount: Int, outputChannels: [Int], connectedEndpoint: ProfileEndpointKind) {
+        hardware = HardwareOutputConfiguration(deviceUID: deviceUID, hardwareChannelCount: hardwareChannelCount,
+            enabledHardwareOutputs: Set(outputChannels))
+        self.connectedEndpoint = connectedEndpoint; legacyOutputChannels = outputChannels
+    }
+
+    init(hardware: HardwareOutputConfiguration, connectedEndpoint: ProfileEndpointKind) {
+        self.hardware = hardware; self.connectedEndpoint = connectedEndpoint; legacyOutputChannels = nil
+    }
+
+    mutating func finishMigration() { legacyOutputChannels = nil }
+
+    private enum CodingKeys: String, CodingKey { case hardware, connectedEndpoint, deviceUID, hardwareChannelCount, outputChannels }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        connectedEndpoint = try values.decode(ProfileEndpointKind.self, forKey: .connectedEndpoint)
+        if let hardware = try values.decodeIfPresent(HardwareOutputConfiguration.self, forKey: .hardware) {
+            self.hardware = hardware
+            legacyOutputChannels = try values.decodeIfPresent([Int].self, forKey: .outputChannels)
+        } else {
+            let outputs = try values.decode([Int].self, forKey: .outputChannels)
+            hardware = try HardwareOutputConfiguration(deviceUID: values.decode(String.self, forKey: .deviceUID),
+                hardwareChannelCount: values.decode(Int.self, forKey: .hardwareChannelCount), enabledHardwareOutputs: Set(outputs))
+            legacyOutputChannels = outputs
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(hardware, forKey: .hardware)
+        try values.encode(connectedEndpoint, forKey: .connectedEndpoint)
+        // A standalone draft may be encoded before its profile consumes migration.
+        try values.encodeIfPresent(legacyOutputChannels, forKey: .outputChannels)
+    }
 
     func validate(deviceUID: String) throws {
-        guard self.deviceUID == deviceUID, (2...32).contains(hardwareChannelCount),
-              !outputChannels.isEmpty, Set(outputChannels).count == outputChannels.count,
-              (connectedEndpoint == .speakers || outputChannels.count == 2),
-              outputChannels.allSatisfy({ (0..<hardwareChannelCount).contains($0) }),
+        try hardware.validate(deviceUID: deviceUID)
+        guard legacyOutputChannels.map({ Set($0).count == $0.count && Set($0) == hardware.enabledHardwareOutputs }) ?? true,
+              (connectedEndpoint == .speakers || hardware.enabledHardwareOutputs.count == 2),
               connectedEndpoint != .audioInterface else {
             throw ProfileSettingsError.runtime("Choose distinct hardware channels and identify what is connected to them. Personal and unspecified endpoints require two channels.")
         }
@@ -847,13 +936,13 @@ extension DeviceProfile {
         if hasPhysicalSpeakerRoute, let topology = speakerTopology {
             return topology.endpoints.filter {
                 ($0.connectionState == .confirmedByUser || $0.connectionState == .acousticallyDetected)
-                    && (endpointKind != .audioInterface || audioInterface?.outputChannels.contains($0.id.channelIndex) == true)
+                    && (endpointKind != .audioInterface || audioInterface?.hardware.enabledHardwareOutputs.contains($0.id.channelIndex) == true)
             }.sorted { $0.id.channelIndex < $1.id.channelIndex }.map {
                 ConfiguredProcessingChannel(index: $0.id.channelIndex, role: $0.role,
                     physicalOutputID: $0.id, displayName: $0.displayName)
             }
         }
-        let assignment = endpointKind == .audioInterface ? audioInterface?.outputChannels : nil
+        let assignment = endpointKind == .audioInterface ? interfaceStereoOutputIndices : nil
         return (0..<min(2, assignment?.count ?? 2)).map { index in
             let physical = assignment?[index] ?? index
             return ConfiguredProcessingChannel(index: index, role: index == 0 ? .left : .right,
@@ -869,7 +958,7 @@ extension DeviceProfile {
         guard physicalChannelProcessing.isEmpty else { return }
         for channel in processing.channels {
             let index: Int
-            if endpointKind == .audioInterface, !hasPhysicalSpeakerRoute, let outputs = audioInterface?.outputChannels,
+            if endpointKind == .audioInterface, !hasPhysicalSpeakerRoute, let outputs = interfaceStereoOutputIndices,
                outputs.indices.contains(channel.index) { index = outputs[channel.index] }
             else { index = channel.index }
             physicalChannelProcessing[PhysicalOutputID(deviceUID: outputDeviceUID, channelIndex: index)] = channel.chain

@@ -4,6 +4,7 @@ enum HistoryTarget: Hashable, Sendable {
     case profile(UUID), profileChannel(UUID, Int), application(String)
     case applicationPresentation(String), applicationPresentationDocument, profileOrganization
     case referenceCorrection(UUID), speakerSystem(UUID)
+    case profileGroup(UUID, SpeakerGroupID)
 }
 
 struct GlobalEQHistoryState: Equatable, Sendable {
@@ -57,6 +58,7 @@ enum HistoryState: Equatable, Sendable {
     case profileName(String), profileOrganization(ProfileOrganizationHistoryState)
     case referenceCorrection(DeviceCorrectionProfile?), referenceTransfer(ReferenceTransferHistoryState)
     case speakerSystem(SpeakerSystemHistoryState)
+    case multichannel(MultichannelHistoryState)
 }
 struct HistoryCoalescingKey: Hashable, Sendable {
     var target: HistoryTarget

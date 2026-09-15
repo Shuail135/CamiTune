@@ -85,6 +85,8 @@ final class PCMRouter: @unchecked Sendable {
         var meterDroppedFrames: UInt64 = 0
         var rateAdjustmentPPM: Double = 0
         var rateMatchBufferedFrames: UInt64 = 0
+        var rejectedSourceFrames: UInt64 = 0
+        var sourceFormatError: String?
     }
 
     private let state = NSLock()
@@ -94,6 +96,7 @@ final class PCMRouter: @unchecked Sendable {
     private var meterBranch: MeterPCMBranch?
     private var statisticsValue = Statistics()
     private var spatialRenderingMode: SpatialRenderingMode = .standard
+    private var activeRoute: ActiveAudioRoute?
 
     var statistics: Statistics {
         state.lock()
@@ -106,6 +109,7 @@ final class PCMRouter: @unchecked Sendable {
     /// without freezing SwiftUI for the branch shutdown timeouts below.
     func start(
         camillaSink: FileHandle,
+        activeRoute: ActiveAudioRoute? = nil,
         spatialRenderingMode: SpatialRenderingMode = .standard,
         spatialListenerTuning: SpatialListenerTuning = .neutral,
         spatialContentMode: SpatialContentMode = .automatic,
@@ -120,6 +124,7 @@ final class PCMRouter: @unchecked Sendable {
         await Task.detached(priority: .userInitiated) { [self] in
             startSynchronously(
                 camillaSink: camillaSink,
+                activeRoute: activeRoute,
                 spatialRenderingMode: spatialRenderingMode,
                 spatialListenerTuning: spatialListenerTuning,
                 spatialContentMode: spatialContentMode,
@@ -137,6 +142,7 @@ final class PCMRouter: @unchecked Sendable {
     /// cannot accidentally join PCM workers on MainActor.
     private func startSynchronously(
         camillaSink: FileHandle,
+        activeRoute: ActiveAudioRoute?,
         spatialRenderingMode: SpatialRenderingMode,
         spatialListenerTuning: SpatialListenerTuning,
         spatialContentMode: SpatialContentMode,
@@ -151,6 +157,7 @@ final class PCMRouter: @unchecked Sendable {
         stop()
         let camillaBranch = CamillaPCMBranch(
             handle: camillaSink,
+            activeRoute: activeRoute,
             systemMaster: systemMaster,
             spatialRenderingMode: spatialRenderingMode,
             spatialListenerTuning: spatialListenerTuning,
@@ -187,6 +194,7 @@ final class PCMRouter: @unchecked Sendable {
 
         state.lock()
         statisticsValue = Statistics()
+        self.activeRoute = activeRoute
         self.spatialRenderingMode = spatialRenderingMode
         self.camillaBranch = camillaBranch
         self.meterBranch = meterBranch
@@ -235,6 +243,16 @@ final class PCMRouter: @unchecked Sendable {
 
     func route(_ frame: PCMFrame) {
         state.lock()
+        do {
+            if let activeRoute { try activeRoute.validateSource(frame) }
+            else { try ActiveAudioRoute.validateFrame(frame) }
+            statisticsValue.sourceFormatError = nil
+        } catch {
+            statisticsValue.rejectedSourceFrames &+= UInt64(max(0, frame.frameCount))
+            statisticsValue.sourceFormatError = error.localizedDescription
+            state.unlock()
+            return
+        }
         let camillaBranch = self.camillaBranch
         let meterBranch = self.meterBranch
         let analyzerBranch = self.analyzerBranch
@@ -325,6 +343,7 @@ final class PCMRouter: @unchecked Sendable {
         self.camillaBranch = nil
         self.meterBranch = nil
         self.analyzerBranch = nil
+        self.activeRoute = nil
         state.unlock()
 
         camillaBranch?.stop()
@@ -561,6 +580,8 @@ private final class CamillaPCMBranch: @unchecked Sendable {
     // Keeping a separate descriptor gives the writer independent lifetime.
     private let handle: FileHandle?
     private let systemMaster: SystemMasterGainControl
+    private let activeRoute: ActiveAudioRoute?
+    private var directMapper: DirectChannelMapper?
     private let recoveryHandler: (Int) -> Void
     private let failureHandler: () -> Void
     private let adjustmentHandler: (Double, Int) -> Void
@@ -612,6 +633,7 @@ private final class CamillaPCMBranch: @unchecked Sendable {
 
     init(
         handle: FileHandle,
+        activeRoute: ActiveAudioRoute?,
         systemMaster: SystemMasterGainControl,
         spatialRenderingMode: SpatialRenderingMode,
         spatialListenerTuning: SpatialListenerTuning,
@@ -644,7 +666,8 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         self.referenceCorrection = referenceCorrection
         self.physicalModeRenderer = referenceTopology.flatMap { try? PhysicalSpeakerModeRenderer(topology: $0) }
         self.referenceTopology = referenceTopology
-        self.expectedOutputChannelCount = referenceTopology?.declaredChannelCount ?? 2
+        self.activeRoute = activeRoute
+        self.expectedOutputChannelCount = activeRoute?.dspInputFormat.channelCount ?? referenceTopology?.declaredChannelCount ?? 2
         self.referenceRenderer = referenceTopology.flatMap { try? ReferenceSpeakerRenderer(topology: $0) }
         self.systemMaster = systemMaster
         let initialMaster = systemMaster.snapshot()
@@ -752,10 +775,12 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         condition.lock()
         defer { condition.unlock() }
         guard calibrationID == id, !stopping, !workerFinished else { return false }
+        if let activeRoute, clip.sampleRate != Double(activeRoute.dspInputFormat.sampleRate) { return false }
         if let physical = clip.physicalOutput {
             guard physical.deviceUID == referenceTopology?.deviceUID,
                   clip.sampleRate == referenceTopology?.sampleRate,
-                  clip.channelCount == expectedOutputChannelCount,
+                  clip.channelCount == referenceTopology?.declaredChannelCount,
+                  activeRoute.map({ route in route.dspInputFormat.channels.contains { $0.physicalOutputID == physical } }) ?? true,
                   referenceTopology?.endpoints.contains(where: { $0.id == physical && $0.connectionState != .disabledByUser }) == true else { return false }
         } else if referenceTopology != nil && clip.isAcousticMeasurement {
             return false
@@ -851,8 +876,17 @@ private final class CamillaPCMBranch: @unchecked Sendable {
                 bus.interleaved = frame.playbackModeSamples[busMode] ?? [Float](repeating: 0, count: frame.interleaved.count)
             }
             let rendered: PCMFrame?
-            if let renderer = physicalModeRenderer {
-                rendered = try? renderer.render(bus, mode: busMode, settings: settings)
+            if activeRoute?.usesSourceProcessingBus == true && busMode != .direct { return nil }
+            if let route = activeRoute, route.usesPhysicalSpeakerBus, busMode == .direct {
+                if directMapper?.sourceLayout != bus.channelLayout {
+                    directMapper = try? route.directMapper(for: bus.channelLayout)
+                }
+                rendered = try? directMapper?.prepare(bus)
+            } else if let renderer = physicalModeRenderer {
+                let physical = try? renderer.render(bus, mode: busMode, settings: settings)
+                if let route = activeRoute, let physical {
+                    rendered = try? route.preparePhysicalCompatibilityFrame(physical)
+                } else { rendered = physical }
             } else if busMode == .spatialRender {
                 var enabled = settings; enabled.enabled = true
                 rendered = spatialEngine.render(frame: bus, settings: enabled, detectedOutput: output)
@@ -979,14 +1013,17 @@ private final class CamillaPCMBranch: @unchecked Sendable {
                 renderedModeBuses.removeAll()
             }
             lastSourceFormat = frame.sourceFormat
-            // The immutable physical route and backend share one channel count.
-            // Legacy profiles retain their existing stereo rendering policy.
+            // All modes and calibration converge on the active DSP input bus.
+            // Expansion to the full hardware width happens in the graph.
             let renderedFrame: PCMFrame?
             if let physicalOutput {
                 // Physical audition/measurement is already mapped. Never feed it
                 // through the scene renderer or stereo downmixer.
-                renderedFrame = physicalOutput.deviceUID == referenceTopology?.deviceUID
-                    && frame.channelCount == expectedOutputChannelCount ? frame : nil
+                if physicalOutput.deviceUID == referenceTopology?.deviceUID,
+                   frame.channelCount == referenceTopology?.declaredChannelCount {
+                    if let activeRoute { renderedFrame = try? activeRoute.preparePhysicalCompatibilityFrame(frame) }
+                    else { renderedFrame = frame }
+                } else { renderedFrame = nil }
             } else {
                 renderedFrame = renderModeBuses(frame, mode: isAcousticMeasurement ? .direct : currentMode,
                     settings: renderSettings, output: renderOutput, correction: correction)
@@ -996,6 +1033,10 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             publishedRenderDiagnostics = spatialRenderingMode == .spatialAudio || hasSpatialBus ? (physicalModeRenderer?.spatialDiagnostics ?? spatialEngine.diagnostics) : nil
             condition.unlock()
             guard let renderedFrame, renderedFrame.channelCount == expectedOutputChannelCount else {
+                recoveryHandler(frame.frameCount)
+                continue
+            }
+            if let activeRoute, (try? activeRoute.validateDSPFrame(renderedFrame)) == nil {
                 recoveryHandler(frame.frameCount)
                 continue
             }

@@ -10,6 +10,8 @@ struct SpeakerSystemView: View {
     var embedded = false
     var compact = false
     var onClose: (() -> Void)?
+    /// Preview/test seam: exercising the real editor need not open an audio device.
+    var auditionOverride: ((PhysicalOutputID) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @StateObject private var audition = SpeakerOutputAudition()
     @State private var historyBaseline: SpeakerSystemHistoryState?
@@ -51,6 +53,12 @@ struct SpeakerSystemView: View {
             Text("Configure speaker position and user position for best performance.")
                 .font(.callout).foregroundStyle(.secondary)
             if let draft {
+                if !listeningOnly {
+                    SpeakerLayoutSelector(topology: topologyBinding(draft),
+                        allowedOutputs: profile.endpointKind == .audioInterface ? profile.audioInterface?.hardware.enabledHardwareOutputs : nil,
+                        applied: { canvasID = UUID(); if let draft = self.draft { fitBoard(draft) }; updateDistances() })
+                        .disabled(editingLocked)
+                }
                 roomMap(draft)
                 ViewThatFits(in: .horizontal) {
                     HStack {
@@ -72,7 +80,14 @@ struct SpeakerSystemView: View {
                 }
                 if let index = draft.endpoints.firstIndex(where: { $0.id == selected }), !listeningOnly {
                     speakerTitle(draft.endpoints[index])
+                    SpeakerRoleSelector(topology: draft, endpoint: draft.endpoints[index],
+                        assign: { setRole($0, for: draft.endpoints[index].id) })
+                        .disabled(editingLocked)
                     heightEditor(index: index)
+                    speakerDetails(draft.endpoints[index])
+                    SpeakerPlacementNotice(endpoint: endpointBinding(draft.endpoints[index]),
+                        listener: SpatialVector3(x: seat?.roomX ?? 0, y: seat?.roomY ?? 0, z: 0))
+                        .disabled(editingLocked)
                 }
             } else {
                 Text("Discover the physical channels to configure this room.").foregroundStyle(.secondary)
@@ -131,7 +146,7 @@ struct SpeakerSystemView: View {
             selected: selected, playing: audition.output, extent: boardExtent,
             locked: busy, listeningOnly: listeningOnly,
             select: { selectSpeaker($0) },
-            audition: { audition.toggle($0, topology: topology, audio: state.coreAudio) },
+            audition: { testSpeaker($0, topology: topology) },
             moveSpeaker: { id, point in
                 audition.stop()
                 guard let index = draft?.endpoints.firstIndex(where: { $0.id == id }) else { return }
@@ -145,13 +160,64 @@ struct SpeakerSystemView: View {
                 updateDistances()
             }, assignRole: { id, role in audition.stop(); setRole(role, for: id) }, zoom: graphZoom, zoomChanged: { graphZoom = $0 }, editingChanged: historyEditingChanged)
             .id(canvasID)
-            .frame(height: compact ? 270 : 370)
+            .frame(height: compact && topology.endpoints.count <= 8 ? 270 : 370)
     }
 
     private var mapInstructions: some View {
         Text(listeningOnly ? "Drag the listener. Drag empty space to pan."
              : "Drag a speaker to place it. Click to test. Drag empty space to pan.")
             .font(.caption).foregroundStyle(.secondary)
+    }
+
+    private func topologyBinding(_ fallback: SpeakerTopology) -> Binding<SpeakerTopology> {
+        Binding(get: { draft ?? fallback }, set: { draft = $0 })
+    }
+
+    private func endpointBinding(_ fallback: SpeakerEndpoint) -> Binding<SpeakerEndpoint> {
+        Binding(get: { draft?.endpoints.first { $0.id == fallback.id } ?? fallback }, set: { value in
+            guard let index = draft?.endpoints.firstIndex(where: { $0.id == fallback.id }) else { return }
+            draft?.endpoints[index] = value
+            updateDistances()
+        })
+    }
+
+    private func testSpeaker(_ id: PhysicalOutputID, topology: SpeakerTopology) {
+        if let auditionOverride { auditionOverride(id) }
+        else { audition.toggle(id, topology: topology, audio: state.coreAudio, profile: profile) }
+    }
+
+    private func speakerDetails(_ endpoint: SpeakerEndpoint) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(String(format: "Distance: %.2f m", SpeakerLayoutGeometry.distance(from: endpoint.position,
+                    listenerX: seat?.roomX ?? 0, listenerY: seat?.roomY ?? 0)))
+                    .font(.callout).foregroundStyle(.secondary)
+                Spacer()
+                Button(audition.output == endpoint.id ? "Stop Test" : "Test Speaker") {
+                    if let draft { testSpeaker(endpoint.id, topology: draft) }
+                }.disabled(busy || endpoint.connectionState == .disabledByUser)
+            }
+            DisclosureGroup("Advanced") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Hardware output \(endpoint.id.channelIndex + 1)").font(.caption).foregroundStyle(.secondary)
+                    Picker("Function", selection: Binding(get: { endpoint.function }, set: { value in
+                        guard let index = draft?.endpoints.firstIndex(where: { $0.id == endpoint.id }) else { return }
+                        draft?.endpoints[index].function = value
+                        draft?.layoutTemplateID = .custom
+                        draft?.refreshStandardGroups()
+                    })) {
+                        // Individual active drivers require the later protection workflow.
+                        ForEach([SpeakerFunction.fullRange, .subwoofer, .custom] +
+                            ([.woofer, .midrange, .tweeter].contains(endpoint.function) ? [endpoint.function] : []), id: \.self) {
+                            Text($0.displayName).tag($0)
+                        }
+                    }.disabled(editingLocked)
+                    if let groups = draft?.groups.filter({ $0.members.contains(endpoint.id) }), !groups.isEmpty {
+                        Text("Groups: " + groups.map(\.name).joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
+                    }
+                }.padding(.top, 4)
+            }.font(.callout)
+        }
     }
 
     private var zoomControls: some View {
@@ -295,6 +361,7 @@ struct SpeakerSystemView: View {
                   originalProfile.spatialSettings == profile.spatialSettings else {
                 throw ProfileSettingsError.runtime("The speaker configuration changed. Close and reopen this editor before saving.")
             }
+            if !listeningOnly { value = SpeakerLayoutGeometry.acceptingDefaultRoles(value) }
             try value.validate()
             guard !seat.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw ProfileSettingsError.runtime("Enter a listening-position name.")

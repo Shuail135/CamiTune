@@ -923,20 +923,29 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         // to the same application instead of silently falling back to unity.
         stateLock.lock()
         let resolvedClientKey: PerAppTransportClientKey? = {
-            if clientsByKey[packet.transportKey] != nil { return packet.transportKey }
+            // HAL can recycle client IDs when an endpoint is republished. The
+            // packet and registry are separate snapshots: a positive packet PID
+            // must agree before any cached client identity can own this audio.
+            func matchesProcess(_ key: PerAppTransportClientKey) -> Bool {
+                guard let client = clientsByKey[key] else { return false }
+                return packet.processID <= 0 || client.processID == packet.processID
+            }
+            if matchesProcess(packet.transportKey) { return packet.transportKey }
             if packet.processID > 0,
                let key = uniqueClientKeyByProcessID[packet.processID] {
                 return key
             }
-            return uniqueClientKeyByClientID[packet.clientID]
+            if let key = uniqueClientKeyByClientID[packet.clientID], matchesProcess(key) { return key }
+            return nil
         }()
         let client = resolvedClientKey.flatMap { clientsByKey[$0] }
         let packetIdentity = packet.processID > 0
             ? workspaceIdentitiesByProcessID[packet.processID]
             : nil
-        let dspClientKey = resolvedClientKey ?? packet.transportKey
+        // Identity fallbacks must not merge two actual callback streams into
+        // the same gain ramp/filter history while the registry catches up.
+        let dspClientKey = packet.transportKey
         let observedSourceCandidate = observedAudioSourcesByKey[dspClientKey]
-            ?? observedAudioSourcesByKey[packet.transportKey]
         let currentProcessID = packet.processID > 0
             ? packet.processID
             : (client?.processID ?? 0)
@@ -1602,7 +1611,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         // merely because the registry snapshot arrived late or was transiently
         // empty. The retained owner was resolved off the packet's exact DSP key.
         for source in observedAudioSources {
-            guard let identity = identities[source.transportKey]
+            let registeredIdentity = identities[source.transportKey].flatMap { identity in
+                source.processID <= 0 || identity.processID == source.processID ? identity : nil
+            }
+            guard let identity = registeredIdentity
                     ?? workspaceIdentities[source.processID]
                     ?? source.identity
                     ?? runningApplications[source.applicationID] else { continue }

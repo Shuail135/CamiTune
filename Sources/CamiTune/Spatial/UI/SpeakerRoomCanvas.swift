@@ -339,6 +339,10 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
             if configuration?.listeningOnly == false {
                 symbol("chevron.down", rect: nodeContentRect(p, x: 11, y: -12, width: 9, height: 8), color: .labelColor)
             }
+            if let listener = configuration?.listener,
+               !SpeakerPlacementWarning.warnings(for: endpoint, listener: listener).isEmpty {
+                symbol("exclamationmark.triangle.fill", rect: nodeContentRect(p, x: -25, y: -30, width: 12, height: 12), color: .systemOrange)
+            }
             let role = displayedRole(endpoint)
             label(disabled ? "Off" : role.shortName,
                   rect: nodeContentRect(p, x: -23, y: 7, width: 46, height: 15), alignment: .center,
@@ -503,22 +507,35 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
     func roleMenu(_ endpoint: SpeakerEndpoint) -> NSMenu {
         menuOutput = endpoint.id
         let menu = NSMenu()
+        menu.autoenablesItems = false
+        let selectedRole = displayedRole(endpoint)
+        let choices = configuration.map { SpeakerRoleChoices(topology: $0.topology, selectedRole: selectedRole) }
+        func item(for role: ChannelRole) -> NSMenuItem {
+            let item = NSMenuItem(title: role.displayName,
+                                  action: #selector(roleChosen(_:)), keyEquivalent: "")
+            item.target = self; item.tag = ChannelRole.allCases.firstIndex(of: role)!
+            item.state = endpoint.connectionState != .disabledByUser && selectedRole == role ? .on : .off
+            return item
+        }
+        for role in choices?.common ?? [endpoint.role] { menu.addItem(item(for: role)) }
+        menu.addItem(.separator())
         let disabled = NSMenuItem(title: "Disabled", action: #selector(roleChosen(_:)), keyEquivalent: "")
         disabled.target = self; disabled.tag = -1
         disabled.state = endpoint.connectionState == .disabledByUser ? .on : .off
         menu.addItem(disabled); menu.addItem(.separator())
-        for (index, role) in ChannelRole.allCases.enumerated() {
-            let estimated = endpoint.role == .unknown && role != .unknown && role == displayedRole(endpoint)
-            let item = NSMenuItem(title: role == .unknown ? "Custom / Unknown" : role.displayName + (estimated ? " (estimated)" : ""),
-                                  action: #selector(roleChosen(_:)), keyEquivalent: "")
-            item.target = self; item.tag = index
-            item.state = endpoint.connectionState != .disabledByUser && endpoint.role == role ? .on : .off
-            menu.addItem(item)
+        let more = NSMenuItem(title: "More Roles…", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        for role in choices?.more ?? ChannelRole.allCases { submenu.addItem(item(for: role)) }
+        if !submenu.items.isEmpty {
+            more.submenu = submenu
+            menu.addItem(more)
         }
         return menu
     }
     @objc private func roleChosen(_ item: NSMenuItem) {
-        guard let id = menuOutput else { return }
-        configuration?.assignRole(id, item.tag < 0 ? nil : ChannelRole.allCases[item.tag])
+        guard let id = menuOutput, let configuration, !configuration.locked, !configuration.listeningOnly,
+              configuration.topology.endpoints.contains(where: { $0.id == id }),
+              item.tag == -1 || ChannelRole.allCases.indices.contains(item.tag) else { return }
+        configuration.assignRole(id, item.tag < 0 ? nil : ChannelRole.allCases[item.tag])
     }
 }

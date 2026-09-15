@@ -13,7 +13,7 @@ final class SpeakerOutputAudition: ObservableObject {
     private var task: Task<Void, Never>?
     private var request = UUID()
 
-    func toggle(_ output: PhysicalOutputID, topology: SpeakerTopology, audio: CoreAudioManager) {
+    func toggle(_ output: PhysicalOutputID, topology: SpeakerTopology, audio: CoreAudioManager, profile: DeviceProfile? = nil) {
         if self.output == output { stop(); return }
         stop()
         let token = UUID(); request = token
@@ -24,7 +24,7 @@ final class SpeakerOutputAudition: ObservableObject {
                 guard let device = await audio.resolveDeviceWithoutBlockingUI(uid: output.deviceUID), !device.isRoutingDevice else {
                     throw ProfileSettingsError.runtime("Connect this physical output before testing it.")
                 }
-                let clip = try await Task.detached(priority: .userInitiated) {
+                let prepared = try await Task.detached(priority: .userInitiated) {
                     let hardware = try SpeakerTopologyProbe().probe(device)
                     try topology.validateHardware(hardware)
                     var testTopology = topology
@@ -37,10 +37,17 @@ final class SpeakerOutputAudition: ObservableObject {
                     guard let clip = SpatialCalibrationClip(physicalOutput: output, topology: testTopology) else {
                         throw ProfileSettingsError.runtime("This output could not prepare an identification signal.")
                     }
-                    return clip
+                    var samples = Self.monoSamples(clip, output: output.channelIndex)
+                    if [.woofer, .midrange, .tweeter].contains(testTopology.endpoints[index].function) {
+                        guard var candidate = profile else { throw ProfileSettingsError.runtime("Active driver tests require a protected speaker profile.") }
+                        candidate.speakerTopology = testTopology; candidate.sampleRate = Int(hardware.sampleRate)
+                        try candidate.validateMultichannelHardware(hardware)
+                        samples = try SpeakerAuditionProtection.samples(samples, output: output, profile: candidate)
+                    }
+                    return (clip, samples)
                 }.value
                 guard request == token, !Task.isCancelled else { return }
-                try start(clip: clip, output: output)
+                try start(clip: prepared.0, samples: prepared.1, output: output)
                 preparing = false
                 // Drain only this test, then release the queue. Poll on the main
                 // actor; the audio callback itself does no allocation or UI work.
@@ -70,7 +77,7 @@ final class SpeakerOutputAudition: ObservableObject {
         }
     }
 
-    private func start(clip: SpatialCalibrationClip, output: PhysicalOutputID) throws {
+    private func start(clip: SpatialCalibrationClip, samples: [Float], output: PhysicalOutputID) throws {
         var format = AudioStreamBasicDescription(mSampleRate: clip.sampleRate,
             mFormatID: kAudioFormatLinearPCM, mFormatFlags: kAudioFormatFlagsNativeFloatPacked,
             mBytesPerPacket: 4, mFramesPerPacket: 1, mBytesPerFrame: 4,
@@ -88,7 +95,6 @@ final class SpeakerOutputAudition: ObservableObject {
             try check(AudioQueueSetProperty(created, kAudioQueueProperty_ChannelAssignments, &assignment,
                                             UInt32(MemoryLayout<AudioQueueChannelAssignment>.size)))
         }
-        let samples = Self.monoSamples(clip, output: output.channelIndex)
         var buffer: AudioQueueBufferRef?
         try check(AudioQueueAllocateBuffer(created, UInt32(samples.count * MemoryLayout<Float>.size), &buffer))
         guard let buffer else { throw ProfileSettingsError.runtime("The test audio buffer could not be created.") }

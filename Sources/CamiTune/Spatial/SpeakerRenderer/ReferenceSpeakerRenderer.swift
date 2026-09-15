@@ -31,7 +31,7 @@ struct ReferenceSpeakerRenderer {
         endpoints = topology.endpoints.filter {
             $0.connectionState == .acousticallyDetected || $0.connectionState == .confirmedByUser
         }
-        positioned = endpoints.filter { $0.position != nil && $0.layer != .subwoofer && !$0.isSubwooferLike }
+        positioned = endpoints.filter { $0.position != nil && !$0.isSubwooferLike }
         solver = VBAPSolver(positions: positioned.compactMap(\.position))
         diagnostics.outputChannels = topology.declaredChannelCount
     }
@@ -105,7 +105,7 @@ struct ReferenceSpeakerRenderer {
         var gains = [Float](repeating: 0, count: topology.declaredChannelCount)
         guard object.active else { return (gains, false) }
         if object.role == .lowFrequency {
-            let subs = endpoints.filter { $0.layer == .subwoofer || $0.isSubwooferLike }
+            let subs = endpoints.filter { $0.isSubwooferLike }
             // No unverified full-range fallback and no implicit LFE +10 dB boost.
             for sub in subs { gains[sub.id.channelIndex] = 1 / Float(subs.count) }
             return (gains, subs.isEmpty)

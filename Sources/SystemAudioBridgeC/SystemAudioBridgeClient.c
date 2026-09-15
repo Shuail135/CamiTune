@@ -514,6 +514,53 @@ OSStatus sabr_client_set_presentation(
     return result;
 }
 
+CFArrayRef sabr_client_copy_profile_devices(AudioObjectID deviceObjectID) {
+    AudioObjectPropertyAddress address = {
+        SABR_TRANSPORT_PROPERTY, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain
+    };
+    CFPropertyListRef capabilities = NULL;
+    UInt32 size = sizeof(capabilities);
+    CFArrayRef result = NULL;
+    OSStatus status = AudioObjectGetPropertyData(deviceObjectID, &address, 0, NULL, &size, &capabilities);
+    if (status == noErr && capabilities != NULL && CFGetTypeID(capabilities) == CFDictionaryGetTypeID()) {
+        CFTypeRef profiles = CFDictionaryGetValue(capabilities, CFSTR(SABR_TRANSPORT_KEY_PROFILES));
+        if (profiles != NULL && CFGetTypeID(profiles) == CFArrayGetTypeID()) { result = CFArrayCreateCopy(kCFAllocatorDefault, profiles); }
+    }
+    if (capabilities != NULL) { CFRelease(capabilities); }
+    return result;
+}
+
+uint32_t sabr_client_profile_format_version(AudioObjectID deviceObjectID) {
+    AudioObjectPropertyAddress address = {
+        SABR_TRANSPORT_PROPERTY, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain
+    };
+    CFPropertyListRef capabilities = NULL;
+    UInt32 size = sizeof(capabilities), version = 0;
+    OSStatus status = AudioObjectGetPropertyData(deviceObjectID, &address, 0, NULL, &size, &capabilities);
+    if (status == noErr && capabilities != NULL && CFGetTypeID(capabilities) == CFDictionaryGetTypeID()) {
+        (void)sabr_profile_uint32(capabilities, CFSTR(SABR_PROFILE_KEY_VERSION), &version);
+    }
+    if (capabilities != NULL) { CFRelease(capabilities); }
+    return version;
+}
+
+OSStatus sabr_client_set_profile_devices_with_formats(AudioObjectID deviceObjectID, CFArrayRef profiles) {
+    if (profiles == NULL || CFGetTypeID(profiles) != CFArrayGetTypeID() ||
+        CFArrayGetCount(profiles) > SABR_TRANSPORT_MAX_PROFILE_DEVICES) { return kAudioHardwareIllegalOperationError; }
+    for (CFIndex i = 0; i < CFArrayGetCount(profiles); ++i) {
+        CFTypeRef value = CFArrayGetValueAtIndex(profiles, i);
+        SABRProfileFormat format;
+        if (value == NULL || CFGetTypeID(value) != CFDictionaryGetTypeID() ||
+            !sabr_profile_format_parse(value, &format)) { return kAudioDeviceUnsupportedFormatError; }
+    }
+    if (sabr_client_profile_format_version(deviceObjectID) != SABR_PROFILE_FORMAT_VERSION ||
+        !sabr_client_transport_is_supported(deviceObjectID) ||
+        sabr_client_transport_channel_count(deviceObjectID) != SABR_TRANSPORT_MAX_CHANNELS) {
+        return kAudioHardwareUnsupportedOperationError;
+    }
+    return sabr_client_set_profile_devices(deviceObjectID, profiles);
+}
+
 OSStatus sabr_client_set_profile_devices(
     AudioObjectID deviceObjectID,
     CFArrayRef profiles

@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+enum PerChannelSelectionScope: String, CaseIterable {
+    case groups = "Groups", speakers = "Speakers"
+}
+
 @MainActor
 struct PerChannelProcessingView: View {
     @ObservedObject var state: AppState
@@ -8,6 +12,8 @@ struct PerChannelProcessingView: View {
 
     @State private var equalizerPresentation: EqualizerPresentation = .both
     @State var selectedChannelIndex = 0
+    @State var selectedGroupID: SpeakerGroupID?
+    @State var selectionScope: PerChannelSelectionScope = .groups
     @State var pendingBandCount: Int?
     @State var showBandReductionConfirmation = false
     @StateObject var runtime = PerChannelEditorRuntime()
@@ -19,6 +25,14 @@ struct PerChannelProcessingView: View {
     }
 
     var editableChannels: [ConfiguredProcessingChannel] { profile.configuredProcessingChannels }
+    var editableGroups: [SpeakerGroup] { profile.configuredSpeakerGroups }
+    var selectedGroup: SpeakerGroup? {
+        guard profile.usesGroupedProcessingPresentation, selectionScope == .groups else { return nil }
+        return editableGroups.first { $0.id == selectedGroupID } ?? editableGroups.first
+    }
+    var selectedTarget: HistoryTarget {
+        selectedGroup.map { .profileGroup(profile.id, $0.id) } ?? .profileChannel(profile.id, selectedChannelIndex)
+    }
     private var channelSelectorWidth: CGFloat {
         let labelWidth = editableChannels.map {
             ($0.displayName as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width
@@ -38,16 +52,21 @@ struct PerChannelProcessingView: View {
                 if bandReduction.isRunning { ProgressView("Fitting bands…").controlSize(.small) }
                 PerChannelHeader(
                     status: runtime.status,
+                    isGroup: selectedGroup != nil,
                     onReset: resetSelectedChannel,
                     onSave: saveSelectedChannel
                 )
 
-                Text("Global processing runs first. These settings then affect only the selected physical channel.")
+                Text(selectedGroup == nil
+                    ? "Global processing runs first. These settings then affect only the selected physical channel."
+                    : "Group processing runs after global processing and before each speaker’s individual settings. Group limiters run last on their members.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 if editableChannels.isEmpty {
                     Text("Configure enabled physical channels in Profile Settings.").foregroundStyle(.secondary)
+                } else if profile.usesGroupedProcessingPresentation {
+                    groupAndSpeakerSelector
                 } else {
                     OverflowAwareHorizontalScrollView(contentWidth: channelSelectorWidth, height: 40) {
                         JoinedSegmentedControl(
@@ -65,6 +84,7 @@ struct PerChannelProcessingView: View {
                     meters: state.meters,
                     profileID: profile.id,
                     channelIndex: selectedChannelIndex,
+                    groupChannelIndices: selectedGroup?.members.map(\.channelIndex),
                     visualEffectsEnabled: runtimeVisualsActive,
                     onChanged: channelSettingsChanged,
                     onEditingChanged: continuousEditingChanged
@@ -76,7 +96,9 @@ struct PerChannelProcessingView: View {
                     onEditingChanged: continuousEditingChanged
                 )
 
-                Text("Use delay to time-align this channel. Fractional-sample values are supported.")
+                Text(selectedGroup == nil
+                    ? "Use delay to time-align this channel. Fractional-sample values are supported."
+                    : "This delay is added to each member’s individual delay. Fractional-sample values are supported.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -129,12 +151,16 @@ struct PerChannelProcessingView: View {
             loadSelectedChannelIfNeeded()
         }
         .onChange(of: profile.id) { _ in
-            loadSelectedChannelIfNeeded()
+            selectionScope = .groups
+            selectedGroupID = nil
+            selectedChannelIndex = 0
+            loadSelectedChannel()
         }
         .onChange(of: editableChannels) { channels in
             if !channels.contains(where: { $0.index == selectedChannelIndex }) { selectedChannelIndex = channels.first?.index ?? 0 }
             loadSelectedChannel()
         }
+        .onChange(of: editableGroups) { _ in loadSelectedChannel() }
         .onChange(of: profile.sampleRate) { _ in bandReduction.cancel(); updateResponses() }
         .onDisappear {
             if runtime.continuousEditDepth > 0 {
@@ -145,10 +171,44 @@ struct PerChannelProcessingView: View {
             runtimeVisualsActive = false
         }
     }
+
+    private var groupAndSpeakerSelector: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            JoinedSegmentedControl(options: PerChannelSelectionScope.allCases,
+                selection: Binding(get: { selectionScope }, set: { value in changeSelection { selectionScope = value } }),
+                title: { $0.rawValue })
+                .frame(width: 220)
+                .accessibilityLabel("Processing target")
+            if let group = selectedGroup {
+                Picker("Group", selection: Binding(get: { group.id }, set: { selectGroup($0) })) {
+                    ForEach(editableGroups) { Text("\($0.name) (\($0.members.count))").tag($0.id) }
+                }.frame(maxWidth: 360)
+                HStack(alignment: .top) {
+                    Text(group.members.compactMap { id in editableChannels.first { $0.physicalOutputID == id }?.displayName }
+                        .joined(separator: ", "))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Menu("Edit a speaker") {
+                        ForEach(editableChannels.filter { group.members.contains($0.physicalOutputID) }) { channel in
+                            Button(channel.displayName) { selectChannel(channel.index) }
+                        }
+                    }.fixedSize()
+                }
+            } else {
+                Picker("Speaker", selection: Binding(get: { selectedChannel.index }, set: { selectChannel($0) })) {
+                    ForEach(editableChannels) { Text($0.displayName).tag($0.index) }
+                }.frame(maxWidth: 360)
+                let inherited = editableGroups.filter { $0.members.contains(selectedChannel.physicalOutputID) }.map(\.name)
+                Text("Groups: \(inherited.joined(separator: ", "))")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
 }
 
 private struct PerChannelHeader: View {
     @ObservedObject var status: PerChannelStatusState
+    let isGroup: Bool
     let onReset: @MainActor () -> Void
     let onSave: @MainActor () -> Void
 
@@ -159,7 +219,7 @@ private struct PerChannelHeader: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(status.isSaved ? Color.green : Color.secondary)
             Spacer()
-            Button("Reset channel") {
+            Button(isGroup ? "Reset group" : "Reset channel") {
                 onReset()
             }
             .disabled(!status.canReset)
@@ -183,6 +243,7 @@ private struct PerChannelGainRow: View {
     let meters: AudioRuntimeMonitor
     let profileID: UUID
     let channelIndex: Int
+    var groupChannelIndices: [Int]?
     let visualEffectsEnabled: Bool
     let onChanged: @MainActor () -> Void
     let onEditingChanged: @MainActor (Bool) -> Void
@@ -208,8 +269,9 @@ private struct PerChannelGainRow: View {
             ),
             meters: meters,
             profileID: profileID,
-            title: "Channel gain",
+            title: groupChannelIndices == nil ? "Channel gain" : "Group gain",
             channelIndex: channelIndex,
+            channelIndices: groupChannelIndices,
             visualEffectsEnabled: visualEffectsEnabled,
             onEditingChanged: onEditingChanged
         )

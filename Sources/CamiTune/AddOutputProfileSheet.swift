@@ -57,7 +57,7 @@ struct AddOutputDraft {
                 throw ProfileSettingsError.runtime(Self.incompleteMessage)
             }
             if let assignment = candidate.audioInterface, deviceType == .audioInterface {
-                for index in topology.endpoints.indices where !assignment.outputChannels.contains(topology.endpoints[index].id.channelIndex) {
+                for index in topology.endpoints.indices where !assignment.hardware.enabledHardwareOutputs.contains(topology.endpoints[index].id.channelIndex) {
                     topology.endpoints[index].connectionState = .disabledByUser
                 }
             }
@@ -66,20 +66,9 @@ struct AddOutputDraft {
             guard !enabled.isEmpty, enabled.allSatisfy({ $0.role != .unknown || $0.position != nil }) else {
                 throw ProfileSettingsError.runtime(Self.incompleteMessage)
             }
-            // Add Profile accepts the roles shown in the room editor. Keep names,
-            // positions, and explicit role choices exactly as configured.
-            let displayedRoles = SpeakerLayoutGeometry.layoutRoles(topology)
-            for index in topology.endpoints.indices where topology.endpoints[index].connectionState != .disabledByUser {
-                if topology.endpoints[index].role == .unknown,
-                   topology.endpoints[index].connectionState != .confirmedByUser {
-                    topology.endpoints[index].role = displayedRoles[index]
-                    topology.endpoints[index].layer = displayedRoles[index].speakerLayer
-                    topology.endpoints[index].isSubwooferLike = displayedRoles[index] == .lowFrequencyEffects
-                }
-                topology.endpoints[index].connectionState = .confirmedByUser
-            }
-            candidate.speakerTopology = topology
+            candidate.speakerTopology = SpeakerLayoutGeometry.acceptingDefaultRoles(topology)
         }
+        try candidate.migrateInterfaceTopology()
         return candidate
     }
 }

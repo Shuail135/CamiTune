@@ -33,7 +33,7 @@ struct SpatialCalibrationClip: Sendable {
         var result = [Float](repeating: 0, count: frames * count)
         var random: UInt32 = 0x43414D49
         var high: Float = 0, low: Float = 0
-        let isSub = endpoint.isSubwooferLike || endpoint.layer == .subwoofer
+        let isSub = endpoint.isSubwooferLike
         let upper = Float(1 - exp(-2 * Double.pi * (isSub ? 100 : 4000) / sampleRate))
         let lower = Float(1 - exp(-2 * Double.pi * (isSub ? 40 : 300) / sampleRate))
         for i in 0..<frames {

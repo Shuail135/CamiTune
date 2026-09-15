@@ -5,6 +5,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "SystemAudioBridgeProfileFormat.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -44,7 +44,7 @@ extension ChannelRole {
         case .frontRightCenter: return "Front right center"
         case .wideLeft: return "Wide left"
         case .wideRight: return "Wide right"
-        case .unknown: return "Unknown"
+        case .unknown: return "Custom"
         }
     }
 

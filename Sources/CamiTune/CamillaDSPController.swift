@@ -47,6 +47,7 @@ final class CamillaDSPController {
     }
 
     func applyGraph(_ graph: ProcessingGraph) async throws {
+        try graph.validate()
         let currentGraph = activeGraph
         let differ = self.differ
         let update = await Task.detached(priority: .userInitiated) {

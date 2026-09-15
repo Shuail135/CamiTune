@@ -454,14 +454,15 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                     if reportedSampleRateMismatch != actualRate {
                         reportedSourceFormat = nil
                         reportedSampleRateMismatch = actualRate
-                        let message = "System Audio Bridge is producing \(rateDescription(actualRate)), but CamillaDSP expects \(rateDescription(requestedRate)). Audio remains routed so meters and DSP stay live while the devices converge; a persistent mismatch can cause wrong-speed playback."
+                        let message = "System Audio Bridge is producing \(rateDescription(actualRate)), but the profile expects \(rateDescription(requestedRate)). Audio is paused until the rates match. Check the source app's selected output and sample rate."
                         Task { @MainActor [owner] in
                             guard let target = owner.value,
                                   target.isCurrentGeneration(context.generation) else { return }
-                            target.status = "Sample-rate mismatch — audio still routed"
+                            target.status = "Paused: source sample rate does not match"
                             target.runtimeError = message
                         }
                     }
+                    continue
                 }
                 let sampleCount = Int(frames * packet.channelCount)
                 let metadata = PerAppAudioPacket(
@@ -667,7 +668,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             case .couldNotCreateSharedRegion:
                 return "CamiTune could not create the private driver audio transport."
             case .incompatibleDriver:
-                return "The live System Audio Bridge driver does not support this SABR transport v5 ABI. Use Setup → Install / Repair Everything to install driver 0.7.10, then ensure coreaudiod reloads."
+                return "The live System Audio Bridge driver does not support this SABR transport v5 ABI. Use Setup → Install / Repair Everything to install driver 0.8.2, then ensure coreaudiod reloads."
             case .disconnect(let status):
                 return "System Audio Bridge did not acknowledge transport disconnect after three attempts (Core Audio \(Self.describe(status))). The worker released its local mapping safely; repair or reload the driver before starting another route."
             case .shutdownTimedOut:
@@ -675,10 +676,10 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             case .coreAudio(let status):
                 if status == kAudioHardwareUnknownPropertyError ||
                     status == kAudioHardwareBadPropertySizeError {
-                    return "The live System Audio Bridge driver is incompatible with this SABR transport v5 ABI (Core Audio \(Self.describe(status))). Use Setup → Install / Repair Everything to install driver 0.7.10 and reload coreaudiod."
+                    return "The live System Audio Bridge driver is incompatible with this SABR transport v5 ABI (Core Audio \(Self.describe(status))). Use Setup → Install / Repair Everything to install driver 0.8.2 and reload coreaudiod."
                 }
                 if status == kAudioHardwareIllegalOperationError {
-                    return "System Audio Bridge rejected transport authorization or shared-region validation (Core Audio \(Self.describe(status))). Install driver 0.7.10 with Setup → Install / Repair Everything and reload coreaudiod."
+                    return "System Audio Bridge rejected transport authorization or shared-region validation (Core Audio \(Self.describe(status))). Install driver 0.8.2 with Setup → Install / Repair Everything and reload coreaudiod."
                 }
                 return "System Audio Bridge rejected the transport connection (Core Audio \(Self.describe(status)))."
             }

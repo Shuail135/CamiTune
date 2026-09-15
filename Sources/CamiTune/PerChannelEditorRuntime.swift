@@ -68,6 +68,11 @@ struct PerChannelEditorSnapshot: Equatable, Sendable {
     let bands: [EQBand]
     var simpleTone = SimpleToneSettings()
 
+    var processingSettings: ChannelProcessingSettings {
+        .init(gainDB: gainDB, bands: bands, delayMilliseconds: delayMilliseconds,
+            limiterEnabled: limiterEnabled, simpleTone: simpleTone)
+    }
+
     var canReset: Bool {
         gainDB != 0 || delayMilliseconds != 0 || limiterEnabled || !bands.isEmpty || !simpleTone.isNeutral
     }
@@ -93,6 +98,7 @@ final class PerChannelEditorRuntime: ObservableObject {
     var responseCalculationTask: Task<Void, Never>?
     var loadedProfileID: UUID?
     var loadedChannelIndex: Int?
+    var loadedGroupID: SpeakerGroupID?
 
     /// Continuous slider gestures keep expensive serialization/DSP work parked
     /// until pointer-up. Text fields, menus, toggles, and band-count edits still

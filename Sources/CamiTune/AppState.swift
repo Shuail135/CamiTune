@@ -141,6 +141,7 @@ final class AppState: NSObject, ObservableObject {
     private var sessionChannelEQDrafts: [UUID: [Int: String]] = [:]
     private var sessionChannelLimiterDrafts: [UUID: [Int: Bool]] = [:]
     private var sessionChannelDelayDrafts: [UUID: [Int: Double]] = [:]
+    private var sessionGroupProcessingDrafts: [UUID: [SpeakerGroupID: PerChannelEditorSnapshot]] = [:]
     private var requestedRuntimeVisualProfileID: UUID?
     private var requestedMeterVisuals = true
     private var requestedSpectrumVisuals = true
@@ -277,11 +278,12 @@ final class AppState: NSObject, ObservableObject {
         }
     }
 
-    func validate(profile: DeviceProfile) async -> ProcessingGraph? {
+    func validate(profile: DeviceProfile, detectedHardware: SpeakerTopology? = nil) async -> ProcessingGraph? {
         do {
             let (graph, parsed) = try await Task.detached(priority: .userInitiated) {
                 (
-                    try ProcessingGraphBuilder(channelCount: profile.processingChannelCount).build(profile: profile),
+                    try detectedHardware.map { try AudioRuntimePlanCompiler().compile(profile: profile, detectedHardware: $0).processingGraph }
+                        ?? ActiveAudioRoute(profile: profile).buildGraph(profile: profile),
                     try profile.resolvedProcessing().globalEqualizer
                 )
             }.value
@@ -311,13 +313,15 @@ final class AppState: NSObject, ObservableObject {
         }
     }
 
+    var multichannelEditSessions: [UUID: MultichannelHistoryState] = [:]
     private var activeReferenceTopology: SpeakerTopology?
+    private var activeAudioRoute: ActiveAudioRoute?
 
     private func buildGraphWithoutBlockingUI(
         profile: DeviceProfile
     ) async throws -> ProcessingGraph {
         try await Task.detached(priority: .userInitiated) {
-            try ProcessingGraphBuilder(channelCount: profile.processingChannelCount).build(profile: profile)
+            try ActiveAudioRoute(profile: profile).buildGraph(profile: profile)
         }.value
     }
 
@@ -462,6 +466,22 @@ final class AppState: NSObject, ObservableObject {
         sessionChannelToneDrafts[profileID]?[channelIndex]
     }
 
+    func groupProcessingDraft(for profileID: UUID, groupID: SpeakerGroupID) -> PerChannelEditorSnapshot? {
+        sessionGroupProcessingDrafts[profileID]?[groupID]
+    }
+
+    func setGroupProcessingDraft(_ snapshot: PerChannelEditorSnapshot, for profileID: UUID, groupID: SpeakerGroupID) {
+        guard sessionGroupProcessingDrafts[profileID]?[groupID] != snapshot else { return }
+        sessionGroupProcessingDrafts[profileID, default: [:]][groupID] = snapshot
+        publishEQDraftChange(for: profileID)
+    }
+
+    func clearGroupProcessingDraft(for profileID: UUID, groupID: SpeakerGroupID) {
+        guard sessionGroupProcessingDrafts[profileID]?.removeValue(forKey: groupID) != nil else { return }
+        if sessionGroupProcessingDrafts[profileID]?.isEmpty == true { sessionGroupProcessingDrafts.removeValue(forKey: profileID) }
+        publishEQDraftChange(for: profileID)
+    }
+
     func channelEQDraft(for profileID: UUID, channelIndex: Int) -> String? {
         sessionChannelEQDrafts[profileID]?[channelIndex]
     }
@@ -595,6 +615,12 @@ final class AppState: NSObject, ObservableObject {
             updated.processing.setLimiterEnabled(limiterEnabled)
         }
         if !replacingGlobalEqualizer { applyDeviceCorrectionProvenanceDraft(to: &updated.processing, for: profile.id) }
+        for (id, snapshot) in sessionGroupProcessingDrafts[profile.id] ?? [:] {
+            // Retain drafts if a setup temporarily disables/removes their group.
+            if updated.configuredSpeakerGroups.contains(where: { $0.id == id }) {
+                try updated.setGroupProcessing(id: id, settings: snapshot.processingSettings)
+            }
+        }
         let channelToneDrafts = sessionChannelToneDrafts[profile.id] ?? [:]
         let channelEQDrafts = sessionChannelEQDrafts[profile.id] ?? [:]
         let channelLimiterDrafts = sessionChannelLimiterDrafts[profile.id] ?? [:]
@@ -911,8 +937,11 @@ final class AppState: NSObject, ObservableObject {
             || original.speakerTopology != candidate.speakerTopology
             || original.spatialSettings != candidate.spatialSettings
             || original.processing != candidate.processing
+            || original.multichannel != candidate.multichannel
             || original.personalReferenceCorrections != candidate.personalReferenceCorrections
-        let requiresRestart = original.endpointKind != candidate.endpointKind
+        let changesSourceFormat = ProfileRoutingDescriptor.sourceLayout(for: original) != ProfileRoutingDescriptor.sourceLayout(for: candidate)
+            || original.sampleRate != candidate.sampleRate
+        let requiresRestart = changesSourceFormat || original.usesSourceProcessingBus != candidate.usesSourceProcessingBus || original.endpointKind != candidate.endpointKind
             || original.outputDevice != candidate.outputDevice || original.sampleRate != candidate.sampleRate
             || original.speakerTopology != candidate.speakerTopology
             || original.effectiveSpatialSettings.seating != candidate.effectiveSpatialSettings.seating
@@ -950,7 +979,8 @@ final class AppState: NSObject, ObservableObject {
                     let discovered = try await Task.detached(priority: .userInitiated) {
                         try SpeakerTopologyProbe().probe(device)
                     }.value
-                    try topology?.validateHardware(discovered)
+                    try candidate.speakerTopology?.validateHardware(discovered)
+                    try candidate.validateMultichannelHardware(discovered)
                     if let assignment, discovered.declaredChannelCount != assignment.hardwareChannelCount {
                         throw SpeakerTopologyError.hardwareLayoutChanged
                     }
@@ -982,7 +1012,7 @@ final class AppState: NSObject, ObservableObject {
                 }
             }
             try checkCurrent()
-            if original.name != candidate.name || original.outputDevice != candidate.outputDevice {
+            if changesSourceFormat || original.name != candidate.name || original.outputDevice != candidate.outputDevice {
                 touchedRouting = true
                 try await coreAudio.synchronizeProfileRoutingDevicesWithoutBlockingUI(
                     profiles: profiles.profiles.map { $0.id == candidate.id ? candidate : $0 },
@@ -1173,22 +1203,22 @@ final class AppState: NSObject, ObservableObject {
                 throw AppError.outputMissing(profile.outputDeviceName)
             }
             guard !output.isRoutingDevice else { throw AppError.invalidTarget }
-            if let assignment = try profile.validatedInterfaceConfiguration() {
+            let assignment = try profile.validatedInterfaceConfiguration()
+            let referenceTopology = try profile.validatedPhysicalSpeakerTopology()
+            let audioRoute = try ActiveAudioRoute(profile: profile)
+            var detectedHardware: SpeakerTopology?
+            if referenceTopology != nil || assignment != nil {
                 let discovered = try await Task.detached(priority: .userInitiated) {
                     try SpeakerTopologyProbe().probe(output)
                 }.value
-                guard discovered.declaredChannelCount == assignment.hardwareChannelCount else {
+                if let assignment, discovered.declaredChannelCount != assignment.hardwareChannelCount {
                     throw SpeakerTopologyError.hardwareLayoutChanged
                 }
+                try referenceTopology?.validateHardware(discovered)
+                try profile.validateMultichannelHardware(discovered)
+                detectedHardware = discovered
             }
-            let referenceTopology = try profile.validatedPhysicalSpeakerTopology()
-            if let referenceTopology {
-                let discovered = try await Task.detached(priority: .userInitiated) {
-                    try SpeakerTopologyProbe().probe(output)
-                }.value
-                try referenceTopology.validateHardware(discovered)
-            }
-            guard let graph = await validate(profile: profile) else { return }
+            guard let graph = await validate(profile: profile, detectedHardware: detectedHardware) else { return }
             let sampleRate = Double(profile.sampleRate)
             guard await coreAudio.supportsSampleRateWithoutBlockingUI(
                 uid: initialBridge.id,
@@ -1211,12 +1241,14 @@ final class AppState: NSObject, ObservableObject {
                     && activePhysicalOutputUID == profile.outputDeviceUID
                     && activeSampleRate == profile.sampleRate
                     && activeReferenceTopology == referenceTopology
+                    && activeAudioRoute == audioRoute
                 guard !alreadyOwnsRequestedRuntime else { return }
                 await stopProcessingPipeline()
                 isActive = false
                 activeSession = nil
                 activeSampleRate = nil
             activeReferenceTopology = nil
+            activeAudioRoute = nil
                 activePhysicalOutputUID = nil
             }
 
@@ -1298,6 +1330,7 @@ final class AppState: NSObject, ObservableObject {
             activeVolumeMode = volumeBridge.mode
             await pcmRouter.start(
                 camillaSink: try dsp.audioInputHandle(),
+                activeRoute: audioRoute,
                 spatialRenderingMode: profile.effectiveSpatialRenderingMode,
                 spatialListenerTuning: profile.spatialListenerTuning,
                 spatialContentMode: profile.spatialContentMode,
@@ -1316,6 +1349,7 @@ final class AppState: NSObject, ObservableObject {
                 }
             )
             activeReferenceTopology = referenceTopology
+            activeAudioRoute = audioRoute
             pcmRouter.setVirtualSurroundLayout(profile.virtualSurroundLayout)
             perAppAudio.setPlaybackContext(PerAppPlaybackContext(profile: profile))
             var transportConnected = false
@@ -1393,6 +1427,7 @@ final class AppState: NSObject, ObservableObject {
             activeSession = nil
             activeSampleRate = nil
             activeReferenceTopology = nil
+            activeAudioRoute = nil
             activePhysicalOutputUID = nil
             activeRoutingUID = nil
             try? await coreAudio.setSystemAudioBridgePresentationWithoutBlockingUI(
@@ -1616,7 +1651,8 @@ final class AppState: NSObject, ObservableObject {
         let profile = pending.profile
         let request = pending.request
         guard isActive, activeProfileID == profile.id else { return }
-        if activeSampleRate != profile.sampleRate || activeReferenceTopology != (try? profile.validatedPhysicalSpeakerTopology()) {
+        if activeSampleRate != profile.sampleRate || activeReferenceTopology != (try? profile.validatedPhysicalSpeakerTopology())
+            || activeAudioRoute != (try? ActiveAudioRoute(profile: profile)) {
             if let problem = await processingSampleRateProblemWithoutBlockingUI(
                 rate: profile.sampleRate,
                 outputUID: profile.outputDeviceUID
@@ -1734,6 +1770,7 @@ final class AppState: NSObject, ObservableObject {
         activeSession = nil
         activeSampleRate = nil
         activeReferenceTopology = nil
+        activeAudioRoute = nil
         activePhysicalOutputUID = nil
         activeRoutingUID = nil
         previousDefaultUID = nil
@@ -1959,6 +1996,7 @@ final class AppState: NSObject, ObservableObject {
         activeSession = nil
         activeSampleRate = nil
         activeReferenceTopology = nil
+        activeAudioRoute = nil
         activePhysicalOutputUID = nil
         activeRoutingUID = nil
         previousDefaultUID = nil

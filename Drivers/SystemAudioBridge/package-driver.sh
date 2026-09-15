@@ -7,7 +7,7 @@ BUILD_ROOT="${SABR_BUILD_ROOT:-$REPO_ROOT/build/driver}"
 PACKAGE_ROOT="$BUILD_ROOT/package-root"
 SCRIPTS_ROOT="$BUILD_ROOT/package-scripts"
 DRIVER="$BUILD_ROOT/CamillaAudio.driver"
-PACKAGE="$BUILD_ROOT/CamillaAudio-${SABR_DRIVER_VERSION:-0.7.10}.pkg"
+PACKAGE="$BUILD_ROOT/CamillaAudio-${SABR_DRIVER_VERSION:-0.8.2}.pkg"
 
 "$SCRIPT_DIR/build-driver.sh"
 
@@ -21,7 +21,7 @@ PACKAGE="$BUILD_ROOT/CamillaAudio-${SABR_DRIVER_VERSION:-0.7.10}.pkg"
     --root "$PACKAGE_ROOT" \
     --scripts "$SCRIPTS_ROOT" \
     --identifier local.camillaaudio.driver.pkg \
-    --version "${SABR_DRIVER_VERSION:-0.7.10}" \
+    --version "${SABR_DRIVER_VERSION:-0.8.2}" \
     --install-location / \
     "$PACKAGE"
 

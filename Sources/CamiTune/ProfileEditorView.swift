@@ -158,7 +158,7 @@ struct ProfileEditorView: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Meters & Status").font(.title3.bold())
-                    SignalMetersView(meters: state.meters, profileID: profile.id)
+                    SignalMetersView(meters: state.meters, profile: profile)
                     Divider()
                     AudioRuntimeStatusView(monitor: state.meters, profileID: profile.id)
                 }.padding(6)
@@ -177,6 +177,8 @@ struct ProfileEditorView: View {
             ConvolutionEditorView(state: state, profile: $profile)
         case .crossfeed:
             CrossfeedEditorView(state: state, profile: $profile)
+        case .multichannel:
+            if profile.hasPhysicalSpeakerRoute { MultichannelProcessingView(state: state, profile: $profile) }
         case .perChannel:
             PerChannelProcessingView(state: state, profile: $profile)
         }

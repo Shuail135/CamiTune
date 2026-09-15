@@ -11,6 +11,7 @@ enum SpeakerTopologyError: Error, Equatable, LocalizedError {
     case foreignDevice(PhysicalOutputID)
     case invalidPosition
     case invalidBandwidth(PhysicalOutputID)
+    case invalidGroup(String)
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +23,7 @@ enum SpeakerTopologyError: Error, Equatable, LocalizedError {
         case .invalidChannelIndex, .duplicateOutput: return "The speaker map has invalid or duplicate physical channel indices."
         case .invalidPosition: return "Speaker positions must use finite angles and a positive distance when supplied."
         case .invalidBandwidth: return "The speaker's frequency limits are invalid."
+        case .invalidGroup: return "A speaker group has an invalid identity or output assignment."
         }
     }
 
@@ -32,7 +34,7 @@ enum SpeakerTopologyError: Error, Equatable, LocalizedError {
 /// Validate after decoding or editing and before using a topology for DSP.
 struct SpeakerTopology: Codable, Hashable, Sendable {
     static let maximumOutputChannels = 32
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     var version: Int = currentVersion
     var deviceUID: String
@@ -43,16 +45,62 @@ struct SpeakerTopology: Codable, Hashable, Sendable {
     var hardwarePositions: [SpatialPosition?]? = nil
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
+    var groups: [SpeakerGroup] = []
+    var layoutTemplateID: SpeakerLayoutTemplateID? = nil
+
+    init(version: Int = Self.currentVersion, deviceUID: String, sampleRate: Double,
+         declaredChannelCount: Int, endpoints: [SpeakerEndpoint], hardwareRoles: [ChannelRole]? = nil,
+         hardwarePositions: [SpatialPosition?]? = nil, createdAt: Date = Date(), updatedAt: Date = Date(),
+         groups: [SpeakerGroup] = [], layoutTemplateID: SpeakerLayoutTemplateID? = nil) {
+        self.version = version; self.deviceUID = deviceUID; self.sampleRate = sampleRate
+        self.declaredChannelCount = declaredChannelCount; self.endpoints = endpoints
+        self.hardwareRoles = hardwareRoles; self.hardwarePositions = hardwarePositions
+        self.createdAt = createdAt; self.updatedAt = updatedAt
+        self.groups = groups; self.layoutTemplateID = layoutTemplateID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, deviceUID, sampleRate, declaredChannelCount, endpoints
+        case hardwareRoles, hardwarePositions, createdAt, updatedAt, groups, layoutTemplateID
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let savedVersion = try values.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        guard (1...Self.currentVersion).contains(savedVersion) else {
+            throw SpeakerTopologyError.unsupportedVersion(savedVersion)
+        }
+        version = Self.currentVersion
+        deviceUID = try values.decode(String.self, forKey: .deviceUID)
+        sampleRate = try values.decode(Double.self, forKey: .sampleRate)
+        declaredChannelCount = try values.decode(Int.self, forKey: .declaredChannelCount)
+        endpoints = try values.decode([SpeakerEndpoint].self, forKey: .endpoints)
+        hardwareRoles = try values.decodeIfPresent([ChannelRole].self, forKey: .hardwareRoles)
+        hardwarePositions = try values.decodeIfPresent([SpatialPosition?].self, forKey: .hardwarePositions)
+        createdAt = try values.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date(timeIntervalSince1970: 0)
+        updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+        groups = try values.decodeIfPresent([SpeakerGroup].self, forKey: .groups) ?? []
+        layoutTemplateID = try values.decodeIfPresent(SpeakerLayoutTemplateID.self, forKey: .layoutTemplateID)
+        if savedVersion == 1 {
+            let legacyIDs = Set(endpoints.compactMap(\.groupID)).sorted()
+            for legacyID in legacyIDs where !legacyID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let id = SpeakerGroupID(rawValue: "legacy:\(legacyID)")
+                if !groups.contains(where: { $0.id == id }) {
+                    groups.append(SpeakerGroup(id: id, name: legacyID, kind: .custom,
+                        members: endpoints.filter { $0.groupID == legacyID }.map(\.id)))
+                }
+            }
+            for index in endpoints.indices { endpoints[index].groupID = nil }
+        }
+        try validate()
+    }
 
     var activeEndpoints: [SpeakerEndpoint] {
         endpoints.filter { $0.connectionState == .acousticallyDetected }
     }
 
     func validateHardware(_ current: SpeakerTopology) throws {
-        try current.validate()
-        guard current.deviceUID == deviceUID, current.declaredChannelCount == declaredChannelCount,
-              hardwareRoles == nil || current.hardwareRoles == hardwareRoles,
-              hardwarePositions == nil || current.hardwarePositions == hardwarePositions else {
+        guard try HardwareTopologyReview(configured: self, detected: current) == .unchanged else {
             throw SpeakerTopologyError.hardwareLayoutChanged
         }
     }
@@ -94,6 +142,17 @@ struct SpeakerTopology: Codable, Hashable, Sendable {
             let ordered = low.flatMap { low in high.map { low <= $0 } } ?? true
             guard [low, high].compactMap({ $0 }).allSatisfy({ $0.isFinite && $0 > 0 }), ordered else {
                 throw SpeakerTopologyError.invalidBandwidth(endpoint.id)
+            }
+        }
+        let outputIDs = Set(endpoints.map(\.id))
+        var groupIDs = Set<SpeakerGroupID>()
+        for group in groups {
+            guard !group.id.rawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !group.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  groupIDs.insert(group.id).inserted, !group.members.isEmpty,
+                  Set(group.members).count == group.members.count,
+                  group.members.allSatisfy({ outputIDs.contains($0) }) else {
+                throw SpeakerTopologyError.invalidGroup(group.id.rawValue)
             }
         }
     }

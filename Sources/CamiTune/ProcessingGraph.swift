@@ -10,11 +10,27 @@ struct ProcessingGraph: Hashable, Sendable {
     static let automaticHeadroomProcessorID = "system_automatic_headroom"
 
     var title: String
-    var sampleRate: Int
+    var inputFormat: AudioFormatDescriptor
+    var outputFormat: AudioFormatDescriptor
+    var sampleRate: Int {
+        get { inputFormat.sampleRate }
+        set {
+            inputFormat = .init(sampleRate: newValue, channels: inputFormat.channels)
+            outputFormat = .init(sampleRate: newValue, channels: outputFormat.channels)
+        }
+    }
     var chunkSize: Int
-    var channelCount: Int
+    /// Compatibility spelling for capture width. Hardware width is outputFormat.
+    var channelCount: Int { inputFormat.channelCount }
     var capture: CaptureEndpoint
-    var playback: PlaybackEndpoint
+    var playback: PlaybackEndpoint {
+        didSet {
+            if playback.channelCount != oldValue.channelCount || playback.deviceUID != oldValue.deviceUID {
+                outputFormat = Self.hardwareFormat(sampleRate: sampleRate, deviceUID: playback.deviceUID,
+                    count: playback.channelCount ?? outputFormat.channelCount)
+            }
+        }
+    }
     /// Runtime-only protection derived from response-shaping and per-channel
     /// processing. Intentional user-preamp gain is kept independent, and this
     /// value is deliberately not part of the persisted processing profile.
@@ -22,6 +38,27 @@ struct ProcessingGraph: Hashable, Sendable {
     var processors: [Processor]
     var mixers: [Mixer]
     var pipeline: [PipelineStep]
+
+    init(title: String, sampleRate: Int, chunkSize: Int, channelCount: Int,
+         capture: CaptureEndpoint, playback: PlaybackEndpoint, automaticHeadroomDB: Double,
+         processors: [Processor], mixers: [Mixer], pipeline: [PipelineStep],
+         inputFormat: AudioFormatDescriptor? = nil, outputFormat: AudioFormatDescriptor? = nil) {
+        self.title = title; self.chunkSize = chunkSize; self.capture = capture; self.playback = playback
+        self.inputFormat = inputFormat ?? .init(sampleRate: sampleRate, channels: (0..<max(0, channelCount)).map {
+            .init(id: .source($0), kind: .source)
+        })
+        self.outputFormat = outputFormat ?? Self.hardwareFormat(sampleRate: sampleRate,
+            deviceUID: playback.deviceUID, count: playback.channelCount ?? channelCount)
+        self.automaticHeadroomDB = automaticHeadroomDB; self.processors = processors
+        self.mixers = mixers; self.pipeline = pipeline
+    }
+
+    private static func hardwareFormat(sampleRate: Int, deviceUID: String, count: Int) -> AudioFormatDescriptor {
+        .init(sampleRate: sampleRate, channels: (0..<max(0, count)).map {
+            let id = PhysicalOutputID(deviceUID: deviceUID, channelIndex: $0)
+            return .init(id: .hardware(id), kind: .hardwareSlot, physicalOutputID: id)
+        })
+    }
 
     struct CaptureEndpoint: Hashable, Sendable {
         var format: SampleFormat
@@ -74,6 +111,8 @@ struct ProcessingGraph: Hashable, Sendable {
         struct Source: Hashable, Sendable {
             var channel: Int
             var gainDB: Double = 0
+            var inverted = false
+            var muted = false
         }
     }
 
@@ -92,6 +131,7 @@ struct ProcessingGraph: Hashable, Sendable {
         enum Scope: Hashable, Sendable {
             case global
             case channel(index: Int, role: ChannelRole)
+            case group(SpeakerGroupID)
         }
     }
 }
@@ -109,6 +149,9 @@ struct ProcessingGraphBuilder {
     }
 
     func build(profile: DeviceProfile) throws -> ProcessingGraph {
+        var profile = profile
+        try profile.migrateInterfaceTopology()
+        try profile.validateMultichannelSettings()
         if let topology = try profile.validatedPhysicalSpeakerTopology(), topology.declaredChannelCount != channelCount {
             throw ProcessingGraphError.invalidChannelCount
         }
@@ -185,6 +228,32 @@ struct ProcessingGraphBuilder {
             to: &graph
         )
 
+        guard Set(processing.groups.map(\.id)).count == processing.groups.count else {
+            throw ProfileSettingsError.runtime("Group processing identities must be unique.")
+        }
+        // Phase 5 maps the compact DSP bus into physical slots at graph ingress.
+        // Group content processing therefore targets explicit member slots here,
+        // after global content and before each physical output's calibration.
+        let configuredGroups = profile.configuredSpeakerGroups
+        let activeGroups = processing.groups.sorted { $0.id.rawValue < $1.id.rawValue }.compactMap { group -> (GroupProcessing, [Int])? in
+            guard let members = configuredGroups.first(where: { $0.id == group.id })?.members else { return nil }
+            return (group, members.map(\.channelIndex).sorted())
+        }
+        for (group, channels) in activeGroups {
+            var regular = ProcessingChain(stages: group.chain.stages.filter {
+                if case .limiter = $0.processor { return false }; return true
+            })
+            let tone = group.chain.simpleTone ?? SimpleToneSettings()
+            let bands = try SimpleToneFilterFactory.filters(for: tone, sampleRate: Double(profile.sampleRate))
+            if !tone.isNeutral {
+                regular.stages.append(ProcessingStage(id: group.id.stageID("tone"),
+                    processor: .equalizer(EqualizerProcessor(bands: bands))))
+            }
+            try append(regular, identifierScope: "group_\(compact(group.id.stageID("scope")))",
+                pipelineScope: .group(group.id), channels: channels, sampleRate: profile.sampleRate,
+                usedStageIDs: &usedStageIDs, to: &graph)
+        }
+
         var usedChannelIndexes = Set<Int>()
         for channel in processing.channels.sorted(by: { $0.index < $1.index }) {
             if profile.hasPhysicalSpeakerRoute, !profile.configuredProcessingChannels.contains(where: { $0.index == channel.index }) { continue }
@@ -235,6 +304,15 @@ struct ProcessingGraphBuilder {
             )
         }
 
+        // Group limiters protect each member after its individual processing.
+        for (group, channels) in activeGroups {
+            let limiters = ProcessingChain(stages: group.chain.stages.filter {
+                if case .limiter = $0.processor { return true }; return false
+            })
+            try append(limiters, identifierScope: "group_\(compact(group.id.stageID("scope")))",
+                pipelineScope: .group(group.id), channels: channels, sampleRate: profile.sampleRate,
+                usedStageIDs: &usedStageIDs, to: &graph)
+        }
         let terminalLimiters = ProcessingChain(stages: processing.global.stages.filter {
             if case .limiter = $0.processor { return true }
             return false
@@ -277,17 +355,19 @@ struct ProcessingGraphBuilder {
         ), at: 0)
 
         if let assignment = try profile.validatedInterfaceConfiguration() {
+            let outputs = try profile.validatedInterfaceOutputIndices() ?? []
             graph.playback.channelCount = assignment.hardwareChannelCount
             let mixerID = "interface_output_assignment"
             let stageID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
             graph.mixers.append(.init(id: mixerID, sourceStageID: stageID,
                 inputChannelCount: channelCount, outputChannelCount: assignment.hardwareChannelCount,
-                mappings: assignment.outputChannels.enumerated().map { logical, physical in
+                mappings: outputs.enumerated().map { logical, physical in
                     .init(destination: physical, sources: [.init(channel: profile.hasPhysicalSpeakerRoute ? physical : logical)])
                 }))
             graph.pipeline.append(.init(id: stageID, kind: .mixer(id: mixerID), scope: .global,
                 channels: [], processorIDs: []))
         }
+        try graph.validate()
         return graph
     }
 
@@ -395,7 +475,7 @@ struct ProcessingGraphBuilder {
                 )
                 continue
             case .delay(let delay):
-                guard case .channel = pipelineScope else {
+                if case .global = pipelineScope {
                     throw ProcessingGraphError.delayMustBePerChannel
                 }
                 guard delay.milliseconds.isFinite,
@@ -689,59 +769,65 @@ struct ProcessingGraphHeadroomCalculator {
         pointCount: Int = 1_200,
         excludingGainStageIDs: Set<UUID> = []
     ) -> Double {
-        guard graph.channelCount > 0 else { return 0 }
-        let processors = Dictionary(graph.processors.map { ($0.id, $0) }, uniquingKeysWith: {
-            // GraphBuilder rejects duplicate IDs. Keeping this calculation
-            // total also makes manually constructed test/future graphs safe.
-            first, _ in first
-        })
-        let response = EQResponseCalculator()
-        let crossfeedBoostDB = graph.processors.reduce(0.0) { result, processor in
-            guard case .crossfeedGain(_, _, let maximumBoostDB) = processor.implementation else {
-                return result
-            }
-            return result + maximumBoostDB
-        }
-        var largestBoost = 0.0
+        guard let outputs = peakOutputMagnitudes(for: graph, pointCount: pointCount,
+                excludingGainStageIDs: excludingGainStageIDs) else { return .nan }
+        return -20 * log10(max(1, outputs.max() ?? 1))
+    }
 
-        for channel in 0..<graph.channelCount {
-            var parsed = ParsedEQ(preampDB: crossfeedBoostDB)
-            for step in graph.pipeline where step.kind == .filter
-                && step.channels.contains(channel) {
-                for processorID in step.processorIDs {
-                    guard processorID != ProcessingGraph.automaticHeadroomProcessorID else {
-                        continue
+    /// Per-output conservative response bounds, retaining attenuation for driver
+    /// protection. The ordinary headroom result above never adds positive gain.
+    func peakOutputMagnitudes(for graph: ProcessingGraph, pointCount: Int = 1_200,
+                              excludingGainStageIDs: Set<UUID> = [], includingAutomaticHeadroom: Bool = false) -> [Double]? {
+        guard graph.channelCount > 0, pointCount > 0 else { return nil }
+        let response = EQResponseCalculator()
+        let frequencies = response.calculate(parsed: ParsedEQ(preampDB: 0), sampleRate: Double(graph.sampleRate), count: pointCount).map(\.frequency)
+        var magnitudes: [String: [Double]] = [:]
+        for processor in graph.processors {
+            var parsed = ParsedEQ(preampDB: 0)
+            var constant = 1.0
+            switch processor.implementation {
+            case .gain(let db):
+                if (includingAutomaticHeadroom || processor.id != ProcessingGraph.automaticHeadroomProcessorID) && !excludingGainStageIDs.contains(processor.sourceStageID) { parsed.preampDB = db }
+            case .biquad(let band): parsed.bands = [band]
+            case .convolution(let fir): parsed.preampDB = max(0, fir.maximumMagnitudeDB)
+            case .crossfeedGain(_, _, let maximumBoostDB): constant = max(0, pow(10, maximumBoostDB / 20) - 1)
+            case .delay, .firstOrderLowpass, .limiter: break
+            }
+            magnitudes[processor.id] = frequencies.map {
+                constant * pow(10, response.gainDB(at: $0, parsed: parsed, sampleRate: Double(graph.sampleRate)) / 20)
+            }
+        }
+        let mixers = Dictionary(graph.mixers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var peaks = [Double](repeating: 0, count: graph.outputFormat.channelCount)
+        for frequency in frequencies.indices {
+            var envelope = [Double](repeating: 1, count: graph.inputFormat.channelCount)
+            for step in graph.pipeline {
+                switch step.kind {
+                case .filter:
+                    for channel in step.channels where envelope.indices.contains(channel) {
+                        for id in step.processorIDs { envelope[channel] *= magnitudes[id]?[frequency] ?? 1 }
                     }
-                    guard let processor = processors[processorID] else { continue }
-                    switch processor.implementation {
-                    case .gain(let db):
-                        guard !excludingGainStageIDs.contains(processor.sourceStageID) else {
-                            continue
+                case .mixer(let id):
+                    guard let mixer = mixers[id], mixer.inputChannelCount == envelope.count, mixer.outputChannelCount > 0 else { return nil }
+                    var mixed = [Double](repeating: 0, count: mixer.outputChannelCount)
+                    for mapping in mixer.mappings {
+                        guard mixed.indices.contains(mapping.destination) else { return nil }
+                        for source in mapping.sources where !source.muted {
+                            guard envelope.indices.contains(source.channel) else { return nil }
+                            // Magnitude sums bound coherent signals without relying on
+                            // phase cancellation. Fan-out and sparse silent slots retain
+                            // their own envelopes through later filters and merges.
+                            mixed[mapping.destination] += envelope[source.channel] * pow(10, source.gainDB / 20)
                         }
-                        parsed.preampDB += db
-                    case .biquad(let band):
-                        parsed.bands.append(band)
-                    case .convolution(let convolution):
-                        // Sum the FIR maximum with the exact IIR response as a
-                        // conservative bound for the cascaded response.
-                        parsed.preampDB += max(0, convolution.maximumMagnitudeDB)
-                    case .delay, .firstOrderLowpass, .crossfeedGain:
-                        break
-                    case .limiter:
-                        break
                     }
+                    envelope = mixed
                 }
             }
-            for point in response.calculate(
-                parsed: parsed,
-                sampleRate: Double(graph.sampleRate),
-                count: pointCount
-            ) {
-                largestBoost = max(largestBoost, point.gainDB)
-            }
+            guard envelope.allSatisfy(\.isFinite) else { return nil }
+            guard envelope.count == peaks.count else { return nil }
+            for channel in peaks.indices { peaks[channel] = max(peaks[channel], envelope[channel]) }
         }
-        guard largestBoost.isFinite else { return 0 }
-        return -max(0, largestBoost)
+        return peaks
     }
 }
 
@@ -828,7 +914,7 @@ enum ProcessingGraphError: LocalizedError, Equatable {
         case .invalidCrossfeedFrequency(let frequency, let sampleRate):
             return "Crossfeed frequency \(frequency) Hz must be positive and below the Nyquist frequency for \(sampleRate) Hz audio."
         case .delayMustBePerChannel:
-            return "Channel delay must belong to one physical channel."
+            return "Delay must target a speaker or speaker group."
         case .invalidChannelDelay(let delay):
             return "Channel delay must be between 0 and 100 ms (received \(delay) ms)."
         case .invalidLimiterCeiling(let ceiling):

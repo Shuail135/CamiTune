@@ -24,16 +24,21 @@ var packageTargets: [Target] = [
     )
 ]
 
-// Tests are intentionally local-only. Opt in when running the local test
-// suite so a clean GitHub checkout does not require the ignored Tests folder.
+// Test sources stay local. Clean GitHub checkouts build without the ignored
+// Tests directory; opt in to the suites available in this working copy.
 if ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] == "1" {
-    packageTargets.append(
-        .testTarget(
-            name: "CamiTuneTests",
-            dependencies: ["CamiTune", "SystemAudioBridgeC"],
-            path: "Tests/CamiTuneTests"
+    let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    for name in ["MultichannelTests", "CamiTuneTests"] {
+        let path = "Tests/\(name)"
+        guard FileManager.default.fileExists(atPath: packageRoot.appendingPathComponent(path).path) else { continue }
+        packageTargets.append(
+            .testTarget(
+                name: name,
+                dependencies: ["CamiTune", "SystemAudioBridgeC"],
+                path: path
+            )
         )
-    )
+    }
 }
 
 let package = Package(

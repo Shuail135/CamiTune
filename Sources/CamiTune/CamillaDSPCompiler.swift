@@ -91,11 +91,11 @@ devices:
   volume_limit: 0.0
   capture:
     type: Stdin
-    channels: \(graph.channelCount)
+    channels: \(graph.inputFormat.channelCount)
     format: \(captureFormat(graph.capture.format))
   playback:
     type: CoreAudio
-    channels: \(graph.playback.channelCount ?? graph.channelCount)
+    channels: \(graph.outputFormat.channelCount)
     device: "\(yamlEscape(graph.playback.deviceUID))"
     exclusive: \(graph.playback.exclusive)
 \(filterSection)
@@ -268,12 +268,14 @@ devices:
                 """
           - channel: \(source.channel)
             gain: \(format(source.gainDB))
+            inverted: \(source.inverted)
+            mute: \(source.muted)
             scale: dB
 """
             }.joined(separator: "\n")
             return """
       - dest: \(mapping.destination)
-        sources:
+        sources:\(sources.isEmpty ? " []" : "")
 \(sources)
 """
         }.joined(separator: "\n")
@@ -282,7 +284,7 @@ devices:
     channels:
       in: \(mixer.inputChannelCount)
       out: \(mixer.outputChannelCount)
-    mapping:
+    mapping:\(mappings.isEmpty ? " []" : "")
 \(mappings)
 """
     }

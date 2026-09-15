@@ -38,7 +38,8 @@ struct ProcessingGraphDiffer: Sendable {
         current.title == next.title
             && current.sampleRate == next.sampleRate
             && current.chunkSize == next.chunkSize
-            && current.channelCount == next.channelCount
+            && current.inputFormat == next.inputFormat
+            && current.outputFormat == next.outputFormat
             && current.capture == next.capture
             && current.playback == next.playback
             && current.mixers == next.mixers
