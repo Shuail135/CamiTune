@@ -7,6 +7,32 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CA4900000000000000000104 = {isa = PBXBuildFile; fileRef = CA4900000000000000000204; };
+		CA4900000000000000000103 = {isa = PBXBuildFile; fileRef = CA4900000000000000000203; };
+		CA4900000000000000000102 = {isa = PBXBuildFile; fileRef = CA4900000000000000000202; };
+		CA4900000000000000000101 = {isa = PBXBuildFile; fileRef = CA4900000000000000000201; };
+		CA4900000000000000000100 = {isa = PBXBuildFile; fileRef = CA4900000000000000000200; };
+		CA4800000000000000000102 = {isa = PBXBuildFile; fileRef = CA4800000000000000000202; };
+		CA4800000000000000000101 = {isa = PBXBuildFile; fileRef = CA4800000000000000000201; };
+		CA4800000000000000000100 = {isa = PBXBuildFile; fileRef = CA4800000000000000000200; };
+		CA4700000000000000000101 = {isa = PBXBuildFile; fileRef = CA4700000000000000000201; };
+		CA4700000000000000000100 = {isa = PBXBuildFile; fileRef = CA4700000000000000000200; };
+		CA4600000000000000000102 = {isa = PBXBuildFile; fileRef = CA4600000000000000000202; };
+		CA4600000000000000000101 = {isa = PBXBuildFile; fileRef = CA4600000000000000000201; };
+		CA4600000000000000000100 = {isa = PBXBuildFile; fileRef = CA4600000000000000000200; };
+		CA4500000000000000000105 = {isa = PBXBuildFile; fileRef = CA4500000000000000000205; };
+		CA4500000000000000000104 = {isa = PBXBuildFile; fileRef = CA4500000000000000000204; };
+		CA4500000000000000000103 = {isa = PBXBuildFile; fileRef = CA4500000000000000000203; };
+		CA4500000000000000000102 = {isa = PBXBuildFile; fileRef = CA4500000000000000000202; };
+		CA4500000000000000000101 = {isa = PBXBuildFile; fileRef = CA4500000000000000000201; };
+		CA4500000000000000000100 = {isa = PBXBuildFile; fileRef = CA4500000000000000000200; };
+		CA4400000000000000000106 = {isa = PBXBuildFile; fileRef = CA4400000000000000000206; };
+		CA4400000000000000000105 = {isa = PBXBuildFile; fileRef = CA4400000000000000000205; };
+		CA4400000000000000000104 = {isa = PBXBuildFile; fileRef = CA4400000000000000000204; };
+		CA4400000000000000000103 = {isa = PBXBuildFile; fileRef = CA4400000000000000000203; };
+		CA4400000000000000000102 = {isa = PBXBuildFile; fileRef = CA4400000000000000000202; };
+		CA4400000000000000000101 = {isa = PBXBuildFile; fileRef = CA4400000000000000000201; };
+		CA4400000000000000000100 = {isa = PBXBuildFile; fileRef = CA4400000000000000000200; };
 		CA4300000000000000000111 = {isa = PBXBuildFile; fileRef = CA4300000000000000000211; };
 		CA4300000000000000000110 = {isa = PBXBuildFile; fileRef = CA4300000000000000000210; };
 		CA4300000000000000000109 = {isa = PBXBuildFile; fileRef = CA4300000000000000000209; };
@@ -588,6 +614,32 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CA4900000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/LiveRuntimeBaseline.swift"; sourceTree = SOURCE_ROOT; };
+		CA4900000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/RuntimeCoordinatorSelfTests.swift"; sourceTree = SOURCE_ROOT; };
+		CA4900000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/OwnedRuntimeSession.swift"; sourceTree = SOURCE_ROOT; };
+		CA4900000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/RuntimeCoordinatorState.swift"; sourceTree = SOURCE_ROOT; };
+		CA4900000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/AudioRuntimeCoordinator.swift"; sourceTree = SOURCE_ROOT; };
+		CA4800000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/RuntimePlanDifferSelfTests.swift"; sourceTree = SOURCE_ROOT; };
+		CA4800000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/RuntimePlanDiffer.swift"; sourceTree = SOURCE_ROOT; };
+		CA4800000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/RuntimePlanDelta.swift"; sourceTree = SOURCE_ROOT; };
+		CA4700000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/RuntimePlanSelfTests.swift"; sourceTree = SOURCE_ROOT; };
+		CA4700000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/AudioRuntimePlanPreparer.swift"; sourceTree = SOURCE_ROOT; };
+		CA4600000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/PresentationSelfTests.swift"; sourceTree = SOURCE_ROOT; };
+		CA4600000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Presentation/PerAppPresentationPublisher.swift"; sourceTree = SOURCE_ROOT; };
+		CA4600000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Presentation/PerAppPresentationSnapshot.swift"; sourceTree = SOURCE_ROOT; };
+		CA4500000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/PerformanceDiagnosticsView.swift"; sourceTree = SOURCE_ROOT; };
+		CA4500000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Performance/RuntimePerformanceRecorder.swift"; sourceTree = SOURCE_ROOT; };
+		CA4500000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Performance/PerformanceReport.swift"; sourceTree = SOURCE_ROOT; };
+		CA4500000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Performance/PerformanceModels.swift"; sourceTree = SOURCE_ROOT; };
+		CA4500000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Performance/PerformanceClock.swift"; sourceTree = SOURCE_ROOT; };
+		CA4500000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Performance/AudioLatencyCapture.swift"; sourceTree = SOURCE_ROOT; };
+		CA4400000000000000000206 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/AudioRuntimeServices.swift"; sourceTree = SOURCE_ROOT; };
+		CA4400000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/SystemDiagnostics.swift"; sourceTree = SOURCE_ROOT; };
+		CA4400000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/DiagnosticsView.swift"; sourceTree = SOURCE_ROOT; };
+		CA4400000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/DiagnosticsRunner.swift"; sourceTree = SOURCE_ROOT; };
+		CA4400000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/DiagnosticsModels.swift"; sourceTree = SOURCE_ROOT; };
+		CA4400000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/DiagnosticRuntimeFakes.swift"; sourceTree = SOURCE_ROOT; };
+		CA4400000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/DeveloperSelfTests.swift"; sourceTree = SOURCE_ROOT; };
 		CA4300000000000000000211 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/SpeakerVerificationView.swift"; sourceTree = SOURCE_ROOT; };
 		CA4300000000000000000210 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/SpeakerVerification.swift"; sourceTree = SOURCE_ROOT; };
 		CA4300000000000000000209 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/SpeakerAuditionProtection.swift"; sourceTree = SOURCE_ROOT; };
@@ -1613,6 +1665,32 @@
 			children = (
 				CA4300000000000000000204,
 				CA4300000000000000000205,
+				CA4500000000000000000200,
+				CA4500000000000000000201,
+				CA4500000000000000000202,
+				CA4500000000000000000203,
+				CA4500000000000000000204,
+				CA4500000000000000000205,
+				CA4900000000000000000201,
+				CA4900000000000000000202,
+				CA4900000000000000000203,
+				CA4900000000000000000204,
+				CA4900000000000000000200,
+				CA4800000000000000000200,
+				CA4800000000000000000201,
+				CA4800000000000000000202,
+				CA4700000000000000000201,
+				CA4700000000000000000200,
+				CA4600000000000000000200,
+				CA4600000000000000000201,
+				CA4600000000000000000202,
+				CA4400000000000000000200,
+				CA4400000000000000000201,
+				CA4400000000000000000202,
+				CA4400000000000000000203,
+				CA4400000000000000000204,
+				CA4400000000000000000205,
+				CA4400000000000000000206,
 				CA4300000000000000000211,
 				CA4300000000000000000210,
 				CA4300000000000000000209,
@@ -1976,6 +2054,32 @@
 			files = (
 				CA4300000000000000000104,
 				CA4300000000000000000105,
+				CA4500000000000000000100,
+				CA4500000000000000000101,
+				CA4500000000000000000102,
+				CA4500000000000000000103,
+				CA4500000000000000000104,
+				CA4500000000000000000105,
+				CA4900000000000000000101,
+				CA4900000000000000000102,
+				CA4900000000000000000103,
+				CA4900000000000000000104,
+				CA4900000000000000000100,
+				CA4800000000000000000100,
+				CA4800000000000000000101,
+				CA4800000000000000000102,
+				CA4700000000000000000101,
+				CA4700000000000000000100,
+				CA4600000000000000000100,
+				CA4600000000000000000101,
+				CA4600000000000000000102,
+				CA4400000000000000000100,
+				CA4400000000000000000101,
+				CA4400000000000000000102,
+				CA4400000000000000000103,
+				CA4400000000000000000104,
+				CA4400000000000000000105,
+				CA4400000000000000000106,
 				CA4300000000000000000111,
 				CA4300000000000000000110,
 				CA4300000000000000000109,

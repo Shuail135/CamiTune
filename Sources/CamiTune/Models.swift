@@ -917,7 +917,7 @@ struct AudioInterfaceConfiguration: Codable, Hashable, Sendable {
 }
 
 
-enum PlaybackModeReadiness: Equatable, Sendable {
+enum PlaybackModeReadiness: Hashable, Sendable {
     case ready, unavailable(String)
     var isReady: Bool { self == .ready }
     var reason: String? { if case .unavailable(let reason) = self { return reason }; return nil }

@@ -262,6 +262,7 @@ final class SystemVolumeControlSession: @unchecked Sendable {
 /// A shared serial queue orders both directions of HAL synchronization.
 @MainActor
 final class SystemVolumeBridge {
+    var runtimeControlSession: SystemVolumeControlSession? { controlSession }
     var measurementSnapshot: SystemVolumeControlSession.Snapshot? { controlSession?.snapshot() }
     private weak var coreAudio: CoreAudioManager?
     private var physicalUID: String?

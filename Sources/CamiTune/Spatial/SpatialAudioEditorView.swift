@@ -178,9 +178,10 @@ struct SpatialAudioEditorView: View {
         .onChange(of: profile.spatialSettings) { _ in
             guard profile.playbackMode == .spatialRender else { return }
             guard active, state.spatialCalibrationContext == nil else { return }
-            state.pcmRouter.setSpatialSettings(profile.effectiveSpatialSettings,
-                output: profile.effectiveSpatialSettings.resolvedOutput(deviceName: profile.outputDeviceName))
-            state.pcmRouter.setSpatialRenderingMode(.spatialAudio)
+            do {
+                let candidate = try state.applyingSessionEQDrafts(to: profile)
+                Task { await state.apply(profile: candidate) }
+            } catch { state.errorMessage = error.localizedDescription }
         }
     }
     private var playbackMode: Binding<PlaybackMode> {

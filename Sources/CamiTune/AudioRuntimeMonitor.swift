@@ -49,6 +49,11 @@ struct PCMLevelSnapshot: Equatable, Sendable {
 }
 
 struct AudioRouteDiagnostics: Equatable, Sendable {
+    var pcmQueue = PCMQueueSnapshot()
+    var bridgePacketCount: UInt64 = 0
+    var bridgeLatestPacketFrames: UInt32 = 0
+    var bridgeMinimumPacketFrames: UInt32 = 0
+    var bridgeMaximumPacketFrames: UInt32 = 0
     var bridgeBufferedFrames: UInt64 = 0
     var bridgeCapacityFrames: UInt64 = 0
     var bridgeDroppedFrames: UInt64 = 0
@@ -74,6 +79,11 @@ struct AudioRouteDiagnostics: Equatable, Sendable {
         transport: SystemAudioBridgeTransport.Statistics,
         router: PCMRouter.Statistics
     ) {
+        pcmQueue = router.camillaQueue
+        bridgePacketCount = transport.packetCount
+        bridgeLatestPacketFrames = transport.latestPacketFrames
+        bridgeMinimumPacketFrames = transport.minimumPacketFrames
+        bridgeMaximumPacketFrames = transport.maximumPacketFrames
         bridgeBufferedFrames = transport.bufferedFrames
         bridgeCapacityFrames = UInt64(transport.ringCapacityFrames)
         bridgeDroppedFrames = transport.droppedFrames
@@ -105,6 +115,70 @@ enum AudioRuntimeHealth: Equatable, Sendable {
     case healthy
     case warning
     case fault
+}
+
+/// Stable, typed causes retain their observed values for UI and report consumers.
+enum AudioRuntimeHealthReason: Sendable, Equatable {
+    case runtimeInactive, engineUnavailable, engineStalled
+    case engineStopped(String), transportFailure(String), sourceFormatError(String)
+    case recentClipping, processingOverload(Double)
+    case bridgeDroppedFrames(UInt64), bridgeOverruns(UInt64)
+    case clientRegistryOverflows(UInt64), clientUseCountSaturations(UInt64)
+    case malformedPackets(UInt64), pcmDroppedFrames(UInt64)
+    case pcmQueueRecoveries(UInt64), pcmWriteFailures(UInt64), rejectedSourceFrames(UInt64)
+    case telemetryPaused, telemetryPending, telemetryStale, telemetryUnavailable
+    case telemetryRPCFailed(String)
+
+    var health: AudioRuntimeHealth {
+        switch self {
+        case .runtimeInactive, .telemetryPaused: return .inactive
+        case .engineUnavailable, .engineStalled, .engineStopped, .transportFailure,
+             .sourceFormatError, .pcmWriteFailures: return .fault
+        default: return .warning
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .runtimeInactive: return "Audio processing is inactive."
+        case .engineUnavailable: return "The CamillaDSP process is not running."
+        case .engineStalled: return "CamillaDSP reports a stalled engine."
+        case .engineStopped(let reason): return "CamillaDSP stop reason: \(reason)."
+        case .transportFailure(let error): return "Driver transport error: \(error)"
+        case .sourceFormatError(let error): return "Source format error: \(error)"
+        case .recentClipping: return "Audio clipping was detected recently."
+        case .processingOverload(let percent): return String(format: "DSP processing load is %.1f%% (warning threshold: 85%%).", percent)
+        case .bridgeDroppedFrames(let count): return "Bridge dropped frames: \(count)."
+        case .bridgeOverruns(let count): return "Bridge consumer overruns: \(count)."
+        case .clientRegistryOverflows(let count): return "Bridge client registry overflows: \(count)."
+        case .clientUseCountSaturations(let count): return "Bridge client use-count saturations: \(count)."
+        case .malformedPackets(let count): return "Malformed bridge packets: \(count)."
+        case .pcmDroppedFrames(let count): return "PCM writer dropped frames: \(count)."
+        case .pcmQueueRecoveries(let count): return "PCM queue recoveries: \(count)."
+        case .pcmWriteFailures(let count): return "PCM write failures: \(count)."
+        case .rejectedSourceFrames(let count): return "Rejected source frames: \(count)."
+        case .telemetryPaused: return "DSP telemetry polling is paused while the profile monitor is not visible."
+        case .telemetryPending: return "Waiting for the first successful DSP diagnostic RPC."
+        case .telemetryStale: return "The last successful DSP diagnostic RPC is more than 2.5 seconds old."
+        case .telemetryUnavailable: return "DSP diagnostics are unavailable."
+        case .telemetryRPCFailed(let error): return "DSP diagnostic RPC failed: \(error)"
+        }
+    }
+}
+
+struct AudioRuntimeHealthAssessment: Sendable, Equatable {
+    let health: AudioRuntimeHealth
+    let reasons: [AudioRuntimeHealthReason]
+
+    init(reasons: [AudioRuntimeHealthReason]) {
+        self.reasons = reasons
+        if reasons.contains(where: { $0.health == .fault }) { health = .fault }
+        else if reasons.contains(where: { $0.health == .warning }) { health = .warning }
+        else if reasons.contains(where: { $0.health == .inactive }) { health = .inactive }
+        else { health = .healthy }
+    }
+
+    var explanation: String { reasons.map(\.summary).joined(separator: " ") }
 }
 
 private final class RuntimePresentationGate: @unchecked Sendable {
@@ -187,6 +261,9 @@ private final class RuntimePresentationGate: @unchecked Sendable {
 }
 
 struct AudioRuntimeStatus: Equatable, Sendable {
+    var isActive = false
+    var engineIsRunning: Bool?
+    var transportError: String?
     var engineState = "Inactive"
     var stopReason = "None"
     var processingLoadPercent = 0.0
@@ -197,6 +274,9 @@ struct AudioRuntimeStatus: Equatable, Sendable {
     var sourceClippedSamples: UInt64 = 0
     var clippingIsRecent = false
     var telemetryAvailable = false
+    var telemetryPollingActive = false
+    var lastTelemetryUpdatedAt: Date?
+    var lastTelemetryError: String?
     var route = AudioRouteDiagnostics()
     var lastUpdated: Date?
 
@@ -205,27 +285,80 @@ struct AudioRuntimeStatus: Equatable, Sendable {
     var effectiveRateAdjustmentPPM: Double {
         if abs(route.rateAdjustmentPPM) >= 0.005 { return route.rateAdjustmentPPM }
         // CamillaDSP reports an adjustment ratio (1.0 means unchanged).
-        guard camillaRateAdjustment.isFinite, camillaRateAdjustment > 0 else { return 0 }
+        guard hasFreshTelemetry(), camillaRateAdjustment.isFinite, camillaRateAdjustment > 0 else { return 0 }
         return (camillaRateAdjustment - 1) * 1_000_000
     }
 
-    var health: AudioRuntimeHealth {
-        guard engineState != "Inactive" || telemetryAvailable else { return .inactive }
-        let normalizedState = engineState.lowercased()
-        let stoppedWithError = !["none", "done"].contains(stopReason.lowercased())
-        if normalizedState == "stalled" || stoppedWithError || route.camillaWriteFailures > 0 {
-            return .fault
-        }
-        if !telemetryAvailable || clippingIsRecent || processingLoadPercent >= 85
-            || route.bridgeDroppedFrames > 0 || route.bridgeConsumerOverrunCount > 0
-            || route.bridgeClientRegistryOverflowCount > 0
-            || route.bridgeClientUseCountSaturationCount > 0
-            || route.bridgeMalformedPacketCount > 0
-            || route.camillaQueueRecoveries > 0 {
-            return .warning
-        }
-        return .healthy
+    /// Audio delivery and RPC observability are independent assessments.
+    var health: AudioRuntimeHealth { pipelineAssessment().health }
+
+    func hasFreshTelemetry(at now: Date = Date()) -> Bool {
+        guard telemetryPollingActive, telemetryAvailable, let lastTelemetryUpdatedAt else { return false }
+        return now.timeIntervalSince(lastTelemetryUpdatedAt) <= 2.5
     }
+
+    func pipelineAssessment(at now: Date = Date()) -> AudioRuntimeHealthAssessment {
+        guard isActive else { return .init(reasons: [.runtimeInactive]) }
+        var reasons: [AudioRuntimeHealthReason] = []
+        if engineIsRunning == false { reasons.append(.engineUnavailable) }
+        if let transportError { reasons.append(.transportFailure(transportError)) }
+        if let error = route.sourceFormatError { reasons.append(.sourceFormatError(error)) }
+        // Cached DSP state/load must not masquerade as a current pipeline fault.
+        if hasFreshTelemetry(at: now) {
+            if engineState.lowercased() == "stalled" { reasons.append(.engineStalled) }
+            if !["none", "done"].contains(stopReason.lowercased()) { reasons.append(.engineStopped(stopReason)) }
+            if processingLoadPercent >= 85 { reasons.append(.processingOverload(processingLoadPercent)) }
+        }
+        if clippingIsRecent { reasons.append(.recentClipping) }
+        if route.bridgeDroppedFrames > 0 { reasons.append(.bridgeDroppedFrames(route.bridgeDroppedFrames)) }
+        if route.bridgeConsumerOverrunCount > 0 { reasons.append(.bridgeOverruns(route.bridgeConsumerOverrunCount)) }
+        if route.bridgeClientRegistryOverflowCount > 0 { reasons.append(.clientRegistryOverflows(route.bridgeClientRegistryOverflowCount)) }
+        if route.bridgeClientUseCountSaturationCount > 0 { reasons.append(.clientUseCountSaturations(route.bridgeClientUseCountSaturationCount)) }
+        if route.bridgeMalformedPacketCount > 0 { reasons.append(.malformedPackets(route.bridgeMalformedPacketCount)) }
+        if route.camillaDroppedFrames > 0 { reasons.append(.pcmDroppedFrames(route.camillaDroppedFrames)) }
+        if route.camillaQueueRecoveries > 0 { reasons.append(.pcmQueueRecoveries(route.camillaQueueRecoveries)) }
+        if route.camillaWriteFailures > 0 { reasons.append(.pcmWriteFailures(route.camillaWriteFailures)) }
+        if route.rejectedSourceFrames > 0 { reasons.append(.rejectedSourceFrames(route.rejectedSourceFrames)) }
+        return .init(reasons: reasons)
+    }
+
+    func telemetryAssessment(at now: Date = Date()) -> AudioRuntimeHealthAssessment {
+        guard isActive else { return .init(reasons: [.runtimeInactive]) }
+        guard telemetryPollingActive else { return .init(reasons: [.telemetryPaused]) }
+        var reasons: [AudioRuntimeHealthReason] = []
+        if let lastTelemetryError { reasons.append(.telemetryRPCFailed(lastTelemetryError)) }
+        if let lastTelemetryUpdatedAt, now.timeIntervalSince(lastTelemetryUpdatedAt) > 2.5 {
+            reasons.append(.telemetryStale)
+        } else if !telemetryAvailable {
+            if lastTelemetryError == nil {
+                reasons.append(lastTelemetryUpdatedAt == nil ? .telemetryPending : .telemetryUnavailable)
+            }
+        } else if lastTelemetryUpdatedAt == nil {
+            reasons.append(.telemetryUnavailable)
+        }
+        return .init(reasons: reasons)
+    }
+
+    mutating func recordTelemetryFailure(_ message: String, at now: Date) {
+        lastTelemetryError = message
+        if lastTelemetryUpdatedAt.map({ now.timeIntervalSince($0) > 2.5 }) ?? true {
+            telemetryAvailable = false
+        }
+    }
+
+    mutating func recordTelemetry(_ diagnostics: CamillaDSPDiagnostics, at now: Date) {
+        engineState = diagnostics.engineState
+        stopReason = diagnostics.stopReason
+        processingLoadPercent = diagnostics.processingLoadPercent
+        resamplerLoadPercent = diagnostics.resamplerLoadPercent
+        dspBufferLevelFrames = diagnostics.bufferLevelFrames
+        camillaRateAdjustment = diagnostics.rateAdjustment
+        dspClippedSamples = diagnostics.clippedSamples
+        telemetryAvailable = true
+        lastTelemetryUpdatedAt = now
+        lastTelemetryError = nil
+    }
+
 }
 
 /// Owns read-only runtime observations. It deliberately does not mutate the
@@ -261,7 +394,6 @@ final class AudioRuntimeMonitor: ObservableObject {
     private let presentationGate = RuntimePresentationGate()
     private var hasReceivedDSPLevels = false
     private var lastDSPLevelsAt: Date?
-    private var lastTelemetryAt: Date?
     private var lastDSPClippedSamples: UInt64 = 0
     private var lastClipAt: Date?
     private var lastChannelClipAt: [Int: Date] = [:]
@@ -271,7 +403,7 @@ final class AudioRuntimeMonitor: ObservableObject {
     }
 
     func start(
-        controller: CamillaDSPController,
+        controller: CamillaDSPController?,
         session: AudioRuntimeSession,
         routeDiagnosticsProvider: @escaping RouteDiagnosticsProvider
     ) {
@@ -279,6 +411,7 @@ final class AudioRuntimeMonitor: ObservableObject {
         activeSession = session
         self.controller = controller
         self.routeDiagnosticsProvider = routeDiagnosticsProvider
+        status.isActive = true
         status.engineState = "Starting"
         updatePolling()
     }
@@ -301,9 +434,11 @@ final class AudioRuntimeMonitor: ObservableObject {
         diagnosticsPollingTask?.cancel()
         meterPollingTask = nil
         diagnosticsPollingTask = nil
+        status.telemetryPollingActive = false
         guard let controller,
               let session = activeSession,
               presentedProfileID == session.profileID else { return }
+        status.telemetryPollingActive = true
 
         meterPollingTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -331,9 +466,7 @@ final class AudioRuntimeMonitor: ObservableObject {
                 } catch {
                     guard self.isPresented(session) else { return }
                     let now = Date()
-                    if self.lastTelemetryAt.map({ now.timeIntervalSince($0) > 2.5 }) ?? true {
-                        self.status.telemetryAvailable = false
-                    }
+                    self.status.recordTelemetryFailure(error.localizedDescription, at: now)
                     self.publishRouteDiagnostics(now: now)
                 }
                 try? await Task.sleep(for: .seconds(1))
@@ -371,12 +504,12 @@ final class AudioRuntimeMonitor: ObservableObject {
         levels = .silent
         captureUsesDSPBus = false
         status = .inactive
-        if let session = activeSession, presentedProfileID == session.profileID {
+        if activeSession != nil {
+            status.isActive = true
             status.engineState = "Starting"
         }
         hasReceivedDSPLevels = false
         lastDSPLevelsAt = nil
-        lastTelemetryAt = nil
         lastDSPClippedSamples = 0
         lastClipAt = nil
         lastChannelClipAt.removeAll()
@@ -386,7 +519,7 @@ final class AudioRuntimeMonitor: ObservableObject {
         activeSession == session && presentedProfileID == session.profileID
     }
 
-    private func ingest(_ snapshot: PCMLevelSnapshot, session: AudioRuntimeSession) {
+    func ingest(_ snapshot: PCMLevelSnapshot, session: AudioRuntimeSession) {
         guard isPresented(session) else { return }
         if snapshot.clippedSamples > 0 {
             status.sourceClippedSamples &+= snapshot.clippedSamples
@@ -451,16 +584,7 @@ final class AudioRuntimeMonitor: ObservableObject {
             lastClipAt = now
         }
         lastDSPClippedSamples = diagnostics.clippedSamples
-        status.engineState = diagnostics.engineState
-        status.stopReason = diagnostics.stopReason
-        status.processingLoadPercent = diagnostics.processingLoadPercent
-        status.resamplerLoadPercent = diagnostics.resamplerLoadPercent
-        status.dspBufferLevelFrames = diagnostics.bufferLevelFrames
-        status.camillaRateAdjustment = diagnostics.rateAdjustment
-        status.dspClippedSamples = diagnostics.clippedSamples
-        status.telemetryAvailable = true
-        status.lastUpdated = now
-        lastTelemetryAt = now
+        status.recordTelemetry(diagnostics, at: now)
         publishRouteDiagnostics(now: now)
     }
 

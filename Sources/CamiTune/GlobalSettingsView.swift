@@ -14,7 +14,7 @@ struct SettingsView: View {
     @State private var showingApply = false
     @State private var selectedProfiles: Set<UUID> = []
     @AppStorage("hideCloseKeepsRunningHint") private var hideCloseKeepsRunningHint = false
-    private let categories = ["General", "Section Layout", "Drivers & Components", "Confirmations"]
+    private let categories = ["General", "Section Layout", "Drivers & Components", "Diagnostics", "Confirmations"]
 
     init(state: AppState) {
         self.state = state
@@ -59,6 +59,8 @@ struct SettingsView: View {
                     }
                 case "Drivers & Components":
                     SetupView(state: state, embedded: true)
+                case "Diagnostics":
+                    DiagnosticsView(state: state)
                 case "Confirmations":
                     Text("Choose which pop-ups to show. Turn an option back on here after selecting “Do not show this again.”")
                         .foregroundStyle(.secondary)

@@ -4,11 +4,11 @@ import Foundation
 /// speaker group and physical endpoint. Subwoofer group controls therefore act
 /// on the distributed bass signal without changing the main speakers' crossover.
 struct MultichannelGraphCompiler {
-    func build(profile: DeviceProfile, inputFormat: AudioFormatDescriptor) throws -> ProcessingGraph {
+    func build(profile: DeviceProfile, inputFormat: AudioFormatDescriptor, assets: PreparedRuntimeAssets? = nil) throws -> ProcessingGraph {
         try profile.validateMultichannelSettings()
         let settings = profile.multichannel
         let width = profile.configuredPhysicalChannelCount
-        var graph = try ProcessingGraphBuilder(channelCount: width).build(profile: profile)
+        var graph = try ProcessingGraphBuilder(channelCount: width, preparedAssets: assets).build(profile: profile)
         let processors = Dictionary(uniqueKeysWithValues: graph.processors.map { ($0.id, $0) })
         func isSourceContent(_ step: ProcessingGraph.PipelineStep) -> Bool {
             guard step.kind == .filter, step.scope == .global,

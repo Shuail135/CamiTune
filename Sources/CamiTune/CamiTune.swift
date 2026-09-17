@@ -20,6 +20,38 @@ private var isSpeakerSetupPreview: Bool {
 @main
 enum CamiTuneLauncher {
     static func main() {
+        if let index = CommandLine.arguments.firstIndex(of: "--live-runtime-baseline"),
+           CommandLine.arguments.count > index + 2 {
+            let destination = CommandLine.arguments[index + 1]
+            let silence = CommandLine.arguments[index + 2]
+            Task { @MainActor in
+                do { try await LiveRuntimeBaseline.capture(destination: destination, silence: silence); Darwin.exit(0) }
+                catch { print("Live baseline failed: \(error.localizedDescription)"); Darwin.exit(1) }
+            }
+            RunLoop.main.run()
+            return
+        }
+        if CommandLine.arguments.contains("--self-test") {
+            Task { @MainActor in
+                var failures = 0
+                let cases = ProcessInfo.processInfo.environment["CAMITUNE_STAGE3_BASELINE_DIRECTORY"] == nil
+                    ? DeveloperSelfTests.cases() : DeveloperSelfTests.presentationBenchmarkCases()
+                for test in cases {
+                    do {
+                        let result = try await test.execute()
+                        print("\(test.id) \(result.status.rawValue.uppercased()): \(result.summary)")
+                        if result.status == .failed { failures += 1 }
+                    } catch {
+                        failures += 1
+                        print("\(test.id) FAILED: \(error.localizedDescription)")
+                    }
+                }
+                print("Self-tests complete: \(failures) failures")
+                Darwin.exit(failures == 0 ? 0 : 1)
+            }
+            RunLoop.main.run()
+            return
+        }
 #if DEBUG
         if isSpeakerSetupPreview { SpeakerSetupPreviewApp.main(); return }
 #endif

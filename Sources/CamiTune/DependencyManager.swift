@@ -87,6 +87,27 @@ final class DependencyManager: ObservableObject {
         finishRefreshMessage()
     }
 
+    /// Inspect installation files only. Unlike refresh, this neither creates the
+    /// support layout nor executes the binary to obtain a version.
+    func diagnosticCamillaDSPStatus() async -> Status {
+        let binary = camillaDSPBinary
+        let marker = camillaDSPCapabilityMarker
+        let version: String?
+        switch camillaDSPStatus {
+        case .installed(let observed): version = observed
+        case .working(let observed): version = observed
+        default: version = nil
+        }
+        return await Task.detached(priority: .utility) {
+            guard FileManager.default.isExecutableFile(atPath: binary.path) else { return Status.missing }
+            guard (try? String(contentsOf: marker, encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines) == Self.coreAudioUIDCapability else {
+                return Status.failed("Required Core Audio UID capability marker is missing.")
+            }
+            return Status.installed(version)
+        }.value
+    }
+
     private func refreshCamillaDSPStatus() {
         camillaDSPStatus = Self.camillaDSPStatus(
             binary: camillaDSPBinary,

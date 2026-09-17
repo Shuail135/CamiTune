@@ -382,9 +382,7 @@ private struct NativeProfileSidebar: NSViewRepresentable {
         init(_ parent: NativeProfileSidebar) { self.parent = parent }
 
         func observeRuntime(_ state: AppState) {
-            runtimeSubscription = state.$activeSession.map { $0?.profileID }
-                .combineLatest(state.$isActive)
-                .map { $1 ? $0 : nil }.removeDuplicates()
+            runtimeSubscription = state.runtimeSnapshots.map { $0.session?.profileID }.removeDuplicates()
                 .sink { [weak self] id in
                     guard let self else { return }
                     let previous = self.activeProfileID

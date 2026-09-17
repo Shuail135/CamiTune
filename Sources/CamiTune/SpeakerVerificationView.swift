@@ -99,20 +99,14 @@ struct SpeakerVerificationView: View {
 
 extension AppState {
     func exportRuntimePlan(profile: DeviceProfile, previewOnly: Bool) async throws {
-        let topology: SpeakerTopology
+        let plan: AudioRuntimePlan
         if previewOnly {
             guard let simulated = profile.speakerTopology else { throw SpeakerTopologyError.invalidDeviceUID }
-            topology = simulated
-        } else {
-            guard let device = await coreAudio.resolveDeviceWithoutBlockingUI(uid: profile.outputDeviceUID) else {
-                throw ProfileSettingsError.runtime("Connect the profile's output before exporting its runtime plan.")
-            }
-            topology = try await Task.detached(priority: .userInitiated) { try SpeakerTopologyProbe().probe(device) }.value
-        }
-        let data = try await Task.detached(priority: .userInitiated) {
-            let plan = try AudioRuntimePlanCompiler().compile(profile: profile, detectedHardware: topology)
-            return try AudioRuntimePlanDiagnostic(plan: plan, profile: profile, simulated: previewOnly).json()
-        }.value
+            plan = try await Task.detached(priority: .userInitiated) {
+                try AudioRuntimePlanPreparer.prepare(profile: profile, detectedHardware: simulated)
+            }.value
+        } else { plan = try await prepareRuntimePlan(profile: profile, reason: "export") }
+        let data = try await Task.detached(priority: .userInitiated) { try AudioRuntimePlanDiagnostic(plan: plan).json() }.value
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "CamiTune-Runtime-Plan.json"
         panel.allowedContentTypes = [.json]

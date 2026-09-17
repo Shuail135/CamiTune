@@ -60,6 +60,13 @@ struct AudioFormatDescriptor: Codable, Hashable, Sendable {
 
     var channelCount: Int { channels.count }
 
+    /// Ordered signal identity. UI labels never change stream compatibility.
+    var signalSignature: Self {
+        .init(sampleRate: sampleRate, channels: channels.map {
+            .init(id: $0.id, role: $0.role, kind: $0.kind, physicalOutputID: $0.physicalOutputID)
+        })
+    }
+
     func validate() throws {
         guard sampleRate > 0 else { throw AudioFormatError.invalidSampleRate(sampleRate) }
         guard !channels.isEmpty else { throw AudioFormatError.invalidChannelCount(0) }

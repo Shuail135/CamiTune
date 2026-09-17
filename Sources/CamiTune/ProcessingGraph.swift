@@ -92,6 +92,7 @@ struct ProcessingGraph: Hashable, Sendable {
                 var filePath: String
                 var channel: Int
                 var maximumMagnitudeDB: Double
+                var contentSHA256: String? = nil
             }
         }
     }
@@ -138,14 +139,17 @@ struct ProcessingGraph: Hashable, Sendable {
 
 struct ProcessingGraphBuilder {
     let channelCount: Int
-    let impulseResponseStore: ImpulseResponseStore
+    let impulseResponseStore: ImpulseResponseStore?
+    let preparedAssets: PreparedRuntimeAssets?
 
     init(
         channelCount: Int = 2,
-        impulseResponseDirectory: URL = CamiTunePaths.impulseResponsesDirectory
+        impulseResponseDirectory: URL? = nil,
+        preparedAssets: PreparedRuntimeAssets? = nil
     ) {
         self.channelCount = channelCount
-        self.impulseResponseStore = ImpulseResponseStore(directory: impulseResponseDirectory)
+        self.preparedAssets = preparedAssets
+        self.impulseResponseStore = preparedAssets == nil ? ImpulseResponseStore(directory: impulseResponseDirectory ?? CamiTunePaths.impulseResponsesDirectory) : nil
     }
 
     func build(profile: DeviceProfile) throws -> ProcessingGraph {
@@ -599,6 +603,15 @@ struct ProcessingGraphBuilder {
                 asset.channelCount
             )
         }
+        if let preparedAssets {
+            guard let prepared = preparedAssets.impulseResponses[asset.id], prepared.metadata == asset else {
+                throw ProcessingGraphError.impulseResponseMissing(asset.displayName)
+            }
+            return .init(filePath: prepared.url.path, channel: convolution.impulseChannel,
+                         maximumMagnitudeDB: asset.maximumMagnitudeDBByChannel[convolution.impulseChannel],
+                         contentSHA256: prepared.sha256)
+        }
+        guard let impulseResponseStore else { throw ProcessingGraphError.impulseResponseMissing(asset.displayName) }
         let url = impulseResponseStore.url(for: asset)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),

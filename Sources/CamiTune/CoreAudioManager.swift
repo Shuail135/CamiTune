@@ -43,7 +43,8 @@ final class CoreAudioManager: ObservableObject {
     private var cachedHiddenSystemAudioBridge: AudioDeviceInfo?
     private var hasResolvedHiddenSystemAudioBridge = false
 
-    init() {
+    init(observesHardware: Bool = true) {
+        guard observesHardware else { return }
         schedulePeriodicRefresh()
         installHardwareListeners()
         // Core Audio notifications drive normal updates. This slow poll is a
@@ -410,11 +411,12 @@ final class CoreAudioManager: ObservableObject {
     func synchronizeProfileRoutingDevices(
         profiles: [DeviceProfile],
         activeProfileID: UUID?,
-        additionallyVisible: Set<UUID> = []
+        additionallyVisible: Set<UUID> = [],
+        preparedDescriptors: [UUID: ProfileRoutingDescriptor] = [:]
     ) throws -> [UUID: ProfileRoutingDescriptor] {
         guard let bridge = systemAudioBridge else { throw AudioError.deviceNotFound(AudioDeviceInfo.systemAudioBridgeUID) }
 
-        let descriptors = ProfileRoutingDescriptor.descriptors(for: profiles)
+        let descriptors = ProfileRoutingDescriptor.descriptors(for: profiles.filter { preparedDescriptors[$0.id] == nil }).merging(preparedDescriptors) { _, prepared in prepared }
         let desired = ProfileRoutingDescriptor.visibleProfileIDs(
             profiles: profiles,
             activeProfileID: activeProfileID,
@@ -460,7 +462,8 @@ final class CoreAudioManager: ObservableObject {
     func synchronizeProfileRoutingDevicesWithoutBlockingUI(
         profiles: [DeviceProfile],
         activeProfileID: UUID?,
-        additionallyVisible: Set<UUID> = []
+        additionallyVisible: Set<UUID> = [],
+        preparedDescriptors: [UUID: ProfileRoutingDescriptor] = [:]
     ) async throws -> [UUID: ProfileRoutingDescriptor] {
         if outputDevices.contains(where: {
             ProfileRoutingDescriptor.isProfileRoutingUID($0.id)
@@ -469,14 +472,14 @@ final class CoreAudioManager: ObservableObject {
             return try synchronizeProfileRoutingDevices(
                 profiles: profiles,
                 activeProfileID: activeProfileID,
-                additionallyVisible: additionallyVisible
+                additionallyVisible: additionallyVisible, preparedDescriptors: preparedDescriptors
             )
         }
 
         guard let bridge = await resolveSystemAudioBridgeWithoutBlockingUI() else {
             throw AudioError.deviceNotFound(AudioDeviceInfo.systemAudioBridgeUID)
         }
-        let descriptors = ProfileRoutingDescriptor.descriptors(for: profiles)
+        let descriptors = ProfileRoutingDescriptor.descriptors(for: profiles.filter { preparedDescriptors[$0.id] == nil }).merging(preparedDescriptors) { _, prepared in prepared }
         let desired = ProfileRoutingDescriptor.visibleProfileIDs(
             profiles: profiles,
             activeProfileID: activeProfileID,

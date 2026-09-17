@@ -311,9 +311,12 @@ extension AppState {
         let original = try historyProfile(profileID)
         var candidate = original; candidate.multichannel = value
         if let topology { candidate.speakerTopology = topology }
-        let checked = candidate
-        _ = try await Task.detached(priority: .userInitiated) { try ActiveAudioRoute(profile: checked).buildGraph(profile: checked) }.value
         if previewOnly {
+            let checked = candidate
+            guard let hardware = checked.speakerTopology else { throw SpeakerTopologyError.hardwareLayoutChanged }
+            _ = try await Task.detached(priority: .userInitiated) {
+                try AudioRuntimePlanPreparer.prepare(profile: checked, detectedHardware: hardware)
+            }.value
             profiles.update(candidate)
         } else {
             var settings = ProfileSettingsDraft(profile: original, activation: profiles.activationMode(for: original))

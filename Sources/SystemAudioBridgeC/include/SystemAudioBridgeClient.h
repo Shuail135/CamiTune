@@ -10,6 +10,16 @@
 extern "C" {
 #endif
 
+// Lock-free scalar for telemetry flags/counters and presentation mailbox ownership.
+// Exchange uses acquire/release ordering; scalar load/store/increment are relaxed.
+typedef struct CMTPerformanceAtomic* CMTPerformanceAtomicRef;
+CMTPerformanceAtomicRef cmt_performance_atomic_create(void);
+void cmt_performance_atomic_destroy(CMTPerformanceAtomicRef value);
+uint64_t cmt_performance_atomic_load(CMTPerformanceAtomicRef value);
+void cmt_performance_atomic_store(CMTPerformanceAtomicRef value, uint64_t number);
+uint64_t cmt_performance_atomic_exchange(CMTPerformanceAtomicRef value, uint64_t number);
+void cmt_performance_atomic_increment(CMTPerformanceAtomicRef value);
+
 typedef struct SABRClientTransport* SABRClientTransportRef;
 
 #define SABR_CLIENT_BUNDLE_ID_CAPACITY SABR_TRANSPORT_BUNDLE_ID_CAPACITY

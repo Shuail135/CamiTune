@@ -8,6 +8,11 @@ struct HardwareTopologyFingerprint: Codable, Hashable, Sendable {
     let reportedRoles: [ChannelRole]?
     let reportedPositions: [SpatialPosition?]?
 
+    init(deviceUID: String, channelCount: Int) {
+        self.deviceUID = deviceUID; self.channelCount = channelCount
+        reportedRoles = nil; reportedPositions = nil
+    }
+
     init(topology: SpeakerTopology) throws {
         try topology.validate()
         deviceUID = topology.deviceUID

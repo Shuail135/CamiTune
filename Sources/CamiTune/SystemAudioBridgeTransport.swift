@@ -4,6 +4,10 @@ import SystemAudioBridgeC
 
 final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
     struct Statistics: Sendable {
+        var packetCount: UInt64 = 0
+        var latestPacketFrames: UInt32 = 0
+        var minimumPacketFrames: UInt32 = 0
+        var maximumPacketFrames: UInt32 = 0
         var bufferedFrames: UInt64 = 0
         var droppedFrames: UInt64 = 0
         var consumerOverrunCount: UInt64 = 0
@@ -44,6 +48,11 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         let expectedSampleRate: Double
         let channelCapacity: UInt32
         let generation: UInt64
+        // Reader-owned values; publication happens on this same worker.
+        var packetCount: UInt64 = 0
+        var latestPacketFrames: UInt32 = 0
+        var minimumPacketFrames: UInt32 = 0
+        var maximumPacketFrames: UInt32 = 0
 
         private let condition = NSCondition()
         private var stopRequested = false
@@ -423,6 +432,14 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                     &packet
                 )
             }
+            let performance = frames > 0 ? context.pcmRouter.performanceSource.snapshot() : nil
+            let received = performance.map { _ in PerformanceClock.now() }
+            if frames > 0 {
+                context.packetCount &+= 1
+                context.latestPacketFrames = frames
+                context.minimumPacketFrames = context.minimumPacketFrames == 0 ? frames : min(context.minimumPacketFrames, frames)
+                context.maximumPacketFrames = max(context.maximumPacketFrames, frames)
+            }
             if frames == 0 {
                 if let deadline = mixFlushDeadline, deadline <= Date() {
                     // More than one reordered cycle can become eligible on the
@@ -486,7 +503,16 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                     context.perAppAudio.ingestTransportPacket(
                         metadata,
                         samples: buffer,
-                        sampleCount: sampleCount
+                        sampleCount: sampleCount,
+                        performance: performance.flatMap { binding in
+                            guard let session = binding.sessionID, let received,
+                                  packet.sampleTime.isFinite, packet.sampleTime >= Double(Int64.min), packet.sampleTime < Double(Int64.max) else { return nil }
+                            return PacketPerformanceContext(capture: binding.capture,
+                                identity: AudioTraceIdentity(captureID: binding.capture.id, runtimeSessionID: session,
+                                    transportGeneration: context.generation, streamEpoch: 0,
+                                    deviceObjectID: packet.deviceObjectID, startSampleTime: Int64(packet.sampleTime.rounded()),
+                                    frameCount: Int(frames), sampleRate: packet.sampleRate, channelCount: Int(packet.channelCount)), received: received)
+                        }
                     )
                 }
                 if let mixed { context.pcmRouter.route(mixed) }
@@ -552,6 +578,8 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         let rateMatching = context.pcmRouter.statistics
         let modularDistance = raw.writeFrame &- raw.readFrame
         let value = Statistics(
+            packetCount: context.packetCount, latestPacketFrames: context.latestPacketFrames,
+            minimumPacketFrames: context.minimumPacketFrames, maximumPacketFrames: context.maximumPacketFrames,
             bufferedFrames: modularDistance <= UInt64(raw.frameCapacity) ? modularDistance : 0,
             droppedFrames: raw.droppedFrames,
             consumerOverrunCount: raw.consumerOverrunCount,

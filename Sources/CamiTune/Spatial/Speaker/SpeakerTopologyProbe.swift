@@ -15,7 +15,7 @@ struct SpeakerTopologyProbe {
         }
     }
 
-    func probe(_ device: AudioDeviceInfo) throws -> SpeakerTopology {
+    func outputChannelCount(_ device: AudioDeviceInfo) throws -> Int {
         guard !device.isRoutingDevice else { throw ProbeError.routingDevice }
         var uidAddress = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -36,6 +36,12 @@ struct SpeakerTopologyProbe {
             }
             return count
         }
+        guard (1...32).contains(count) else { throw ProbeError.malformedProperty }
+        return count
+    }
+
+    func probe(_ device: AudioDeviceInfo) throws -> SpeakerTopology {
+        let count = try outputChannelCount(device)
         let rateData = try property(device.objectID, selector: kAudioDevicePropertyNominalSampleRate, scope: kAudioObjectPropertyScopeGlobal)
         guard rateData.count == MemoryLayout<Double>.size else { throw ProbeError.malformedProperty }
         let rate = rateData.withUnsafeBytes { $0.loadUnaligned(as: Double.self) }

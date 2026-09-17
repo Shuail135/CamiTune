@@ -13,6 +13,7 @@ struct CamillaDSPDiagnostics: Sendable {
 
     enum GraphUpdateKind: String, Sendable {
         case fullConfiguration
+        case fullConfigurationFallback
         case runtimePatch
         case unchanged
     }
@@ -25,18 +26,24 @@ final class CamillaDSPController {
     private let manager: CamillaDSPManager
     private let compiler: CamillaDSPCompiler
     private let differ: ProcessingGraphDiffer
-    private var activeGraph: ProcessingGraph?
-    private var lastGraphUpdate: CamillaDSPDiagnostics.GraphUpdateKind?
+    private(set) var activeGraph: ProcessingGraph?
+    private(set) var lastGraphUpdate: CamillaDSPDiagnostics.GraphUpdateKind?
     private var patchedFilterCount = 0
+    private let applyConfiguration: (CamillaDSPConfiguration) async throws -> Void
+    private let applyPatch: (CamillaDSPRuntimePatch) async throws -> Void
 
     init(
         manager: CamillaDSPManager,
         compiler: CamillaDSPCompiler = CamillaDSPCompiler(),
-        differ: ProcessingGraphDiffer = ProcessingGraphDiffer()
+        differ: ProcessingGraphDiffer = ProcessingGraphDiffer(),
+        applyConfiguration: ((CamillaDSPConfiguration) async throws -> Void)? = nil,
+        applyPatch: ((CamillaDSPRuntimePatch) async throws -> Void)? = nil
     ) {
         self.manager = manager
         self.compiler = compiler
         self.differ = differ
+        self.applyConfiguration = applyConfiguration ?? { try await manager.apply(configuration: $0) }
+        self.applyPatch = applyPatch ?? { try await manager.apply(patch: $0) }
     }
 
     func configuration(for graph: ProcessingGraph) async -> CamillaDSPConfiguration {
@@ -46,14 +53,17 @@ final class CamillaDSPController {
         }.value
     }
 
-    func applyGraph(_ graph: ProcessingGraph) async throws {
+    func applyGraph(_ graph: ProcessingGraph, performanceRecorder: RuntimePerformanceRecorder? = nil) async throws {
         try graph.validate()
         let currentGraph = activeGraph
         let differ = self.differ
+        let operation = performanceRecorder?.begin("Graph diff", reason: "backend")
         let update = await Task.detached(priority: .userInitiated) {
             currentGraph.map { differ.update(from: $0, to: graph) }
                 ?? .replaceConfiguration
         }.value
+        operation?.mark("classification: " + update.kind)
+        operation?.finish("success")
 
         switch update {
         case .unchanged:
@@ -65,7 +75,7 @@ final class CamillaDSPController {
                 compiler.compileRuntimePatch(processors: processors)
             }.value
             do {
-                try await manager.apply(patch: patch)
+                try await applyPatch(patch)
                 lastGraphUpdate = .runtimePatch
                 patchedFilterCount = processors.count
             } catch is CancellationError {
@@ -76,8 +86,8 @@ final class CamillaDSPController {
                 let configuration = await Task.detached(priority: .userInitiated) {
                     compiler.compile(graph)
                 }.value
-                try await manager.apply(configuration: configuration)
-                lastGraphUpdate = .fullConfiguration
+                try await applyConfiguration(configuration)
+                lastGraphUpdate = .fullConfigurationFallback
                 patchedFilterCount = 0
             }
         case .replaceConfiguration:
@@ -85,7 +95,7 @@ final class CamillaDSPController {
             let configuration = await Task.detached(priority: .userInitiated) {
                 compiler.compile(graph)
             }.value
-            try await manager.apply(configuration: configuration)
+            try await applyConfiguration(configuration)
             lastGraphUpdate = .fullConfiguration
             patchedFilterCount = 0
         }

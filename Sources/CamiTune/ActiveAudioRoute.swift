@@ -52,11 +52,11 @@ struct ActiveAudioRoute: Hashable, Sendable {
         }
     }
 
-    func buildGraph(profile: DeviceProfile) throws -> ProcessingGraph {
-        let builder = ProcessingGraphBuilder(channelCount: profile.processingChannelCount)
+    func buildGraph(profile: DeviceProfile, assets: PreparedRuntimeAssets? = nil) throws -> ProcessingGraph {
+        let builder = ProcessingGraphBuilder(channelCount: profile.processingChannelCount, preparedAssets: assets)
         var graph: ProcessingGraph
         if usesSourceProcessingBus {
-            graph = try MultichannelGraphCompiler().build(profile: profile, inputFormat: dspInputFormat)
+            graph = try MultichannelGraphCompiler().build(profile: profile, inputFormat: dspInputFormat, assets: assets)
         } else if usesPhysicalSpeakerBus {
             let mappings = try dspInputFormat.channels.enumerated().map { index, channel -> ProcessingGraph.Mixer.Mapping in
                 guard let output = channel.physicalOutputID else { throw AudioRouteFormatError.incompatibleOutput }

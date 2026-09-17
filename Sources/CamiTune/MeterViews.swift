@@ -96,30 +96,34 @@ struct AudioRuntimeStatusView: View {
                 Circle()
                     .fill(healthColor)
                     .frame(width: 7, height: 7)
-                Text(activeStatus.engineState)
+                Text(pipelineTitle)
                     .font(.body.weight(.medium))
-                if activeStatus.stopReason != "None" {
-                    Text(activeStatus.stopReason)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
                 Spacer()
             }
+
+            if !activeStatus.pipelineAssessment().reasons.isEmpty {
+                Text(activeStatus.pipelineAssessment().explanation)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Text("DSP telemetry: \(telemetrySummary)")
+                .font(.caption)
+                .foregroundStyle(activeStatus.telemetryAssessment().health == .warning ? Color.orange : Color.secondary)
 
             LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
                 RuntimeMetricValue(
                     title: "DSP load",
-                    value: percent(activeStatus.processingLoadPercent),
-                    detail: "Resampler \(percent(activeStatus.resamplerLoadPercent))"
+                    value: telemetryIsFresh ? percent(activeStatus.processingLoadPercent) : "—",
+                    detail: telemetryIsFresh ? "Resampler \(percent(activeStatus.resamplerLoadPercent))" : "DSP telemetry unavailable"
                 )
                 RuntimeMetricValue(
                     title: "DSP buffer",
-                    value: "\(activeStatus.dspBufferLevelFrames) frames",
+                    value: telemetryIsFresh ? "\(activeStatus.dspBufferLevelFrames) frames" : "—",
                     detail: bridgeBufferDetail
                 )
                 RuntimeMetricValue(
                     title: "Rate adjust",
-                    value: String(format: "%+.1f ppm", activeStatus.effectiveRateAdjustmentPPM),
+                    value: activeStatus.route.sampleRate > 0 || telemetryIsFresh
+                        ? String(format: "%+.1f ppm", activeStatus.effectiveRateAdjustmentPPM) : "—",
                     detail: "Matched buffer \(activeStatus.route.rateMatchBufferedFrames) frames"
                 )
                 RuntimeMetricValue(
@@ -145,6 +149,20 @@ struct AudioRuntimeStatusView: View {
     private var profileIsActive: Bool { monitor.activeSession?.profileID == profileID }
     private var activeStatus: AudioRuntimeStatus {
         profileIsActive ? monitor.status : .inactive
+    }
+
+    private var telemetryIsFresh: Bool { activeStatus.hasFreshTelemetry() }
+    private var telemetrySummary: String {
+        let assessment = activeStatus.telemetryAssessment()
+        return assessment.reasons.isEmpty ? "Current" : assessment.explanation
+    }
+    private var pipelineTitle: String {
+        switch activeStatus.health {
+        case .inactive: return "Audio pipeline inactive"
+        case .healthy: return "Audio pipeline healthy"
+        case .warning: return "Audio pipeline warning"
+        case .fault: return "Audio pipeline fault"
+        }
     }
 
     private var healthColor: Color {

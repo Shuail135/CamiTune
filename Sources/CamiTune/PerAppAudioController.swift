@@ -56,7 +56,7 @@ struct PerAppAudioDocument: Codable {
     }
 }
 
-struct PerAppPlaybackContext: Sendable {
+struct PerAppPlaybackContext: Hashable, Sendable {
     var profileMode: PlaybackMode
     var visibleModes: [PlaybackMode]
     var readiness: [PlaybackMode: PlaybackModeReadiness]
@@ -172,7 +172,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     @Published private(set) var applications: [PerAppAudioApplication] = []
     private var playbackContext: PerAppPlaybackContext?
 
+    private var performanceEpoch: UInt64 = 0
+
     private struct PendingMix {
+        var performanceTrace: MixPerformanceTrace? = nil
         var deviceObjectID: UInt32
         var startSampleTime: Int64
         var channelCount: Int
@@ -201,26 +204,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         var settingsRevision: UInt64
     }
 
-    private struct ApplicationIdentity: Hashable {
-        var id: String
-        var bundleID: String?
-        var bundleURL: URL?
-        var processID: Int32
-        var displayName: String
-        var isDockApplication: Bool
-        var isAccessoryApplication: Bool
-    }
-
-    /// An audible packet is authoritative even when the driver's independently
-    /// published client registry is late or briefly empty. Retain the resolved
-    /// owner beside the exact DSP key so both publication and later packets keep
-    /// using the same application control during that gap.
-    private struct ObservedAudioSource {
-        var transportKey: PerAppTransportClientKey
-        var processID: Int32
-        var applicationID: String
-        var identity: ApplicationIdentity?
-    }
+    private typealias ApplicationIdentity = PerAppPresentationIdentity
+    private typealias ObservedAudioSource = PerAppObservedAudioSource
 
     private struct ResolvedApplicationOwner {
         var bundleID: String?
@@ -238,7 +223,6 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
     private static let applicationActivityFloor = pow(10.0, -72.0 / 20.0)
     private static let meterDecayTime: TimeInterval = 0.8
-    private static let publishInterval: TimeInterval = 0.1
     // Hold two observed packet lengths on the device sample timeline before
     // committing audio. MixOutput callbacks from different applications can
     // complete out of order and can use different IO buffer sizes. The device
@@ -289,6 +273,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     )
     // Snapshot coalescing is isolated from both control state and DSP runtime.
     // The MainActor never acquires an NSLock in order to publish applications.
+    let presentationPerformanceSource = PerformanceTraceSource()
     private let publicationQueue = DispatchQueue(
         label: "CamiTune.PerAppAudioPublication",
         qos: .userInteractive
@@ -346,23 +331,20 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     private var pendingRunningApplicationRefresh: DispatchWorkItem?
     private var identityRetryWorkItem: DispatchWorkItem?
     private var identityRetryExhaustedClientKeys: Set<PerAppTransportClientKey> = []
-    private var pendingThrottledPublication: DispatchWorkItem?
-    // Accessed only on `publicationQueue`. Keeping these off `stateLock` means
-    // the MainActor publication callback can never wait for controller state.
-    private var pendingApplicationSnapshot: [PerAppAudioApplication]?
-    private var mainPublishScheduled = false
-    private var submittedPresentationMetadata: [String: AppPresentationObservation] = [:]
-    private var lastPublishDate = Date.distantPast
+    private var presentationRevision: UInt64 = 0
+    private(set) var applicationPublicationRevision: UInt64 = 0 // MainActor delivery only.
+    private var presentationPublisher: PerAppPresentationPublisher!
+    var presentationStatistics: PresentationPublicationStatistics { presentationPublisher.statistics }
     private var identityResolutionRevision: UInt64 = 0
-    private var meterPresentationSources: Set<String> = []
-    private var suspendedMeterPresentationSources: Set<String> = []
     private var workspaceObservers: [NSObjectProtocol] = []
 
     init(
         settingsURL: URL = CamiTunePaths.perAppAudioSettingsURL,
         audioHistoryURL: URL? = nil,
         monitorsRunningApplications: Bool = true,
-        presentationStore: AppPresentationStore? = nil
+        presentationStore: AppPresentationStore? = nil,
+        publicationScheduling: PresentationPublicationScheduling? = nil,
+        presentationRowsBuilder: @escaping @Sendable (PerAppPresentationInput) -> [PerAppAudioApplication] = { PerAppPresentationSnapshot.makeRows($0) }
     ) {
         self.settingsURL = settingsURL
         let presentation = presentationStore ?? AppPresentationStore(
@@ -377,18 +359,27 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         settingsByApplication = loaded.settings
         persistenceError = loaded.error
         knownAudioApplicationIDs = presentation.seenIDs
+        presentationPublisher = PerAppPresentationPublisher(
+            scheduling: publicationScheduling ?? .live(queue: publicationQueue), performance: presentationPerformanceSource,
+            captureInput: { [weak self] in self?.capturePresentationInput() }, buildRows: presentationRowsBuilder,
+            observeMetadata: { [weak self] in self?.observeForPresentation($0) }, deliver: { [weak self] snapshot in
+                guard let self else { return }
+                UIRenderPerformance.recordAppPublication()
+                self.applicationPublicationRevision = snapshot.revision
+                self.applications = snapshot.applications
+            })
         if monitorsRunningApplications {
             observeWorkspaceApplications()
             scheduleRunningApplicationRefresh(immediate: true)
         }
-        publishApplications(force: true)
+        presentationPublisher.request(.immediate)
     }
 
     deinit {
         pendingPersistence?.cancel()
         pendingRunningApplicationRefresh?.cancel()
         identityRetryWorkItem?.cancel()
-        pendingThrottledPublication?.cancel()
+        presentationPublisher.shutdown()
         let notificationCenter = NSWorkspace.shared.notificationCenter
         for observer in workspaceObservers {
             notificationCenter.removeObserver(observer)
@@ -444,6 +435,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         identityRetryWorkItem?.cancel()
         identityRetryWorkItem = nil
         identityRetryExhaustedClientKeys.removeAll()
+        presentationRevision &+= 1
         stateLock.unlock()
 
         for client in nextClients.values {
@@ -621,6 +613,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             }
         }
         let savedSettings = settingsByApplication
+        presentationRevision &+= 1
         stateLock.unlock()
 
         if settingsChanged { schedulePersistence(savedSettings) }
@@ -668,7 +661,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                 self.headroomLock.unlock()
             }
         }
-        publishApplications(force: true)
+        presentationPublisher.request(.immediate)
         return hasAnotherRetry
     }
 
@@ -742,9 +735,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             settingsRevisionByApplication[id, default: 0] &+= 1
         }
         let current = settingsByApplication
+        presentationRevision &+= 1
         stateLock.unlock()
         schedulePersistence(current)
-        publishApplications(force: true)
+        presentationPublisher.request(.immediate)
     }
 
     func setPlaybackModeOverride(_ mode: PlaybackMode?, for applicationID: String) {
@@ -792,32 +786,18 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     }
 
     func setMeterPresentationActive(_ active: Bool, source: String) {
-        stateLock.lock()
-        if active {
-            meterPresentationSources.insert(source)
-        } else {
-            meterPresentationSources.remove(source)
-        }
-        let shouldPublish = active && !suspendedMeterPresentationSources.contains(source)
-        stateLock.unlock()
-        if shouldPublish {
+        stateLock.lock(); presentationRevision &+= 1; stateLock.unlock()
+        if presentationPublisher.setActive(active, source: source) {
             scheduleRunningApplicationRefresh(immediate: true)
-            publishApplications(force: true)
+            presentationPublisher.request(.immediate)
         }
     }
 
     func setMeterPresentationSuspended(_ suspended: Bool, source: String) {
-        stateLock.lock()
-        if suspended {
-            suspendedMeterPresentationSources.insert(source)
-        } else {
-            suspendedMeterPresentationSources.remove(source)
-        }
-        let shouldPublish = !suspended && meterPresentationSources.contains(source)
-        stateLock.unlock()
-        if shouldPublish {
+        stateLock.lock(); presentationRevision &+= 1; stateLock.unlock()
+        if presentationPublisher.setSuspended(suspended, source: source) {
             scheduleRunningApplicationRefresh(immediate: true)
-            publishApplications(force: true)
+            presentationPublisher.request(.immediate)
         }
     }
 
@@ -873,9 +853,9 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }
     }
 
-    func ingest(_ packet: PerAppAudioPacket) -> PCMFrame? {
+    func ingest(_ packet: PerAppAudioPacket, now: Date? = nil, performance: PacketPerformanceContext? = nil) -> PCMFrame? {
         var processed = packet.interleaved
-        return ingest(packet, processed: &processed)
+        return ingest(packet, processed: &processed, now: now, performance: performance)
     }
 
     /// Copies the transport's reusable C read buffer directly into the one
@@ -885,7 +865,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     func ingestTransportPacket(
         _ metadata: PerAppAudioPacket,
         samples: UnsafeBufferPointer<Float>,
-        sampleCount: Int
+        sampleCount: Int,
+        performance: PacketPerformanceContext? = nil
     ) -> PCMFrame? {
         guard sampleCount >= 0, sampleCount <= samples.count else { return nil }
         var processed = Array<Float>(unsafeUninitializedCapacity: sampleCount) {
@@ -898,12 +879,14 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             }
             initializedCount = sampleCount
         }
-        return ingest(metadata, processed: &processed)
+        return ingest(metadata, processed: &processed, performance: performance)
     }
 
     private func ingest(
         _ packet: PerAppAudioPacket,
-        processed: inout [Float]
+        processed: inout [Float],
+        now suppliedNow: Date? = nil,
+        performance incomingPerformance: PacketPerformanceContext? = nil
     ) -> PCMFrame? {
         guard (1...32).contains(packet.channelCount),
               packet.channelLayout.channelCount == packet.channelCount,
@@ -971,7 +954,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         stateLock.unlock()
 
         let rawPeak = processed.reduce(0.0) { max($0, Double(abs($1))) }
-        let now = Date()
+        let now = suppliedNow ?? Date()
+        let policyTick = incomingPerformance.map { _ in PerformanceClock.now() }
         let eqHeadroom: Float
         if settings.isMuted || settings.eqBypassed || !settings.hasEqualizerProcessing {
             eqHeadroom = 1
@@ -998,6 +982,16 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             sampleRate: packet.sampleRate,
             cycleCounter: packet.cycleCounter
         )
+
+        var performance = incomingPerformance
+        performance?.policyTick = policyTick
+        if performance != nil, let mix = pendingMixesByDevice[packet.deviceObjectID],
+           mix.channelCount != packet.channelCount || mix.channelLayout != packet.channelLayout
+            || abs(mix.sampleRate - packet.sampleRate) >= 0.5
+            || packetStartSampleTime - mix.endSampleTime > Int64(max(mix.largestPacketFrames, packetFrameCount) * Self.timelineDiscontinuityMultiplier) {
+            performanceEpoch &+= 1
+        }
+        performance?.identity.streamEpoch = performanceEpoch
 
         if sourceDetectors[dspClientKey]?.processID != currentProcessID ||
             sourceDetectors[dspClientKey]?.generation != UInt64(client?.generation ?? 0) {
@@ -1035,6 +1029,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             targetGain: targetGain
         )
 
+        let processingCompleted = performance.map { _ in PerformanceClock.now() }
         let outputPeak = processed.reduce(0.0) { max($0, Double(abs($1))) }
         let elapsed = now.timeIntervalSince(
             lastMeterUpdateByApplication[applicationID] ?? now
@@ -1053,10 +1048,15 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             packetStartSampleTime: packetStartSampleTime,
             samples: processed,
             clientKey: dspClientKey,
-            now: now
+            now: now,
+            performance: performance,
+            processingCompleted: processingCompleted
         )
         let presentationLevel = levelsByApplication[applicationID] ?? 0
         audioLock.unlock()
+        if let performance, let processingCompleted {
+            performance.capture.append(.packet(.init(identity: performance.identity, received: performance.received, processed: processingCompleted)))
+        }
 
         var presentationObservation: AppPresentationObservation?
         stateLock.lock()
@@ -1064,6 +1064,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             publishedSourceDiagnostics.removeValue(forKey: oldest)
         }
         publishedSourceDiagnostics[dspClientKey] = sourceDiagnostics
+        presentationRevision &+= 1
         presentationLevelsByApplication[applicationID] = presentationLevel
         if rawPeak >= Self.applicationActivityFloor {
             observedAudioIDs.insert(applicationID)
@@ -1088,21 +1089,24 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }
         stateLock.unlock()
         if let presentationObservation { observeForPresentation([presentationObservation]) }
-        publishApplications()
+        let publicationStarted = performance.map { _ in PerformanceClock.now() }
+        presentationPublisher.request(.meter)
+        performance?.capture.recordPresentation("Packet publication request", from: publicationStarted)
         return completed
     }
 
-    func flushExpiredMix() -> PerAppMixFlushResult {
+    func flushExpiredMix(now suppliedNow: Date? = nil) -> PerAppMixFlushResult {
         audioLock.lock()
-        let now = Date()
+        let now = suppliedNow ?? Date()
         guard !pendingMixesByDevice.isEmpty else {
             decayLevelsLocked(now: now)
             let presentationLevels = levelsByApplication
             audioLock.unlock()
             stateLock.lock()
+            presentationRevision &+= 1
             presentationLevelsByApplication = presentationLevels
             stateLock.unlock()
-            publishApplications()
+            presentationPublisher.request(.meter)
             return .idle
         }
 
@@ -1126,7 +1130,13 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             audioLock.unlock()
             return .retryAfter(max(0.0005, selectedDeadline.timeIntervalSince(now)))
         }
-        guard let completed = emitAllPendingMixLocked(for: selectedDevice) else {
+        let execution = pendingMixesByDevice[selectedDevice]?.performanceTrace.map { _ in PerformanceClock.now() }
+        let deadline: PerformanceTick? = pendingMixesByDevice[selectedDevice].flatMap { mix in
+            mix.performanceTrace.map { trace in
+                trace.lastPolicyTick.advanced(seconds: max(0.004, Double(max(1, mix.largestPacketFrames)) / mix.sampleRate * 1.5))
+            }
+        }
+        guard let completed = emitAllPendingMixLocked(for: selectedDevice, eligible: deadline ?? execution, idleDeadline: deadline, idleFlushStarted: execution) else {
             audioLock.unlock()
             return .idle
         }
@@ -1134,9 +1144,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         let presentationLevels = levelsByApplication
         audioLock.unlock()
         stateLock.lock()
+        presentationRevision &+= 1
         presentationLevelsByApplication = presentationLevels
         stateLock.unlock()
-        publishApplications()
+        presentationPublisher.request(.meter)
         return .flushed(completed)
     }
 
@@ -1150,6 +1161,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         stateLock.lock(); publishedSourceDiagnostics.removeAll(); stateLock.unlock()
         audioLock.lock()
         pendingMixesByDevice.removeAll(keepingCapacity: true)
+        performanceEpoch &+= 1
         lastEmittedEndSampleTimeByDevice.removeAll(keepingCapacity: true)
         sourceDetectors.removeAll()
         filterBanks.removeAll()
@@ -1165,9 +1177,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         headroomLock.unlock()
         stateLock.lock()
         presentationLevelsByApplication.removeAll()
+        presentationRevision &+= 1
         observedAudioSourcesByKey.removeAll()
         stateLock.unlock()
-        publishApplications(force: true)
+        presentationPublisher.request(.immediate)
     }
 
     private func updateSettings(
@@ -1188,6 +1201,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }
         let settingsRevision = settingsRevisionByApplication[applicationID] ?? 0
         let saved = persistChanges ? settingsByApplication : nil
+        presentationRevision &+= 1
         stateLock.unlock()
 
         // Correctness no longer depends on maintenance running before the next
@@ -1218,7 +1232,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         if let saved {
             schedulePersistence(saved)
         }
-        publishApplications(force: forcePublication)
+        presentationPublisher.request(forcePublication ? .immediate : .meter)
     }
 
     private static func uniqueClientKeys<Key: Hashable>(
@@ -1279,6 +1293,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     }
 
     private func resetDeviceTimelineLocked(_ deviceObjectID: UInt32) {
+        performanceEpoch &+= 1
         pendingMixesByDevice.removeValue(forKey: deviceObjectID)
         lastEmittedEndSampleTimeByDevice.removeValue(forKey: deviceObjectID)
         sourceDetectors = sourceDetectors.filter { $0.key.deviceObjectID != deviceObjectID }
@@ -1292,7 +1307,9 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         packetStartSampleTime: Int64,
         samples: [Float],
         clientKey: PerAppTransportClientKey,
-        now: Date
+        now: Date,
+        performance: PacketPerformanceContext?,
+        processingCompleted: PerformanceTick?
     ) -> PCMFrame? {
         let channelCount = packet.channelCount
         var packetSamples = samples
@@ -1316,6 +1333,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }
 
         if var mix = pendingMixesByDevice[packet.deviceObjectID] {
+            if mix.performanceTrace?.capture.isStopped == true { mix.performanceTrace = nil }
             let formatMatches = mix.channelCount == channelCount
                 && abs(mix.sampleRate - packet.sampleRate) < 0.5
                 && mix.channelLayout == packet.channelLayout
@@ -1327,7 +1345,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                     startSampleTime: packetStart,
                     samples: packetSamples,
                     clientKey: clientKey,
-                    now: now
+                    now: now,
+                    performance: performance, processingCompleted: processingCompleted
                 )
                 return completed
             }
@@ -1349,7 +1368,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                     startSampleTime: packetStart,
                     samples: packetSamples,
                     clientKey: clientKey,
-                    now: now
+                    now: now,
+                    performance: performance, processingCompleted: processingCompleted
                 )
                 return completed
             }
@@ -1361,6 +1381,13 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                 return nil
             }
 
+            if mix.performanceTrace == nil, let performance {
+                mix.performanceTrace = MixPerformanceTrace(capture: performance.capture, identity: performance.identity,
+                    untracedUntil: mix.endSampleTime, lastPolicyTick: performance.policyTick ?? performance.received)
+            }
+            let existingMixEnd = mix.endSampleTime
+            mix.performanceTrace?.add(performance, processed: processingCompleted, start: packetStart,
+                end: packetEnd, existingEnd: existingMixEnd)
             if packetStart < mix.startSampleTime {
                 let prependFrames = Int(mix.startSampleTime - packetStart)
                 mix.samples = [Float](
@@ -1413,7 +1440,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                 startSampleTime: packetStart,
                 samples: packetSamples,
                 clientKey: clientKey,
-                now: now
+                now: now,
+                performance: performance, processingCompleted: processingCompleted
             )
         }
 
@@ -1428,7 +1456,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         guard safeFrames > 0 else { return nil }
         return emitPendingPrefixLocked(
             for: packet.deviceObjectID,
-            frameCount: safeFrames
+            frameCount: safeFrames,
+            eligible: pendingMix.performanceTrace.map { _ in PerformanceClock.now() }
         )
     }
 
@@ -1438,9 +1467,16 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         startSampleTime: Int64,
         samples: [Float],
         clientKey: PerAppTransportClientKey,
-        now: Date
+        now: Date,
+        performance: PacketPerformanceContext?,
+        processingCompleted: PerformanceTick?
     ) -> PendingMix {
-        PendingMix(
+        var trace = performance.map { MixPerformanceTrace(capture: $0.capture, identity: $0.identity,
+            untracedUntil: startSampleTime, lastPolicyTick: $0.policyTick ?? $0.received) }
+        trace?.add(performance, processed: processingCompleted, start: startSampleTime,
+                   end: startSampleTime + Int64(samples.count / packet.channelCount), existingEnd: startSampleTime)
+        return PendingMix(
+            performanceTrace: trace,
             deviceObjectID: packet.deviceObjectID,
             startSampleTime: startSampleTime,
             channelCount: packet.channelCount,
@@ -1456,23 +1492,31 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         )
     }
 
-    private func emitAllPendingMixLocked(for deviceObjectID: UInt32) -> PCMFrame? {
+    private func emitAllPendingMixLocked(for deviceObjectID: UInt32, eligible: PerformanceTick? = nil, idleDeadline: PerformanceTick? = nil, idleFlushStarted: PerformanceTick? = nil) -> PCMFrame? {
         guard let mix = pendingMixesByDevice[deviceObjectID] else { return nil }
         return emitPendingPrefixLocked(
             for: deviceObjectID,
-            frameCount: mix.frameCount
+            frameCount: mix.frameCount,
+            eligible: eligible ?? mix.performanceTrace.map { _ in PerformanceClock.now() },
+            idleDeadline: idleDeadline, idleFlushStarted: idleFlushStarted
         )
     }
 
     private func emitPendingPrefixLocked(
         for deviceObjectID: UInt32,
-        frameCount: Int
+        frameCount: Int,
+        eligible: PerformanceTick? = nil,
+        idleDeadline: PerformanceTick? = nil,
+        idleFlushStarted: PerformanceTick? = nil
     ) -> PCMFrame? {
         guard var mix = pendingMixesByDevice[deviceObjectID],
               frameCount > 0,
               frameCount <= mix.frameCount else {
             return nil
         }
+        if mix.performanceTrace?.capture.isStopped == true { mix.performanceTrace = nil }
+        let intervalTrace = eligible.flatMap { mix.performanceTrace?.emit(start: mix.startSampleTime,
+            count: frameCount, eligible: $0, deadline: idleDeadline, flushStarted: idleFlushStarted) }
         let sampleCount = frameCount * mix.channelCount
         let outputSamples = Array(mix.samples.prefix(sampleCount))
         let activeClientCount = max(1, mix.clientKeys.count)
@@ -1498,6 +1542,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             mix.startSampleTime = emittedEnd
             pendingMixesByDevice[deviceObjectID] = mix
         }
+        output.performanceTrace = intervalTrace
+        if output.performanceTrace != nil { output.performanceTrace?.emitted = PerformanceClock.now() }
         return output
     }
 
@@ -1548,197 +1594,17 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func publishApplications(force: Bool = false) {
-        stateLock.lock()
-        let now = Date()
-        let hasVisiblePresentation = meterPresentationSources.contains {
-            !suspendedMeterPresentationSources.contains($0)
-        }
-        if !force && !hasVisiblePresentation {
-            stateLock.unlock()
-            return
-        }
-        if !force && now.timeIntervalSince(lastPublishDate) < Self.publishInterval {
-            scheduleTrailingPublicationLocked(
-                after: Self.publishInterval - now.timeIntervalSince(lastPublishDate)
-            )
-            stateLock.unlock()
-            return
-        }
-        if force {
-            pendingThrottledPublication?.cancel()
-            pendingThrottledPublication = nil
-        }
-        lastPublishDate = now
-        let clients = Array(clientsByKey.values)
-        let identities = identitiesByClientKey
-        let workspaceIdentities = workspaceIdentitiesByProcessID
-        let runningApplications = runningApplicationsByID
-        let settings = settingsByApplication
-        let levels = presentationLevelsByApplication
-        let knownAudioApplications = knownAudioApplicationIDs
-        let observedAudioApplications = observedAudioIDs
-        let observedAudioSources = Array(observedAudioSourcesByKey.values)
-        let exhaustedClientKeys = identityRetryExhaustedClientKeys
-        stateLock.unlock()
-
-        var visibleIdentities: [String: ApplicationIdentity] = [:]
-
-        // Core Audio clients are authoritative. Workspace metadata only fills
-        // ownership gaps; activation policy never vetoes observed audio.
-        for client in clients where client.isActive {
-            guard let identity = identities[client.transportKey]
-                    ?? workspaceIdentities[client.processID] else { continue }
-            let hasAudioEvidence = observedAudioApplications.contains(identity.id)
-                || knownAudioApplications.contains(identity.id)
-            guard hasAudioEvidence else { continue }
-            guard !Self.isSystemAudioService(
-                bundleID: identity.bundleID,
-                displayName: identity.displayName
-            ) else { continue }
-            if Self.isEphemeralApplicationID(identity.id) {
-                guard exhaustedClientKeys.contains(client.transportKey),
-                      identity.displayName != "Application" else { continue }
-            }
-            visibleIdentities[identity.id] = Self.preferredIdentity(
-                visibleIdentities[identity.id],
-                identity
-            )
-        }
-
-        // PCM packets and registry updates travel through independent channels.
-        // Do not make a real audio source disappear (or lose its control ID)
-        // merely because the registry snapshot arrived late or was transiently
-        // empty. The retained owner was resolved off the packet's exact DSP key.
-        for source in observedAudioSources {
-            let registeredIdentity = identities[source.transportKey].flatMap { identity in
-                source.processID <= 0 || identity.processID == source.processID ? identity : nil
-            }
-            guard let identity = registeredIdentity
-                    ?? workspaceIdentities[source.processID]
-                    ?? source.identity
-                    ?? runningApplications[source.applicationID] else { continue }
-            guard observedAudioApplications.contains(source.applicationID)
-                    || observedAudioApplications.contains(identity.id)
-                    || knownAudioApplications.contains(source.applicationID)
-                    || knownAudioApplications.contains(identity.id) else { continue }
-            guard !Self.isSystemAudioService(
-                bundleID: identity.bundleID,
-                displayName: identity.displayName
-            ) else { continue }
-            if Self.isEphemeralApplicationID(identity.id) {
-                guard exhaustedClientKeys.contains(source.transportKey),
-                      identity.displayName != "Application" else { continue }
-            }
-            visibleIdentities[identity.id] = Self.preferredIdentity(
-                visibleIdentities[identity.id],
-                identity
-            )
-        }
-
-        // Keep an audio-proven running owner stable across short-lived helper
-        // restarts without reintroducing an idle Workspace application roster.
-        for (applicationID, identity) in runningApplications {
-            guard observedAudioApplications.contains(applicationID)
-                    || knownAudioApplications.contains(applicationID) else { continue }
-            guard !Self.isEphemeralApplicationID(applicationID),
-                  !Self.isSystemAudioService(
-                    bundleID: identity.bundleID,
-                    displayName: identity.displayName
-                  ) else { continue }
-            visibleIdentities[applicationID] = Self.preferredIdentity(
-                visibleIdentities[applicationID],
-                identity
-            )
-        }
-
-        let snapshot = visibleIdentities.map { applicationID, identity in
-            return PerAppAudioApplication(
-                id: applicationID,
-                bundleID: identity.bundleID,
-                bundleURL: identity.bundleURL,
-                processID: identity.processID,
-                displayName: identity.displayName,
-                // Every published row is already backed by audio evidence.
-                // Keep it available across brief client-registry gaps so its
-                // meter and controls do not disappear from the UI.
-                isActive: true,
-                level: levels[applicationID] ?? 0,
-                settings: settings[applicationID] ?? PerAppAudioSettings()
-            )
-        }
-        .sorted {
-            if $0.isActive != $1.isActive { return $0.isActive && !$1.isActive }
-            return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-        }
-
-        enqueueApplicationSnapshot(snapshot)
-    }
-
-    /// Coalesce packet-rate meter changes, but never discard the final value in
-    /// a burst. Without this trailing publication, a short sound arriving just
-    /// after another UI update could remain invisible indefinitely.
-    private func scheduleTrailingPublicationLocked(after delay: TimeInterval) {
-        guard pendingThrottledPublication == nil else { return }
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.stateLock.lock()
-            self.pendingThrottledPublication = nil
-            self.stateLock.unlock()
-            self.publishApplications(force: true)
-        }
-        pendingThrottledPublication = work
-        publicationQueue.asyncAfter(
-            deadline: .now() + max(0, delay),
-            execute: work
-        )
-    }
-
-    private func enqueueApplicationSnapshot(_ snapshot: [PerAppAudioApplication]) {
-        publicationQueue.async { [weak self] in
-            guard let self else { return }
-            // Always retain only the newest snapshot while a MainActor delivery
-            // is pending. This preserves the old coalescing behavior without
-            // making the UI reacquire `stateLock`.
-            self.pendingApplicationSnapshot = snapshot
-            // Metadata changes are uncommon. Keep their diff on the publication
-            // queue so meter cadence never republishes or persists presentation.
-            var observations: [AppPresentationObservation] = []
-            for app in snapshot where Self.isPersistentApplicationID(app.id) {
-                let observation = AppPresentationObservation(applicationID: app.id,
-                    systemDisplayName: app.displayName, bundleID: app.bundleID)
-                if self.submittedPresentationMetadata[app.id] != observation {
-                    self.submittedPresentationMetadata[app.id] = observation
-                    observations.append(observation)
-                }
-            }
-            self.observeForPresentation(observations)
-            self.scheduleMainPublicationIfNeeded()
-        }
-    }
-
-    private func scheduleMainPublicationIfNeeded() {
-        dispatchPrecondition(condition: .onQueue(publicationQueue))
-        guard !mainPublishScheduled, let snapshot = pendingApplicationSnapshot else {
-            return
-        }
-
-        pendingApplicationSnapshot = nil
-        mainPublishScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-
-            // Intentionally lock-free on MainActor. `snapshot` is immutable and
-            // all coalescing bookkeeping stays on `publicationQueue`.
-            UIRenderPerformance.recordAppPublication()
-                self.applications = snapshot
-
-            self.publicationQueue.async { [weak self] in
-                guard let self else { return }
-                self.mainPublishScheduled = false
-                self.scheduleMainPublicationIfNeeded()
-            }
-        }
+    private func capturePresentationInput() -> PerAppPresentationInput {
+        stateLock.lock(); defer { stateLock.unlock() }
+        // Detach storage under the existing state lock, then release it before
+        // identity merge, row creation, sorting, metadata diff, or Main delivery.
+        func copy<K, V>(_ values: [K: V]) -> [K: V] { Dictionary(uniqueKeysWithValues: values.map { ($0.key, $0.value) }) }
+        return .init(revision: presentationRevision, clients: Array(clientsByKey.values),
+            identities: copy(identitiesByClientKey), workspaceIdentities: copy(workspaceIdentitiesByProcessID),
+            runningApplications: copy(runningApplicationsByID), settings: copy(settingsByApplication),
+            levels: copy(presentationLevelsByApplication), knownAudioApplications: Set(knownAudioApplicationIDs.map { $0 }),
+            observedAudioApplications: Set(observedAudioIDs.map { $0 }), observedAudioSources: Array(observedAudioSourcesByKey.values),
+            exhaustedClientKeys: Set(identityRetryExhaustedClientKeys.map { $0 }))
     }
 
     static func normalizedMeterLevel(forPeak peak: Double) -> Double {
@@ -1794,11 +1660,12 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                 uniquingKeysWith: { current, _ in current }
             )
             self.stateLock.lock()
+            self.presentationRevision &+= 1
             self.runningApplicationsByID = resolved
             self.workspaceIdentitiesByProcessID = audioIdentities
             self.pendingRunningApplicationRefresh = nil
             self.stateLock.unlock()
-            self.publishApplications(force: true)
+            self.presentationPublisher.request(.immediate)
         }
 
         stateLock.lock()
@@ -1915,7 +1782,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
     /// Apple ships a small group of document, account, and maintenance apps
     /// that do not own a media playback path. Hide those idle Dock processes,
-    /// while `publishApplications` still lets direct audio history override
+    /// while the presentation snapshot builder still lets direct audio history override
     /// this conservative classification if macOS changes their behavior.
     static func isKnownNonAudioSystemApplication(bundleID: String?) -> Bool {
         guard let bundleID = bundleID?.lowercased() else { return false }
@@ -2035,19 +1902,6 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }
         return processBundleURL != ownerBundleURL
             && processBundleURL.path.hasPrefix(ownerBundleURL.path + "/")
-    }
-
-    private static func preferredIdentity(
-        _ current: ApplicationIdentity?,
-        _ candidate: ApplicationIdentity
-    ) -> ApplicationIdentity {
-        guard let current else { return candidate }
-        if current.bundleURL == nil, candidate.bundleURL != nil { return candidate }
-        if !current.isDockApplication, candidate.isDockApplication { return candidate }
-        if current.displayName == "Application", candidate.displayName != "Application" {
-            return candidate
-        }
-        return current.processID <= candidate.processID ? current : candidate
     }
 
     static func isEphemeralApplicationID(_ id: String) -> Bool {
@@ -2273,6 +2127,21 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         stateLock.unlock()
         let error = persistenceQueue.sync { Self.persist(current, to: settingsURL) }
         if let error { throw ProfileSettingsError.runtime(error) }
+    }
+
+    /// Test/benchmark barrier for already-enqueued discovery/publication work.
+    /// Does not force delayed identity retries or advance meter deadlines.
+    func drainPresentationPreparation() async {
+        await withCheckedContinuation { continuation in
+            identityQueue.async { [weak self] in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { continuation.resume(); return }
+                    self.publicationQueue.async {
+                        DispatchQueue.main.async { continuation.resume() }
+                    }
+                }
+            }
+        }
     }
 
     func flushPendingSaveSynchronously() {

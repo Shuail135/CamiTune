@@ -2,6 +2,8 @@ import Foundation
 import Darwin
 
 struct PCMFrame: Sendable {
+    var performanceTrace: AudioIntervalTraceContext?
+    var writerTrace: PCMWriterTraceContext?
     var interleaved: [Float]
     /// Optional mode buses share this frame's exact format and timeline.
     /// `interleaved` remains the combined signal for observation branches.
@@ -87,8 +89,10 @@ final class PCMRouter: @unchecked Sendable {
         var rateMatchBufferedFrames: UInt64 = 0
         var rejectedSourceFrames: UInt64 = 0
         var sourceFormatError: String?
+        var camillaQueue = PCMQueueSnapshot()
     }
 
+    let performanceSource = PerformanceTraceSource()
     private let state = NSLock()
     private let systemMaster = SystemMasterGainControl()
     private var camillaBranch: CamillaPCMBranch?
@@ -100,8 +104,11 @@ final class PCMRouter: @unchecked Sendable {
 
     var statistics: Statistics {
         state.lock()
-        defer { state.unlock() }
-        return statisticsValue
+        var value = statisticsValue
+        let branch = camillaBranch
+        state.unlock()
+        if let branch { value.camillaQueue = branch.queueSnapshot }
+        return value
     }
 
     /// Serializes router replacement without making the caller's executor wait
@@ -110,6 +117,8 @@ final class PCMRouter: @unchecked Sendable {
     func start(
         camillaSink: FileHandle,
         activeRoute: ActiveAudioRoute? = nil,
+        renderConfiguration: RenderConfiguration? = nil,
+        configurationObserver: (@Sendable (RenderConfiguration) -> Void)? = nil,
         spatialRenderingMode: SpatialRenderingMode = .standard,
         spatialListenerTuning: SpatialListenerTuning = .neutral,
         spatialContentMode: SpatialContentMode = .automatic,
@@ -125,6 +134,8 @@ final class PCMRouter: @unchecked Sendable {
             startSynchronously(
                 camillaSink: camillaSink,
                 activeRoute: activeRoute,
+                renderConfiguration: renderConfiguration,
+                configurationObserver: configurationObserver,
                 spatialRenderingMode: spatialRenderingMode,
                 spatialListenerTuning: spatialListenerTuning,
                 spatialContentMode: spatialContentMode,
@@ -143,6 +154,8 @@ final class PCMRouter: @unchecked Sendable {
     private func startSynchronously(
         camillaSink: FileHandle,
         activeRoute: ActiveAudioRoute?,
+        renderConfiguration: RenderConfiguration?,
+        configurationObserver: (@Sendable (RenderConfiguration) -> Void)?,
         spatialRenderingMode: SpatialRenderingMode,
         spatialListenerTuning: SpatialListenerTuning,
         spatialContentMode: SpatialContentMode,
@@ -157,7 +170,10 @@ final class PCMRouter: @unchecked Sendable {
         stop()
         let camillaBranch = CamillaPCMBranch(
             handle: camillaSink,
+            performanceSource: performanceSource,
             activeRoute: activeRoute,
+            renderConfiguration: renderConfiguration,
+            configurationObserver: configurationObserver,
             systemMaster: systemMaster,
             spatialRenderingMode: spatialRenderingMode,
             spatialListenerTuning: spatialListenerTuning,
@@ -195,7 +211,7 @@ final class PCMRouter: @unchecked Sendable {
         state.lock()
         statisticsValue = Statistics()
         self.activeRoute = activeRoute
-        self.spatialRenderingMode = spatialRenderingMode
+        self.spatialRenderingMode = renderConfiguration?.spatialRenderingMode ?? spatialRenderingMode
         self.camillaBranch = camillaBranch
         self.meterBranch = meterBranch
         self.analyzerBranch = analyzerBranch
@@ -207,6 +223,14 @@ final class PCMRouter: @unchecked Sendable {
     /// once per block and ramps sample-continuously.
     func setSystemMaster(linearGain: Float, muted: Bool) {
         systemMaster.set(linearGain: linearGain, muted: muted)
+    }
+
+    func setRenderConfiguration(_ configuration: RenderConfiguration) {
+        state.lock()
+        spatialRenderingMode = configuration.spatialRenderingMode
+        let branch = camillaBranch
+        state.unlock()
+        branch?.setRenderConfiguration(configuration)
     }
 
     func setPlaybackMode(_ mode: PlaybackMode, correction: DeviceCorrectionProfile?) {
@@ -264,6 +288,8 @@ final class PCMRouter: @unchecked Sendable {
         camillaBranch?.enqueue(frame)
         var observation = frame
         observation.playbackModeSamples = [:]
+        observation.performanceTrace = nil
+        observation.writerTrace = nil
         meterBranch?.enqueue(observation)
         analyzerBranch?.enqueue(observation)
     }
@@ -347,6 +373,11 @@ final class PCMRouter: @unchecked Sendable {
         state.unlock()
 
         camillaBranch?.stop()
+        if let snapshot = camillaBranch?.queueSnapshot {
+            state.lock()
+            if self.camillaBranch == nil { statisticsValue.camillaQueue = snapshot }
+            state.unlock()
+        }
         meterBranch?.stop()
         analyzerBranch?.stop()
     }
@@ -523,12 +554,13 @@ private final class AnalyzerPCMBranch: @unchecked Sendable {
 
 struct LowLatencyPCMQueue {
     private struct Buffer {
-        let frame: PCMFrame
+        var frame: PCMFrame
     }
 
     private var buffers: [Buffer] = []
     private(set) var queuedFrames = 0
     private var sampleRate = 0.0
+    private(set) var snapshot = PCMQueueSnapshot()
     let maximumDuration: TimeInterval
 
     init(maximumDuration: TimeInterval = 0.1) {
@@ -537,12 +569,15 @@ struct LowLatencyPCMQueue {
 
     var isEmpty: Bool { buffers.isEmpty }
     var bufferCount: Int { buffers.count }
+    var lastEnqueuedTrace: PCMWriterTraceContext? { buffers.last?.frame.writerTrace }
 
-    mutating func append(_ frame: PCMFrame) -> Int {
+    mutating func append(_ frame: PCMFrame, performance: PerformanceCaptureBinding? = nil) -> Int {
         let frameCount = frame.frameCount
         let sampleRate = frame.sampleRate
         guard frameCount > 0, sampleRate > 0 else { return 0 }
         var droppedFrames = 0
+        let before = queuedFrames
+        let previousRate = self.sampleRate
         if self.sampleRate != 0, self.sampleRate != sampleRate {
             droppedFrames += clear()
         }
@@ -554,6 +589,27 @@ struct LowLatencyPCMQueue {
         }
         buffers.append(Buffer(frame: frame))
         queuedFrames += frameCount
+        snapshot.queuedFrames = queuedFrames
+        snapshot.capacityFrames = maximumFrames
+        snapshot.sampleRate = sampleRate
+        snapshot.peakQueuedFrames = max(snapshot.peakQueuedFrames, queuedFrames)
+        snapshot.peakDurationMilliseconds = max(snapshot.peakDurationMilliseconds, Double(queuedFrames) * 1000 / sampleRate)
+        if droppedFrames > 0 {
+            snapshot.lastRecoveryUptime = PerformanceClock.now().rawValue
+            snapshot.lastRecoveryDroppedFrames = droppedFrames
+            snapshot.lastRecoveryQueuedFrames = before
+            snapshot.lastRecoveryIncomingFrames = frameCount
+            snapshot.lastRecoverySampleRate = previousRate > 0 ? previousRate : sampleRate
+        }
+        let interval = frame.performanceTrace
+        if let capture = interval?.capture ?? performance?.capture,
+           let session = interval?.identity.runtimeSessionID ?? performance?.sessionID {
+            let identity = interval?.identity ?? AudioTraceIdentity(captureID: capture.id, runtimeSessionID: session,
+                transportGeneration: 0, streamEpoch: 0, deviceObjectID: 0, startSampleTime: 0,
+                frameCount: frameCount, sampleRate: sampleRate, channelCount: frame.channelCount)
+            buffers[buffers.count - 1].frame.writerTrace = PCMWriterTraceContext(capture: capture, identity: identity,
+                interval: interval, entered: PerformanceClock.now(), queueBefore: before, queueAfter: queuedFrames, capacity: maximumFrames)
+        }
         return droppedFrames
     }
 
@@ -561,6 +617,8 @@ struct LowLatencyPCMQueue {
         guard !buffers.isEmpty else { return nil }
         let buffer = buffers.removeFirst()
         queuedFrames -= buffer.frame.frameCount
+        snapshot.latestBlockFrames = buffer.frame.frameCount
+        snapshot.queuedFrames = queuedFrames
         return buffer.frame
     }
 
@@ -569,6 +627,7 @@ struct LowLatencyPCMQueue {
         let droppedFrames = queuedFrames
         buffers.removeAll(keepingCapacity: true)
         queuedFrames = 0
+        snapshot.queuedFrames = 0
         return droppedFrames
     }
 }
@@ -579,6 +638,8 @@ private final class CamillaPCMBranch: @unchecked Sendable {
     // Error) if write(contentsOf:) races with close() on that same object.
     // Keeping a separate descriptor gives the writer independent lifetime.
     private let handle: FileHandle?
+    private let performanceSource: PerformanceTraceSource
+    private var writerBlockInProgressFrames = 0
     private let systemMaster: SystemMasterGainControl
     private let activeRoute: ActiveAudioRoute?
     private var directMapper: DirectChannelMapper?
@@ -586,6 +647,8 @@ private final class CamillaPCMBranch: @unchecked Sendable {
     private let failureHandler: () -> Void
     private let adjustmentHandler: (Double, Int) -> Void
     private let condition = NSCondition()
+    private var renderConfiguration: RenderConfiguration
+    private let configurationObserver: (@Sendable (RenderConfiguration) -> Void)?
     private var queue = LowLatencyPCMQueue()
     private var stopping = false
     private var workerFinished = true
@@ -595,15 +658,24 @@ private final class CamillaPCMBranch: @unchecked Sendable {
     private var resampler = AdaptivePCMResampler()
     private let sourceRouter = SpatialSourceRouter()
     private var contentAnalyzer = SpatialContentAnalyzer()
-    private var spatialContentMode: SpatialContentMode
+    private var spatialContentMode: SpatialContentMode {
+        get { renderConfiguration.spatialContentMode }
+        set { renderConfiguration.spatialContentMode = newValue }
+    }
     private var publishedContentEstimate = SpatialContentEstimate.unknown
     private var contentEstimateDate = Date.distantPast
     private var needsContentReset = false
     private let spatialEngine = SpatialAudioEngine()
     private var referenceRenderer: ReferenceSpeakerRenderer?
     private var physicalModeRenderer: PhysicalSpeakerModeRenderer?
-    private var playbackMode: PlaybackMode
-    private var referenceCorrection: DeviceCorrectionProfile?
+    private var playbackMode: PlaybackMode {
+        get { renderConfiguration.playbackMode }
+        set { renderConfiguration.playbackMode = newValue }
+    }
+    private var referenceCorrection: DeviceCorrectionProfile? {
+        get { renderConfiguration.referenceCorrection }
+        set { renderConfiguration.referenceCorrection = newValue }
+    }
     private var correctionBank = PerAppFilterBank()
     private var correctionSignature: DeviceCorrectionProfile?
     private var correctionGain: Float = 1
@@ -612,13 +684,28 @@ private final class CamillaPCMBranch: @unchecked Sendable {
     private let expectedOutputChannelCount: Int
     private var publishedReferenceDiagnostics: ReferenceSpeakerDiagnostics?
     private var publishedRenderDiagnostics: SpatialRenderDiagnostics?
-    private var renderSettings: SpatialRenderSettings
-    private var renderOutput: SpatialOutputKind
-    private var virtualSurroundLayout = VirtualSurroundLayout.standard
+    private var renderSettings: SpatialRenderSettings {
+        get { renderConfiguration.spatialSettings }
+        set { renderConfiguration.spatialSettings = newValue }
+    }
+    private var renderOutput: SpatialOutputKind {
+        get { renderConfiguration.spatialOutput }
+        set { renderConfiguration.spatialOutput = newValue }
+    }
+    private var virtualSurroundLayout: VirtualSurroundLayout {
+        get { renderConfiguration.virtualSurroundLayout }
+        set { renderConfiguration.virtualSurroundLayout = newValue }
+    }
     private var lastSourceFormat: SpatialSourceFormat?
     private var renderedModeBuses: Set<PlaybackMode> = []
-    private var spatialRenderingMode: SpatialRenderingMode
-    private var spatialListenerTuning: SpatialListenerTuning
+    private var spatialRenderingMode: SpatialRenderingMode {
+        get { renderConfiguration.spatialRenderingMode }
+        set { renderConfiguration.spatialRenderingMode = newValue }
+    }
+    private var spatialListenerTuning: SpatialListenerTuning {
+        get { renderConfiguration.spatialListenerTuning }
+        set { renderConfiguration.spatialListenerTuning = newValue }
+    }
     private var calibrationID: UUID?
     private var calibrationTuning: SpatialListenerTuning?
     private var calibrationPlayback: SpatialCalibrationPlayback?
@@ -633,7 +720,10 @@ private final class CamillaPCMBranch: @unchecked Sendable {
 
     init(
         handle: FileHandle,
+        performanceSource: PerformanceTraceSource,
         activeRoute: ActiveAudioRoute?,
+        renderConfiguration: RenderConfiguration?,
+        configurationObserver: (@Sendable (RenderConfiguration) -> Void)?,
         systemMaster: SystemMasterGainControl,
         spatialRenderingMode: SpatialRenderingMode,
         spatialListenerTuning: SpatialListenerTuning,
@@ -647,6 +737,7 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         failureHandler: @escaping () -> Void,
         adjustmentHandler: @escaping (Double, Int) -> Void
     ) {
+        self.performanceSource = performanceSource
         let duplicatedDescriptor = Darwin.dup(handle.fileDescriptor)
         if duplicatedDescriptor >= 0 {
             self.handle = FileHandle(
@@ -656,14 +747,11 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         } else {
             self.handle = nil
         }
-        self.spatialRenderingMode = spatialRenderingMode == .standard ? .standard : .spatialAudio
-        self.spatialListenerTuning = spatialListenerTuning.validated
-        self.spatialContentMode = spatialContentMode
-        self.renderSettings = spatialSettings
-        if spatialRenderingMode == .frontStage || spatialRenderingMode == .virtualSurround { self.renderSettings.enabled = true }
-        self.renderOutput = spatialOutput
-        self.playbackMode = playbackMode ?? (referenceTopology != nil ? .referencePlayback : spatialRenderingMode == .standard ? .direct : .spatialRender)
-        self.referenceCorrection = referenceCorrection
+        self.renderConfiguration = renderConfiguration ?? .init(mode: spatialRenderingMode, tuning: spatialListenerTuning,
+            content: spatialContentMode, settings: spatialSettings, output: spatialOutput,
+            playback: playbackMode ?? (referenceTopology != nil ? .referencePlayback : spatialRenderingMode == .standard ? .direct : .spatialRender),
+            correction: referenceCorrection)
+        self.configurationObserver = configurationObserver
         self.physicalModeRenderer = referenceTopology.flatMap { try? PhysicalSpeakerModeRenderer(topology: $0) }
         self.referenceTopology = referenceTopology
         self.activeRoute = activeRoute
@@ -679,6 +767,10 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         self.adjustmentHandler = adjustmentHandler
     }
 
+    var queueSnapshot: PCMQueueSnapshot {
+        condition.lock(); defer { condition.unlock() }; return queue.snapshot
+    }
+
     var referenceDiagnostics: ReferenceSpeakerDiagnostics? {
         condition.lock(); defer { condition.unlock() }
         return publishedReferenceDiagnostics
@@ -688,6 +780,19 @@ private final class CamillaPCMBranch: @unchecked Sendable {
         condition.lock()
         defer { condition.unlock() }
         return publishedRenderDiagnostics
+    }
+
+    func setRenderConfiguration(_ configuration: RenderConfiguration) {
+        condition.lock(); defer { condition.unlock() }
+        let old = renderConfiguration
+        // Preserve the existing reset policy. Renderer-local settings changes
+        // continue through the long-lived engine's own update path.
+        if old.spatialRenderingMode != configuration.spatialRenderingMode {
+            needsSpatialReset = true
+        }
+        if old.spatialContentMode != configuration.spatialContentMode { needsContentReset = true }
+        renderConfiguration = configuration
+        // Correction history is compared with this block's immutable value on the writer.
     }
 
     func setPlaybackMode(_ mode: PlaybackMode, correction: DeviceCorrectionProfile?) {
@@ -814,16 +919,32 @@ private final class CamillaPCMBranch: @unchecked Sendable {
     }
 
     func enqueue(_ frame: PCMFrame) {
+        let performance = performanceSource.snapshot()
         condition.lock()
         guard !stopping, calibrationPlayback == nil, !measurementHold else {
             condition.unlock()
             return
         }
-        let droppedFrames = queue.append(frame)
+        let droppedFrames = queue.append(frame, performance: performance)
+        let recovery = queue.snapshot
+        let entry = queue.lastEnqueuedTrace
+        let writerFrames = writerBlockInProgressFrames
         if droppedFrames > 0 { needsRateMatcherReset = true }
         condition.signal()
         condition.unlock()
-        if droppedFrames > 0 { recoveryHandler(droppedFrames) }
+        if let entry {
+            entry.capture.append(.queue(.init(identity: entry.identity, timestamp: entry.entered, isEntry: true,
+                queuedFrames: entry.queueAfter, capacityFrames: entry.capacity)))
+        }
+        if droppedFrames > 0 {
+            recoveryHandler(droppedFrames)
+            if let performance, let session = performance.sessionID, let timestamp = recovery.lastRecoveryUptime {
+                performance.capture.append(.recovery(.init(captureID: performance.capture.id, runtimeSessionID: session,
+                    timestamp: .init(rawValue: timestamp), queuedFramesBeforeRecovery: recovery.lastRecoveryQueuedFrames,
+                    incomingFrames: recovery.lastRecoveryIncomingFrames, droppedFrames: droppedFrames,
+                    sampleRate: recovery.lastRecoverySampleRate, writerBlockInProgressFrames: writerFrames)))
+            }
+        }
     }
 
     func holdSpatialMeasurement(id: UUID, enabled: Bool) {
@@ -937,6 +1058,7 @@ private final class CamillaPCMBranch: @unchecked Sendable {
 
         while true {
             condition.lock()
+            writerBlockInProgressFrames = 0
             while queue.isEmpty && calibrationPlayback == nil && !stopping { condition.wait() }
             if stopping {
                 workerFinished = true
@@ -973,20 +1095,24 @@ private final class CamillaPCMBranch: @unchecked Sendable {
                 condition.unlock()
                 continue
             }
+            let trace = frame.writerTrace.flatMap { $0.capture.accepts(PerformanceClock.now()) ? $0 : nil }
+            let queueLeft = trace.map { _ in PerformanceClock.now() }
+            writerBlockInProgressFrames = frame.frameCount
             let queuedFrames = queue.queuedFrames
             let shouldResetRateMatcher = needsRateMatcherReset
             let shouldResetSpatialRenderer = needsSpatialReset
+            let configuration = renderConfiguration
             // Keep the two physical sweep channels independent. The existing
             // downstream output EQ and system master remain in the path.
-            let spatialRenderingMode: SpatialRenderingMode = isAcousticMeasurement ? .standard : self.spatialRenderingMode
-            var renderSettings = self.renderSettings
+            let spatialRenderingMode: SpatialRenderingMode = isAcousticMeasurement ? .standard : configuration.spatialRenderingMode
+            var renderSettings = configuration.spatialSettings
             if isChannelAudition {
                 renderSettings.contentSelection = .cinema
                 renderSettings.cinema.amount = 1
             }
-            let renderOutput = self.renderOutput
-            let currentMode = self.playbackMode
-            let correction = self.referenceCorrection
+            let renderOutput = configuration.spatialOutput
+            let currentMode = configuration.playbackMode
+            let correction = configuration.referenceCorrection
             let hasSpatialBus = frame.playbackModeSamples[.spatialRender] != nil
             let shouldAnalyzeContent = ((spatialRenderingMode != .standard && renderSettings.enabled) || hasSpatialBus)
                 && calibrationID == nil && !isCalibrationSample
@@ -995,6 +1121,11 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             needsRateMatcherReset = false
             needsSpatialReset = false
             condition.unlock()
+            configurationObserver?(configuration)
+            if let trace, let queueLeft {
+                trace.capture.append(.queue(.init(identity: trace.identity, timestamp: queueLeft, isEntry: false,
+                    queuedFrames: queuedFrames, capacityFrames: trace.capacity)))
+            }
             if shouldResetContent || shouldResetRateMatcher || shouldResetSpatialRenderer || lastSourceFormat != frame.sourceFormat {
                 contentAnalyzer.reset()
             }
@@ -1047,6 +1178,7 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             // count and previously drove a false resampling correction for
             // seconds. The local mixed queue is already in timeline frames and
             // is the correct clock-boundary backlog to control.
+            let renderCompleted = trace.map { _ in PerformanceClock.now() }
             let bufferedFrames = frame.frameCount + queuedFrames
             let localQueueCapacityFrames = max(frame.frameCount * 8, frame.frameCount)
             let adjustmentPPM = isCalibrationSample ? 0 : rateController.update(
@@ -1059,14 +1191,29 @@ private final class CamillaPCMBranch: @unchecked Sendable {
             var adjustedFrame = isCalibrationSample
                 ? renderedFrame : resampler.process(renderedFrame, adjustmentPPM: adjustmentPPM)
             guard !adjustedFrame.interleaved.isEmpty else { continue }
+            let resampleCompleted = trace.map { _ in PerformanceClock.now() }
             applySystemMaster(
                 to: &adjustedFrame.interleaved,
                 channelCount: adjustedFrame.channelCount,
                 sampleRate: adjustedFrame.sampleRate
             )
+            let masterCompleted = trace.map { _ in PerformanceClock.now() }
             do {
-                try adjustedFrame.interleaved.withUnsafeBytes { bytes in
-                    try handle.write(contentsOf: Data(bytes))
+                let payload = adjustedFrame.interleaved.withUnsafeBytes { Data($0) }
+                let pipeWriteStarted = trace.map { _ in PerformanceClock.now() }
+                try handle.write(contentsOf: payload)
+                if let trace, let queueLeft, let renderCompleted, let resampleCompleted, let masterCompleted, let pipeWriteStarted {
+                    let interval = trace.interval
+                    trace.capture.append(.audio(.init(identity: trace.identity,
+                        packetReceived: interval?.firstPacketReceived, lastPacketReceived: interval?.lastPacketReceived,
+                        firstPacketProcessed: interval?.firstPacketProcessed, packetProcessed: interval?.lastPacketProcessed, mixEligible: interval?.becameEligible,
+                        mixEmitted: interval?.emitted, idleDeadline: interval?.idleDeadline, idleFlushStarted: interval?.idleFlushStarted,
+                        queueEntered: trace.entered, queueLeft: queueLeft, renderCompleted: renderCompleted,
+                        resampleCompleted: resampleCompleted, masterCompleted: masterCompleted,
+                        pipeWriteStarted: pipeWriteStarted, pipeWriteCompleted: PerformanceClock.now(),
+                        queueFramesBeforeEntry: trace.queueBefore, queueFramesAtEntry: trace.queueAfter,
+                        queueFramesAfterDequeue: queuedFrames, queueCapacityFrames: trace.capacity,
+                        blockFrames: adjustedFrame.frameCount, contributorCount: interval?.contributingPackets ?? 0)))
                 }
                 calibrationCompletion?()
             } catch {
