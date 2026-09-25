@@ -196,7 +196,7 @@ struct SpatialAudioEditorView: View {
     private var playbackModeDescription: String {
         switch modePreview ?? profile.playbackMode {
         case .direct:
-            return "No automatic adjustment for audio devices."
+            return "No automatic adjustment for audio devices.(Reference & Spatial still in development)"
         case .referencePlayback:
             if profile.isPersonalListening {
                 return profile.effectiveEndpointKind == .iem

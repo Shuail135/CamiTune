@@ -53,6 +53,7 @@ struct ProfileDeletionSnapshot: Equatable, Sendable {
 enum HistoryState: Equatable, Sendable {
     case globalEQ(GlobalEQHistoryState), channel(PerChannelEditorSnapshot)
     case crossfeed(CrossfeedHistoryState), convolution(ConvolutionHistoryState)
+    case convolutionBatch([Int: ConvolutionHistoryState])
     case perAppAudio(PerAppAudioSettings), perAppBatch([String: PerAppAudioSettings])
     case appAlias(String?), appPlacement(AppPlacementHistoryState)
     case deletion(ProfileDeletionSnapshot, deleted: Bool)

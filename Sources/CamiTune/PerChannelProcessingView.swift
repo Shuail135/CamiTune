@@ -132,6 +132,10 @@ struct PerChannelProcessingView: View {
                         onEditingChanged: continuousEditingChanged
                     )
                 }
+                Divider()
+                ConvolutionEditorView(state: state, profile: $profile, target: selectedTarget,
+                    targetName: selectedGroup?.name ?? selectedChannel.displayName)
+                    .id(selectedTarget)
             }
             .padding(6)
             .disabled(editableChannels.isEmpty || bandReduction.isRunning)

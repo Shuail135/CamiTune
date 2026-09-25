@@ -110,8 +110,11 @@ package struct ProcessingGraphBuilder {
             let tone = group.chain.simpleTone ?? SimpleToneSettings()
             let bands = try SimpleToneFilterFactory.filters(for: tone, sampleRate: Double(profile.sampleRate))
             if !tone.isNeutral {
-                regular.stages.append(ProcessingStage(id: group.id.stageID("tone"),
-                    processor: .equalizer(EqualizerProcessor(bands: bands))))
+                let insertion = regular.stages.firstIndex {
+                    switch $0.processor { case .convolution, .delay, .crossfeed: return true; default: return false }
+                } ?? regular.stages.endIndex
+                regular.stages.insert(ProcessingStage(id: group.id.stageID("tone"),
+                    processor: .equalizer(EqualizerProcessor(bands: bands))), at: insertion)
             }
             try append(regular, identifierScope: "group_\(compact(group.id.stageID("scope")))",
                 pipelineScope: .group(group.id), channels: channels, sampleRate: profile.sampleRate,
@@ -139,10 +142,13 @@ package struct ProcessingGraphBuilder {
                 for: channelTone, sampleRate: Double(profile.sampleRate)
             )
             if !channelTone.isNeutral {
-                regularChannel.stages.append(ProcessingStage(
+                let insertion = regularChannel.stages.firstIndex {
+                    switch $0.processor { case .convolution, .delay, .crossfeed: return true; default: return false }
+                } ?? regularChannel.stages.endIndex
+                regularChannel.stages.insert(ProcessingStage(
                     id: ProcessingProfile.toneStageID(forChannel: channel.index),
                     processor: .equalizer(EqualizerProcessor(bands: channelToneBands))
-                ))
+                ), at: insertion)
             }
             try append(
                 regularChannel,

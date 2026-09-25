@@ -30,11 +30,22 @@ extension AppState: HistoryRestoring {
     }
 
     /// Saved processing mutations preserve every current session draft.
-    func mutateSavedProcessing(profileID: UUID, _ mutation: (inout ProcessingProfile) -> Void) throws {
+    func mutateSavedProcessing(profileID: UUID, _ mutation: (inout ProcessingProfile) throws -> Void) throws {
         var profile = try historyProfile(profileID)
         var processing = try profile.resolvedProcessing()
-        mutation(&processing)
-        profile.processing = processing
+        let previousChannels = processing.channels
+        try mutation(&processing)
+        if processing.channels != previousChannels {
+            // Physical IDs are authoritative once channel calibration exists.
+            // Keep FIR edits in that store so resolving the profile cannot lose them.
+            profile.captureLegacyPhysicalChannels()
+            for channel in profile.configuredProcessingChannels {
+                if let chain = processing.channels.first(where: { $0.index == channel.index })?.chain {
+                    profile.physicalChannelProcessing[channel.physicalOutputID] = chain
+                }
+            }
+        }
+        profile.replaceProcessing(processing)
         profiles.update(profile)
     }
     func applyHistoryProfileIfActive(_ id: UUID) async throws {
@@ -68,7 +79,7 @@ extension AppState: HistoryRestoring {
 
     private func persistHistoryChanges(for snapshot: HistoryState) async throws {
         switch snapshot {
-        case .crossfeed, .convolution, .profileName, .profileOrganization, .deletion, .referenceTransfer:
+        case .crossfeed, .convolution, .convolutionBatch, .profileName, .profileOrganization, .deletion, .referenceTransfer:
             try await profiles.persistHistoryChanges()
         case .perAppAudio, .perAppBatch: try perAppAudio.persistHistoryChanges()
         case .appAlias, .appPlacement: try perAppAudio.presentationStore.persistHistoryChanges()
@@ -95,9 +106,12 @@ extension AppState: HistoryRestoring {
             let value = try profile.resolvedProcessing().settings(forGroup: group) ?? .identity
             return .channel(PerChannelEditorSnapshot(gainDB: value.gainDB, delayMilliseconds: value.delayMilliseconds,
                 limiterEnabled: value.limiterEnabled, bands: value.bands, simpleTone: value.simpleTone))
-        case (.convolution, .profile(let id)):
-            let stage = try historyProfile(id).processing.convolution
-            return .convolution(ConvolutionHistoryState(processor: stage?.processor, isEnabled: stage?.isEnabled ?? false))
+        case (.convolution, .profile), (.convolution, .profileChannel), (.convolution, .profileGroup):
+            return .convolution(try convolutionHistoryState(for: target))
+        case (.convolutionBatch(let values), .profile(let id)):
+            return .convolutionBatch(try Dictionary(uniqueKeysWithValues: values.keys.map {
+                ($0, try convolutionHistoryState(for: .profileChannel(id, $0)))
+            }))
         case (.perAppAudio, .application(let id)): return .perAppAudio(perAppAudio.settings(for: id))
         case (.perAppBatch(let values), .applicationPresentationDocument):
             return .perAppBatch(Dictionary(uniqueKeysWithValues: values.keys.map { ($0, perAppAudio.settings(for: $0)) }))
@@ -157,8 +171,23 @@ extension AppState: HistoryRestoring {
             }
             setGroupProcessingDraft(value, for: id, groupID: group)
             applyID = id
-        case let (.convolution(value), .profile(id)):
-            try mutateSavedProcessing(profileID: id) { $0.setConvolution(value.processor, enabled: value.isEnabled) }
+        case (.convolution(let value), .profile), (.convolution(let value), .profileChannel), (.convolution(let value), .profileGroup):
+            applyID = try storeConvolution(value, target: target)
+        case let (.convolutionBatch(values), .profile(id)):
+            let profile = try historyProfile(id)
+            guard Set(values.keys).isSubset(of: Set(profile.configuredProcessingChannels.map(\.index))) else {
+                throw HistoryRestoreError.invalidStateForTarget
+            }
+            try mutateSavedProcessing(profileID: id) { processing in
+                for (index, value) in values {
+                    if !processing.channels.contains(where: { $0.index == index }),
+                       let channel = profile.configuredProcessingChannels.first(where: { $0.index == index }) {
+                        processing.channels.append(ChannelProcessing(index: index, role: channel.role))
+                    }
+                    processing.setConvolution(value.processor, enabled: value.isEnabled, forChannel: index)
+                }
+                processing.channels.sort { $0.index < $1.index }
+            }
             applyID = id
         case let (.perAppAudio(value), .application(id)):
             perAppAudio.replaceSettings(value, for: id)

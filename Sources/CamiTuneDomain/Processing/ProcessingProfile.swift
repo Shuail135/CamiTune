@@ -45,6 +45,16 @@ package struct ProcessingProfile: Codable, Hashable, Sendable {
         ))
     }
 
+    package static func convolutionStageID(forChannel index: Int) -> UUID {
+        let value = UInt32(clamping: index)
+        return UUID(uuid: (
+            0x43, 0x41, 0x4d, 0x49, 0x54, 0x55, 0x4e, 0x45,
+            0x46, 0x49, 0x52, 0x00,
+            UInt8((value >> 24) & 0xff), UInt8((value >> 16) & 0xff),
+            UInt8((value >> 8) & 0xff), UInt8(value & 0xff)
+        ))
+    }
+
     package static func toneStageID(forChannel index: Int) -> UUID {
         let value = UInt32(clamping: index)
         return UUID(uuid: (
@@ -247,6 +257,27 @@ package struct ProcessingProfile: Codable, Hashable, Sendable {
             enabled: enabled,
             stageID: Self.crossfeedStageID
         )
+    }
+
+    package func convolution(forChannel index: Int) -> (isEnabled: Bool, processor: ConvolutionProcessor)? {
+        channels.first { $0.index == index }?.chain.stages.firstConvolutionStage
+    }
+
+    package mutating func setConvolution(_ convolution: ConvolutionProcessor?, enabled: Bool = true, forChannel index: Int) {
+        guard let position = channels.firstIndex(where: { $0.index == index }) else { return }
+        channels[position].chain.stages.upsertConvolution(convolution, enabled: enabled,
+            stageID: Self.convolutionStageID(forChannel: index))
+    }
+
+    package func convolution(forGroup id: SpeakerGroupID) -> (isEnabled: Bool, processor: ConvolutionProcessor)? {
+        groups.first { $0.id == id }?.chain.stages.firstConvolutionStage
+    }
+
+    package mutating func setConvolution(_ convolution: ConvolutionProcessor?, enabled: Bool = true, forGroup id: SpeakerGroupID) {
+        guard convolution != nil || groups.contains(where: { $0.id == id }) else { return }
+        if !groups.contains(where: { $0.id == id }) { groups.append(GroupProcessing(id: id)) }
+        guard let position = groups.firstIndex(where: { $0.id == id }) else { return }
+        groups[position].chain.stages.upsertConvolution(convolution, enabled: enabled, stageID: id.stageID("convolution"))
     }
 
     package func settings(forChannel index: Int) -> ChannelProcessingSettings? {
@@ -666,7 +697,7 @@ private extension Array where Element == ProcessingStage {
         }
     }
 
-    mutating func upsertEqualizer(bands: [EQBand]) {
+    mutating func upsertEqualizer(bands: [EQBand], stageID: UUID? = nil) {
         if let index = firstIndex(where: {
             guard $0.id != ProcessingProfile.spatialRoomCorrectionStageID else { return false }
             if case .equalizer = $0.processor { return true }
@@ -675,7 +706,10 @@ private extension Array where Element == ProcessingStage {
             self[index].processor = .equalizer(EqualizerProcessor(bands: bands))
             self[index].isEnabled = true
         } else {
-            append(ProcessingStage(processor: .equalizer(EqualizerProcessor(bands: bands))))
+            let insertion = firstIndex {
+                switch $0.processor { case .convolution, .delay, .crossfeed, .limiter: return true; default: return false }
+            } ?? endIndex
+            insert(ProcessingStage(id: stageID ?? UUID(), processor: .equalizer(EqualizerProcessor(bands: bands))), at: insertion)
         }
     }
 
@@ -729,23 +763,21 @@ private extension Array where Element == ProcessingStage {
             if let index { remove(at: index) }
             return
         }
-        if let index {
-            self[index].processor = .convolution(convolution)
-            self[index].isEnabled = enabled
-            return
-        }
+        // Preserve an existing identity while repairing legacy insertion order.
+        let identity = index.map { self[$0].id } ?? stageID
+        if let index { remove(at: index) }
 
         // FIR follows ordinary response shaping and remains before the terminal
         // limiter even when an older profile's stages were hand-authored.
         let insertionIndex = firstIndex(where: {
             switch $0.processor {
-            case .crossfeed, .limiter: return true
+            case .delay, .crossfeed, .limiter: return true
             default: return false
             }
         }) ?? endIndex
         insert(
             ProcessingStage(
-                id: stageID,
+                id: identity,
                 isEnabled: enabled,
                 processor: .convolution(convolution)
             ),
@@ -807,11 +839,7 @@ extension ProcessingProfile {
         group.chain.simpleTone = settings.simpleTone
         let gainID = group.chain.stages.first { if case .gain = $0.processor { return true }; return false }?.id
         group.chain.stages.upsertGain(gainDB: settings.gainDB, stageID: gainID ?? id.stageID("gain"))
-        if !group.chain.stages.contains(where: { if case .equalizer = $0.processor { return true }; return false }) {
-            group.chain.stages.append(ProcessingStage(id: id.stageID("eq"),
-                processor: .equalizer(EqualizerProcessor(bands: []))))
-        }
-        group.chain.stages.upsertEqualizer(bands: settings.bands)
+        group.chain.stages.upsertEqualizer(bands: settings.bands, stageID: id.stageID("eq"))
         group.chain.stages.upsertDelay(milliseconds: settings.delayMilliseconds, stageID: id.stageID("delay"))
         group.chain.stages.upsertLimiter(enabled: settings.limiterEnabled, stageID: id.stageID("limiter"))
         if let index = groups.firstIndex(where: { $0.id == id }) { groups[index] = group }
