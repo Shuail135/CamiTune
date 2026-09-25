@@ -1,0 +1,57 @@
+--- a/src/coreaudio_backend/device.rs
++++ b/src/coreaudio_backend/device.rs
+@@ -458,6 +458,15 @@
+                 let (tx_dev, rx_dev) = bounded(channel_capacity);
+                 let buffer_fill = Arc::new(Mutex::new(countertimer::DeviceBufferEstimator::new(samplerate)));
+                 let buffer_fill_clone = buffer_fill.clone();
++                // Diagnostic-only: opt-in callback clock observation. Formatting
++                // and logging remain on the playback worker, never the callback.
++                let clock_probe_enabled = std::env::var("CAMITUNE_CLOCK_PROBE").as_deref() == Ok("1");
++                type ClockProbe = (u64, u64, f64, u64, f64, u32, u64, usize);
++                let clock_probe: Arc<Mutex<Option<ClockProbe>>> = Arc::new(Mutex::new(None));
++                let callback_clock_probe = clock_probe.clone();
++                let mut clock_callbacks = 0_u64;
++                let mut clock_demand_frames = 0_u64;
++                let mut clock_observation_misses = 0_u64;
+                 let mut buffer_avg = countertimer::Averager::new();
+                 let mut timer = countertimer::Stopwatch::new();
+                 let mut chunk_stats = ChunkStats {
+@@ -502,8 +511,21 @@
+ 
+                 let callback_res = audio_unit.set_render_callback(move |args: Args| {
+                     let Args {
+-                        num_frames, data, ..
++                        num_frames, data, time_stamp, ..
+                     } = args;
++                    if clock_probe_enabled {
++                        clock_callbacks = clock_callbacks.wrapping_add(1);
++                        clock_demand_frames = clock_demand_frames.wrapping_add(num_frames as u64);
++                        // Never wait for the observer. A missed snapshot is counted;
++                        // the callback-local demand total still includes every call.
++                        if let Ok(mut observation) = callback_clock_probe.try_lock() {
++                            *observation = Some((clock_callbacks, clock_demand_frames,
++                                time_stamp.mSampleTime, time_stamp.mHostTime,
++                                time_stamp.mRateScalar, time_stamp.mFlags.0, clock_observation_misses, num_frames));
++                        } else {
++                            clock_observation_misses = clock_observation_misses.wrapping_add(1);
++                        }
++                    }
+                     trace!("Playback cb called with {num_frames} frames.");
+                     while sample_queue.len() < (blockalign * num_frames) {
+                         trace!("playback loop needs more samples, reading from channel");
+@@ -630,6 +652,15 @@
+                             {
+                                 timer.restart();
+                                 buffer_avg.restart();
++                                if clock_probe_enabled {
++                                    let snapshot = clock_probe.try_lock().ok().and_then(|value| *value);
++                                    if let Some((callbacks, demand, sample, host, scalar, flags, misses, frames)) = snapshot {
++                                        info!("CAMITUNE_CLOCK_PROBE callbacks={} demand={} sample={:.6} host={} scalar={:.12} flags={} misses={} frames={}",
++                                            callbacks, demand, sample, host, scalar, flags, misses, frames);
++                                    } else {
++                                        info!("CAMITUNE_CLOCK_PROBE observation_unavailable");
++                                    }
++                                }
+                                 if adjust {
+                                     let speed = rate_controller.next(av_delay);
+                                     let changed = (speed - rate_adjust_value).abs() > 0.000_001;

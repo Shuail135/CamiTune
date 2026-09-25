@@ -1,62 +1,5 @@
+import CamiTuneDomain
 import Foundation
-
-enum ProfileNamePolicy {
-    static func uniqueName(base requestedBase: String, existingNames: [String]) -> String {
-        let trimmed = requestedBase.trimmingCharacters(in: .whitespacesAndNewlines)
-        let base = trimmed.isEmpty ? "Profile" : trimmed
-        let existingKeys = Set(existingNames.map(comparisonKey))
-        guard existingKeys.contains(comparisonKey(base)) else { return base }
-
-        var suffix = 2
-        while existingKeys.contains(comparisonKey("\(base) \(suffix)")) {
-            suffix += 1
-        }
-        return "\(base) \(suffix)"
-    }
-
-    static func isAvailable(_ name: String, in profiles: [DeviceProfile], excluding profileID: UUID? = nil) -> Bool {
-        let key = comparisonKey(name)
-        return !profiles.contains { profile in
-            profile.id != profileID && comparisonKey(profile.name) == key
-        }
-    }
-
-    static func normalized(_ profiles: [DeviceProfile]) -> [DeviceProfile] {
-        var result: [DeviceProfile] = []
-        result.reserveCapacity(profiles.count)
-        for var profile in profiles {
-            profile.name = uniqueName(base: profile.name, existingNames: result.map(\.name))
-            result.append(profile)
-        }
-        return result
-    }
-
-    private static func comparisonKey(_ name: String) -> String {
-        name.trimmingCharacters(in: .whitespacesAndNewlines).folding(
-            options: [.caseInsensitive, .diacriticInsensitive],
-            locale: Locale(identifier: "en_US_POSIX")
-        )
-    }
-}
-
-struct ProfileFolder: Identifiable, Codable, Equatable, Sendable {
-    var id = UUID()
-    var name: String
-    var profileIDs: [UUID] = []
-}
-
-enum ProfileRootItem: Codable, Hashable, Sendable {
-    case profile(UUID), folder(UUID)
-
-    static func normalized(_ order: [Self], profiles: [DeviceProfile], folders: [ProfileFolder]) -> [Self] {
-        let grouped = Set(folders.flatMap(\.profileIDs))
-        let defaults = profiles.filter { !grouped.contains($0.id) }.map { Self.profile($0.id) }
-            + folders.map { Self.folder($0.id) }
-        let valid = Set(defaults)
-        var seen = Set<Self>()
-        return (order + defaults).filter { valid.contains($0) && seen.insert($0).inserted }
-    }
-}
 
 @MainActor
 final class ProfileStore: ObservableObject {
@@ -95,17 +38,45 @@ final class ProfileStore: ObservableObject {
             rootOrder = state.rootOrder
         }
     }
-    @Published var profiles: [DeviceProfile] = [] {
-        didSet { save() }
+    @Published private var libraryProfiles: [DeviceProfile] = []
+    var profiles: [DeviceProfile] {
+        get { libraryProfiles }
+        set {
+            guard !stopping || isLoading else { return }
+            if activeDurableCommit != nil && !isLoading {
+                let old = Dictionary(uniqueKeysWithValues: libraryProfiles.map { ($0.id, Self.settingsSnapshot($0)) })
+                guard newValue.count == libraryProfiles.count,
+                      Set(newValue.map(\.id)).count == newValue.count,
+                      newValue.allSatisfy({ old[$0.id] == Self.settingsSnapshot($0) }) else { return }
+                if activeDurableCommit?.mutation.kind == .history,
+                   newValue.map(\.id) != libraryProfiles.map(\.id) { return }
+            }
+            libraryProfiles = newValue; save()
+        }
     }
-    @Published private(set) var physicalDeviceDefaults: [PhysicalDeviceDefaultProfile] = [] {
-        didSet { save() }
+    @Published private var libraryDefaults: [PhysicalDeviceDefaultProfile] = []
+    private(set) var physicalDeviceDefaults: [PhysicalDeviceDefaultProfile] {
+        get { libraryDefaults }
+        set {
+            guard isLoading || (!stopping && activeDurableCommit == nil) else { return }
+            libraryDefaults = newValue; save()
+        }
     }
-    @Published private(set) var folders: [ProfileFolder] = [] {
-        didSet { save() }
+    @Published private var libraryFolders: [ProfileFolder] = []
+    private(set) var folders: [ProfileFolder] {
+        get { libraryFolders }
+        set {
+            guard isLoading || (!stopping && activeDurableCommit?.mutation.kind != .history) else { return }
+            libraryFolders = newValue; save()
+        }
     }
-    @Published private(set) var rootOrder: [ProfileRootItem] = [] {
-        didSet { save() }
+    @Published private var libraryRootOrder: [ProfileRootItem] = []
+    private(set) var rootOrder: [ProfileRootItem] {
+        get { libraryRootOrder }
+        set {
+            guard isLoading || (!stopping && activeDurableCommit?.mutation.kind != .history) else { return }
+            libraryRootOrder = newValue; save()
+        }
     }
     var effectiveRootOrder: [ProfileRootItem] {
         ProfileRootItem.normalized(rootOrder, profiles: profiles, folders: folders)
@@ -149,42 +120,11 @@ final class ProfileStore: ObservableObject {
         }
     }
 
-    /// Write the complete candidate atomically before publishing it to observers.
-    /// A failed write leaves the original in-memory and persisted configuration intact.
+    @discardableResult
     func commitSettings(_ candidate: DeviceProfile, expected: DeviceProfile,
-                        originalActivation: ProfileActivationMode, activation: ProfileActivationMode) throws {
+                        originalActivation: ProfileActivationMode, activation: ProfileActivationMode) async throws -> ProfilePersistenceReceipt {
         try validateSettingsSnapshot(expected, activation: originalActivation)
-        guard let index = profiles.firstIndex(where: { $0.id == candidate.id }),
-              ProfileNamePolicy.isAvailable(candidate.name, in: profiles, excluding: candidate.id) else {
-            throw ProfileSettingsError.runtime("A profile with that name already exists.")
-        }
-        var updated = profiles
-        var saved = candidate
-        saved.outputVolumeScalar = updated[index].outputVolumeScalar
-        saved.autoActivateWhenProfileDeviceSelected = activation == .profileAudioDevice
-        updated[index] = saved
-        var defaults = physicalDeviceDefaults.filter { $0.profileID != candidate.id }
-        if activation == .physicalOutput {
-            defaults.removeAll { $0.physicalDevice.uid == candidate.outputDeviceUID }
-            defaults.append(PhysicalDeviceDefaultProfile(physicalDevice: candidate.outputDevice, profileID: candidate.id))
-        }
-        let stored = StoredProfileConfiguration(profiles: updated, physicalDeviceDefaults: defaults,
-            folders: folders, rootOrder: effectiveRootOrder, layoutDefaults: layoutDefaults,
-            showProfileEnabledExplanation: showProfileEnabledExplanation)
-        pendingPersistence?.cancel()
-        pendingPersistence = nil
-        persistenceRevision &+= 1
-        do { try persistenceQueue.sync { try Self.persist(stored, to: url) } }
-        catch {
-            // Preserve a pending save of unrelated edits if this transaction fails.
-            save()
-            throw error
-        }
-        isLoading = true
-        profiles = updated
-        physicalDeviceDefaults = defaults
-        isLoading = false
-        persistenceError = nil
+        return try await commit(.settings(candidate, activation))
     }
 
     @Published var selectedProfileID: UUID? {
@@ -192,25 +132,28 @@ final class ProfileStore: ObservableObject {
     }
     @Published private(set) var persistenceError: String?
 
-    private let url: URL
+    let repository: ProfileRepository
+    private(set) var libraryRevision = ProfileLibraryRevision(rawValue: 0)
     private let userDefaults: UserDefaults
     private var isLoading = true
     private var saveDeferralDepth = 0
     private var needsDeferredSave = false
-    private var persistenceRevision: UInt64 = 0
-    private var pendingPersistence: DispatchWorkItem?
-    private let persistenceQueue = DispatchQueue(
-        label: "CamiTune.ProfilePersistence",
-        qos: .utility
-    )
-    /// An existing store that this version cannot decode may belong to a newer
-    /// CamiTune version. Never replace it with the empty in-memory fallback.
-    private var protectsUnreadableStorage = false
+    private var pendingPersistence: Task<Void, Never>?
+    @Published private(set) var hasDurableCommit = false
+    private var activeDurableCommit: ProfileDurableCommit?
+    private(set) var deferredAutosaveNeeded = false
+    private var stopping = false
+    private var terminalDrainCompleted = false
+    var performanceRecorder: RuntimePerformanceRecorder?
+    /// Diagnostic delivery gate; it never occupies the repository worker.
+    var beforeAutosaveResult: (@MainActor () async -> Void)?
+    var settingsMutationsAllowed: Bool { !stopping && !hasDurableCommit }
 
-    init(storageURL: URL? = nil, userDefaults: UserDefaults = .standard) {
+    private var protectsUnreadableStorage: Bool { repository.status.protectedStorage }
+
+    init(storageURL: URL? = nil, userDefaults: UserDefaults = .standard, fileIO: ProfileRepositoryFileIO = .live) {
         let base = storageURL?.deletingLastPathComponent() ?? CamiTunePaths.supportDirectory
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        self.url = storageURL ?? base.appendingPathComponent("profiles.json")
+        self.repository = ProfileRepository(url: storageURL ?? base.appendingPathComponent("profiles.json"), io: fileIO)
         self.userDefaults = userDefaults
         load()
         sanitizeProfiles()
@@ -238,7 +181,7 @@ final class ProfileStore: ObservableObject {
 
     @discardableResult
     func addProfile(for device: AudioDeviceInfo) -> DeviceProfile? {
-        guard !device.isRoutingDevice else { return nil }
+        guard settingsMutationsAllowed, !device.isRoutingDevice else { return nil }
         let isFirstProfileForDevice = !profiles.contains { $0.outputDeviceUID == device.id }
         let baseName = ProfileNamePolicy.uniqueName(
             base: device.name,
@@ -260,43 +203,15 @@ final class ProfileStore: ObservableObject {
         return profile
     }
 
-    /// Wizard commit: persist a complete profile before publishing or exposing a route.
-    func insertConfiguredProfile(_ candidate: DeviceProfile) throws -> UUID {
-        guard !protectsUnreadableStorage else {
-            throw ProfileSettingsError.runtime(persistenceError ?? "Saved profiles cannot be overwritten.")
-        }
-        guard !candidate.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !candidate.outputDeviceUID.isEmpty,
-              !profiles.contains(where: { $0.id == candidate.id }),
-              ProfileNamePolicy.isAvailable(candidate.name, in: profiles) else {
-            throw ProfileSettingsError.runtime("Enter a unique profile name before adding the profile.")
-        }
-        var profile = candidate
-        let firstForOutput = !profiles.contains { $0.outputDeviceUID == profile.outputDeviceUID }
-        profile.autoActivateWhenProfileDeviceSelected = !firstForOutput
-        let updated = profiles + [profile]
-        var defaults = physicalDeviceDefaults
-        if firstForOutput {
-            defaults.removeAll { $0.physicalDevice.uid == profile.outputDeviceUID }
-            defaults.append(.init(physicalDevice: profile.outputDevice, profileID: profile.id))
-        }
-        let order = effectiveRootOrder + [.profile(profile.id)]
-        let stored = StoredProfileConfiguration(profiles: updated, physicalDeviceDefaults: defaults,
-            folders: folders, rootOrder: order, layoutDefaults: layoutDefaults,
-            showProfileEnabledExplanation: showProfileEnabledExplanation)
-        pendingPersistence?.cancel()
-        pendingPersistence = nil
-        persistenceRevision &+= 1
-        do { try persistenceQueue.sync { try Self.persist(stored, to: url) } }
-        catch { save(); throw error }
-        isLoading = true
-        profiles = updated
-        physicalDeviceDefaults = defaults
-        rootOrder = order
-        isLoading = false
-        persistenceError = nil
-        selectedProfileID = profile.id
-        return profile.id
+    /// Persist before publication, selection, or exposing a routing endpoint.
+    func insertConfiguredProfile(_ candidate: DeviceProfile) async throws -> UUID {
+        _ = try await commit(.creation(candidate))
+        selectedProfileID = candidate.id
+        return candidate.id
+    }
+    @discardableResult
+    func commitMenuDeactivationPolicy(profileID: UUID) async throws -> ProfilePersistenceReceipt {
+        try await commit(.routingPolicy(profileID))
     }
 
     func setAutoActivateWhenProfileDeviceSelected(profileID: UUID, enabled: Bool) {
@@ -385,6 +300,7 @@ final class ProfileStore: ObservableObject {
     }
 
     func restoreDeletedProfiles(_ snapshot: ProfileDeletionSnapshot) throws {
+        guard settingsMutationsAllowed else { throw ProfileSettingsError.busy }
         let restoredIDs = Set(snapshot.profiles.map(\.id))
         guard restoredIDs.count == snapshot.profiles.count,
               restoredIDs.isDisjoint(with: Set(profiles.map(\.id))),
@@ -430,6 +346,7 @@ final class ProfileStore: ObservableObject {
     }
 
     func deleteProfile(id: UUID) {
+        guard settingsMutationsAllowed else { return }
         let fallback = nearbySurvivingProfile(excluding: [id])
         performBatchUpdate {
             physicalDeviceDefaults.removeAll { $0.profileID == id }
@@ -482,6 +399,7 @@ final class ProfileStore: ObservableObject {
 
     /// The caller confirms the contents and stops any affected runtime first.
     func deleteFolder(id: UUID) {
+        guard settingsMutationsAllowed else { return }
         guard folders.contains(where: { $0.id == id }) else { return }
         let deletedIDs = Set(profiles(in: id).map(\.id))
         let fallback = nearbySurvivingProfile(excluding: deletedIDs)
@@ -643,40 +561,13 @@ final class ProfileStore: ObservableObject {
     }
 
     private func load() {
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        let data: Data
-        do {
-            data = try Data(contentsOf: url)
-        } catch {
-            protectUnreadableStorage(details: error.localizedDescription)
-            return
-        }
-        let decoder = JSONDecoder()
-        if let stored = try? decoder.decode(StoredProfileConfiguration.self, from: data) {
-            layoutDefaults = stored.layoutDefaults
-            showProfileEnabledExplanation = stored.showProfileEnabledExplanation
-            rootOrder = stored.rootOrder
-            folders = stored.folders
-            profiles = stored.profiles
+        if let stored = repository.loadedDocument {
+            layoutDefaults = stored.layoutDefaults; showProfileEnabledExplanation = stored.showProfileEnabledExplanation
+            rootOrder = stored.rootOrder; folders = stored.folders; profiles = stored.profiles
             physicalDeviceDefaults = stored.physicalDeviceDefaults
-            return
         }
-        guard let legacy = try? decoder.decode([LegacyStoredProfile].self, from: data) else {
-            protectUnreadableStorage(
-                details: "The file is damaged or was written by an incompatible CamiTune version."
-            )
-            return
-        }
-        profiles = legacy.map(\.profile)
-
-        var claimedUIDs = Set<String>()
-        physicalDeviceDefaults = legacy.compactMap { item in
-            guard item.autoActivate,
-                  claimedUIDs.insert(item.profile.outputDeviceUID).inserted else { return nil }
-            return PhysicalDeviceDefaultProfile(
-                physicalDevice: item.profile.outputDevice,
-                profileID: item.profile.id
-            )
+        if repository.status.protectedStorage {
+            persistenceError = "CamiTune could not read the saved profiles. The original profiles.json is protected and cannot be overwritten."
         }
     }
 
@@ -719,151 +610,124 @@ final class ProfileStore: ObservableObject {
         }
     }
 
+    var document: ProfileDocument {
+        ProfileDocument(profiles: profiles, physicalDeviceDefaults: physicalDeviceDefaults,
+            folders: folders, rootOrder: effectiveRootOrder, layoutDefaults: layoutDefaults,
+            showProfileEnabledExplanation: showProfileEnabledExplanation)
+    }
     private func save() {
-        guard !isLoading else { return }
+        guard !isLoading, !stopping else { return }
+        libraryRevision = .init(rawValue: libraryRevision.rawValue + 1)
         guard !protectsUnreadableStorage else { return }
-        guard saveDeferralDepth == 0 else {
-            needsDeferredSave = true
-            return
-        }
-        let stored = StoredProfileConfiguration(
-            profiles: profiles,
-            physicalDeviceDefaults: physicalDeviceDefaults,
-            folders: folders, rootOrder: effectiveRootOrder, layoutDefaults: layoutDefaults,
-            showProfileEnabledExplanation: showProfileEnabledExplanation
-        )
-        persistenceRevision &+= 1
-        let revision = persistenceRevision
-        let destination = url
+        if activeDurableCommit != nil { deferredAutosaveNeeded = true; return }
+        guard saveDeferralDepth == 0 else { needsDeferredSave = true; return }
+        let stored = document, revision = libraryRevision
         pendingPersistence?.cancel()
-
-        let work = DispatchWorkItem { [weak self] in
-            let result = Result {
-                try Self.persist(stored, to: destination)
-            }
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.persistenceRevision == revision else { return }
-                self.pendingPersistence = nil
-                switch result {
-                case .success:
-                    self.persistenceError = nil
-                case .failure(let error):
-                    self.persistenceError = "CamiTune could not save your profiles: \(error.localizedDescription)"
-                }
-            }
+        pendingPersistence = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+            guard let self, !self.stopping, self.activeDurableCommit == nil, self.libraryRevision == revision else { return }
+            let result = await self.repository.submit(stored, source: revision, kind: .autosave).value()
+            if let gate = self.beforeAutosaveResult { await gate() }
+            guard self.libraryRevision == revision else { return }
+            self.pendingPersistence = nil
+            self.publishPersistence(result)
         }
-        pendingPersistence = work
-        // Controls can publish dozens of values while the pointer is down.
-        // Persist only the settled snapshot, and encode/write it away from the
-        // main actor so AppKit scrolling and animations are never held up by
-        // an atomic profiles.json replacement.
-        persistenceQueue.asyncAfter(deadline: .now() + 0.2, execute: work)
     }
-
-    /// App termination is already synchronous. Flush the latest in-memory
-    /// snapshot after all previously-started writes so the debounce never
-    /// sacrifices durability.
-    func persistHistoryChanges() throws {
-        flushPendingSaveSynchronously()
-        if let persistenceError { throw ProfileSettingsError.runtime(persistenceError) }
-    }
-
-    func flushPendingSaveSynchronously() {
-        guard !isLoading, !protectsUnreadableStorage else { return }
-        pendingPersistence?.cancel()
-        pendingPersistence = nil
-        persistenceRevision &+= 1
-        let stored = StoredProfileConfiguration(
-            profiles: profiles,
-            physicalDeviceDefaults: physicalDeviceDefaults,
-            folders: folders, rootOrder: effectiveRootOrder, layoutDefaults: layoutDefaults,
-            showProfileEnabledExplanation: showProfileEnabledExplanation
-        )
-        let destination = url
-        let result = persistenceQueue.sync {
-            Result { try Self.persist(stored, to: destination) }
-        }
+    private func publishPersistence(_ result: Result<ProfileAutosaveResult, Error>) {
         switch result {
-        case .success:
-            persistenceError = nil
-        case .failure(let error):
-            persistenceError = "CamiTune could not save your profiles: \(error.localizedDescription)"
+        case .success(.committed): persistenceError = nil
+        case .success(.superseded): break
+        case .failure(let error): persistenceError = "CamiTune could not save your profiles: \(error.localizedDescription)"
         }
     }
-
-    private nonisolated static func persist(
-        _ stored: StoredProfileConfiguration,
-        to url: URL
-    ) throws {
-        let data = try JSONEncoder().encode(stored)
-        try data.write(to: url, options: .atomic)
+    private func publishDocument(_ value: ProfileDocument) {
+        isLoading = true
+        profiles = value.profiles; physicalDeviceDefaults = value.physicalDeviceDefaults
+        folders = value.folders; rootOrder = value.rootOrder
+        layoutDefaults = value.layoutDefaults; showProfileEnabledExplanation = value.showProfileEnabledExplanation
+        isLoading = false
+        libraryRevision = .init(rawValue: libraryRevision.rawValue + 1)
     }
-
-    private func protectUnreadableStorage(details: String) {
-        protectsUnreadableStorage = true
-        persistenceError = "CamiTune could not read the saved profiles, so the original profiles.json has been left unchanged and this session's profile edits cannot be saved. \(details)"
-    }
-}
-
-private struct StoredProfileConfiguration: Codable, Sendable {
-    static let currentSchemaVersion = 6
-    var schemaVersion: Int = currentSchemaVersion
-    var profiles: [DeviceProfile]
-    var physicalDeviceDefaults: [PhysicalDeviceDefaultProfile]
-    var folders: [ProfileFolder]
-    var rootOrder: [ProfileRootItem]
-    var layoutDefaults: [String: ProfileSectionLayout]
-    var showProfileEnabledExplanation: Bool
-
-    private enum CodingKeys: String, CodingKey {
-        case schemaVersion, profiles, physicalDeviceDefaults, folders, rootOrder, layoutDefaults, showProfileEnabledExplanation
-    }
-
-    init(profiles: [DeviceProfile], physicalDeviceDefaults: [PhysicalDeviceDefaultProfile], folders: [ProfileFolder], rootOrder: [ProfileRootItem], layoutDefaults: [String: ProfileSectionLayout], showProfileEnabledExplanation: Bool) {
-        self.layoutDefaults = layoutDefaults
-        self.showProfileEnabledExplanation = showProfileEnabledExplanation
-        self.rootOrder = rootOrder
-        self.folders = folders
-        self.profiles = profiles
-        self.physicalDeviceDefaults = physicalDeviceDefaults
-    }
-
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        // The original document had no version. Accept that exact legacy
-        // shape, but reject explicit unsupported versions before decoding data.
-        if values.contains(.schemaVersion) {
-            let version = try values.decode(Int.self, forKey: .schemaVersion)
-            guard (1...Self.currentSchemaVersion).contains(version) else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .schemaVersion,
-                    in: values,
-                    debugDescription: "Unsupported profile schema version: \(version)"
-                )
+    private func commit(_ mutation: ProfileDocumentMutation) async throws -> ProfilePersistenceReceipt {
+        guard settingsMutationsAllowed else { throw ProfileSettingsError.busy }
+        guard !protectsUnreadableStorage else { throw ProfileRepositoryError.protectedStorage }
+        let candidate = try mutation.applying(to: document)
+        pendingPersistence?.cancel(); pendingPersistence = nil
+        libraryRevision = .init(rawValue: libraryRevision.rawValue + 1)
+        let operation = performanceRecorder?.begin("Profile persistence", reason: mutation.kind.rawValue, revision: libraryRevision.rawValue)
+        operation?.mark("repository submission")
+        let ticket = repository.submit(candidate, source: libraryRevision, kind: mutation.kind)
+        activeDurableCommit = .init(mutation: mutation, ticket: ticket); hasDurableCommit = true
+        defer {
+            activeDurableCommit = nil; hasDurableCommit = false
+            if deferredAutosaveNeeded && !stopping {
+                deferredAutosaveNeeded = false; save()
             }
         }
-        layoutDefaults = try values.decodeIfPresent([String: ProfileSectionLayout].self, forKey: .layoutDefaults) ?? [:]
-        showProfileEnabledExplanation = try values.decodeIfPresent(Bool.self, forKey: .showProfileEnabledExplanation) ?? true
-        rootOrder = try values.decodeIfPresent([ProfileRootItem].self, forKey: .rootOrder) ?? []
-        folders = try values.decodeIfPresent([ProfileFolder].self, forKey: .folders) ?? []
-        profiles = try values.decode([DeviceProfile].self, forKey: .profiles)
-        physicalDeviceDefaults = try values.decode(
-            [PhysicalDeviceDefaultProfile].self, forKey: .physicalDeviceDefaults
-        )
+        do {
+            let outcome = try await ticket.value().get()
+            guard case .committed(let receipt) = outcome else { preconditionFailure("Durable transaction cannot be superseded") }
+            operation?.recordPersistence(receipt)
+            // Same-profile settings and policy were barred; apply only the typed
+            // mutation to today's library, preserving new volume/organization.
+            if !stopping { publishDocument(try mutation.applying(to: document)) }
+            persistenceError = nil
+            operation?.mark("MainActor publication"); operation?.finish("success")
+            return receipt
+        } catch {
+            deferredAutosaveNeeded = true
+            persistenceError = "CamiTune could not save your profiles: \(error.localizedDescription)"
+            operation?.finish("failed")
+            throw error
+        }
     }
-}
+    func persistHistoryChanges() async throws { _ = try await commit(.history) }
 
-private struct LegacyStoredProfile: Decodable {
-    let profile: DeviceProfile
-    let autoActivate: Bool
-
-    private enum CodingKeys: String, CodingKey {
-        case autoActivate
+    /// Awaitable flush for diagnostics/explicit durability. Ordinary edits retain debounce.
+    func flushPendingSave() async throws {
+        guard !hasDurableCommit, !stopping else { throw ProfileSettingsError.busy }
+        pendingPersistence?.cancel(); pendingPersistence = nil
+        let revision = libraryRevision
+        let result = await repository.submit(document, source: revision, kind: .autosave).value()
+        if let gate = beforeAutosaveResult { await gate() }
+        if libraryRevision == revision { publishPersistence(result) }
+        _ = try result.get()
     }
-
-    init(from decoder: Decoder) throws {
-        profile = try DeviceProfile(from: decoder)
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        autoActivate = try values.decodeIfPresent(Bool.self, forKey: .autoActivate) ?? false
+    func shutdownSynchronously() {
+        guard !stopping else { return }
+        stopping = true
+        flushPendingSaveSynchronously()
+        terminalDrainCompleted = true
+    }
+    /// Terminal/isolated diagnostic teardown only; no interactive callers.
+    func flushPendingSaveSynchronously() {
+        guard !isLoading, !terminalDrainCompleted else { return }
+        pendingPersistence?.cancel(); pendingPersistence = nil
+        // Finish accepted work first. The worker and ticket completion do not
+        // depend on MainActor. A held durable candidate must never be replaced
+        // by the older published library on termination.
+        repository.drainSynchronously()
+        var final = document
+        if let active = activeDurableCommit,
+           case .success(.committed) = active.ticket.waitSynchronously() {
+            guard let merged = try? active.mutation.applying(to: final) else { return }
+            final = merged
+        }
+        libraryRevision = .init(rawValue: libraryRevision.rawValue + 1)
+        publishPersistence(repository.submit(final, source: libraryRevision, kind: .shutdownFlush).waitSynchronously())
+        repository.drainSynchronously()
+    }
+    var repositorySummary: String {
+        let state = repository.status, last = state.lastReceipt
+        return [
+            "Schema: \(ProfileDocument.currentSchemaVersion) • Durable revision: \(state.lastCommittedRevision.rawValue)",
+            "Library revision: \(libraryRevision.rawValue) • Protected storage: \(state.protectedStorage)",
+            "Writer: \(state.inFlightKind?.rawValue ?? "Idle") • Operation: \(state.inFlightOperation.map { String($0.rawValue) } ?? "—")",
+            "Pending autosave: \(state.pendingAutosave) • Pending durable writes: \(state.pendingDurableCount)",
+            "Store transaction: \(activeDurableCommit?.mutation.kind.rawValue ?? "None") • Deferred autosave: \(deferredAutosaveNeeded)",
+            "Last operation: \(last?.kind.rawValue ?? "None") • Superseded autosaves: \(state.supersededAutosaveCount) • Failures: \(state.writeFailures)",
+            String(format: "Last queue / encode / write: %.3f / %.3f / %.3f ms", last?.queueMilliseconds ?? 0, last?.encodingMilliseconds ?? 0, last?.writeMilliseconds ?? 0),
+            "Storage state: \(state.lastError ?? "Healthy")"
+        ].joined(separator: "\n")
     }
 }

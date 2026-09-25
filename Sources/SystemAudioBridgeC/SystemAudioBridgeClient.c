@@ -134,7 +134,9 @@ static Boolean sabr_packet_is_supported(
     uint32_t maximumFrames
 ) {
     const double sampleRate = sabr_bits_to_double(packet->sampleRateBits);
-    return packet->frameCount > 0 && packet->frameCount <= maximumFrames &&
+    const bool interval = packet->eventKind == SABR_EVENT_PCM || packet->eventKind == SABR_EVENT_CLOSE;
+    return packet->eventKind <= SABR_EVENT_FAULT &&
+        (interval ? packet->frameCount > 0 && packet->frameCount <= maximumFrames : packet->frameCount == 0) &&
         packet->channelCount > 0 && packet->channelCount <= header->channelCapacity &&
         packet->channelCount <= destinationChannelCapacity &&
         packet->deviceObjectID != kAudioObjectUnknown &&
@@ -751,7 +753,7 @@ uint32_t sabr_client_transport_read_packet(
             sawInvalidReservationSequence = true;
             continue;
         }
-        if (candidate->frameCount == 0) {
+        if (candidate->frameCount == 0 && candidate->eventKind == SABR_EVENT_PCM) {
             /* A producer reserved a packet but found no frame capacity. */
             atomic_store_explicit(
                 &candidate->committed,
@@ -761,7 +763,7 @@ uint32_t sabr_client_transport_read_packet(
             continue;
         }
         sawReadyNonemptyPacket = true;
-        if (candidate->startFrame != readFrame) { continue; }
+        if (candidate->eventKind == SABR_EVENT_PCM && candidate->startFrame != readFrame) { continue; }
         packet = (SABRTransportPacket) {
             .startFrame = candidate->startFrame,
             .cycleCounter = candidate->cycleCounter,
@@ -777,6 +779,10 @@ uint32_t sabr_client_transport_read_packet(
             .reserved32 = candidate->reserved32,
             .reservationSequence = candidate->reservationSequence,
             .reservedCommit32 = candidate->reservedCommit32,
+            .producerEpoch = candidate->producerEpoch,
+            .outputHostTime = candidate->outputHostTime,
+            .timestampFlags = candidate->timestampFlags,
+            .eventKind = candidate->eventKind,
         };
         source = candidate;
         break;
@@ -819,7 +825,9 @@ uint32_t sabr_client_transport_read_packet(
             maximumFrames)) {
         /* Reject the v4 descriptor without leaving the queue permanently wedged. */
         sabr_record_malformed_packet(transport);
-        if (packet.frameCount <= header->frameCapacity) {
+        if (packet.eventKind != SABR_EVENT_PCM) {
+            /* Completion records never own frame-ring storage. */
+        } else if (packet.frameCount <= header->frameCapacity) {
             atomic_store_explicit(
                 &header->readFrame,
                 packet.startFrame + packet.frameCount,
@@ -841,7 +849,9 @@ uint32_t sabr_client_transport_read_packet(
         ? packet.frameCount
         : header->frameCapacity - startFrame;
     const uint32_t secondFrames = packet.frameCount - firstFrames;
-    if (packet.channelCount == header->channelCapacity) {
+    if (packet.eventKind != SABR_EVENT_PCM) {
+        /* Metadata only; frameCount is the closed timeline interval length. */
+    } else if (packet.channelCount == header->channelCapacity) {
         memcpy(
             interleavedDestination,
             transport->samples + ((size_t)startFrame * header->channelCapacity),
@@ -875,7 +885,12 @@ uint32_t sabr_client_transport_read_packet(
     packetInfo->channelCount = packet.channelCount;
     packetInfo->channelLayoutTag = packet.channelLayoutTag;
     packetInfo->sampleRate = sabr_bits_to_double(packet.sampleRateBits);
-    atomic_store_explicit(
+    packetInfo->reservationSequence = packet.reservationSequence;
+    packetInfo->producerEpoch = packet.producerEpoch;
+    packetInfo->outputHostTime = packet.outputHostTime;
+    packetInfo->timestampFlags = packet.timestampFlags;
+    packetInfo->eventKind = packet.eventKind;
+    if (packet.eventKind == SABR_EVENT_PCM) atomic_store_explicit(
         &header->readFrame,
         packet.startFrame + packet.frameCount,
         memory_order_release
@@ -886,7 +901,15 @@ uint32_t sabr_client_transport_read_packet(
         memory_order_release
     );
     sabr_reclaim_consumed_packets(transport, writePacket);
-    return packet.frameCount;
+    return packet.eventKind == SABR_EVENT_PCM ? packet.frameCount : 0;
+}
+
+Boolean sabr_client_transport_read_event(
+    SABRClientTransportRef transport, Float32* destination, uint32_t channels,
+    uint32_t maximumFrames, SABRClientAudioPacketInfo* info
+) {
+    uint32_t frames = sabr_client_transport_read_packet(transport, destination, channels, maximumFrames, info);
+    return info != NULL && (frames != 0 || info->eventKind != SABR_EVENT_PCM);
 }
 
 uint32_t sabr_client_transport_copy_clients(
@@ -1015,6 +1038,24 @@ uint64_t sabr_client_transport_client_generation(SABRClientTransportRef transpor
     );
 }
 
+Boolean sabr_client_transport_observe_reservations(
+    SABRClientTransportRef transport,
+    SABRClientReservationObservation* observation
+) {
+    if (observation == NULL) { return false; }
+    memset(observation, 0, sizeof(*observation));
+    if (transport == NULL || !sabr_client_header_is_valid(transport)) { return false; }
+    const SABRTransportHeader* header = transport->header;
+    /* The sole reader owns the read cursors. Producer reservations may advance
+     * between these loads or immediately afterward; this is evidence only. */
+    observation->readPacket = atomic_load_explicit(&header->readPacket, memory_order_acquire);
+    observation->readFrame = atomic_load_explicit(&header->readFrame, memory_order_acquire);
+    observation->reservedWriteFrame = atomic_load_explicit(&header->writeFrame, memory_order_acquire);
+    observation->reservedWritePacket = atomic_load_explicit(&header->writePacket, memory_order_acquire);
+    return observation->reservedWritePacket - observation->readPacket <= header->packetCapacity
+        && observation->reservedWriteFrame - observation->readFrame <= header->frameCapacity;
+}
+
 void sabr_client_transport_get_statistics(
     SABRClientTransportRef transport,
     SABRClientTransportStatistics* statistics
@@ -1052,6 +1093,7 @@ void sabr_client_transport_get_statistics(
                 continue;
             }
             committedPackets += 1;
+            if (packet->eventKind != SABR_EVENT_PCM) { continue; }
             if (packet->frameCount <= header->frameCapacity - committedFrames) {
                 committedFrames += packet->frameCount;
             } else {
@@ -1228,17 +1270,3 @@ void sabr_client_transport_signal(SABRClientTransportRef transport) {
     if (transport == NULL || transport->notification == SEM_FAILED) { return; }
     (void)sem_post(transport->notification);
 }
-
-// These counters never acquire a mutex on a transport or PCM worker.
-struct CMTPerformanceAtomic { _Atomic(uint64_t) value; };
-CMTPerformanceAtomicRef cmt_performance_atomic_create(void) {
-    CMTPerformanceAtomicRef result = calloc(1, sizeof(*result));
-    if (result) atomic_init(&result->value, 0);
-    return result;
-}
-void cmt_performance_atomic_destroy(CMTPerformanceAtomicRef value) { free(value); }
-uint64_t cmt_performance_atomic_load(CMTPerformanceAtomicRef value) { return atomic_load_explicit(&value->value, memory_order_relaxed); }
-void cmt_performance_atomic_store(CMTPerformanceAtomicRef value, uint64_t number) { atomic_store_explicit(&value->value, number, memory_order_relaxed); }
-void cmt_performance_atomic_increment(CMTPerformanceAtomicRef value) { atomic_fetch_add_explicit(&value->value, 1, memory_order_relaxed); }
-
-uint64_t cmt_performance_atomic_exchange(CMTPerformanceAtomicRef value, uint64_t number) { return atomic_exchange_explicit(&value->value, number, memory_order_acq_rel); }

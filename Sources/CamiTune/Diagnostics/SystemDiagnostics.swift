@@ -1,3 +1,4 @@
+import CamiTuneAudio
 import Foundation
 
 @MainActor
@@ -33,10 +34,10 @@ enum SystemDiagnostics {
                 return result
             },
             check("S02", "Components", "System Audio Bridge") {
-                let present = await state.coreAudio.resolveSystemAudioBridgeWithoutBlockingUI() != nil
-                let supported = await state.coreAudio.systemAudioBridgePresentationIsSupportedWithoutBlockingUI()
+                let present = await state.coreAudioService.resolveSystemAudioBridgeWithoutBlockingUI() != nil
+                let supported = await state.coreAudioService.systemAudioBridgePresentationIsSupportedWithoutBlockingUI()
                 var result = component(!present ? .missing : supported ? .working("Supported") : .failed("Unsupported"))
-                if let layout = state.coreAudio.installedSystemAudioBridgeChannelLayout {
+                if let layout = state.coreAudioService.installedSystemAudioBridgeChannelLayout {
                     result.evidence.append(.init(name: "Bridge channels", value: "\(layout.channelCount)"))
                 } else if present {
                     result.status = .failed
@@ -61,12 +62,12 @@ enum SystemDiagnostics {
             },
             check("S05", "Hardware", "Sample rate support") {
                 guard let profile else { return .init(status: .skipped, summary: "No profile selected") }
-                guard let bridge = await state.coreAudio.resolveSystemAudioBridgeWithoutBlockingUI(),
+                guard let bridge = await state.coreAudioService.resolveSystemAudioBridgeWithoutBlockingUI(),
                       state.coreAudio.cachedDevice(uid: profile.outputDeviceUID) != nil else {
                     return .init(status: .skipped, summary: "Bridge or physical output unavailable")
                 }
-                let physical = await state.coreAudio.supportsSampleRateWithoutBlockingUI(uid: profile.outputDeviceUID, rate: Double(profile.sampleRate))
-                let routing = await state.coreAudio.supportsSampleRateWithoutBlockingUI(uid: bridge.id, rate: Double(profile.sampleRate))
+                let physical = await state.coreAudioService.supportsSampleRateWithoutBlockingUI(uid: profile.outputDeviceUID, rate: Double(profile.sampleRate))
+                let routing = await state.coreAudioService.supportsSampleRateWithoutBlockingUI(uid: bridge.id, rate: Double(profile.sampleRate))
                 return .init(status: physical && routing ? .passed : .failed,
                              summary: physical && routing ? "Both devices support the configured rate" : "Configured rate is unsupported",
                              evidence: [.init(name: "Sample rate", value: "\(profile.sampleRate) Hz")])

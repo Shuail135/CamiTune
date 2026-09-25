@@ -1,3 +1,5 @@
+import CamiTuneAudio
+import CamiTuneDomain
 import CryptoKit
 import Foundation
 
@@ -62,6 +64,26 @@ extension DeveloperSelfTests {
                     return "Missing convolution file rejected before compile/backend/writer application"
                 }
                 throw DiagnosticFailure(message: "Missing asset was accepted")
+            },
+            check("R18", "Asset preparation uses the injected runtime boundary") { box in
+                var profile = DiagnosticSandbox.profile()
+                let source = box.directory.appendingPathComponent("source.wav")
+                try runtimePlanImpulseWAV().write(to: source)
+                let store = ImpulseResponseStore(directory: box.directory.appendingPathComponent("isolated-assets"))
+                let asset = try store.importWAV(at: source, expectedSampleRate: profile.sampleRate)
+                profile.processing.global.stages.append(.init(processor: .convolution(.init(asset: asset))))
+                let fake = DiagnosticRuntimeFakes()
+                var services = fake.services()
+                services.prepareAssets = { profile in
+                    try PreparedRuntimeAssets.prepare(profile: profile, directory: store.directory)
+                }
+                let plan = try await AudioRuntimePlanPreparer().prepare(profile: profile,
+                    revision: .init(profileID: profile.id, generation: 1), services: services)
+                try diagnosticRequire(plan.assets.impulseResponses[asset.id]?.url == store.url(for: asset),
+                    "Preparation ignored the isolated asset provider")
+                try diagnosticRequire(fake.graphs.isEmpty && fake.resources.isEmpty,
+                    "Preparing an asset started runtime resources")
+                return "Isolated convolution preparation does not read the user's asset directory or start audio"
             },
             check("R05", "Compilation is pure and deterministic") { box in
                 var profile = DiagnosticSandbox.profile()
@@ -165,7 +187,7 @@ extension DeveloperSelfTests {
                 let url = box.directory.appendingPathComponent("coherent.pcm")
                 FileManager.default.createFile(atPath: url.path, contents: nil)
                 let sink = try FileHandle(forWritingTo: url); defer { try? sink.close() }
-                await router.start(camillaSink: sink, renderConfiguration: a, configurationObserver: { configuration in
+                await router.startFixture(camillaSink: sink, renderConfiguration: a, configurationObserver: { configuration in
                     let count = observations.append(configuration)
                     if count == 1 { Task { @MainActor in entered.release() }; release.wait() }
                     else { Task { @MainActor in second.release() } }

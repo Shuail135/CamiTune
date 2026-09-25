@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import Foundation
 import CoreAudio
 import SystemAudioBridgeC
@@ -39,6 +40,24 @@ struct ProfileEndpointState: Equatable, Sendable {
     }
 }
 
+/// Domain endpoint policy produces values; the HAL service only publishes them.
+struct ProfileEndpointPublicationRequest: Sendable {
+    let descriptors: [UUID: ProfileRoutingDescriptor]
+    let endpoints: [ProfileEndpointState]
+    init(profiles: [DeviceProfile], activeProfileID: UUID?, defaultOutputUID: String?,
+         additionallyVisible: Set<UUID> = [], preparedDescriptors: [UUID: ProfileRoutingDescriptor] = [:]) throws {
+        let resolved = ProfileRoutingDescriptor.descriptors(for: profiles.filter { preparedDescriptors[$0.id] == nil })
+            .merging(preparedDescriptors) { _, prepared in prepared }
+        descriptors = resolved
+        let desired = ProfileRoutingDescriptor.visibleProfileIDs(profiles: profiles, activeProfileID: activeProfileID,
+            defaultOutputUID: defaultOutputUID, additionallyVisible: additionallyVisible)
+        endpoints = try desired.sorted { $0.uuidString < $1.uuidString }.compactMap { id in
+            guard let descriptor = resolved[id] else { return nil }
+            return try ProfileEndpointState(payload: descriptor.formatPayload())
+        }
+    }
+}
+
 protocol ProfileEndpointPublicationBackend {
     func checkSupport() throws
     func current() throws -> [ProfileEndpointState]
@@ -54,6 +73,8 @@ enum ProfileEndpointPublication {
 
     static func publish(_ desired: [ProfileEndpointState], using backend: ProfileEndpointPublicationBackend) throws {
         lock.lock(); defer { lock.unlock() }
+        // A cancelled worker may have been waiting behind shutdown cleanup.
+        try Task.checkCancellation()
         guard Set(desired.map(\.uid)).count == desired.count, desired.count <= 32 else {
             throw ProfileSettingsError.runtime("Profile endpoints must have unique identities and fit the driver capacity.")
         }
@@ -69,9 +90,11 @@ enum ProfileEndpointPublication {
         } catch {
             let failure = error
             do {
+                try CoreAudioPublicationCancellation.$current.withValue(nil) {
                 let current = try backend.current()
                 if !equivalent(current, previous) { try apply(from: current, to: previous, using: backend) }
                 if let uid = defaultUID, try backend.defaultOutputUID() != uid { try backend.restoreDefaultOutput(uid) }
+                }
             } catch { throw ProfileSettingsError.rollback(failure.localizedDescription, error.localizedDescription) }
             throw failure
         }
@@ -100,35 +123,40 @@ enum ProfileEndpointPublication {
 }
 
 struct NativeProfileEndpointBackend: ProfileEndpointPublicationBackend {
-    let bridgeID: AudioObjectID
+    let bridgeID: AudioObjectID // compatibility initializer only; never trusted across publication
+    var waitObserver: @Sendable (CoreAudioWaitResult) -> Void = { _ in }
+    private var currentBridgeID: AudioObjectID { Self.resolve(AudioDeviceInfo.systemAudioBridgeUID) }
 
     func checkSupport() throws {
-        guard sabr_client_profile_format_version(bridgeID) == 1,
-              sabr_client_transport_is_supported(bridgeID), sabr_client_transport_channel_count(bridgeID) == 32 else {
+        guard sabr_client_profile_format_version(currentBridgeID) == 1,
+              sabr_client_transport_is_supported(currentBridgeID), sabr_client_transport_channel_count(currentBridgeID) == 32 else {
             throw ProfileSettingsError.runtime("Profile channel formats require System Audio Bridge 0.8.0 or newer. Open Setup and select Install / Repair Everything.")
         }
     }
 
     func current() throws -> [ProfileEndpointState] {
-        guard let array = sabr_client_copy_profile_devices(bridgeID), let payloads = array as? [[String: Any]] else {
+        guard let array = sabr_client_copy_profile_devices(currentBridgeID), let payloads = array as? [[String: Any]] else {
             throw ProfileSettingsError.runtime("Could not read the driver's profile endpoints.")
         }
         return try payloads.map { try ProfileEndpointState(payload: $0) }
     }
 
     func apply(_ endpoints: [ProfileEndpointState]) throws {
-        let status = sabr_client_set_profile_devices(bridgeID, endpoints.map(\.payload) as CFArray)
+        let status = sabr_client_set_profile_devices(currentBridgeID, endpoints.map(\.payload) as CFArray)
         guard status == noErr else {
             throw ProfileSettingsError.runtime("The profile audio devices could not be reconfigured (Core Audio \(status)). Stop apps using the affected profile output and retry.")
         }
     }
 
     func waitForVisibility(_ uids: Set<String>, present: Bool) throws {
-        for _ in 0..<60 {
-            if uids.allSatisfy({ (Self.resolve($0) != kAudioObjectUnknown) == present }) { return }
-            Thread.sleep(forTimeInterval: 0.05)
+        let result = CoreAudioConditionWaiter.waitSynchronously(backend: .live, event: .devices, timeout: .seconds(3)) {
+            uids.allSatisfy { (Self.resolve($0) != kAudioObjectUnknown) == present }
         }
-        throw ProfileSettingsError.runtime("macOS did not finish updating the profile audio devices.")
+        waitObserver(result)
+        if result.source == .cancelled { throw CancellationError() }
+        guard result.source != .timedOut else {
+            throw ProfileSettingsError.runtime("macOS did not finish updating the profile audio devices.")
+        }
     }
 
     func defaultOutputUID() throws -> String? {

@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import Foundation
 
 /// One-shot, cancellation-aware suspension. No wall-clock delay selects the race.
@@ -141,8 +142,10 @@ final class DiagnosticRuntimeFakes {
                 closeEngineInput: { self.record("close engine input") }, stopSpectrum: { self.stop("spectrum") },
                 stopEngine: { self.stop("engine") }, stopVolume: { self.stop("volume") },
                 setDefaultOutput: { self.defaultUID = $0; self.record("restore output") },
-                hideBridge: { self.record("hide bridge") }),
+                hideBridge: { self.record("hide bridge") },
+                removeProfileDevices: { self.record("remove profile devices") }),
             refreshDependencies: { self.record("refresh dependencies") },
+            prepareAssets: { _ in .empty },
             engineAvailable: { true },
             resolveBridge: { self.record("resolve bridge"); return self.bridge },
             freshBridge: { self.bridge },
@@ -191,6 +194,7 @@ final class DiagnosticRuntimeFakes {
             volumeMode: { nil },
             startPCM: { plan, _ in self.renderConfigurations.append(plan.renderConfiguration); self.start("PCM") },
             applyRenderConfiguration: { self.renderConfigurations.append($0); self.record("apply renderer") },
+            applyPCMDeliveryConfiguration: { _ in self.record("apply PCM delivery") },
             startTransport: { _, _, _, _ in
                 try await self.scenario.transportGate?.enter()
                 let attempt = self.transportAttempts
@@ -201,9 +205,9 @@ final class DiagnosticRuntimeFakes {
                 }
                 self.start("transport")
             },
-            prepareVolume: { self.record("prepare volume") },
+            prepareIncoming: { self.record("prepare volume") },
             startSpectrum: { _ in self.start("spectrum") },
-            beginHandoff: { self.record("begin handoff") },
+            beginOutgoing: { self.record("begin handoff") },
             stopObservations: { self.stop("observations") },
             stopTransport: { self.stop("transport") },
             stopPCM: { self.stop("PCM") },

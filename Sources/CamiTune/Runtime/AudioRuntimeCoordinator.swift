@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import Foundation
 import Combine
 
@@ -27,6 +28,8 @@ final class AudioRuntimeCoordinator: ObservableObject {
     private var ownedSession: OwnedRuntimeSession?
     private var provisionalSession: ProvisionalRuntimeSession?
     private var activeTransaction: RuntimeSettingsTransaction?
+    private var pendingPersistence: [RuntimeTransactionID: RuntimeSettingsTransaction] = [:]
+    var pendingPersistenceCount: Int { pendingPersistence.count }
     private var reconciliationWorker: Task<Void, Never>?
     private var executingGeneration: RuntimeIntentGeneration?
     private var generation: UInt64 = 0
@@ -74,6 +77,8 @@ final class AudioRuntimeCoordinator: ObservableObject {
     var acknowledgedPlanRevision: RuntimeIntentRevision? { ownedSession?.acknowledgedPlan?.revision }
     var runtimePlanSummary: String { ownedSession?.acknowledgedPlan?.summary ?? "No runtime plan has been acknowledged." }
     private var activeRuntimePlan: AudioRuntimePlan? { ownedSession?.appliedPlan }
+    var appliedProfile: DeviceProfile? { activeRuntimePlan?.intent }
+    var activeDeliveryConfiguration: PCMDeliveryConfiguration? { activeRuntimePlan?.deliveryConfiguration }
     var activeSampleRate: Int? { ownedSession?.appliedPlan.sourceFormat.sampleRate }
     var activeRoutingUID: String? { ownedSession?.restoration.routingUID }
     var activePhysicalOutputUID: String? { ownedSession?.restoration.physicalOutputUID }
@@ -108,7 +113,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
             "Worker active: \(reconciliationWorker != nil ? "Yes" : "No")",
             "Transition: \(transition.map { "#\($0.id.rawValue) \($0.phase), generation \($0.generation.rawValue)" } ?? "None")",
             "Superseded: \(transition.map { $0.generation != desiredRuntime.generation } == true ? "Yes" : "No")",
-            "Transaction: \(activeTransaction.map { String($0.id.rawValue) } ?? "None")",
+            "Transaction: \(activeTransaction.map { String($0.id.rawValue) } ?? "None") • Awaiting persistence: \(pendingPersistence.count)",
             "Manual-stop suppression: \(suppressedAutoUID ?? "None")",
             "Manual-stop barrier: \(manualStopBarrier.map { String($0.rawValue) } ?? "None")",
             "Automatic retry: \(automaticActivationRetry.map { "Attempt \($0.failureCount), after \($0.retryAfter)" } ?? "None")"
@@ -148,9 +153,18 @@ final class AudioRuntimeCoordinator: ObservableObject {
     func handleDefaultOutputChange(_ uid: String?) {
         if let suppressedAutoUID, let uid, uid != suppressedAutoUID,
            !ProfileRoutingDescriptor.isProfileRoutingUID(uid) { self.suppressedAutoUID = nil }
-        guard isActive, !transitionInProgress else { publishSnapshot(); return }
-        if uid == activeRoutingUID { runtimeServices.resumeVolume() }
-        else { runtimeServices.silenceVolume(); callbacks.retireOverlays() }
+        guard isActive, uid == runtimeServices.defaultOutput() else { publishSnapshot(); return }
+        if uid == activeRoutingUID {
+            guard case .active(let desired) = desiredRuntime.target, desired.id == activeProfileID,
+                  let owner = ownedSession, owner.volumeLease?.controlSession.snapshot().audibility == .held,
+                  endpointRequests.isEmpty else { return }
+            // Returning is evidence, not permission. Recheck the binding, actual
+            // default output and mirror readiness on the existing lifecycle worker.
+            endpointRequests.append(.init(generation: desiredRuntime.generation, restoreProfile: nil,
+                publish: false, hideBridge: false, continuation: nil))
+            ensureWorker()
+        }
+        else { runtimeServices.holdAudibility(ownedSession?.volumeLease); callbacks.retireOverlays() }
     }
     private func submit(target: DesiredRuntimeIntent.Target, source: RuntimeIntentSource,
                         preparedPlan: AudioRuntimePlan? = nil, reportErrors: Bool = true,
@@ -161,6 +175,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
             transaction.rollbackContinuation = nil
             activeTransaction = nil
         }
+        runtimeServices.cancelReadiness()
         let old = desiredRuntime.generation
         if executingGeneration != old {
             operations.removeValue(forKey: old)?.finish("coalesced")
@@ -276,10 +291,18 @@ final class AudioRuntimeCoordinator: ObservableObject {
                 try await runtimeServices.setDefaultOutput(profile.outputDeviceUID)
                 try checkCurrent(request.generation)
             }
+            if let owner = ownedSession { runtimeServices.holdAudibility(owner.volumeLease) }
             if request.hideBridge { try await runtimeServices.hideBridge(); try checkCurrent(request.generation) }
             if request.publish { try await runtimeServices.synchronizeRouting(callbacks.profiles(), activeProfileID, [], [:]) }
+            if let owner = ownedSession { try await refreshBinding(owner, permit: true); try checkCurrent(request.generation) }
             request.continuation?.resume()
-        } catch { request.continuation?.resume(throwing: error) }
+        } catch {
+            request.continuation?.resume(throwing: error)
+            if request.continuation == nil, ownedSession != nil {
+                callbacks.reportError(error)
+                _ = submitStop(manual: false, restoreOutput: true, reason: .transportFailure, parent: nil, operation: nil, performanceReason: "bindingRecoveryFailed")
+            }
+        }
         transition = nil; publishSnapshot()
     }
 
@@ -287,7 +310,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
         activeWorkerCount += 1; maximumWorkerCount = max(maximumWorkerCount, activeWorkerCount)
         defer {
             activeWorkerCount -= 1; reconciliationWorker = nil; executingGeneration = nil
-            if activeTransaction?.receipt == nil { transition = nil }
+            transition = nil
             publishSnapshot()
         }
         while !terminated {
@@ -410,9 +433,61 @@ final class AudioRuntimeCoordinator: ObservableObject {
     }
 
     private func publishPlanEndpoint(_ plan: AudioRuntimePlan) async throws {
+        let owner = ownedSession ?? provisionalSession?.owner
+        if let owner { runtimeServices.holdAudibility(owner.volumeLease) }
         try await runtimeServices.synchronizeRouting(
             callbacks.profiles().map { $0.id == plan.revision.profileID ? plan.intent : $0 }, activeProfileID, [],
             [plan.revision.profileID: plan.profileRoutingDescriptor])
+        if let owner { try await refreshBinding(owner, permit: ownedSession === owner) }
+    }
+
+    /// A platform rebind does not change the planned delta or retire engine/PCM.
+    @Published private(set) var lastBindingAction = "No runtime binding"
+    var bindingSummary: String {
+        guard let binding = (ownedSession ?? provisionalSession?.owner)?.binding else { return "No runtime CoreAudio binding" }
+        return "Binding action: \(lastBindingAction)\nBinding generation: \(binding.graphGeneration)\nBridge: \(binding.bridge.name)\nRouting: \(binding.routing.name)\nPhysical: \(binding.physical.name)"
+    }
+    private func refreshBinding(_ owner: OwnedRuntimeSession, permit: Bool) async throws {
+        guard owns(owner.ownershipID), let resolve = runtimeServices.resolveBinding else { return }
+        runtimeServices.holdAudibility(owner.volumeLease)
+        let operation = performanceRecorder.begin("CoreAudio runtime binding")
+        defer { operation?.finish("binding checked") }
+        let fresh = try await resolve(owner.restoration.routingUID, owner.restoration.physicalOutputUID)
+        guard owns(owner.ownershipID) else { throw CancellationError() }
+        let previous = owner.binding
+        if previous?.hasSameObjects(as: fresh) != true {
+            let restart = owner.resources.contains(.transport) && previous?.bridge.objectID != fresh.bridge.objectID
+            if restart {
+                lastBindingAction = "Transport rebound"
+                await runtimeServices.stopTransport()
+                guard owns(owner.ownershipID) else { throw CancellationError() }
+            } else if let master = owner.masterControl {
+                // Suspend control acceptance while retaining the PCM transport.
+                runtimeServices.updateTransportControl(0, master)
+            }
+            if let lease = owner.volumeLease { try await runtimeServices.rebindVolume(lease, fresh) }
+            guard owns(owner.ownershipID) else { throw CancellationError() }
+            if let master = runtimeServices.volumeMasterControl() { owner.masterControl = master }
+            guard let master = owner.masterControl else { throw CancellationError() }
+            if restart {
+                try await runtimeServices.startTransport(fresh.bridge, fresh.routing, Double(owner.appliedPlan.sourceFormat.sampleRate), master)
+            } else {
+                lastBindingAction = "Volume/control binding refreshed"
+                runtimeServices.updateTransportControl(fresh.routing.objectID, master)
+            }
+            operation?.mark(lastBindingAction)
+        } else { lastBindingAction = "Bindings unchanged" }
+        guard owns(owner.ownershipID) else { throw CancellationError() }
+        owner.binding = fresh
+        try await runtimeServices.prepareIncoming()
+        guard owns(owner.ownershipID) else { throw CancellationError() }
+        var actualDefault = runtimeServices.defaultOutput()
+        if let read = runtimeServices.freshDefaultOutput { actualDefault = await read() }
+        guard owns(owner.ownershipID) else { throw CancellationError() }
+        if permit, actualDefault == owner.restoration.routingUID,
+           case .active(let desired) = desiredRuntime.target, desired.id == owner.publicSession.profileID {
+            runtimeServices.permitAudibility(owner.volumeLease)
+        }
     }
 
     private func acknowledge(_ plan: AudioRuntimePlan) {
@@ -423,6 +498,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
 
     private func applyRenderer(_ plan: AudioRuntimePlan) {
         runtimeServices.applyRenderConfiguration(plan.renderConfiguration)
+        runtimeServices.applyPCMDeliveryConfiguration(plan.deliveryConfiguration)
         perAppAudio.setPlaybackContext(plan.playbackContext)
     }
 
@@ -455,11 +531,16 @@ final class AudioRuntimeCoordinator: ObservableObject {
         if let old = ownedSession {
             let delta = compareRuntimePlans(from: old.appliedPlan, to: plan, reason: "activation", parentOperation: operation?.id)
             if old.publicSession.profileID == profile.id && delta.isNoOp { result = "success"; return }
-            await executeDeactivation(restoreOutput: true, reason: switching ? "profileSwitch" : "runtimeRestart", parent: operation?.id)
+            switch RuntimeResourceReuseDecision.evaluate(delta) {
+            case .cleanRestart(let reason):
+                operation?.mark("resource replacement: \(reason.rawValue)")
+                await executeDeactivation(restoreOutput: true, reason: switching ? "profileSwitch" : "runtimeRestart", parent: operation?.id)
+            }
             try checkCurrent(intent.generation)
         }
         ownershipSequence &+= 1
-        let currentDefault = runtimeServices.defaultOutput()
+        var currentDefault = runtimeServices.defaultOutput()
+        if let read = runtimeServices.freshDefaultOutput { currentDefault = await read(); try checkCurrent(intent.generation) }
         let previous = currentDefault.flatMap { ProfileRoutingDescriptor.isProfileRoutingUID($0) || $0 == AudioDeviceInfo.systemAudioBridgeUID ? nil : $0 }
         let owner = OwnedRuntimeSession(id: .init(rawValue: ownershipSequence), plan: plan, previousDefaultUID: previous)
         provisionalSession = .init(generation: intent.generation, owner: owner)
@@ -470,11 +551,18 @@ final class AudioRuntimeCoordinator: ObservableObject {
             try await runtimeServices.synchronizeRouting(routingProfiles, nil, [profile.id], [profile.id: plan.profileRoutingDescriptor]); try current()
             operation?.mark("routing endpoints synchronized")
             let routingValue = await runtimeServices.waitForRouting(profile.id); try current()
-            guard let routing = routingValue else { throw AppState.AppError.profileRoutingDeviceMissing(profile.name) }
+            guard var routing = routingValue else { throw AppState.AppError.profileRoutingDeviceMissing(profile.name) }
             let bridgeValue = await runtimeServices.freshBridge(); try current()
-            guard let bridge = bridgeValue else { throw AppState.AppError.missingRoutingDriver }
+            guard var bridge = bridgeValue else { throw AppState.AppError.missingRoutingDriver }
             try await AudioRuntimePlanPreparer().validateCurrent(plan, services: runtimeServices); try current()
             try await runtimeServices.hideBridge(); try current()
+            if let resolve = runtimeServices.resolveBinding {
+                owner.binding = try await resolve(routing.id, output.id); try current()
+            }
+            routing = owner.binding?.routing ?? routing
+            let output = owner.binding?.physical ?? output
+            bridge = owner.binding?.bridge ?? bridge
+            operation?.mark("runtime binding resolved")
             operation?.mark("routing endpoint available")
             let sampleRate = Double(plan.sourceFormat.sampleRate)
             try await runtimeServices.setRate(output.id, sampleRate); try current()
@@ -493,7 +581,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
             owner.resources.insert(.observations); runtimeServices.startObservations(owner.publicSession)
             try await acquire(.volume, owner: owner) {
                 owner.masterControl = try await runtimeServices.startVolume(routing, output, profile.id)
-                owner.volumeSession = runtimeServices.currentVolumeSession()
+                owner.volumeLease = runtimeServices.currentVolumeLease()
                 owner.volumeMode = runtimeServices.volumeMode()
             }; try current()
             operation?.mark("volume session ready")
@@ -505,10 +593,13 @@ final class AudioRuntimeCoordinator: ObservableObject {
             var transportError: Error?
             var connected = false
             for attempt in 0..<3 {
-                let fresh = await runtimeServices.freshBridge(); try current()
+                if runtimeServices.resolveBinding != nil { try await refreshBinding(owner, permit: false); try current() }
+                let fresh: AudioDeviceInfo?
+                if let bound = owner.binding?.bridge { fresh = bound }
+                else { fresh = await runtimeServices.freshBridge(); try current() }
                 guard let fresh, let master = owner.masterControl else { throw AppState.AppError.missingRoutingDriver }
                 do {
-                    try await acquire(.transport, owner: owner) { try await runtimeServices.startTransport(fresh, routing, sampleRate, master) }
+                    try await acquire(.transport, owner: owner) { try await runtimeServices.startTransport(fresh, owner.binding?.routing ?? routing, sampleRate, master) }
                     try current(); connected = true; break
                 } catch {
                     try current(); transportError = error
@@ -517,7 +608,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
             }
             guard connected else { throw transportError ?? AppState.AppError.missingRoutingDriver }
             operation?.mark("transport connected")
-            try await runtimeServices.prepareVolume(); try current()
+            try await runtimeServices.prepareIncoming(); try current()
             operation?.mark("volume handoff ready")
             phase("Switching output", status: .activating)
             if runtimeServices.defaultOutput() != routing.id {
@@ -526,17 +617,22 @@ final class AudioRuntimeCoordinator: ObservableObject {
             }
             operation?.mark("default output switched")
             try await acquire(.spectrum, owner: owner) { await runtimeServices.startSpectrum(owner.publicSession) }; try current()
-            try? await runtimeServices.synchronizeRouting(routingProfiles, profile.id, [], [profile.id: plan.profileRoutingDescriptor]); try current()
+            try await runtimeServices.synchronizeRouting(routingProfiles, profile.id, [], [profile.id: plan.profileRoutingDescriptor]); try current()
+            try await refreshBinding(owner, permit: false); try current()
             operation?.mark("post-activation routing sync")
             try await AudioRuntimePlanPreparer().validateCurrent(plan, services: runtimeServices); try current()
             let nominal = await runtimeServices.nominalRate(output.id); try current()
             if let nominal, abs(nominal - sampleRate) >= 0.5 {
                 throw AppState.AppError.runtimeSampleRateMismatch(expected: plan.sourceFormat.sampleRate, actual: nominal, device: output.name)
             }
-            guard runtimeServices.defaultOutput() == routing.id else { throw CancellationError() }
+            var actualDefault = runtimeServices.defaultOutput()
+            if let read = runtimeServices.freshDefaultOutput { actualDefault = await read(); try current() }
+            guard actualDefault == routing.id else { throw CancellationError() }
             if let failure = runtimeServices.transportError() { throw ProfileSettingsError.runtime(failure) }
             // Promotion is synchronous: no suspended provisional attempt can
             // publish an active session after a newer Stop or activation intent.
+            runtimeServices.permitAudibility(owner.volumeLease)
+            operation?.mark("audibility permitted")
             owner.acknowledgedPlan = acknowledgeOnSuccess ? plan : nil
             ownedSession = owner; provisionalSession = nil
             phase("Session acknowledged", status: .active)
@@ -545,9 +641,11 @@ final class AudioRuntimeCoordinator: ObservableObject {
             callbacks.clearError(); runtimeServices.notifyActivation(); result = "success"
         } catch {
             operation?.mark("cleanup started")
+            var actualDefault = runtimeServices.defaultOutput()
+            if !terminated, let read = runtimeServices.freshDefaultOutput { actualDefault = await read() }
             let restore: Bool
             if case .inactive(let requestedRestore) = desiredRuntime.target { restore = requestedRestore }
-            else { restore = !owner.restoration.defaultOutputWasRedirected || runtimeServices.defaultOutput() == owner.restoration.routingUID }
+            else { restore = !owner.restoration.defaultOutputWasRedirected || actualDefault == owner.restoration.routingUID }
             await retire(owner, restoreOutput: restore, operation: operation)
             operation?.mark("cleanup complete")
             if provisionalSession?.owner.ownershipID == owner.ownershipID { provisionalSession = nil }
@@ -598,7 +696,9 @@ final class AudioRuntimeCoordinator: ObservableObject {
             if delta.requirements.requiresGraphUpdate { try await applyPlanGraph(candidate, operation: operation); graphApplied = true }
             guard owns(owner.ownershipID) else { throw CancellationError() }
             // Supersession after RPC submission cannot split graph and renderer.
-            if delta.requirements.requiresRenderConfigurationUpdate { applyRenderer(candidate); rendererApplied = true }
+            if delta.requirements.requiresRenderConfigurationUpdate || delta.requirements.requiresPCMDeliveryUpdate {
+                applyRenderer(candidate); rendererApplied = true
+            }
             if delta.requirements.requiresEndpointMetadataUpdate { endpointAttempted = true; try await publishPlanEndpoint(candidate) }
             guard owns(owner.ownershipID) else { throw CancellationError() }
             acknowledge(candidate); callbacks.clearError(); operation?.mark("local runtime committed")
@@ -656,7 +756,9 @@ final class AudioRuntimeCoordinator: ObservableObject {
     private func retire(_ owner: OwnedRuntimeSession, restoreOutput: Bool, operation: PerformanceOperation?) async {
         guard currentOwnershipID == owner.ownershipID else { return }
         if terminated { retireSynchronously(owner); return }
-        if owner.resources.contains(.volume) { await runtimeServices.beginHandoff() }
+        runtimeServices.holdAudibility(owner.volumeLease)
+        operation?.mark("outgoing audibility held")
+        if owner.resources.contains(.volume) { await runtimeServices.beginOutgoing() }
         guard owns(owner.ownershipID) else { return }
         operation?.mark("volume handoff prepared")
         callbacks.retireOverlays(); perAppAudio.setPlaybackContext(nil)
@@ -680,11 +782,13 @@ final class AudioRuntimeCoordinator: ObservableObject {
         operation?.mark("engine stopped")
         if owner.resources.contains(.volume) { await runtimeServices.stopVolume(); owner.resources.remove(.volume) }
         guard owns(owner.ownershipID) else { return }
-        owner.volumeSession = nil; owner.masterControl = nil
+        owner.volumeLease = nil; owner.masterControl = nil
         operation?.mark("volume bridge stopped")
         if restoreOutput {
-            let restore = owner.restoration.previousDefaultUID.flatMap { runtimeServices.cachedDevice($0) != nil ? $0 : nil }
-                ?? owner.restoration.physicalOutputUID
+            var restore = owner.restoration.physicalOutputUID
+            if let preferred = owner.restoration.previousDefaultUID,
+               await runtimeServices.resolveOutput(preferred) != nil { restore = preferred }
+            guard owns(owner.ownershipID) else { return }
             do { try await runtimeServices.setDefaultOutput(restore) }
             catch { callbacks.reportMessage("EQ stopped, but macOS could not switch back to the physical output: \(error.localizedDescription)") }
         }
@@ -708,25 +812,50 @@ final class AudioRuntimeCoordinator: ObservableObject {
             throw ProfileSettingsError.cancelled
         }
     }
+    /// Compatibility for coordinator regression tests: explicit persistence
+    /// outcomes below are used by the application facade.
     func commit(_ receipt: RuntimeApplyReceipt) throws {
-        guard let transaction = activeTransaction, receiptIsCurrent(receipt, transaction: transaction) else {
-            throw ProfileSettingsError.cancelled
+        try validate(receipt)
+        _ = persistenceCommitted(receipt)
+    }
+    @discardableResult
+    func persistenceCommitted(_ receipt: RuntimeApplyReceipt) -> RuntimePersistenceResolution {
+        guard let transaction = pendingPersistence[receipt.transactionID], transaction.receipt == receipt else { return .superseded }
+        pendingPersistence.removeValue(forKey: receipt.transactionID)
+        let current = receiptIsCurrent(receipt, transaction: transaction)
+        if current, transaction.wasActive, transaction.delta?.isNoOp == false, let candidate = transaction.candidate { acknowledge(candidate) }
+        if activeTransaction?.id == transaction.id {
+            activeTransaction = nil
+            if transition?.generation == transaction.generation { transition = nil }
         }
-        if transaction.wasActive, transaction.delta?.isNoOp == false, let candidate = transaction.candidate { acknowledge(candidate) }
-        activeTransaction = nil; transition = nil; publishSnapshot()
+        publishSnapshot()
+        return current ? .finalizedCurrentRuntime : .superseded
+    }
+    @discardableResult
+    func persistenceFailed(_ receipt: RuntimeApplyReceipt) async throws -> RuntimePersistenceResolution {
+        guard let transaction = pendingPersistence[receipt.transactionID], transaction.receipt == receipt else { return .superseded }
+        defer { pendingPersistence.removeValue(forKey: receipt.transactionID); publishSnapshot() }
+        guard receiptIsCurrent(receipt, transaction: transaction) else {
+            if activeTransaction?.id == transaction.id { activeTransaction = nil }
+            return .superseded
+        }
+        transaction.rollbackRequested = true
+        let result: RuntimeCommandResult = try await withCheckedThrowingContinuation {
+            transaction.rollbackContinuation = $0; ensureWorker()
+        }
+        if case .superseded = result { return .superseded }
+        return .finalizedCurrentRuntime
     }
     @discardableResult
     func rollback(_ receipt: RuntimeApplyReceipt) async throws -> RuntimeCommandResult {
-        guard let transaction = activeTransaction, receiptIsCurrent(receipt, transaction: transaction) else { return .superseded }
-        transaction.rollbackRequested = true
-        return try await withCheckedThrowingContinuation {
-            transaction.rollbackContinuation = $0; ensureWorker()
-        }
+        let result = try await persistenceFailed(receipt)
+        return result == .superseded ? .superseded : .satisfied
     }
     private func receiptIsCurrent(_ receipt: RuntimeApplyReceipt, transaction: RuntimeSettingsTransaction) -> Bool {
         !terminated && transaction.id == receipt.transactionID && transaction.receipt == receipt
             && desiredRuntime.generation == receipt.intentGeneration
             && currentOwnershipID == receipt.ownershipID && activeSession?.id == receipt.sessionID
+            && (!transaction.wasActive || transaction.delta?.isNoOp != false || ownedSession?.appliedPlan.revision == receipt.candidatePlanRevision)
     }
     private func transactionIsCurrent(_ transaction: RuntimeSettingsTransaction) throws {
         try checkCurrent(transaction.generation)
@@ -770,7 +899,9 @@ final class AudioRuntimeCoordinator: ObservableObject {
                         try await applyPlanGraph(candidate, operation: operation)
                     }
                     guard !terminated, ownedSession?.ownershipID == transaction.baseOwnershipID else { throw CancellationError() }
-                    if effects.requiresRenderConfigurationUpdate { applyRenderer(candidate); transaction.rendererApplied = true }
+                    if effects.requiresRenderConfigurationUpdate || effects.requiresPCMDeliveryUpdate {
+                        applyRenderer(candidate); transaction.rendererApplied = true
+                    }
                 }
             }
             let publish = transaction.delta?.requirements.requiresEndpointMetadataUpdate
@@ -785,7 +916,9 @@ final class AudioRuntimeCoordinator: ObservableObject {
                 sessionID: activeSession?.id, ownershipID: currentOwnershipID,
                 oldPlanRevision: transaction.oldPlan?.revision, candidatePlanRevision: candidate.revision)
             transaction.receipt = receipt
-            phase("Awaiting settings persistence", status: .applying)
+            pendingPersistence[transaction.id] = transaction
+            transaction.operation?.mark("awaiting persistence")
+            transition = nil; publishSnapshot()
             transaction.applyContinuation?.resume(returning: receipt); transaction.applyContinuation = nil
         } catch {
             var failure: Error = error
@@ -861,6 +994,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
         endpointRequests.removeAll()
         callbacks.retireOverlays()
         if let owner = ownedSession ?? provisionalSession?.owner { retireSynchronously(owner) }
+        runtimeServices.synchronous.removeProfileDevices()
         ownedSession = nil
         // Retain the provisional identity until an outstanding acquisition
         // returns; its late resources are retired under that same identity.
@@ -868,10 +1002,12 @@ final class AudioRuntimeCoordinator: ObservableObject {
         activeTransaction?.applyContinuation = nil
         activeTransaction?.rollbackContinuation?.resume(returning: .superseded)
         activeTransaction?.rollbackContinuation = nil; activeTransaction = nil
+        pendingPersistence.removeAll()
         transition = nil; publishSnapshot()
     }
     private func retireSynchronously(_ owner: OwnedRuntimeSession) {
         guard currentOwnershipID == owner.ownershipID else { return }
+        runtimeServices.holdAudibility(owner.volumeLease)
         let sync = runtimeServices.synchronous
         callbacks.retireOverlays(); perAppAudio.setPlaybackContext(nil)
         if owner.resources.remove(.observations) != nil { runtimeServices.stopObservations() }
@@ -882,9 +1018,10 @@ final class AudioRuntimeCoordinator: ObservableObject {
         if owner.resources.remove(.spectrum) != nil { sync.stopSpectrum() }
         if owner.resources.remove(.engine) != nil { sync.stopEngine(); runtimeServices.resetEngine() }
         if owner.resources.remove(.volume) != nil { sync.stopVolume() }
-        owner.masterControl = nil; owner.volumeSession = nil
+        owner.masterControl = nil; owner.volumeLease = nil
         if runtimeServices.defaultOutput() == owner.restoration.routingUID {
-            try? sync.setDefaultOutput(owner.restoration.previousDefaultUID ?? owner.restoration.physicalOutputUID)
+            do { try sync.setDefaultOutput(owner.restoration.previousDefaultUID ?? owner.restoration.physicalOutputUID) }
+            catch { try? sync.setDefaultOutput(owner.restoration.physicalOutputUID) }
         }
         try? sync.hideBridge()
     }
@@ -895,6 +1032,15 @@ final class AudioRuntimeCoordinator: ObservableObject {
         let observationGeneration = desiredRuntime.generation
         let observationOwner = currentOwnershipID
         if isActive {
+            if let owner = ownedSession, let generation = runtimeServices.bindingGeneration(),
+               owner.binding?.graphGeneration != generation {
+                runtimeServices.holdAudibility(owner.volumeLease)
+                endpointRequests.append(.init(generation: desiredRuntime.generation, restoreProfile: nil,
+                    publish: false, hideBridge: false, continuation: nil))
+                ensureWorker()
+                await reconciliationWorker?.value
+                guard observationGeneration == desiredRuntime.generation, observationOwner == currentOwnershipID else { return }
+            }
             if let runtimeError = runtimeServices.transportError() {
                 errorMessage = runtimeError
                 await deactivate(manual: false, performanceReason: "transportFailure")
@@ -998,7 +1144,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
                 break
             }
         }
-        if let audioError = error as? CoreAudioManager.AudioError {
+        if let audioError = error as? CoreAudioService.AudioError {
             switch audioError {
             case .sampleRateNotSettable, .sampleRateDidNotApply,
                     .defaultOutputDidNotApply:

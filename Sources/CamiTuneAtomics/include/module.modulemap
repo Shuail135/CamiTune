@@ -1,0 +1,4 @@
+module CamiTuneAtomics {
+    header "CamiTuneAtomics.h"
+    export *
+}

@@ -24,7 +24,7 @@ struct ProfileActiveIndicator: View {
 /// Isolates CoreAudio device-list publications from the full profile editor.
 @MainActor
 struct ProfileConnectionStatusView: View {
-    @ObservedObject var coreAudio: CoreAudioManager
+    @ObservedObject var coreAudio: CoreAudioSnapshotStore
     let outputDeviceUID: String
 
     var body: some View {

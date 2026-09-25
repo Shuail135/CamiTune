@@ -22,8 +22,8 @@ struct MenuAppDragSource: NSViewRepresentable {
         view.drawsIdentity = drawsIdentity
         view.modifierOnlyHitTesting = modifierOnlyHitTesting
         view.requiresModifier = requiresModifier
-        view.toolTip = PerAppAudioController.isPersistentApplicationID(application.id)
-            ? "\(displayedName) — \(requiresModifier ? "Option-drag" : "Drag") to move" : displayedName
+        view.toolTip = PerAppApplicationIdentityPolicy.isPersistentApplicationID(application.id)
+            ? "\(displayedName) — \(requiresModifier ? "Command-drag" : "Drag") to move" : displayedName
         view.setAccessibilityElement(drawsIdentity)
         view.setAccessibilityRole(.staticText)
         view.setAccessibilityLabel(displayedName)
@@ -42,7 +42,7 @@ struct MenuAppDragSource: NSViewRepresentable {
         override var isFlipped: Bool { true }
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-        // An overlay in App Audio captures only Option or Command presses. Ordinary name
+        // An overlay in App Audio captures only Command presses. Ordinary name
         // clicks and field editing continue to the underlying SwiftUI view.
         func capturesMouse(modifiers: NSEvent.ModifierFlags) -> Bool {
             !modifierOnlyHitTesting || MenuAppReorderCoordinator.canBegin(

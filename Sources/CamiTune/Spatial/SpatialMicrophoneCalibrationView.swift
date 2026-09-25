@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -163,7 +164,7 @@ struct SpatialMicrophoneCalibrationView: View {
                 guard let volume = state.acousticVolumeSnapshot, !volume.muted, volume.scalar > 0,
                       measuredVolume == nil || measuredVolume == volume else { throw AcousticMeasurementError.routeChanged }
                 let sweep = try AcousticSweep(sampleRate: context.sampleRate)
-                guard state.playSpatialCalibration(context: context, clip: sweep.clip, tuning: .neutral, completion: {}) else {
+                guard state.playSpatialCalibration(context: context, clip: sweep.clip, completion: {}) else {
                     throw AcousticMeasurementError.routeChanged
                 }
                 status = "Recording on your other device…"
@@ -233,7 +234,7 @@ struct SpatialMicrophoneCalibrationView: View {
                 try await Task.sleep(nanoseconds: 300_000_000)
                 guard state.acousticMeasurementIsCurrent(context: context, processing: profile.processing),
                       state.acousticVolumeSnapshot == volume,
-                      state.playSpatialCalibration(context: context, clip: sweep.clip, tuning: .neutral, completion: {}) else {
+                      state.playSpatialCalibration(context: context, clip: sweep.clip, completion: {}) else {
                     throw AcousticMeasurementError.routeChanged
                 }
                 status = "Recording left and right sweeps…"

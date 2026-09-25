@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import Foundation
 
 /// Meter indices describe their actual boundary: compact DSP input vs hardware output.

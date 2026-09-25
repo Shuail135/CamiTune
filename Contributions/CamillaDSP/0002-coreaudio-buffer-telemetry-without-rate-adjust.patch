@@ -1,0 +1,65 @@
+--- a/src/coreaudio_backend/device.rs
++++ b/src/coreaudio_backend/device.rs
+@@ -618,32 +618,40 @@
+                         Ok(AudioMessage::Audio(chunk)) => {
+                             let estimated_buffer_fill = buffer_fill.try_lock().map(|b| b.estimate() as f64).unwrap_or_default();
+                             buffer_avg.add_value(estimated_buffer_fill + (channel.len() * chunksize) as f64);
+-                            if adjust
+-                                && timer.larger_than_millis((1000.0 * adjust_period) as u64)
++                            // Buffer telemetry is observation, not a rate-controller output.
++                            // Report it even when the host application owns rate matching.
++                            let telemetry_period_ms = if adjust {
++                                (1000.0 * adjust_period) as u64
++                            } else {
++                                1000
++                            };
++                            if timer.larger_than_millis(telemetry_period_ms)
+                                 && let Some(av_delay) = buffer_avg.average()
+                             {
+-                                let speed = rate_controller.next(av_delay);
+-                                let changed = (speed - rate_adjust_value).abs() > 0.000_001;
+-
+                                 timer.restart();
+                                 buffer_avg.restart();
+-                                if changed {
+-                                    debug!(
+-                                        "Current buffer level {:.1}, set capture rate to {:.4}%.",
+-                                        av_delay,
+-                                        100.0 * speed
+-                                    );
+-                                    status_channel
+-                                        .send(StatusMessage::SetSpeed(speed))
+-                                        .unwrap_or(());
+-                                    rate_adjust_value = speed;
+-                                }
+-                                else {
+-                                    debug!(
+-                                        "Current buffer level {:.1}, leaving capture rate at {:.4}%.",
+-                                        av_delay,
+-                                        100.0 * rate_adjust_value
+-                                    );
++                                if adjust {
++                                    let speed = rate_controller.next(av_delay);
++                                    let changed = (speed - rate_adjust_value).abs() > 0.000_001;
++
++                                    if changed {
++                                        debug!(
++                                            "Current buffer level {:.1}, set capture rate to {:.4}%.",
++                                            av_delay,
++                                            100.0 * speed
++                                        );
++                                        status_channel
++                                            .send(StatusMessage::SetSpeed(speed))
++                                            .unwrap_or(());
++                                        rate_adjust_value = speed;
++                                    }
++                                    else {
++                                        debug!(
++                                            "Current buffer level {:.1}, leaving capture rate at {:.4}%.",
++                                            av_delay,
++                                            100.0 * rate_adjust_value
++                                        );
++                                    }
+                                 }
+                                 if let Some(mut playback_status) = playback_status.try_write() {
+                                     playback_status.buffer_level = av_delay as usize;

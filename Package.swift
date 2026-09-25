@@ -3,6 +3,9 @@ import PackageDescription
 import Foundation
 
 var packageTargets: [Target] = [
+    .target(name: "CamiTuneDomain", path: "Sources/CamiTuneDomain"),
+    .target(name: "CamiTuneAtomics", path: "Sources/CamiTuneAtomics", publicHeadersPath: "include"),
+    .target(name: "CamiTuneAudio", dependencies: ["CamiTuneDomain", "CamiTuneAtomics"], path: "Sources/CamiTuneAudio"),
     .target(
         name: "SystemAudioBridgeC",
         path: "Sources/SystemAudioBridgeC",
@@ -14,7 +17,7 @@ var packageTargets: [Target] = [
     ),
     .executableTarget(
         name: "CamiTune",
-        dependencies: ["SystemAudioBridgeC"],
+        dependencies: ["CamiTuneDomain", "CamiTuneAudio", "SystemAudioBridgeC"],
         path: "Sources/CamiTune",
         resources: [
             .copy("icon.png"),
@@ -26,6 +29,20 @@ var packageTargets: [Target] = [
 
 // Test sources stay local. Clean GitHub checkouts build without the ignored
 // Tests directory; opt in to the suites available in this working copy.
+if ["1", "domain", "modules"].contains(ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] ?? "") {
+    let path = "Tests/CamiTuneDomainTests"
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    if FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path) {
+        packageTargets.append(.testTarget(name: "CamiTuneDomainTests", dependencies: ["CamiTuneDomain"], path: path))
+    }
+}
+if ["1", "audio", "modules"].contains(ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] ?? "") {
+    let path = "Tests/CamiTuneAudioTests"
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    if FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path) {
+        packageTargets.append(.testTarget(name: "CamiTuneAudioTests", dependencies: ["CamiTuneDomain", "CamiTuneAudio"], path: path))
+    }
+}
 if ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] == "1" {
     let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     for name in ["MultichannelTests", "CamiTuneTests"] {
@@ -34,7 +51,7 @@ if ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] == "1" {
         packageTargets.append(
             .testTarget(
                 name: name,
-                dependencies: ["CamiTune", "SystemAudioBridgeC"],
+                dependencies: ["CamiTune", "CamiTuneDomain", "CamiTuneAudio", "SystemAudioBridgeC"],
                 path: path
             )
         )

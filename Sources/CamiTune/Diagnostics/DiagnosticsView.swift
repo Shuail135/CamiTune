@@ -41,7 +41,7 @@ struct DiagnosticsView: View {
                                 copied = false
                             }.disabled(controller.isRunning || controller.selectedTests.isEmpty)
                         }
-                        ForEach(["Planning & Configuration", "Profiles", "PCM / Timeline", "Runtime Lifecycle", "Runtime Health", "Performance Measurement", "Presentation Publication", "Runtime Plan Authority", "Runtime Plan Differ", "Runtime Coordinator"], id: \.self) { suite in
+                        ForEach(["Planning & Configuration", "Profiles", "PCM / Timeline", "Runtime Lifecycle", "Runtime Health", "Performance Measurement", "Presentation Publication", "Runtime Plan Authority", "Runtime Plan Differ", "Runtime Coordinator", "CoreAudio & Route Handoff", "Profile Repository & Persistence", "Timeline Mixer"], id: \.self) { suite in
                             let results = controller.results.filter { $0.suite == suite }
                             HStack {
                                 Text(suite)
@@ -78,6 +78,42 @@ struct DiagnosticsView: View {
                             NSPasteboard.general.setString(state.runtimeCoordinatorSummary, forType: .string)
                         }
                     }.padding(6).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                GroupBox("Timeline Mixer") {
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        let summary = state.perAppAudio.timelineStatisticsSnapshot().map { $0.summary + "\n\nReorder policy\n" + $0.policySummary } ?? "Mixer is processing audio; snapshot will refresh."
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(summary).font(.caption).textSelection(.enabled)
+                            Button("Copy Timeline Mixer Summary") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(summary, forType: .string)
+                            }
+                        }.padding(6).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                GroupBox("Profile Repository") {
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(state.profiles.repositorySummary).font(.caption).textSelection(.enabled)
+                            Button("Copy Profile Repository Summary") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(state.profiles.repositorySummary, forType: .string)
+                            }
+                        }.padding(6).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                GroupBox("CoreAudio & Volume Handoff") {
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(state.coreAudioSummary).font(.caption).textSelection(.enabled)
+                            Text(state.runtimeCoordinator.bindingSummary).font(.caption).textSelection(.enabled)
+                            Text(state.volumeHandoffSummary).font(.caption).textSelection(.enabled)
+                            Button("Copy CoreAudio & Handoff Summary") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(state.coreAudioSummary + "\n" + state.runtimeCoordinator.bindingSummary + "\n" + state.volumeHandoffSummary, forType: .string)
+                            }
+                        }.padding(6).frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 GroupBox("Runtime Plan") {
                     VStack(alignment: .leading, spacing: 10) {

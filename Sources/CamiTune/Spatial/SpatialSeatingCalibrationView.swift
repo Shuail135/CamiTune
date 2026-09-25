@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import SwiftUI
 
 @MainActor
@@ -44,7 +45,7 @@ struct SpatialSeatingCalibrationView: View {
                         state.pcmRouter.stopSpatialCalibrationSample(id: context.id)
                         playing = false
                     } else if let clip = voice.clip {
-                        playing = state.playSpatialCalibration(context: context, clip: clip, tuning: .neutral) {
+                        playing = state.playSpatialCalibration(context: context, clip: clip) {
                             Task { @MainActor in playing = false }
                         }
                         if !playing { error = "The active output changed. Close and reopen calibration." }

@@ -112,7 +112,7 @@ struct ContentView: View {
         defer { discoveringOutput = false }
         // The HAL/device scan itself runs off-main inside
         // refreshWithoutBlockingUI(); only the small state update returns here.
-        await state.coreAudio.refreshWithoutBlockingUI()
+        await state.coreAudioService.refreshWithoutBlockingUI()
         let devices = state.coreAudio.physicalOutputDevices
         pendingOutputUID = devices.first(where: {
             $0.id == state.coreAudio.defaultOutputUID

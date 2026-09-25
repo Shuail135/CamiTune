@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import AppKit
 import SwiftUI
 
@@ -352,21 +353,31 @@ extension GlobalEqualizerEditorView {
                 return
             }
             let headroom = await Task.detached(priority: .utility) {
-                (try? ProcessingGraphBuilder(channelCount: candidate.processingChannelCount).build(profile: candidate)
-                    .automaticHeadroomDB) ?? 0
+                do {
+                    let assets = try PreparedRuntimeAssets.prepare(profile: candidate, directory: CamiTunePaths.impulseResponsesDirectory)
+                    return try ProcessingGraphBuilder(channelCount: candidate.processingChannelCount, preparedAssets: assets)
+                        .build(profile: candidate).automaticHeadroomDB
+                } catch { return 0 }
             }.value
             guard !Task.isCancelled, profile.id == profileID else { return }
             automaticSystemHeadroomDB = headroom
         }
     }
 
-    func automaticHeadroomForCorrection(_ filters: [EQBand]) -> Double {
+    func automaticHeadroomForCorrection(_ filters: [EQBand]) async -> Double {
         do {
             var candidate = profile
             candidate = try state.applyingSessionEQDrafts(to: candidate)
             candidate.processing.setDeviceCorrection(nil)
             candidate.setGlobalEqualizer(preampDB: 0, bands: filters)
-            return try ProcessingGraphBuilder(channelCount: candidate.processingChannelCount).build(profile: candidate).automaticHeadroomDB
+            let snapshot = candidate
+            return await Task.detached(priority: .utility) {
+                do {
+                    let assets = try PreparedRuntimeAssets.prepare(profile: snapshot, directory: CamiTunePaths.impulseResponsesDirectory)
+                    return try ProcessingGraphBuilder(channelCount: snapshot.processingChannelCount, preparedAssets: assets)
+                        .build(profile: snapshot).automaticHeadroomDB
+                } catch { return 0 }
+            }.value
         } catch {
             return 0
         }

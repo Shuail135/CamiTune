@@ -1,3 +1,5 @@
+import CamiTuneAudio
+import CamiTuneDomain
 import AudioToolbox
 import Combine
 import Foundation
@@ -13,7 +15,7 @@ final class SpeakerOutputAudition: ObservableObject {
     private var task: Task<Void, Never>?
     private var request = UUID()
 
-    func toggle(_ output: PhysicalOutputID, topology: SpeakerTopology, audio: CoreAudioManager, profile: DeviceProfile? = nil) {
+    func toggle(_ output: PhysicalOutputID, topology: SpeakerTopology, audio: CoreAudioService, profile: DeviceProfile? = nil) {
         if self.output == output { stop(); return }
         stop()
         let token = UUID(); request = token
@@ -24,8 +26,8 @@ final class SpeakerOutputAudition: ObservableObject {
                 guard let device = await audio.resolveDeviceWithoutBlockingUI(uid: output.deviceUID), !device.isRoutingDevice else {
                     throw ProfileSettingsError.runtime("Connect this physical output before testing it.")
                 }
+                let hardware = try await audio.probeSpeakerTopology(uid: device.id)
                 let prepared = try await Task.detached(priority: .userInitiated) {
-                    let hardware = try SpeakerTopologyProbe().probe(device)
                     try topology.validateHardware(hardware)
                     var testTopology = topology
                     testTopology.sampleRate = hardware.sampleRate

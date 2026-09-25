@@ -15,11 +15,11 @@ struct AppOrderView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("App Order").font(.title2.bold())
             if store.snapshot.orderedApplicationIDs.isEmpty {
-                Text("Play audio in an application to add it here.")
+                Text("Auto detect application when audio played/")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                Text("Drag the reorder symbol to arrange apps or move them between Shown and Hidden.")
+                Text("All apps CamiTune detected before shown here. Audio settings still apply in Hidden.")
                     .font(.caption).foregroundStyle(.secondary)
                 AppOrderList(store: store, systemNames: currentNames)
             }

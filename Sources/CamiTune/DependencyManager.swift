@@ -16,10 +16,10 @@ final class DependencyManager: ObservableObject {
     @Published var setupInProgress = false
     @Published var setupFailed = false
 
-    private let coreAudio: CoreAudioManager
-    private static let coreAudioUIDCapability = "coreaudio-uid-v1"
+    private let coreAudio: CoreAudioService
+    private static let requiredCamillaCapability = "coreaudio-uid-playback-clock-v1"
 
-    init(coreAudio: CoreAudioManager) {
+    init(coreAudio: CoreAudioService) {
         self.coreAudio = coreAudio
     }
 
@@ -101,8 +101,8 @@ final class DependencyManager: ObservableObject {
         return await Task.detached(priority: .utility) {
             guard FileManager.default.isExecutableFile(atPath: binary.path) else { return Status.missing }
             guard (try? String(contentsOf: marker, encoding: .utf8))?
-                .trimmingCharacters(in: .whitespacesAndNewlines) == Self.coreAudioUIDCapability else {
-                return Status.failed("Required Core Audio UID capability marker is missing.")
+                .trimmingCharacters(in: .whitespacesAndNewlines) == Self.requiredCamillaCapability else {
+                return Status.failed("Required audio-engine capability marker is missing.")
             }
             return Status.installed(version)
         }.value
@@ -121,13 +121,13 @@ final class DependencyManager: ObservableObject {
     ) -> Status {
         if FileManager.default.isExecutableFile(atPath: binary.path),
            (try? String(contentsOf: capabilityMarker, encoding: .utf8))?
-            .trimmingCharacters(in: .whitespacesAndNewlines) == Self.coreAudioUIDCapability {
+            .trimmingCharacters(in: .whitespacesAndNewlines) == Self.requiredCamillaCapability {
             let version = (try? Self.runBlocking(binary.path, ["--version"]))?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return .installed(version)
         } else if FileManager.default.isExecutableFile(atPath: binary.path) {
             return .failed(
-                "Installed build lacks required Core Audio UID support. Select Install / Repair Everything."
+                "Installed engine lacks the required CamiTune audio capabilities. Select Install / Repair Everything."
             )
         } else {
             return .missing
@@ -190,8 +190,8 @@ final class DependencyManager: ObservableObject {
 
     private func performCamillaDSPInstall() async {
         setupFailed = false
-        setupMessage = "Installing the bundled UID-capable CamillaDSP build…"
-        camillaDSPStatus = .working("Installing CamiTune's UID-capable CamillaDSP build…")
+        setupMessage = "Installing the bundled CamillaDSP build…"
+        camillaDSPStatus = .working("Installing CamiTune's CamillaDSP build…")
         do {
             try createSupportLayout()
             guard let binary = Bundle.main.url(
@@ -215,6 +215,14 @@ final class DependencyManager: ObservableObject {
                 ["-d", "com.apple.quarantine", stagedBinary.path]
             )
             _ = try await run(stagedBinary.path, ["--version"])
+            let capability: String
+            do {
+                capability = try await run(stagedBinary.path, ["--cami-tune-capabilities"])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } catch { throw SetupError.bundledCamillaDSPIncompatible }
+            guard capability == Self.requiredCamillaCapability else {
+                throw SetupError.bundledCamillaDSPIncompatible
+            }
             if FileManager.default.fileExists(atPath: camillaDSPBinary.path) {
                 _ = try FileManager.default.replaceItemAt(
                     camillaDSPBinary,
@@ -225,12 +233,12 @@ final class DependencyManager: ObservableObject {
             } else {
                 try FileManager.default.moveItem(at: stagedBinary, to: camillaDSPBinary)
             }
-            try Self.coreAudioUIDCapability.write(
+            try Self.requiredCamillaCapability.write(
                 to: camillaDSPCapabilityMarker,
                 atomically: true,
                 encoding: .utf8
             )
-            setupMessage = "UID-capable CamillaDSP is installed and verified."
+            setupMessage = "CamillaDSP is installed and verified."
             await refreshWithoutBlockingUI()
         } catch {
             setupFailed = true
@@ -290,7 +298,7 @@ final class DependencyManager: ObservableObject {
                 try FileManager.default.moveItem(at: stagedDriver, to: managedDriverURL)
             }
 
-            coreAudio.destroyAllProfileRoutingDevices()
+            await coreAudio.destroyAllProfileRoutingDevicesWithoutBlockingUI()
             let destination = "/Library/Audio/Plug-Ins/HAL/CamillaAudio.driver"
             let legacyDestinations = [
                 "/Library/Audio/Plug-Ins/HAL/CamillaEQAudio.driver",
@@ -337,7 +345,7 @@ final class DependencyManager: ObservableObject {
         audioDriverStatus = .working("Waiting for macOS administrator approval…")
         defer { setupInProgress = false }
         do {
-            coreAudio.destroyAllProfileRoutingDevices()
+            await coreAudio.destroyAllProfileRoutingDevicesWithoutBlockingUI()
             let targets = [
                 "/Library/Audio/Plug-Ins/HAL/CamillaAudio.driver",
                 "/Library/Audio/Plug-Ins/HAL/CamillaEQAudio.driver",
@@ -437,6 +445,7 @@ final class DependencyManager: ObservableObject {
     enum SetupError: LocalizedError {
         case binaryMissing
         case bundledCamillaDSPMissing
+        case bundledCamillaDSPIncompatible
         case bundledDriverMissing
         case commandFailed(String)
         var errorDescription: String? {
@@ -444,6 +453,8 @@ final class DependencyManager: ObservableObject {
             case .binaryMissing: return "The UID-capable CamillaDSP executable is not installed."
             case .bundledCamillaDSPMissing:
                 return "This CamiTune build does not contain the required UID-capable CamillaDSP executable. Rebuild CamiTune with build-app.sh."
+            case .bundledCamillaDSPIncompatible:
+                return "This app contains an incompatible audio engine. Reinstall or rebuild CamiTune."
             case .bundledDriverMissing: return "This app bundle does not contain CamillaAudio.driver. Reinstall CamiTune."
             case .commandFailed(let output): return output.isEmpty ? "Installer command failed." : output
             }

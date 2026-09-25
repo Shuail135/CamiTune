@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import SwiftUI
 import AppKit
 import Foundation
@@ -6,7 +7,7 @@ import Foundation
 struct ProfileEditorView: View {
     @EnvironmentObject private var commands: MainWindowCommandCoordinator
     let state: AppState
-    let coreAudio: CoreAudioManager
+    let coreAudio: CoreAudioSnapshotStore
     @ObservedObject private var store: ProfileStore
     @State private var showingSettings = false
     @Binding var profile: DeviceProfile
@@ -21,7 +22,7 @@ struct ProfileEditorView: View {
     @FocusState private var profileNameFocused: Bool
 
 
-    init(state: AppState, coreAudio: CoreAudioManager, profile: Binding<DeviceProfile>) {
+    init(state: AppState, coreAudio: CoreAudioSnapshotStore, profile: Binding<DeviceProfile>) {
         self.state = state
         self.coreAudio = coreAudio
         _profile = profile

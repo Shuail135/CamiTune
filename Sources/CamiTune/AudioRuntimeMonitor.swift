@@ -1,3 +1,4 @@
+import CamiTuneAudio
 import Combine
 import Foundation
 
@@ -72,6 +73,7 @@ struct AudioRouteDiagnostics: Equatable, Sendable {
     var meterDroppedFrames: UInt64 = 0
     var rejectedSourceFrames: UInt64 = 0
     var sourceFormatError: String?
+    var deliveryError: String?
 
     init() {}
 
@@ -102,6 +104,7 @@ struct AudioRouteDiagnostics: Equatable, Sendable {
         meterDroppedFrames = router.meterDroppedFrames
         rejectedSourceFrames = router.rejectedSourceFrames
         sourceFormatError = router.sourceFormatError
+        deliveryError = router.deliveryError
     }
 
     var bridgeFillRatio: Double? {
@@ -121,6 +124,7 @@ enum AudioRuntimeHealth: Equatable, Sendable {
 enum AudioRuntimeHealthReason: Sendable, Equatable {
     case runtimeInactive, engineUnavailable, engineStalled
     case engineStopped(String), transportFailure(String), sourceFormatError(String)
+    case pcmDeliveryFailure(String)
     case recentClipping, processingOverload(Double)
     case bridgeDroppedFrames(UInt64), bridgeOverruns(UInt64)
     case clientRegistryOverflows(UInt64), clientUseCountSaturations(UInt64)
@@ -133,7 +137,7 @@ enum AudioRuntimeHealthReason: Sendable, Equatable {
         switch self {
         case .runtimeInactive, .telemetryPaused: return .inactive
         case .engineUnavailable, .engineStalled, .engineStopped, .transportFailure,
-             .sourceFormatError, .pcmWriteFailures: return .fault
+             .sourceFormatError, .pcmWriteFailures, .pcmDeliveryFailure: return .fault
         default: return .warning
         }
     }
@@ -156,6 +160,7 @@ enum AudioRuntimeHealthReason: Sendable, Equatable {
         case .pcmDroppedFrames(let count): return "PCM writer dropped frames: \(count)."
         case .pcmQueueRecoveries(let count): return "PCM queue recoveries: \(count)."
         case .pcmWriteFailures(let count): return "PCM write failures: \(count)."
+        case .pcmDeliveryFailure(let error): return error
         case .rejectedSourceFrames(let count): return "Rejected source frames: \(count)."
         case .telemetryPaused: return "DSP telemetry polling is paused while the profile monitor is not visible."
         case .telemetryPending: return "Waiting for the first successful DSP diagnostic RPC."
@@ -318,6 +323,7 @@ struct AudioRuntimeStatus: Equatable, Sendable {
         if route.camillaDroppedFrames > 0 { reasons.append(.pcmDroppedFrames(route.camillaDroppedFrames)) }
         if route.camillaQueueRecoveries > 0 { reasons.append(.pcmQueueRecoveries(route.camillaQueueRecoveries)) }
         if route.camillaWriteFailures > 0 { reasons.append(.pcmWriteFailures(route.camillaWriteFailures)) }
+        if let error = route.deliveryError { reasons.append(.pcmDeliveryFailure(error)) }
         if route.rejectedSourceFrames > 0 { reasons.append(.rejectedSourceFrames(route.rejectedSourceFrames)) }
         return .init(reasons: reasons)
     }

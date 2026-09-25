@@ -22,6 +22,10 @@
 #include <Accelerate/Accelerate.h>
 #include <Availability.h>
 #include "SystemAudioBridgeDriverTransport.h"
+#include "../../../Sources/SystemAudioBridgeC/include/SystemAudioBridgeCompletion.h"
+#ifndef SABR_ENABLE_COMPLETION
+#define SABR_ENABLE_COMPLETION 1
+#endif
 
 //==================================================================================================
 #pragma mark -
@@ -387,6 +391,9 @@ struct DeviceIOState {
     bool outputStreamIsActive;
     _Atomic Float32 volume;
     _Atomic bool mute;
+    SABRCompletionAdmission completionAdmission;
+    double completionSampleRate;
+    uint32_t completionLayout;
 };
 
 /* Called with gPlugIn_StateMutex held; real-time readers load one atomic value. */
@@ -1018,11 +1025,10 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
                 false,
                 memory_order_release
             );
-            // HAL can retire the device before delivering RemoveDeviceClient.
-            // Reclaim its identities now, including the real-time PID snapshot;
-            // otherwise each reactivation leaks a device's entire client roster
-            // until new audio packets lose their owner when the registry fills.
-            sabr_driver_transport_remove_device_clients(profile_device_id(slot));
+            // Retire active IO without discarding HAL client registrations.
+            // Core Audio may keep a client attached across this hide/show cycle
+            // and resume it without a second AddDeviceClient callback.
+            sabr_driver_transport_suspend_device_clients(profile_device_id(slot));
         }
         gProfileDevice_UIDs[slot] = NULL;
         gProfileDevice_Names[slot] = NULL;
@@ -1773,7 +1779,8 @@ static OSStatus SystemAudioBridge_RemoveDeviceClient(AudioServerPlugInDriverRef 
         pthread_mutex_unlock(&gPlugIn_StateMutex);
         return kAudioHardwareBadObjectError;
     }
-    sabr_driver_transport_remove_client(inDeviceObjectID, inClientInfo->mClientID);
+    sabr_driver_transport_remove_client(inDeviceObjectID, inClientInfo->mClientID,
+        inClientInfo->mProcessID);
     pthread_mutex_unlock(&gPlugIn_StateMutex);
     return noErr;
 }
@@ -3855,6 +3862,39 @@ Done:
 	return theAnswer;
 }
 
+/* gPlugIn_StateMutex serializes this check and attachment with StartIO. A
+ * runningCount of zero alone is insufficient: the final admitted callback may
+ * still be publishing its data or END. Reject a mid-epoch attachment rather than
+ * accepting a closure whose contributors went to an old or absent transport. */
+static bool completion_attachment_is_quiescent(void)
+{
+#if SABR_ENABLE_COMPLETION
+    for (int slot = -1; slot < kProfileDevice_Count; ++slot) {
+        struct DeviceIOState* state = slot < 0 ? &gMainDeviceIOState : &gProfileDeviceIOStates[slot];
+        const uint64_t admission = atomic_load_explicit(&state->completionAdmission.state, memory_order_acquire);
+        if (state->runningCount != 0 || (admission & (SABR_COMPLETION_OPEN | SABR_COMPLETION_USERS)) != 0 ||
+            (admission != 0 && !(admission & SABR_COMPLETION_SEALED))) { return false; }
+    }
+#endif
+    return true;
+}
+
+static OSStatus connect_completion_transport(CFPropertyListRef propertyList, pid_t processID)
+{
+    bool disconnect = false;
+    if (propertyList && CFGetTypeID(propertyList) == CFDictionaryGetTypeID()) {
+        CFTypeRef command = CFDictionaryGetValue((CFDictionaryRef)propertyList, CFSTR(SABR_TRANSPORT_KEY_COMMAND));
+        disconnect = command && CFGetTypeID(command) == CFStringGetTypeID() &&
+            CFEqual(command, CFSTR(SABR_TRANSPORT_COMMAND_DISCONNECT));
+    }
+    pthread_mutex_lock(&gPlugIn_StateMutex);
+    const OSStatus result = !disconnect && !completion_attachment_is_quiescent()
+        ? SABR_TRANSPORT_PRODUCER_ACTIVE_ERROR
+        : sabr_driver_transport_connect_property_list(propertyList, processID);
+    pthread_mutex_unlock(&gPlugIn_StateMutex);
+    return result;
+}
+
 static OSStatus	SystemAudioBridge_SetDevicePropertyData(AudioServerPlugInDriverRef inDriver, AudioObjectID inObjectID, pid_t inClientProcessID, const AudioObjectPropertyAddress* inAddress, UInt32 inQualifierDataSize, const void* inQualifierData, UInt32 inDataSize, const void* inData, UInt32* outNumberPropertiesChanged, AudioObjectPropertyAddress outChangedAddresses[2])
 {
 	#pragma unused(inQualifierDataSize, inQualifierData)
@@ -3965,7 +4005,7 @@ static OSStatus	SystemAudioBridge_SetDevicePropertyData(AudioServerPlugInDriverR
 					break;
 				}
 			}
-			theAnswer = sabr_driver_transport_connect_property_list(
+			theAnswer = connect_completion_transport(
 				propertyList,
 				inClientProcessID
 			);
@@ -5473,6 +5513,17 @@ Done:
 
 #pragma mark IO Operations
 
+#if SABR_ENABLE_COMPLETION
+static void publish_completion_end(struct DeviceIOState* state, AudioObjectID device, uint64_t epoch)
+{
+    if (!epoch) { return; }
+    sabr_driver_transport_write_completion(SABR_EVENT_END, device, epoch, 0, 0,
+        state->completionSampleRate, state->completionLayout & 0xffff,
+        state->completionLayout, 0, 0);
+    sabr_completion_end_published(&state->completionAdmission);
+}
+#endif
+
 static OSStatus	SystemAudioBridge_StartIO(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, UInt32 inClientID)
 {
 	//	This call tells the device that IO is starting for the given client. When this routine
@@ -5517,6 +5568,24 @@ static OSStatus	SystemAudioBridge_StartIO(AudioServerPlugInDriverRef inDriver, A
 
 	if(state->runningCount == 0)
 	{
+#if SABR_ENABLE_COMPLETION
+        const uint64_t admission = atomic_load_explicit(&state->completionAdmission.state, memory_order_acquire);
+        if ((admission & (SABR_COMPLETION_OPEN | SABR_COMPLETION_USERS)) != 0 ||
+            (admission != 0 && !(admission & SABR_COMPLETION_SEALED))) {
+            sabr_driver_transport_stop_client(inDeviceObjectID, inClientID);
+            pthread_mutex_unlock(&gPlugIn_StateMutex);
+            theAnswer = kAudioHardwareIllegalOperationError;
+            goto Done;
+        }
+        state->completionSampleRate = endpoint_sample_rate(inDeviceObjectID);
+        state->completionLayout = endpoint_layout_tag(inDeviceObjectID);
+        if (!sabr_completion_open(&state->completionAdmission)) {
+            sabr_driver_transport_stop_client(inDeviceObjectID, inClientID);
+            pthread_mutex_unlock(&gPlugIn_StateMutex);
+            theAnswer = kAudioHardwareIllegalOperationError;
+            goto Done;
+        }
+#endif
 		pthread_mutex_lock(&state->ioMutex);
 		state->numberTimeStamps = 0;
 		state->anchorHostTime = mach_absolute_time();
@@ -5530,6 +5599,9 @@ static OSStatus	SystemAudioBridge_StartIO(AudioServerPlugInDriverRef inDriver, A
 		if(state->ringBuffer == NULL)
 		{
 			theAnswer = kAudioHardwareUnspecifiedError;
+#if SABR_ENABLE_COMPLETION
+            publish_completion_end(state, inDeviceObjectID, sabr_completion_close(&state->completionAdmission));
+#endif
 			sabr_driver_transport_stop_client(inDeviceObjectID, inClientID);
 			pthread_mutex_unlock(&gPlugIn_StateMutex);
 			goto Done;
@@ -5580,6 +5652,11 @@ static OSStatus	SystemAudioBridge_StopIO(AudioServerPlugInDriverRef inDriver, Au
 	}
 	state->runningCount -= 1;
 	sabr_driver_transport_stop_client(inDeviceObjectID, inClientID);
+#if SABR_ENABLE_COMPLETION
+    if (state->runningCount == 0) {
+        publish_completion_end(state, inDeviceObjectID, sabr_completion_close(&state->completionAdmission));
+    }
+#endif
 
 #if kDevice_HasInput
     if(state->runningCount == 0 && state->ringBuffer != NULL)
@@ -5683,7 +5760,12 @@ static OSStatus	SystemAudioBridge_WillDoIOOperation(AudioServerPlugInDriverRef i
 			break;
 		#endif
 			
+#if SABR_ENABLE_COMPLETION
+        case kAudioServerPlugInIOOperationProcessOutput:
+        case kAudioServerPlugInIOOperationWriteMix:
+#else
 		case kAudioServerPlugInIOOperationMixOutput:
+#endif
 			willDo = true;
 			willDoInPlace = true;
 			break;
@@ -5730,6 +5812,10 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
 	
 	//	declare the local variables
 	OSStatus theAnswer = 0;
+#if SABR_ENABLE_COMPLETION
+    uint64_t completionLease = 0;
+    struct DeviceIOState* completionState = NULL;
+#endif
     const UInt32 channelLayoutTag = endpoint_layout_tag(inDeviceObjectID);
     const UInt32 channelCount = channelLayoutTag & 0xffff;
 	
@@ -5738,11 +5824,21 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
 	FailWithAction(!is_device_object(inDeviceObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: bad device ID");
 	FailWithAction(!is_stream_object(inStreamObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: bad stream ID");
 	FailWithAction(stream_owner_device(inStreamObjectID) != inDeviceObjectID, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: stream does not belong to device");
+#if SABR_ENABLE_COMPLETION
+    Boolean isSupportedOperation = inOperationID == kAudioServerPlugInIOOperationProcessOutput ||
+        inOperationID == kAudioServerPlugInIOOperationWriteMix;
+#else
 	Boolean isSupportedOperation = inOperationID == kAudioServerPlugInIOOperationMixOutput;
+#endif
 #if kDevice_HasInput
 	isSupportedOperation = isSupportedOperation || inOperationID == kAudioServerPlugInIOOperationReadInput;
 #endif
 	if(!isSupportedOperation) { goto Done; }
+#if SABR_ENABLE_COMPLETION
+    FailWithAction((inOperationID == kAudioServerPlugInIOOperationProcessOutput ||
+        inOperationID == kAudioServerPlugInIOOperationWriteMix) && inStreamObjectID == kObjectID_Stream_Input,
+        theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: completion requires an output stream");
+#endif
 	FailWithAction(inOperationID == kAudioServerPlugInIOOperationMixOutput && inStreamObjectID == kObjectID_Stream_Input, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: MixOutput requires an output stream");
 #if kDevice_HasInput
 	FailWithAction(inOperationID == kAudioServerPlugInIOOperationReadInput && (inDeviceObjectID != kObjectID_Device || inStreamObjectID != kObjectID_Stream_Input), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: ReadInput requires the main input stream");
@@ -5751,6 +5847,38 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
 	FailWithAction(ioMainBuffer == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_DoIOOperation: no main buffer");
 	struct DeviceIOState* state = device_io_state(inDeviceObjectID);
 	FailWithAction(state == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_DoIOOperation: missing IO state");
+#if SABR_ENABLE_COMPLETION
+    if (inOperationID == kAudioServerPlugInIOOperationProcessOutput ||
+        inOperationID == kAudioServerPlugInIOOperationWriteMix) {
+        completionState = state;
+        completionLease = sabr_completion_enter(&state->completionAdmission);
+        const bool valid = completionLease && inIOBufferFrameSize > 0 &&
+            (inIOCycleInfo->mOutputTime.mFlags & kAudioTimeStampSampleTimeValid) &&
+            isfinite(inIOCycleInfo->mOutputTime.mSampleTime);
+        if (!valid) {
+            uint64_t epoch = completionLease ? completionLease : sabr_completion_epoch(
+                atomic_load_explicit(&state->completionAdmission.state, memory_order_acquire));
+            sabr_driver_transport_write_completion(SABR_EVENT_FAULT, inDeviceObjectID, epoch,
+                0, 0, endpoint_sample_rate(inDeviceObjectID), channelCount, channelLayoutTag, 0, 0);
+            theAnswer = kAudioHardwareIllegalOperationError;
+            goto Done;
+        }
+        if (inOperationID == kAudioServerPlugInIOOperationProcessOutput) {
+            sabr_driver_transport_write_completed_source(ioMainBuffer, inIOBufferFrameSize,
+                channelCount, channelLayoutTag, state->completionSampleRate, inDeviceObjectID,
+                inClientID, inIOCycleInfo->mIOCycleCounter, inIOCycleInfo->mOutputTime.mSampleTime,
+                completionLease, inIOCycleInfo->mOutputTime.mHostTime, inIOCycleInfo->mOutputTime.mFlags);
+        } else {
+            sabr_driver_transport_write_completion(SABR_EVENT_CLOSE, inDeviceObjectID, completionLease,
+                inIOCycleInfo->mOutputTime.mSampleTime, inIOBufferFrameSize, state->completionSampleRate,
+                channelCount, channelLayoutTag, inIOCycleInfo->mOutputTime.mHostTime,
+                inIOCycleInfo->mOutputTime.mFlags);
+        }
+#if !kDevice_HasInput
+        goto Done;
+#endif
+    }
+#endif
 #if kDevice_HasInput
 	FailWithAction(state->ringBuffer == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_DoIOOperation: IO is not running");
 
@@ -5769,6 +5897,19 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
         secondPartFrameSize = inIOBufferFrameSize - firstPartFrameSize;
     }
     
+    #if SABR_ENABLE_COMPLETION
+    if(inOperationID == kAudioServerPlugInIOOperationWriteMix)
+    {
+        memcpy(state->ringBuffer + ringBufferFrameLocationStart * channelCount,
+            ioMainBuffer, firstPartFrameSize * channelCount * sizeof(Float32));
+        if(secondPartFrameSize > 0) {
+            memcpy(state->ringBuffer, (Float32*)ioMainBuffer + firstPartFrameSize * channelCount,
+                secondPartFrameSize * channelCount * sizeof(Float32));
+        }
+        state->lastOutputSampleTime = inIOCycleInfo->mOutputTime.mSampleTime;
+        state->isBufferClear = false;
+    }
+    #endif
     // From SystemAudioBridge to Application
     if(inOperationID == kAudioServerPlugInIOOperationReadInput)
     {
@@ -5896,6 +6037,12 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
     }
 
 Done:
+#if SABR_ENABLE_COMPLETION
+    if (completionLease) {
+        publish_completion_end(completionState, inDeviceObjectID,
+            sabr_completion_leave(&completionState->completionAdmission));
+    }
+#endif
 	return theAnswer;
 }
 

@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import Foundation
 
 struct RuntimeResourceOwnership: OptionSet {
@@ -28,7 +29,8 @@ final class OwnedRuntimeSession {
     var restoration: OutputRestorationContext
     var resources: RuntimeResourceOwnership = []
     var volumeMode: SystemVolumeMode?
-    var volumeSession: SystemVolumeControlSession?
+    var volumeLease: VolumeHandoffLease?
+    var binding: CoreAudioRuntimeBinding?
     var masterControl: AudioRuntimeServices.MasterControl?
     init(id: RuntimeOwnershipID, plan: AudioRuntimePlan, previousDefaultUID: String?) {
         ownershipID = id; publicSession = AudioRuntimeSession(profileID: plan.revision.profileID)
@@ -78,3 +80,6 @@ final class RuntimeSettingsTransaction {
         self.operation = operation; self.validatePersistence = validatePersistence
     }
 }
+
+/// Disk success/failure never grants ownership of a newer runtime.
+enum RuntimePersistenceResolution: Sendable, Equatable { case finalizedCurrentRuntime, superseded }

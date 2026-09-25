@@ -1,16 +1,9 @@
+import CamiTuneDomain
 import AVFoundation
 import CryptoKit
 import Foundation
 
-struct PreparedRuntimeAssets: Hashable, Sendable {
-    struct Asset: Hashable, Sendable {
-        let metadata: ImpulseResponseAsset
-        let url: URL
-        let sha256: String
-    }
-    let impulseResponses: [UUID: Asset]
-    static let empty = Self(impulseResponses: [:])
-
+extension PreparedRuntimeAssets {
     static func prepare(profile: DeviceProfile, directory: URL) throws -> Self {
         let processing = try profile.resolvedProcessing()
         let activeChannels = Set(profile.configuredProcessingChannels.map(\.index))
@@ -83,13 +76,12 @@ struct AudioRuntimePlanPreparer {
         let hardware = try await evidence(output: profile.outputDevice, sampleRate: profile.sampleRate,
             needsTopology: needsTopology, services: services, phase: phase)
         phase("hardware evidence")
-        let directory = CamiTunePaths.impulseResponsesDirectory
-        let assets = try await Task.detached(priority: .userInitiated) {
-            try PreparedRuntimeAssets.prepare(profile: profile, directory: directory)
-        }.value
+        let assets = try await services.prepareAssets(profile)
         phase("assets prepared")
-        let input = PreparedRuntimeInputs(revision: revision, preparedAt: Date(), profile: profile, hardware: hardware, assets: assets)
+        let input = PreparedRuntimeInputs(revision: revision, preparedAt: Date(), profile: profile,
+            hardware: hardware, assets: assets, deliveryConfiguration: services.deliveryConfiguration?(profile))
         let plan = try await Task.detached(priority: .userInitiated) { try AudioRuntimePlanCompiler().compile(input) }.value
+        _ = try plan.profileRoutingDescriptor.formatPayload()
         phase("pure compile")
         return plan
     }
@@ -170,8 +162,10 @@ struct AudioRuntimePlanPreparer {
         let hardware = RuntimeHardwareEvidence(output: .init(uid: detectedHardware.deviceUID, name: profile.outputDeviceName),
             sampleRate: profile.sampleRate, physicalChannelCount: detectedHardware.declaredChannelCount,
             speakerTopology: detectedHardware, fingerprint: try .init(topology: detectedHardware), simulated: true)
-        return try AudioRuntimePlanCompiler().compile(.init(revision: revision ?? .init(profileID: profile.id, generation: 0),
+        let plan = try AudioRuntimePlanCompiler().compile(.init(revision: revision ?? .init(profileID: profile.id, generation: 0),
             preparedAt: Date(), profile: profile, hardware: hardware,
             assets: PreparedRuntimeAssets.prepare(profile: profile, directory: assetDirectory)))
+        _ = try plan.profileRoutingDescriptor.formatPayload()
+        return plan
     }
 }

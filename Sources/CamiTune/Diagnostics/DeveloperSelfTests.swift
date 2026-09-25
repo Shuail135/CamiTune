@@ -1,9 +1,11 @@
+import CamiTuneAudio
+import CamiTuneDomain
 import Foundation
 
 @MainActor
 enum DeveloperSelfTests {
     static func cases() -> [DiagnosticCase] {
-        profileCases() + planningCases() + pcmCases() + lifecycleCases() + healthCases() + performanceCases() + presentationCases() + runtimePlanCases() + runtimePlanDifferCases() + runtimeCoordinatorCases()
+        profileCases() + planningCases() + pcmCases() + lifecycleCases() + healthCases() + performanceCases() + presentationCases() + runtimePlanCases() + runtimePlanDifferCases() + runtimeCoordinatorCases() + coreAudioHandoffCases() + profileRepositoryCases() + profilePersistenceCases() + timelineStorageCases() + timelineMixerCases() + timelineIntegrationCases() + timelineBenchmarkCases() + reorderPolicyCases() + reorderMatrixCases() + pcmDeliveryCases() + producerCompletionCases() + pcmSinkCases() + audioClockCases() + architectureOwnerCases()
     }
 
     private static func test(_ id: String, _ suite: String, _ name: String,
@@ -56,7 +58,7 @@ enum DeveloperSelfTests {
         [
             test("P04", "Planning & Configuration", "Stereo graph construction") { _ in
                 let profile = DiagnosticSandbox.profile()
-                let graph = try ActiveAudioRoute(profile: profile).buildGraph(profile: profile)
+                let graph = try ActiveAudioRoute(profile: profile).buildGraph(profile: profile, assets: .empty)
                 try graph.validate()
                 try diagnosticRequire(graph.inputFormat.channelCount == 2 && graph.outputFormat.channelCount == 2, "Unexpected stereo formats")
                 return .init(summary: "Stereo graph validates", evidence: [.init(name: "Stages", value: "\(graph.pipeline.count)")])
@@ -87,25 +89,25 @@ enum DeveloperSelfTests {
             test("P07", "Planning & Configuration", "Malformed processing input") { _ in
                 var profile = DiagnosticSandbox.profile()
                 profile.equalizerAPOText = "Filter 1: ON PK Fc invalid Hz Gain broken dB Q nope"
-                do { _ = try ActiveAudioRoute(profile: profile).buildGraph(profile: profile) }
+                do { _ = try ActiveAudioRoute(profile: profile).buildGraph(profile: profile, assets: .empty) }
                 catch { return .init(summary: "Malformed processing was rejected") }
                 throw DiagnosticFailure(message: "Malformed EQ unexpectedly produced a graph")
             },
             test("P08", "Planning & Configuration", "Headroom invariants") { _ in
                 let profile = DiagnosticSandbox.profile()
-                let first = try ActiveAudioRoute(profile: profile).buildGraph(profile: profile)
-                let second = try ActiveAudioRoute(profile: profile).buildGraph(profile: profile)
+                let first = try ActiveAudioRoute(profile: profile).buildGraph(profile: profile, assets: .empty)
+                let second = try ActiveAudioRoute(profile: profile).buildGraph(profile: profile, assets: .empty)
                 try diagnosticRequire(first.automaticHeadroomDB.isFinite && first.automaticHeadroomDB <= 0 && first.automaticHeadroomDB >= -120, "Headroom outside the legal range")
                 try diagnosticRequire(first.automaticHeadroomDB == second.automaticHeadroomDB, "Headroom is not deterministic")
                 var disabled = profile
                 disabled.processing.global.stages.append(.init(isEnabled: false, processor: .gain(.init(gainDB: 30))))
-                let ignored = try ActiveAudioRoute(profile: disabled).buildGraph(profile: disabled)
+                let ignored = try ActiveAudioRoute(profile: disabled).buildGraph(profile: disabled, assets: .empty)
                 try diagnosticRequire(first.automaticHeadroomDB == ignored.automaticHeadroomDB, "Disabled gain affected headroom")
                 return .init(summary: "Finite, bounded, repeatable headroom; disabled gain ignored")
             },
             test("P09", "Planning & Configuration", "Graph update behavior") { _ in
                 let profile = DiagnosticSandbox.profile()
-                let graph = try ActiveAudioRoute(profile: profile).buildGraph(profile: profile)
+                let graph = try ActiveAudioRoute(profile: profile).buildGraph(profile: profile, assets: .empty)
                 let differ = ProcessingGraphDiffer()
                 try diagnosticRequire(differ.update(from: graph, to: graph) == .unchanged, "Identical graph is not unchanged")
                 var next = graph
@@ -127,10 +129,16 @@ enum DeveloperSelfTests {
         PerAppAudioPacket(deviceObjectID: 100, clientID: client, processID: 0,
                          cycleCounter: UInt64(max(0, start / 4)), sampleTime: start,
                          interleaved: Array(repeating: value, count: frames * channels),
-                         channelCount: channels, sampleRate: rate, sourceBufferedFrames: frames, sourceCapacityFrames: 65_536)
+                         channelCount: channels, sampleRate: rate)
+    }
+    private static func flush(_ controller: TimelineMixerFixture) throws -> PCMFrame {
+        guard case .flushed(let frame) = controller.flushExpiredMix(now: instant.addingTimeInterval(1)) else {
+            throw DiagnosticFailure(message: "Expected pending audio to flush")
+        }
+        return frame
     }
     private static func flush(_ controller: PerAppAudioController) throws -> PCMFrame {
-        guard case .flushed(let frame) = controller.flushExpiredMix(now: instant.addingTimeInterval(1)) else {
+        guard case .flushed(let frame) = controller.flushExpiredMix(now: instant.addingTimeInterval(1), policyNow: PerformanceClock.now().advanced(seconds: 1)) else {
             throw DiagnosticFailure(message: "Expected pending audio to flush")
         }
         return frame
@@ -141,70 +149,78 @@ enum DeveloperSelfTests {
 
     private static func pcmCases() -> [DiagnosticCase] {
         [
-            test("A01", "PCM / Timeline", "One client") { box in
-                _ = box.perApp.ingest(packet(), now: instant)
-                try samples(flush(box.perApp).interleaved, Array(repeating: 0.25, count: 8))
+            test("A01", "PCM / Timeline", "One client") { _ in
+                let mixer = TimelineMixerFixture()
+                _ = mixer.ingest(packet(), now: instant)
+                try samples(flush(mixer).interleaved, Array(repeating: 0.25, count: 8))
                 return .init(summary: "Single-client samples preserved")
             },
-            test("A02", "PCM / Timeline", "Two clients, same interval") { box in
-                _ = box.perApp.ingest(packet(1), now: instant)
-                _ = box.perApp.ingest(packet(2), now: instant)
-                try samples(flush(box.perApp).interleaved, Array(repeating: 0.5, count: 8))
+            test("A02", "PCM / Timeline", "Two clients, same interval") { _ in
+                let mixer = TimelineMixerFixture()
+                _ = mixer.ingest(packet(1), now: instant)
+                _ = mixer.ingest(packet(2), now: instant)
+                try samples(flush(mixer).interleaved, Array(repeating: 0.5, count: 8))
                 return .init(summary: "Coincident intervals summed")
             },
-            test("A03", "PCM / Timeline", "Overlapping intervals") { box in
-                _ = box.perApp.ingest(packet(1, 0), now: instant)
-                _ = box.perApp.ingest(packet(2, 2), now: instant)
-                try samples(flush(box.perApp).interleaved, [0.25, 0.25, 0.25, 0.25, 0.5, 0.5, 0.5, 0.5, 0.25, 0.25, 0.25, 0.25])
+            test("A03", "PCM / Timeline", "Overlapping intervals") { _ in
+                let mixer = TimelineMixerFixture()
+                _ = mixer.ingest(packet(1, 0), now: instant)
+                _ = mixer.ingest(packet(2, 2), now: instant)
+                try samples(flush(mixer).interleaved, [0.25, 0.25, 0.25, 0.25, 0.5, 0.5, 0.5, 0.5, 0.25, 0.25, 0.25, 0.25])
                 return .init(summary: "Overlap summed; both non-overlapping tails preserved")
             },
-            test("A04", "PCM / Timeline", "Unequal packet sizes") { box in
-                let first = box.perApp.ingest(packet(1, 0, 256), now: instant)
-                let second = box.perApp.ingest(packet(2, 0, 1024), now: instant)
+            test("A04", "PCM / Timeline", "Unequal packet sizes") { _ in
+                let mixer = TimelineMixerFixture()
+                let first = mixer.ingest(packet(1, 0, 256), now: instant)
+                let second = mixer.ingest(packet(2, 0, 1024), now: instant)
                 try diagnosticRequire(first == nil && second == nil, "Current holdback policy changed")
-                try samples(flush(box.perApp).interleaved, Array(repeating: 0.5, count: 512) + Array(repeating: 0.25, count: 1536))
+                try samples(flush(mixer).interleaved, Array(repeating: 0.5, count: 512) + Array(repeating: 0.25, count: 1536))
                 return .init(summary: "256/1024-frame packets retain holdback and mix correctly")
             },
-            test("A05", "PCM / Timeline", "Late packet") { box in
-                _ = box.perApp.ingest(packet(1, 400, 4, 1), now: instant)
-                _ = box.perApp.ingest(packet(1, 404, 4, 0), now: instant)
-                _ = box.perApp.ingest(packet(2, 400, 4, 2), now: instant)
-                let emitted = box.perApp.ingest(packet(1, 408, 4, 0), now: instant)
+            test("A05", "PCM / Timeline", "Late packet") { _ in
+                let mixer = TimelineMixerFixture()
+                _ = mixer.ingest(packet(1, 400, 4, 1), now: instant)
+                _ = mixer.ingest(packet(1, 404, 4, 0), now: instant)
+                _ = mixer.ingest(packet(2, 400, 4, 2), now: instant)
+                let emitted = mixer.ingest(packet(1, 408, 4, 0), now: instant)
                 try samples(emitted?.interleaved ?? [], Array(repeating: 3, count: 8))
-                let late = box.perApp.ingest(packet(2, 400, 4, 4), now: instant)
+                let late = mixer.ingest(packet(2, 400, 4, 4), now: instant)
                 try diagnosticRequire(late == nil, "Already emitted audio was replayed")
-                _ = box.perApp.ingest(packet(2, 402, 4, 4), now: instant)
-                let next = box.perApp.ingest(packet(1, 412, 4, 0), now: instant)
+                _ = mixer.ingest(packet(2, 402, 4, 4), now: instant)
+                let next = mixer.ingest(packet(1, 412, 4, 0), now: instant)
                 try samples(next?.interleaved ?? [], [4, 4, 4, 4, 0, 0, 0, 0])
                 return .init(summary: "Stale audio rejected; only the unrendered suffix of a partially late packet retained")
             },
-            test("A06", "PCM / Timeline", "Short sound idle flush") { box in
-                _ = box.perApp.ingest(packet(), now: instant)
-                guard case .retryAfter = box.perApp.flushExpiredMix(now: instant.addingTimeInterval(0.003)) else {
+            test("A06", "PCM / Timeline", "Short sound idle flush") { _ in
+                let mixer = TimelineMixerFixture()
+                _ = mixer.ingest(packet(), now: instant)
+                guard case .retryAfter = mixer.flushExpiredMix(now: instant.addingTimeInterval(0.003)) else {
                     throw DiagnosticFailure(message: "Tail flushed before its deadline")
                 }
-                guard case .flushed(let frame) = box.perApp.flushExpiredMix(now: instant.addingTimeInterval(0.020)) else {
+                guard case .flushed(let frame) = mixer.flushExpiredMix(now: instant.addingTimeInterval(0.020)) else {
                     throw DiagnosticFailure(message: "Short sound tail was lost")
                 }
                 try samples(frame.interleaved, Array(repeating: 0.25, count: 8))
                 return .init(summary: "Tail emitted after an explicit 20 ms advance; no sleep")
             },
-            test("A07", "PCM / Timeline", "Format change") { box in
-                _ = box.perApp.ingest(packet(), now: instant)
-                _ = box.perApp.ingest(packet(1, 0, 4, 0.5, rate: 96_000, channels: 1), now: instant)
-                let frame = try flush(box.perApp)
+            test("A07", "PCM / Timeline", "Format change") { _ in
+                let mixer = TimelineMixerFixture()
+                _ = mixer.ingest(packet(), now: instant)
+                _ = mixer.ingest(packet(1, 0, 4, 0.5, rate: 96_000, channels: 1), now: instant)
+                let frame = try flush(mixer)
                 try diagnosticRequire(frame.sampleRate == 96_000 && frame.channelCount == 1, "New format did not replace pending timeline")
                 try samples(frame.interleaved, Array(repeating: 0.5, count: 4))
                 return .init(summary: "Rate/channel/layout change reset pending audio")
             },
-            test("A08", "PCM / Timeline", "Runtime reset") { box in
-                _ = box.perApp.ingest(packet(), now: instant)
-                box.perApp.resetRuntime()
-                guard case .idle = box.perApp.flushExpiredMix(now: instant.addingTimeInterval(1)) else {
+            test("A08", "PCM / Timeline", "Runtime reset") { _ in
+                let mixer = TimelineMixerFixture()
+                _ = mixer.ingest(packet(), now: instant)
+                mixer.resetRuntime()
+                guard case .idle = mixer.flushExpiredMix(now: instant.addingTimeInterval(1)) else {
                     throw DiagnosticFailure(message: "Old pending audio survived reset")
                 }
-                _ = box.perApp.ingest(packet(1, 0, 4, 0.5), now: instant)
-                try samples(flush(box.perApp).interleaved, Array(repeating: 0.5, count: 8))
+                _ = mixer.ingest(packet(1, 0, 4, 0.5), now: instant)
+                try samples(flush(mixer).interleaved, Array(repeating: 0.5, count: 8))
                 return .init(summary: "Reset discarded prior stream and accepted a fresh timeline")
             }
         ]
@@ -394,7 +410,6 @@ enum DeveloperSelfTests {
             }
         ]
     }
-
 }
 
 extension DeveloperSelfTests {
@@ -562,6 +577,30 @@ extension DeveloperSelfTests {
             },
             test("V08", "Performance Measurement", "Tracing OFF/ON PCM and overhead baseline") { box in
                 try await performanceBenchmark(box)
+            },
+            test("V09", "Performance Measurement", "Explicit rate target evidence is passive and signed") { _ in
+                var observed = AdaptiveRateController(), control = AdaptiveRateController()
+                for index in 0..<300 {
+                    let frames = [128, 512, 1024][index % 3]
+                    let buffered = index < 150 ? frames : frames * 4
+                    let input = RateMatchObservation(bufferedFrames: buffered, targetFrames: 1024,
+                        sampleRate: 48_000, elapsedFrames: frames, recoveryGeneration: 0)
+                    let a = observed.update(input)
+                    let measurement = observed.diagnosticObservation(input, targetSource: "configured")
+                    let b = control.update(input)
+                    try diagnosticRequire(a == b && measurement.adjustmentPPM == a
+                        && measurement.targetFrames == 1024
+                        && measurement.bufferedFrames == buffered, "Observation changed controller or target")
+                    let decoded = try JSONDecoder().decode(RateMatchMeasurement.self, from: JSONEncoder().encode(measurement))
+                    try diagnosticRequire(decoded.targetFrames == measurement.targetFrames
+                        && decoded.bufferedFrames == measurement.bufferedFrames
+                        && decoded.targetSource == measurement.targetSource
+                        && abs(decoded.adjustmentPPM - measurement.adjustmentPPM) < 1e-9
+                        && abs(decoded.filteredBufferedFrames - measurement.filteredBufferedFrames) < 1e-9
+                        && abs(decoded.normalizedError - measurement.normalizedError) < 1e-9,
+                        "Signed rate evidence failed round trip")
+                }
+                return .init(summary: "Explicit target and signed PPM captured without advancing controller state")
             }
         ]
     }
@@ -586,7 +625,7 @@ extension DeveloperSelfTests {
             let sink = try FileHandle(forWritingTo: url)
             let reader = try FileHandle(forReadingFrom: url)
             defer { try? sink.close(); try? reader.close() }
-            await router.start(camillaSink: sink)
+            await router.startFixture(camillaSink: sink)
             var environment = template
             environment.sessionID = session; environment.sampleRate = 48_000; environment.channelCount = 2
             environment.playbackMode = PlaybackMode.direct.rawValue; environment.activeApplications = 1
@@ -646,7 +685,10 @@ extension DeveloperSelfTests {
             && off.statistics.camillaDroppedFrames == 0 && on.statistics.camillaDroppedFrames == 0, "Isolated paced fixture recovered its queue")
         guard var baseline = on.baseline else { throw DiagnosticFailure(message: "Missing tracing baseline") }
         try diagnosticRequire(baseline.telemetryDrops == 0 && baseline.packets.count == 48
-            && baseline.samples.allSatisfy { $0.packetReceived != nil && $0.identity.runtimeSessionID == baseline.environment.sessionID }, "Trace coverage or session identity incomplete")
+            && baseline.samples.allSatisfy { $0.packetReceived != nil && $0.identity.runtimeSessionID == baseline.environment.sessionID },
+            "Trace coverage or session identity incomplete: \(baseline.telemetryDrops) drops, \(baseline.packets.count)/48 packets, \(baseline.samples.count) writes")
+        try diagnosticRequire(!baseline.samples.isEmpty && baseline.samples.allSatisfy { $0.rateMatch != nil },
+            "Writer rate evidence missing from detailed tracing")
         for name in ["Per-client processing", "Mixer policy wait", "Mixer emission work", "PCM queue residence",
                      "Rendering (including analysis/reset)", "Resampling/rate-match", "System master", "Payload preparation", "Pipe write", "Receipt → Camilla input"] {
             try diagnosticRequire(baseline.audio[name]?.sampleCount ?? 0 > 0, "Missing timing stage: \(name)")

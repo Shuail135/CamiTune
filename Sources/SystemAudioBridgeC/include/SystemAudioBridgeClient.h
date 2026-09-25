@@ -10,16 +10,6 @@
 extern "C" {
 #endif
 
-// Lock-free scalar for telemetry flags/counters and presentation mailbox ownership.
-// Exchange uses acquire/release ordering; scalar load/store/increment are relaxed.
-typedef struct CMTPerformanceAtomic* CMTPerformanceAtomicRef;
-CMTPerformanceAtomicRef cmt_performance_atomic_create(void);
-void cmt_performance_atomic_destroy(CMTPerformanceAtomicRef value);
-uint64_t cmt_performance_atomic_load(CMTPerformanceAtomicRef value);
-void cmt_performance_atomic_store(CMTPerformanceAtomicRef value, uint64_t number);
-uint64_t cmt_performance_atomic_exchange(CMTPerformanceAtomicRef value, uint64_t number);
-void cmt_performance_atomic_increment(CMTPerformanceAtomicRef value);
-
 typedef struct SABRClientTransport* SABRClientTransportRef;
 
 #define SABR_CLIENT_BUNDLE_ID_CAPACITY SABR_TRANSPORT_BUNDLE_ID_CAPACITY
@@ -34,6 +24,11 @@ typedef struct SABRClientAudioPacketInfo {
     uint32_t channelCount;
     uint32_t channelLayoutTag;
     double sampleRate;
+    uint64_t reservationSequence;
+    uint64_t producerEpoch;
+    uint64_t outputHostTime;
+    uint32_t timestampFlags;
+    uint32_t eventKind;
 } SABRClientAudioPacketInfo;
 
 typedef struct SABRClientIdentity {
@@ -109,6 +104,18 @@ uint32_t sabr_client_transport_read_packet(
     SABRClientAudioPacketInfo* packetInfo
 );
 
+/* True means one PCM or completion record was consumed. PCM owns frameCount
+ * samples; CLOSE describes frameCount timeline frames but owns no PCM. Records
+ * may be returned out of reservation order: the consumer MUST sequence them
+ * before applying any closure. A false result is never completeness evidence. */
+Boolean sabr_client_transport_read_event(
+    SABRClientTransportRef transport,
+    Float32* interleavedDestination,
+    uint32_t destinationChannelCapacity,
+    uint32_t maximumFrames,
+    SABRClientAudioPacketInfo* packetInfo
+);
+
 uint32_t sabr_client_transport_copy_clients(
     SABRClientTransportRef transport,
     SABRClientIdentity* destination,
@@ -121,6 +128,21 @@ Boolean sabr_client_transport_copy_control_state(
 );
 
 uint64_t sabr_client_transport_client_generation(SABRClientTransportRef transport);
+
+/* Reader-thread-only diagnostic sample of reservation cursors. This is not
+ * a completion watermark: zero reservations says nothing about future callbacks.
+ * No shared layout or driver protocol change is involved. */
+typedef struct SABRClientReservationObservation {
+    uint64_t readPacket;
+    uint64_t reservedWritePacket;
+    uint64_t readFrame;
+    uint64_t reservedWriteFrame;
+} SABRClientReservationObservation;
+
+Boolean sabr_client_transport_observe_reservations(
+    SABRClientTransportRef transport,
+    SABRClientReservationObservation* observation
+);
 
 void sabr_client_transport_get_statistics(
     SABRClientTransportRef transport,

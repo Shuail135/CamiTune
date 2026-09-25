@@ -1,3 +1,5 @@
+import CamiTuneAudio
+import CamiTuneDomain
 import Foundation
 import Darwin
 
@@ -13,6 +15,9 @@ final class CamillaDSPManager: ObservableObject {
     private var process: Process?
     private var inputPipe: Pipe?
     private var hasAppliedConfig = false
+    private var clockPollingTask: Task<Void, Never>?
+    private var clockSession: UUID?
+    private(set) var lastPlaybackClock: CamillaPlaybackClock?
 
     init() {
         let port = UInt16.random(in: 20_000...49_999)
@@ -71,9 +76,36 @@ final class CamillaDSPManager: ObservableObject {
         return handle
     }
 
-    /// Closing stdin first unblocks any PCM writer waiting on a full pipe. It
-    /// is intentionally separate from process teardown so the router can join
-    /// its delivery worker without depending on CamillaDSP's control socket.
+    func observePlaybackClock(session: UUID, consumer: @escaping @Sendable (AudioClockObservation) -> Void) {
+        stopClockObservations()
+        clockSession = session
+        clockPollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, clockSession == session else { return }
+                do {
+                    if let clock = try await rpc.playbackClock(), !Task.isCancelled, clockSession == session {
+                        lastPlaybackClock = clock
+                        consumer(clock.observation(received: PerformanceClock.now()))
+                    }
+                } catch {
+                    // Missing evidence expires in the writer's clock contract.
+                    // A failed RPC cannot make the last sample appear fresh.
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+    }
+
+    func stopClockObservations() {
+        clockSession = nil
+        lastPlaybackClock = nil
+        clockPollingTask?.cancel()
+        clockPollingTask = nil
+    }
+
+    /// Releases the manager's stdin handle. The PCM worker owns a separate
+    /// duplicate; if it is blocked, engine termination closes the read end and
+    /// unblocks it. Router shutdown therefore uses a bounded join.
     func closeAudioInput() {
         try? inputPipe?.fileHandleForWriting.close()
         inputPipe = nil
@@ -100,7 +132,7 @@ final class CamillaDSPManager: ObservableObject {
             }.value
             try await rpc.setConfig(yaml: yaml)
             // Startup uses -20 dB as a safety guard. Normalize the Main fader
-            // only for the first valid graph. SystemVolumeBridge owns the live
+            // only for the first valid graph. VolumeHandoffService owns the live
             // master afterward; later full graph replacements must not reset a
             // user's keyboard volume or mute state to 0 dB/unmuted.
             if !hasAppliedConfig {
@@ -134,6 +166,7 @@ final class CamillaDSPManager: ObservableObject {
     }
 
     func forceStopAndWait() {
+        stopClockObservations()
         guard let childProcess = process else {
             hasAppliedConfig = false
             isRunning = false
@@ -160,6 +193,7 @@ final class CamillaDSPManager: ObservableObject {
     }
 
     func stop() async {
+        stopClockObservations()
         await closeAudioInputWithoutBlockingUI()
         // Disconnecting first also aborts a stuck in-flight RPC. Waiting for an
         // "Exit" reply here could otherwise make profile switching hang forever.

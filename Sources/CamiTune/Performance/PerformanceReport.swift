@@ -1,3 +1,5 @@
+import CamiTuneAudio
+import CamiTuneDomain
 import Foundation
 
 enum PerformanceAggregator {
@@ -26,6 +28,19 @@ enum PerformanceAggregator {
         for packet in packets {
             add("Per-client processing", packet.received, packet.processed)
             packetSizes[packet.identity.frameCount, default: 0] += 1
+            if let policy = packet.reorder {
+                let scale = 1000 / policy.sampleRate
+                values["Observed reorder depth", default: []].append(Double(policy.reorderDepthFrames) * scale)
+                values["Active reorder window", default: []].append(Double(policy.activeWindowFrames) * scale)
+                values["Candidate reorder window", default: []].append(Double(policy.candidateWindowFrames) * scale)
+                values["Legacy reorder ceiling", default: []].append(Double(policy.legacyWindowFrames) * scale)
+            }
+            if let work = packet.timeline {
+                if let policy = work.policyMilliseconds { values["Timeline policy evaluation", default: []].append(policy) }
+                values["Timeline packet placement", default: []].append(work.placementMilliseconds)
+                if work.materializationMilliseconds > 0 { values["Timeline prefix materialization", default: []].append(work.materializationMilliseconds) }
+                if work.growthMilliseconds > 0 { values["Timeline storage growth", default: []].append(work.growthMilliseconds) }
+            }
         }
         var priorEntry: [String: PerformanceTick] = [:]; var priorDequeue: [String: PerformanceTick] = [:]
         for sample in samples.sorted(by: { $0.queueEntered < $1.queueEntered }) {
@@ -101,8 +116,9 @@ enum PerformanceAggregator {
             previous = current
         }
         if options.scenario.requiresMixedPacketSizes && packetSizes.count < 2 { mismatches.insert("Mixed packet sizes were not observed") }
-        recoveryDelta = max(recoveryDelta, UInt64(recoveries.count))
-        dropDelta = max(dropDelta, recoveries.reduce(0) { $0 + UInt64(max(0, $1.droppedFrames)) })
+        let overflowRecoveries = recoveries.filter { $0.recovery == nil || $0.recovery?.reason == .overflow }
+        recoveryDelta = max(recoveryDelta, UInt64(overflowRecoveries.count))
+        dropDelta = max(dropDelta, overflowRecoveries.reduce(0) { $0 + UInt64(max(0, $1.droppedFrames)) })
         if Set(samples.map { $0.identity.runtimeSessionID }).count > 1 { mismatches.insert("Capture spans multiple runtime sessions; inspect individual identities") }
         if samples.isEmpty && options.detailedAudioTracing { mismatches.insert("No completed audio blocks were observed") }
         let duration = Double(PerformanceClock.duration(from: capture.start, to: end)) / 1e9
@@ -157,7 +173,7 @@ extension PerformanceBaseline {
             "Processing stages: \(env.processingStages ?? 0); Camilla chunk: \(env.chunkSize ?? 0) frames",
             "Applications: \(env.activeApplications); window visible: \(env.windowVisible); profile visible: \(env.profileVisible)",
             "Queue policy: 100 ms, at least one incoming block; clear on overflow/rate change",
-            "Mixer policy: two largest packets held back; idle delay max(4 ms, 1.5 × packet duration)",
+            "Mixer policy: \(env.timelineMixerStatistics?.policySummary ?? "No active timeline snapshot")",
             "Telemetry drops: \(telemetryDrops)\(telemetryDrops > 0 ? " — MEASUREMENT INCOMPLETE" : "")",
             "Coverage: \(packets.count) packets; \(samples.count) completed writes; \(samples.filter { $0.packetReceived != nil }.count) full receipt traces",
             "In-process timing ends at Camilla input. It is not physical playback latency.", "",
@@ -169,14 +185,42 @@ extension PerformanceBaseline {
                 lines.append("\(name) | \(metric.sampleCount) | \(ms(metric.medianMilliseconds)) | \(ms(metric.p95Milliseconds)) | \(ms(metric.p99Milliseconds)) | \(ms(metric.maximumMilliseconds))")
             }
         }
+        if let delivery = env.deliveryConfiguration ?? observations.compactMap({ $0.environment.deliveryConfiguration }).last {
+            lines += ["", "PCM delivery configuration", delivery.summary]
+        }
+        let rate = samples.compactMap(\.rateMatch)
+        if !rate.isEmpty {
+            let ppm = rate.map(\.adjustmentPPM).sorted()
+            let targets = Set(rate.map(\.targetFrames)).sorted()
+            lines.append("Writer rate evidence: \(rate.count) blocks; effective targets \(targets.map(ms).joined(separator: ", ")) frames; PPM min/median/max \(ms(ppm.first!))/\(ms(ppm[(ppm.count - 1) / 2]))/\(ms(ppm.last!))")
+            lines.append("Rate target source: \(rate[0].targetSource)")
+            let states = Dictionary(grouping: rate, by: { $0.controlState ?? "historical" })
+            lines.append("Rate control states: " + states.keys.sorted().map { "\($0): \(states[$0]!.count) blocks" }.joined(separator: ", "))
+        }
         lines += ["", "Queue occupancy at entry (\(queueOccupancy.sampleCount) samples): median \(ms(queueOccupancy.medianMilliseconds)) ms; mean \(ms(queueOccupancy.meanMilliseconds)) ms",
                   "Recoveries during capture: \(recoveriesDuringCapture); dropped frames: \(droppedFramesDuringCapture); bridge drops: \(transportDroppedFramesDuringCapture)"]
+        let completions = observations.compactMap { $0.environment.producerCompletion } + [env.producerCompletion].compactMap { $0 }
+        if !completions.isEmpty {
+            // Shutdown resets the live counters. Report observed maxima rather
+            // than replacing the evidence with that final zero snapshot. These
+            // are session maxima, not sums across restarts or exact end totals.
+            func maximum<T: Comparable>(_ key: KeyPath<ProducerCompletionStatistics, T>) -> T {
+                completions.map { $0[keyPath: key] }.max()!
+            }
+            lines.append("Producer completion (maximum observed session counters): \(maximum(\.closures)) host closures; \(maximum(\.terminalDrains)) terminal drains / \(maximum(\.terminalFrames)) frames; \(maximum(\.closedRevisionFrames)) closed zero-revision frames; \(maximum(\.faults)) faults")
+            lines.append("Completion storage peak: \(maximum(\.peakPendingFrames)) pending contribution frames; \(maximum(\.peakReorderedRecords)) reordered records; final events between observations may be absent")
+        }
         if let final = observations.last?.environment.queue {
             lines.append("Queue current: \(final.queuedFrames) frames / \(ms(final.durationMilliseconds)) ms @ \(final.sampleRate) Hz; capacity: \(final.capacityFrames) frames / \(ms(final.capacityMilliseconds)) ms")
             lines.append("Session queue peak: \(final.peakQueuedFrames) frames; peak duration: \(ms(final.peakDurationMilliseconds)) ms (may precede capture)")
         }
         for recovery in recoveries {
-            lines.append("Recovery +\(ms(PerformanceClock.milliseconds(measurementStart, recovery.timestamp) / 1000)) s: \(recovery.queuedFramesBeforeRecovery) frames + \(recovery.incomingFrames), dropped \(recovery.droppedFrames) frames / \(ms(Double(recovery.droppedFrames) * 1000 / recovery.sampleRate)) ms @ \(recovery.sampleRate) Hz; writer block \(recovery.writerBlockInProgressFrames) frames")
+            let droppedMilliseconds = recovery.sampleRate > 0 ? Double(recovery.droppedFrames) * 1000 / recovery.sampleRate : 0
+            let reason = recovery.recovery?.reason.rawValue ?? "legacy recovery (unclassified)"
+            lines.append("Writer \(reason) +\(ms(PerformanceClock.milliseconds(measurementStart, recovery.timestamp) / 1000)) s: \(recovery.queuedFramesBeforeRecovery) frames + \(recovery.incomingFrames), dropped \(recovery.droppedFrames) frames / \(ms(droppedMilliseconds)) ms @ \(recovery.sampleRate) Hz; writer block \(recovery.writerBlockInProgressFrames) frames")
+            if let detail = recovery.recovery {
+                lines.append("  Generation \(detail.generation); retained \(detail.retainedFrames), after \(detail.queuedFramesAfter), target \(detail.operatingTargetFrames), recovery target \(detail.recoveryTargetFrames), hard limit \(detail.hardLimitFrames) frames")
+            }
             if let active = samples.first(where: { $0.identity.runtimeSessionID == recovery.runtimeSessionID && $0.queueLeft <= recovery.timestamp && $0.pipeWriteCompleted > recovery.timestamp }) {
                 let phases: [(String, PerformanceTick, PerformanceTick)] = [
                     ("render", active.queueLeft, active.renderCompleted),

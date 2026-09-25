@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -6,7 +7,7 @@ struct DeviceCorrectionEditorView: View {
     let existing: DeviceCorrectionProfile?
     let sampleRate: Double
     let referenceEndpoint: ProfileEndpointKind?
-    let automaticHeadroom: @MainActor ([EQBand]) -> Double
+    let automaticHeadroom: @MainActor ([EQBand]) async -> Double
     let shouldConfirmReplacement: @MainActor () -> Bool
     let onCancel: @MainActor () -> Void
     let onLoad: @MainActor (DeviceCorrectionProfile) -> Void
@@ -42,7 +43,7 @@ struct DeviceCorrectionEditorView: View {
         existing: DeviceCorrectionProfile?,
         sampleRate: Double,
         referenceEndpoint: ProfileEndpointKind? = nil,
-        automaticHeadroom: @escaping @MainActor ([EQBand]) -> Double,
+        automaticHeadroom: @escaping @MainActor ([EQBand]) async -> Double,
         shouldConfirmReplacement: @escaping @MainActor () -> Bool,
         onCancel: @escaping @MainActor () -> Void,
         onLoad: @escaping @MainActor (DeviceCorrectionProfile) -> Void
@@ -83,7 +84,7 @@ struct DeviceCorrectionEditorView: View {
         })
         _generated = State(initialValue: existing)
         _generatedAutomaticHeadroomDB = State(
-            initialValue: existing.map { automaticHeadroom($0.filters) } ?? 0
+            initialValue: 0
         )
     }
 
@@ -340,6 +341,12 @@ struct DeviceCorrectionEditorView: View {
         }
         .frame(minWidth: 700, idealWidth: 760, minHeight: 620, idealHeight: 720)
         .task { await loadCatalog() }
+        .task(id: generated?.filters) {
+            guard let filters = generated?.filters else { generatedAutomaticHeadroomDB = 0; return }
+            let result = await automaticHeadroom(filters)
+            guard !Task.isCancelled, generated?.filters == filters else { return }
+            generatedAutomaticHeadroomDB = result
+        }
         .onChange(of: searchText) { newValue in
             guard newValue != deviceName else { return }
             loadCoordinator.sourceGeneration &+= 1

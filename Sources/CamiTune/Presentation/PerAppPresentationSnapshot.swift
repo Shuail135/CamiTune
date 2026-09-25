@@ -1,3 +1,5 @@
+import CamiTuneAudio
+import CamiTuneDomain
 import Foundation
 
 struct PerAppPresentationIdentity: Hashable, Sendable {
@@ -62,11 +64,11 @@ struct PerAppPresentationSnapshot: Sendable {
             let hasAudioEvidence = observedAudioApplications.contains(identity.id)
                 || knownAudioApplications.contains(identity.id)
             guard hasAudioEvidence else { continue }
-            guard !PerAppAudioController.isSystemAudioService(
+            guard !PerAppClientRegistry.isSystemAudioService(
                 bundleID: identity.bundleID,
                 displayName: identity.displayName
             ) else { continue }
-            if PerAppAudioController.isEphemeralApplicationID(identity.id) {
+            if PerAppApplicationIdentityPolicy.isEphemeralApplicationID(identity.id) {
                 guard exhaustedClientKeys.contains(client.transportKey),
                       identity.displayName != "Application" else { continue }
             }
@@ -92,11 +94,11 @@ struct PerAppPresentationSnapshot: Sendable {
                     || observedAudioApplications.contains(identity.id)
                     || knownAudioApplications.contains(source.applicationID)
                     || knownAudioApplications.contains(identity.id) else { continue }
-            guard !PerAppAudioController.isSystemAudioService(
+            guard !PerAppClientRegistry.isSystemAudioService(
                 bundleID: identity.bundleID,
                 displayName: identity.displayName
             ) else { continue }
-            if PerAppAudioController.isEphemeralApplicationID(identity.id) {
+            if PerAppApplicationIdentityPolicy.isEphemeralApplicationID(identity.id) {
                 guard exhaustedClientKeys.contains(source.transportKey),
                       identity.displayName != "Application" else { continue }
             }
@@ -111,8 +113,8 @@ struct PerAppPresentationSnapshot: Sendable {
         for (applicationID, identity) in runningApplications {
             guard observedAudioApplications.contains(applicationID)
                     || knownAudioApplications.contains(applicationID) else { continue }
-            guard !PerAppAudioController.isEphemeralApplicationID(applicationID),
-                  !PerAppAudioController.isSystemAudioService(
+            guard !PerAppApplicationIdentityPolicy.isEphemeralApplicationID(applicationID),
+                  !PerAppClientRegistry.isSystemAudioService(
                     bundleID: identity.bundleID,
                     displayName: identity.displayName
                   ) else { continue }

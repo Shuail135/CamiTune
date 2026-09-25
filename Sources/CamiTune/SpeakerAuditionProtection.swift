@@ -1,3 +1,5 @@
+import CamiTuneAudio
+import CamiTuneDomain
 import Foundation
 
 /// Identification uses a direct hardware queue, so active-driver protection must

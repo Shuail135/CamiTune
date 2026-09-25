@@ -1,3 +1,4 @@
+import CamiTuneAudio
 import Foundation
 
 /// One serial worker; the manual implementation controls deadlines and Main delivery in tests.
@@ -140,7 +141,7 @@ final class PerAppPresentationPublisher: @unchecked Sendable {
             let snapshot = PerAppPresentationSnapshot(revision: input.revision, applications: sorted)
             let metadataStarted = capture.map { _ in PerformanceClock.now() }
             var observations: [AppPresentationObservation] = []
-            for app in sorted where PerAppAudioController.isPersistentApplicationID(app.id) {
+            for app in sorted where PerAppApplicationIdentityPolicy.isPersistentApplicationID(app.id) {
                 let observation = AppPresentationObservation(applicationID: app.id, systemDisplayName: app.displayName, bundleID: app.bundleID)
                 if submittedMetadata[app.id] != observation {
                     submittedMetadata[app.id] = observation; observations.append(observation)

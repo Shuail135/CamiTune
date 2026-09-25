@@ -1,15 +1,26 @@
+import CamiTuneDomain
 import Foundation
 
 /// External effects only. This value owns no transition state or lifecycle policy.
 /// Every field is required so simulated compositions cannot silently fall back to HAL.
 @MainActor
 struct AudioRuntimeServices {
-    var currentVolumeSession: () -> SystemVolumeControlSession? = { nil }
+    /// Optional pure configuration injection for controlled developer comparisons.
+    var deliveryConfiguration: ((DeviceProfile) -> PCMDeliveryConfiguration)? = nil
+    var currentVolumeLease: () -> VolumeHandoffLease? = { nil }
+    var freshDefaultOutput: (() async -> String?)?
+    var bindingGeneration: () -> UInt64? = { nil }
+    var cancelReadiness: () -> Void = {}
+    var resolveBinding: ((String, String) async throws -> CoreAudioRuntimeBinding)?
+    var rebindVolume: (VolumeHandoffLease, CoreAudioRuntimeBinding) async throws -> Void = { _, _ in }
+    var volumeMasterControl: () -> MasterControl? = { nil }
+    var updateTransportControl: (UInt32, @escaping MasterControl) -> Void = { _, _ in }
     var synchronous: SynchronousRuntimeServices
-    var silenceVolume: () -> Void = {}
-    var resumeVolume: () -> Void = {}
+    var holdAudibility: (VolumeHandoffLease?) -> Void = { _ in }
+    var permitAudibility: (VolumeHandoffLease?) -> Void = { _ in }
     typealias MasterControl = @Sendable (Float, Bool) -> Void
     var refreshDependencies: () async -> Void
+    var prepareAssets: (DeviceProfile) async throws -> PreparedRuntimeAssets
     var engineAvailable: () -> Bool
     var resolveBridge: () async -> AudioDeviceInfo?
     var freshBridge: () async -> AudioDeviceInfo?
@@ -38,10 +49,11 @@ struct AudioRuntimeServices {
     var volumeMode: () -> SystemVolumeMode?
     var startPCM: (AudioRuntimePlan, AudioRuntimeSession) async throws -> Void
     var applyRenderConfiguration: (RenderConfiguration) -> Void
+    var applyPCMDeliveryConfiguration: (PCMDeliveryConfiguration) -> Void
     var startTransport: (AudioDeviceInfo, AudioDeviceInfo, Double, @escaping MasterControl) async throws -> Void
-    var prepareVolume: () async throws -> Void
+    var prepareIncoming: () async throws -> Void
     var startSpectrum: (AudioRuntimeSession) async -> Void
-    var beginHandoff: () async -> Void
+    var beginOutgoing: () async -> Void
     var stopObservations: () -> Void
     var stopTransport: () async -> Void
     var stopPCM: () async -> Void
@@ -68,4 +80,5 @@ struct SynchronousRuntimeServices {
     let stopVolume: () -> Void
     let setDefaultOutput: (String) throws -> Void
     let hideBridge: () throws -> Void
+    let removeProfileDevices: () -> Void
 }

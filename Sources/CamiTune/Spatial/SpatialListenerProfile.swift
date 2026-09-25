@@ -1,82 +1,8 @@
+import CamiTuneDomain
 import Foundation
-
-enum PerceivedVoiceDepth: String, Codable, CaseIterable, Identifiable, Sendable {
-    case behindLaptop, laptop, screen, inFrontOfScreen
-    var id: String { rawValue }
-    var label: String {
-        switch self {
-        case .behindLaptop: return "Behind the speakers"
-        case .laptop: return "At the speakers"
-        case .screen: return "At the screen"
-        case .inFrontOfScreen: return "In front of the screen"
-        }
-    }
-}
-
-struct SpatialPositionFeedback: Codable, Hashable, Sendable {
-    var depth: PerceivedVoiceDepth = .screen
-    /// Perceived position: -1 is left, +1 is right, 0 is centered.
-    var horizontalPosition: Float = 0
-}
 
 /// Perceptual preferences adjust intent, never measured delays or safety
 /// ceilings. Bounded deltas keep stereo and movie policies distinct.
-struct SpatialListenerTuning: Codable, Hashable, Sendable {
-    var externalization: Float = 0
-    var crosstalk: Float = 0
-    var width: Float = 0
-    var depth: Float = 0
-    var timbre: Float = 0
-    var centerAnchor: Float = 0
-    var centerBalance: Float = 0
-
-    static let neutral = SpatialListenerTuning()
-
-    var validated: Self {
-        Self(
-            externalization: Self.bound(externalization, limit: 0.25),
-            crosstalk: Self.bound(crosstalk, limit: 0.20),
-            width: Self.bound(width, limit: 0.20),
-            depth: Self.bound(depth, limit: 0.20),
-            timbre: Self.bound(timbre, limit: 0.20),
-            centerAnchor: Self.bound(centerAnchor, limit: 0.15),
-            centerBalance: Self.bound(centerBalance, limit: 0.18)
-        )
-    }
-
-    func applying(to intent: SpatialRenderIntent) -> SpatialRenderIntent {
-        guard intent.frontStageStrength > 0 else { return intent.clamped }
-        let tuning = validated
-        var result = intent
-        result.centerExternalization += tuning.externalization
-        result.crosstalkControl += tuning.crosstalk
-        result.stageWidth += tuning.width
-        result.stageDepth += tuning.depth
-        result.timbreCompensation += tuning.timbre
-        result.centerAnchor += tuning.centerAnchor
-        result.centerBalance = tuning.centerBalance
-        return result.clamped
-    }
-
-    private static func bound(_ value: Float, limit: Float) -> Float {
-        value.isFinite ? max(-limit, min(limit, value)) : 0
-    }
-}
-
-struct SpatialListenerProfile: Codable, Hashable, Sendable {
-    var version = 1
-    var name: String
-    var outputDeviceUID: String
-    var savedAt: Date
-    var position: SpatialPositionFeedback
-    var tuning: SpatialListenerTuning
-    var completedComparisons: Int
-
-    func tuning(for outputUID: String) -> SpatialListenerTuning {
-        guard version == 1, outputDeviceUID == outputUID else { return .neutral }
-        return tuning.validated
-    }
-}
 
 /// Four bounded coordinate comparisons. A/B order alternates so a repeated
 /// preference for the first button does not always mean stronger processing.

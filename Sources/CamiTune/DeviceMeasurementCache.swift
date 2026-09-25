@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import Foundation
 
 /// Dedicated, versioned on-disk store for measurement catalogs and raw responses.

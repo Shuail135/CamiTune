@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import SwiftUI
 
 struct CorrectionResponseGraph: View, Equatable {

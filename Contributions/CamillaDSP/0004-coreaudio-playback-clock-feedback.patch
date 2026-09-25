@@ -1,0 +1,174 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -200,8 +200,27 @@
+     pub used_channels: Vec<bool>,
+ }
+ 
++/// CoreAudio callback observation, scoped to one playback stream. It is control
++/// evidence, independent of optional meter polling and buffer-rate adjustment.
++#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
++pub struct PlaybackClock {
++    pub epoch: u64,
++    pub sample_time: f64,
++    pub host_time: u64,
++    pub nominal_rate: usize,
++    pub timestamp_flags: u32,
++    pub callback_frames: usize,
++    pub buffered_frames: usize,
++    pub demand_frames: u64,
++    pub underrun_frames: u64,
++}
++
++pub static NEXT_PLAYBACK_CLOCK_EPOCH: std::sync::atomic::AtomicU64 =
++    std::sync::atomic::AtomicU64::new(1);
++
+ #[derive(Clone, Debug)]
+ pub struct PlaybackStatus {
++    pub playback_clock: Arc<Mutex<Option<PlaybackClock>>>,
+     pub update_interval: usize,
+     pub clipped_samples: usize,
+     pub buffer_level: usize,
+--- a/src/bin.rs
++++ b/src/bin.rs
+@@ -1110,6 +1110,7 @@
+         used_channels: Vec::new(),
+     }));
+     let playback_status = Arc::new(RwLock::new(PlaybackStatus {
++        playback_clock: Arc::new(parking_lot::Mutex::new(None)),
+         buffer_level: 0,
+         clipped_samples: 0,
+         update_interval: 1000,
+@@ -1260,5 +1261,13 @@
+ }
+ 
+ fn main() {
++    // Side-effect-free installer handshake: do not initialize audio, logging,
++    // sockets or configuration just to identify CamiTune's required protocol.
++    if cfg!(target_os = "macos")
++        && std::env::args().nth(1).as_deref() == Some("--cami-tune-capabilities")
++    {
++        println!("coreaudio-uid-playback-clock-v1");
++        return;
++    }
+     std::process::exit(main_process());
+ }
+--- a/src/socketserver.rs
++++ b/src/socketserver.rs
+@@ -149,6 +149,7 @@
+     GetClippedSamples,
+     ResetClippedSamples,
+     GetBufferLevel,
++    GetPlaybackClock,
+     GetSupportedDeviceTypes,
+     GetAvailableCaptureDevices(String),
+     GetAvailablePlaybackDevices(String),
+@@ -425,6 +426,10 @@
+     GetRateAdjust {
+         result: WsResult,
+         value: f32,
++    },
++    GetPlaybackClock {
++        result: WsResult,
++        value: Option<crate::PlaybackClock>,
+     },
+     GetBufferLevel {
+         result: WsResult,
+@@ -904,6 +909,11 @@
+                 result: WsResult::Ok,
+             })
+         }
++        WsCommand::GetPlaybackClock => {
++            let clock = shared_data_inst.playback_status.read().playback_clock.clone();
++            let value = clock.try_lock().and_then(|snapshot| *snapshot);
++            Some(WsReply::GetPlaybackClock { result: WsResult::Ok, value })
++        }
+         WsCommand::GetBufferLevel => {
+             let pbstat = shared_data_inst.playback_status.read();
+             Some(WsReply::GetBufferLevel {
+@@ -1892,3 +1902,30 @@
+         assert_eq!(res, WsCommand::SetConfigFilePath("somefile".to_string()));
+     }
+ }
++
++#[cfg(test)]
++mod playback_clock_protocol_tests {
++    use super::*;
++
++    #[test]
++    fn playback_clock_command_and_pending_reply() {
++        assert_eq!(serde_json::from_str::<WsCommand>(r#""GetPlaybackClock""#).unwrap(), WsCommand::GetPlaybackClock);
++        let reply = serde_json::to_value(WsReply::GetPlaybackClock { result: WsResult::Ok, value: None }).unwrap();
++        assert_eq!(reply["GetPlaybackClock"]["result"], "Ok");
++        assert!(reply["GetPlaybackClock"]["value"].is_null());
++    }
++
++    #[test]
++    fn playback_clock_reply_preserves_epoch_and_raw_host_ticks() {
++        let clock = crate::PlaybackClock { epoch: 7, sample_time: 512.0,
++            host_time: 123456789012345, nominal_rate: 48000, timestamp_flags: 3,
++            callback_frames: 512, buffered_frames: 1536, demand_frames: 1024, underrun_frames: 0 };
++        let reply = serde_json::to_value(WsReply::GetPlaybackClock { result: WsResult::Ok, value: Some(clock) }).unwrap();
++        let value = &reply["GetPlaybackClock"]["value"];
++        assert_eq!(value["epoch"], 7);
++        assert_eq!(value["host_time"].as_u64(), Some(clock.host_time));
++        assert_eq!(value["timestamp_flags"], 3);
++        assert_eq!(value["underrun_frames"], 0);
++        assert_eq!(value["buffered_frames"], 1536);
++    }
++}
+--- a/src/coreaudio_backend/device.rs
++++ b/src/coreaudio_backend/device.rs
+@@ -458,6 +458,14 @@
+                 let (tx_dev, rx_dev) = bounded(channel_capacity);
+                 let buffer_fill = Arc::new(Mutex::new(countertimer::DeviceBufferEstimator::new(samplerate)));
+                 let buffer_fill_clone = buffer_fill.clone();
++                // A new Arc detaches any retiring callback from the current
++                // RPC snapshot. The callback never takes the status lock.
++                let playback_clock = Arc::new(parking_lot::Mutex::new(None));
++                playback_status.write().playback_clock = playback_clock.clone();
++                let clock_epoch = crate::NEXT_PLAYBACK_CLOCK_EPOCH.fetch_add(
++                    1, std::sync::atomic::Ordering::Relaxed);
++                let mut clock_demand_frames = 0_u64;
++                let mut clock_underrun_frames = 0_u64;
+                 let mut buffer_avg = countertimer::Averager::new();
+                 let mut timer = countertimer::Stopwatch::new();
+                 let mut chunk_stats = ChunkStats {
+@@ -502,7 +510,7 @@
+ 
+                 let callback_res = audio_unit.set_render_callback(move |args: Args| {
+                     let Args {
+-                        num_frames, data, ..
++                        num_frames, data, time_stamp, ..
+                     } = args;
+                     trace!("Playback cb called with {num_frames} frames.");
+                     while sample_queue.len() < (blockalign * num_frames) {
+@@ -528,6 +536,10 @@
+                                 }
+                             }
+                             Err(_) => {
++                                if !starting {
++                                    clock_underrun_frames = clock_underrun_frames.saturating_add(
++                                        (num_frames - sample_queue.len() / blockalign) as u64);
++                                }
+                                 for _ in 0..((blockalign * num_frames) - sample_queue.len()) {
+                                     sample_queue.push_back(0);
+                                 }
+@@ -544,6 +556,18 @@
+                     }
+                     let curr_buffer_fill =
+                         sample_queue.len() / blockalign + rx_dev.len() * chunksize;
++                    clock_demand_frames = clock_demand_frames.saturating_add(num_frames as u64);
++                    // Copy a fixed-size value; never block, allocate, format or
++                    // log for clock observation inside the callback.
++                    if let Some(mut snapshot) = playback_clock.try_lock() {
++                        *snapshot = Some(crate::PlaybackClock {
++                            epoch: clock_epoch, sample_time: time_stamp.mSampleTime,
++                            host_time: time_stamp.mHostTime, nominal_rate: samplerate,
++                            timestamp_flags: time_stamp.mFlags.0, callback_frames: num_frames,
++                            demand_frames: clock_demand_frames, underrun_frames: clock_underrun_frames,
++                            buffered_frames: curr_buffer_fill,
++                        });
++                    }
+                     if let Ok(mut estimator) = buffer_fill_clone.try_lock() {
+                         estimator.add(curr_buffer_fill)
+                     }

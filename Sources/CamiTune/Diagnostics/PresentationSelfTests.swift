@@ -1,3 +1,5 @@
+import CamiTuneAudio
+import CamiTuneDomain
 import Foundation
 
 extension DeveloperSelfTests {
@@ -19,7 +21,7 @@ extension DeveloperSelfTests {
                 let url = box.directory.appendingPathComponent("presentation.pcm")
                 FileManager.default.createFile(atPath: url.path, contents: nil)
                 let sink = try FileHandle(forWritingTo: url); defer { try? sink.close() }
-                await router.start(camillaSink: sink)
+                await router.startFixture(camillaSink: sink)
                 var environment = state.performanceEnvironment()
                 environment.sessionID = session; environment.sampleRate = 48_000; environment.channelCount = 8
                 environment.playbackMode = PlaybackMode.direct.rawValue; environment.activeApplications = count
@@ -43,7 +45,7 @@ extension DeveloperSelfTests {
                                 let packet = PerAppAudioPacket(deviceObjectID: 100, clientID: client.clientID, processID: client.processID,
                                     cycleCounter: UInt64(cycle), sampleTime: Double(cycle * 512),
                                     interleaved: Array(repeating: Float(0.1 / Double(count)), count: 512 * 8), channelCount: 8,
-                                    sampleRate: 48_000, sourceBufferedFrames: 512, sourceCapacityFrames: 65536)
+                                    sampleRate: 48_000)
                                 let context = router.performanceSource.snapshot().map { binding in
                                     PacketPerformanceContext(capture: binding.capture,
                                         identity: .init(captureID: binding.capture.id, runtimeSessionID: session, transportGeneration: 1,
@@ -185,7 +187,7 @@ extension DeveloperSelfTests {
                         let packet = PerAppAudioPacket(deviceObjectID: 100, clientID: 1, processID: 0,
                             cycleCounter: UInt64(index), sampleTime: Double(index * 512),
                             interleaved: Array(repeating: Float(0.25), count: 1024), channelCount: 2,
-                            sampleRate: 48_000, sourceBufferedFrames: 512, sourceCapacityFrames: 65536)
+                            sampleRate: 48_000)
                         output = controller.ingest(packet) ?? output
                     }
                     return output
@@ -233,7 +235,7 @@ extension DeveloperSelfTests {
                 let builds = controller.presentationStatistics.snapshotsBuilt
                 _ = controller.ingest(PerAppAudioPacket(deviceObjectID: 100, clientID: 1, processID: client.processID,
                     cycleCounter: 1, sampleTime: 0, interleaved: Array(repeating: Float(0.5), count: 1024),
-                    channelCount: 2, sampleRate: 48_000, sourceBufferedFrames: 512, sourceCapacityFrames: 65536))
+                    channelCount: 2, sampleRate: 48_000))
                 controller.flushPendingSaveSynchronously()
                 try diagnosticRequire(controller.presentationStore.seenIDs.contains("fixture.hidden.player"), "Hidden audio discovery was not persisted")
                 try diagnosticRequire(controller.presentationStatistics.snapshotsBuilt == builds, "Hidden packet built a row snapshot")
@@ -291,7 +293,7 @@ extension DeveloperSelfTests {
                 controller.setMeterPresentationActive(true, source: "test"); scheduler.settle()
                 _ = controller.ingest(PerAppAudioPacket(deviceObjectID: 100, clientID: 1, processID: 2_000_333_333,
                     cycleCounter: 1, sampleTime: 0, interleaved: Array(repeating: Float(0.5), count: 1024),
-                    channelCount: 2, sampleRate: 48_000, sourceBufferedFrames: 512, sourceCapacityFrames: 65536))
+                    channelCount: 2, sampleRate: 48_000))
                 scheduler.runWorker()
                 controller.resetRuntime(); scheduler.settle()
                 let revision = controller.applicationPublicationRevision

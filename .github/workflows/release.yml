@@ -39,6 +39,9 @@ jobs:
           echo "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
           echo "Rust deployment target: $(rustc --print=deployment-target)"
 
+      - name: Verify SwiftPM and Xcode source ownership
+        run: python3 Scripts/verify-source-targets.py --require-modules
+
       - name: Restore audio component cache
         uses: actions/cache@v5
         with:

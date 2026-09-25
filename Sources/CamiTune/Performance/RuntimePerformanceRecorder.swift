@@ -1,3 +1,4 @@
+import CamiTuneAudio
 import Foundation
 import Darwin
 
@@ -13,6 +14,16 @@ final class PerformanceOperation {
     func mark(_ phase: String) {
         guard value.ended == nil, value.phases.count < 64 else { return }
         value.phases.append(.init(name: phase, timestamp: PerformanceClock.now()))
+    }
+    /// Worker timestamps are imported after acknowledgement; measuring disk
+    /// phases must not depend on MainActor being scheduled during the write.
+    func recordPersistence(_ receipt: ProfilePersistenceReceipt) {
+        guard value.ended == nil, value.phases.count < 60 else { return }
+        value.phases.append(.init(name: "repository accepted", timestamp: receipt.submittedAt))
+        value.phases.append(.init(name: "repository queue wait", timestamp: receipt.writeStartedAt))
+        value.phases.append(.init(name: "JSON encoding", timestamp: receipt.writeStartedAt.advanced(seconds: receipt.encodingMilliseconds / 1000)))
+        value.phases.append(.init(name: "atomic write", timestamp: receipt.writeCompletedAt))
+        mark("repository acknowledgement")
     }
     func finish(_ result: String) {
         guard value.ended == nil else { return }
@@ -54,7 +65,7 @@ final class RuntimePerformanceRecorder: ObservableObject {
     func start(options requested: PerformanceCaptureOptions, environment: @escaping () -> PerformanceEnvironment) {
         guard !isCapturing, !isAggregating else { return }
         options = requested
-        options.duration = min(300, max(1, requested.duration))
+        options.duration = min(1_830, max(1, requested.duration))
         options.warmUp = min(30, max(0, requested.warmUp))
         let now = PerformanceClock.now()
         let measurementStart = now.advanced(seconds: options.warmUp)
@@ -70,20 +81,27 @@ final class RuntimePerformanceRecorder: ObservableObject {
             while !Task.isCancelled {
                 guard let self, let capture, isCapturing else { return }
                 let now = PerformanceClock.now()
-                elapsed = now < capture.start ? -Double(capture.start.rawValue - now.rawValue) / 1e9 : Double(now.rawValue - capture.start.rawValue) / 1e9
-                if let environment = environmentProvider?() {
-                    currentEnvironment = environment
-                    if now >= capture.start {
-                        if observations.count < 1_024 { observations.append(.init(timestamp: now, environment: environment)) }
-                        else { extraDrops &+= 1 }
-                    } else { initialEnvironment = environment }
-                }
-                let counts = capture.counts(); packetCount = counts.packets; audioCount = counts.audio
-                telemetryDrops = capture.telemetryDrops + sourceDrops - sourceDropsAtStart + extraDrops
+                recordObservation(at: now)
                 if now >= capture.deadline { await stop(reason: "Duration complete"); return }
-                try? await Task.sleep(for: .milliseconds(500))
+                try? await Task.sleep(for: .seconds(options.observationInterval))
             }
         }
+    }
+
+    /// Also used at explicit lifecycle boundaries that may fall between ticks.
+    /// This remains MainActor-owned and shares the periodic recorder's bound.
+    func recordObservation(at now: PerformanceTick = PerformanceClock.now()) {
+        guard let capture, isCapturing else { return }
+        elapsed = now < capture.start ? -Double(capture.start.rawValue - now.rawValue) / 1e9 : Double(now.rawValue - capture.start.rawValue) / 1e9
+        if let environment = environmentProvider?() {
+            currentEnvironment = environment
+            if now >= capture.start {
+                if observations.count < 1_024 { observations.append(.init(timestamp: now, environment: environment)) }
+                else { extraDrops &+= 1 }
+            } else { initialEnvironment = environment }
+        }
+        let counts = capture.counts(); packetCount = counts.packets; audioCount = counts.audio
+        telemetryDrops = capture.telemetryDrops + sourceDrops - sourceDropsAtStart + extraDrops
     }
 
     func begin(_ kind: String, reason: String = "user", revision: UInt64? = nil,

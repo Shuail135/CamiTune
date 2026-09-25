@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import Foundation
 
 private final class CamillaRPCWatchdog: @unchecked Sendable {
@@ -196,6 +197,13 @@ actor CamillaRPC {
 
     func bufferLevel() async throws -> UInt64 {
         try await unsignedIntegerValue(command: "GetBufferLevel")
+    }
+
+    func playbackClock() async throws -> CamillaPlaybackClock? {
+        let body = try successfulBody(try await request("GetPlaybackClock"), command: "GetPlaybackClock")
+        guard let value = body["value"], !(value is NSNull) else { return nil }
+        let bytes = try JSONSerialization.data(withJSONObject: value)
+        return try JSONDecoder().decode(CamillaPlaybackClock.self, from: bytes)
     }
 
     func rateAdjust() async throws -> Double {

@@ -7,6 +7,36 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CA5D00000000000000000105 = {isa = PBXBuildFile; fileRef = CA5D00000000000000000205; };
+		CA5D00000000000000000104 = {isa = PBXBuildFile; fileRef = CA5D00000000000000000204; };
+		CA5D00000000000000000103 = {isa = PBXBuildFile; fileRef = CA5D00000000000000000203; };
+		CA5D00000000000000000102 = {isa = PBXBuildFile; fileRef = CA5D00000000000000000202; };
+		CA5D00000000000000000101 = {isa = PBXBuildFile; fileRef = CA5D00000000000000000201; };
+		CA5D00000000000000000100 = {isa = PBXBuildFile; fileRef = CA5D00000000000000000200; };
+		CA5C00000000000000000101 = {isa = PBXBuildFile; fileRef = CA5C00000000000000000201; };
+		CA5C00000000000000000100 = {isa = PBXBuildFile; fileRef = CA5C00000000000000000200; };
+		CA5B00000000000000000103 = {isa = PBXBuildFile; fileRef = CA5B00000000000000000203; };
+		CA5B00000000000000000102 = {isa = PBXBuildFile; fileRef = CA5B00000000000000000202; };
+		CA5B00000000000000000101 = {isa = PBXBuildFile; fileRef = CA5B00000000000000000201; };
+		CA5B00000000000000000100 = {isa = PBXBuildFile; fileRef = CA5B00000000000000000200; };
+		CA5A00000000000000000102 = {isa = PBXBuildFile; fileRef = CA5A00000000000000000202; };
+		CA5A00000000000000000101 = {isa = PBXBuildFile; fileRef = CA5A00000000000000000201; };
+		CA5A00000000000000000100 = {isa = PBXBuildFile; fileRef = CA5A00000000000000000200; };
+		CA5900000000000000000103 = {isa = PBXBuildFile; fileRef = CA5900000000000000000203; };
+		CA5900000000000000000102 = {isa = PBXBuildFile; fileRef = CA5900000000000000000202; };
+		CA5900000000000000000101 = {isa = PBXBuildFile; fileRef = CA5900000000000000000201; };
+		CA5900000000000000000100 = {isa = PBXBuildFile; fileRef = CA5900000000000000000200; };
+		CA5800000000000000000104 = {isa = PBXBuildFile; fileRef = CA5800000000000000000204; };
+		CA5800000000000000000103 = {isa = PBXBuildFile; fileRef = CA5800000000000000000203; };
+		CA5800000000000000000102 = {isa = PBXBuildFile; fileRef = CA5800000000000000000202; };
+		CA5800000000000000000101 = {isa = PBXBuildFile; fileRef = CA5800000000000000000201; };
+		CA5800000000000000000100 = {isa = PBXBuildFile; fileRef = CA5800000000000000000200; };
+        CA5700000000000000000105 = {isa = PBXBuildFile; fileRef = CA5700000000000000000205; };
+		CA5700000000000000000104 = {isa = PBXBuildFile; fileRef = CA5700000000000000000204; };
+		CA5700000000000000000103 = {isa = PBXBuildFile; fileRef = CA5700000000000000000203; };
+		CA5700000000000000000102 = {isa = PBXBuildFile; fileRef = CA5700000000000000000202; };
+		CA5700000000000000000101 = {isa = PBXBuildFile; fileRef = CA5700000000000000000201; };
+		CA5700000000000000000100 = {isa = PBXBuildFile; fileRef = CA5700000000000000000200; };
 		CA4900000000000000000104 = {isa = PBXBuildFile; fileRef = CA4900000000000000000204; };
 		CA4900000000000000000103 = {isa = PBXBuildFile; fileRef = CA4900000000000000000203; };
 		CA4900000000000000000102 = {isa = PBXBuildFile; fileRef = CA4900000000000000000202; };
@@ -117,7 +147,7 @@
 		3AEBCC5F09FFB466C6149F72 = {isa = PBXBuildFile; fileRef = FE397D86A6B82EB70DF6F0DE; };
         CA118B800000000000000001 = {isa = PBXBuildFile; fileRef = CA118B800000000000000011; };
         CA117B700000000000000001 = {isa = PBXBuildFile; fileRef = CA117B700000000000000011; };
-        CA117B700000000000000002 = {isa = PBXBuildFile; fileRef = CA117B700000000000000012; };
+
 
         CA117B700000000000000004 = {isa = PBXBuildFile; fileRef = CA117B700000000000000014; };
         CA116B600000000000000001 = {isa = PBXBuildFile; fileRef = CA116B600000000000000011; };
@@ -250,18 +280,12 @@
 			isa = PBXBuildFile;
 			fileRef = D0C1C6852DDFBC26F0F7E99F;
 		};
-		4F46291C9C388B617853C93C = {
-			isa = PBXBuildFile;
-			fileRef = 6154D02D5D2B4B73FAEA68D8;
-		};
+
 		54976AE88F40EA0DE7A084FC = {
 			isa = PBXBuildFile;
 			fileRef = A8D0128ACA3AA5114A452008;
 		};
-		6301C43CCA0E7DB4B88A3563 = {
-			isa = PBXBuildFile;
-			fileRef = 91F9868CC1008E967B573580;
-		};
+
 		68609869E637BD85A0B1592E = {
 			isa = PBXBuildFile;
 			fileRef = 3C922D1B2EC37F8F35722C3F;
@@ -274,18 +298,12 @@
 			isa = PBXBuildFile;
 			fileRef = 14C9869259F14FE6380CCFA1;
 		};
-		6E30A0A4A8F0269DDCAFF53D = {
-			isa = PBXBuildFile;
-			fileRef = 8153B007346754CFD4C54028;
-		};
+
 		6E748E6F25E048DFB8F9A8FB = {
 			isa = PBXBuildFile;
 			fileRef = F86B98A5D65177AF7614C652;
 		};
-		6FF20D9AC22785421F2B749F = {
-			isa = PBXBuildFile;
-			fileRef = 984578BB0AD4799495528409;
-		};
+
 		70E5A104D3F176241A45054E = {
 			isa = PBXBuildFile;
 			fileRef = 0220C780A3EB2499A9CE521C;
@@ -338,10 +356,7 @@
 			isa = PBXBuildFile;
 			fileRef = E34C54670C8A33EABC3405A0;
 		};
-		96BC01AEF791977512A3F6AF = {
-			isa = PBXBuildFile;
-			fileRef = D2783A0108B44779E0197A65;
-		};
+
 		9ACFCDC029F1C3AB19455554 = {
 			isa = PBXBuildFile;
 			fileRef = 2DE83E5CB9F32E3259E9E3F8;
@@ -350,10 +365,7 @@
 			isa = PBXBuildFile;
 			fileRef = 9532C23AE89A7CC393468F1B;
 		};
-		A07CDF21B959E4B5B9F0D601 = {
-			isa = PBXBuildFile;
-			fileRef = C393C80F0A6351A34B95F79A;
-		};
+
 		A74EA3476AC0185359E36A82 = {
 			isa = PBXBuildFile;
 			fileRef = 5D74D2E2E80DD80B1EF4F10A;
@@ -374,10 +386,7 @@
 			isa = PBXBuildFile;
 			fileRef = 4B1F60A36418774FA08832BA;
 		};
-		AD28B41EB8446A514BB3863B = {
-			isa = PBXBuildFile;
-			fileRef = 52ABD1D3F5BC5C1E0E208365;
-		};
+
 		B0E4D72FE339637D604EF8BB = {
 			isa = PBXBuildFile;
 			fileRef = 03FAE1FDD57D8B202DEE35F0;
@@ -407,10 +416,7 @@
 			isa = PBXBuildFile;
 			fileRef = B2AE6B6ABE861570A5AEF10F;
 		};
-		CCC46CD02CC53F166DA3A6AD = {
-			isa = PBXBuildFile;
-			fileRef = AC6C231D56CFAC403ECCBE70;
-		};
+
 		CDAD70D2653C37AFBD71DD2C = {
 			isa = PBXBuildFile;
 			fileRef = 92EBDB5ABB5737E00E819D59;
@@ -587,6 +593,314 @@
 			isa = PBXBuildFile;
 			fileRef = 826F6EFC1EE9CD4FF66D94B3;
 		};
+		4D049C05192C85016E5941D7 = {
+			isa = PBXBuildFile;
+			fileRef = 044EAAD76038F5B5E8D187AE;
+		};
+		B4B109935E6D583AC6942F67 = {
+			isa = PBXBuildFile;
+			fileRef = 952CF367AED20AA5831BFCCC;
+		};
+		6D07CAC5D178B9F21C862EF2 = {
+			isa = PBXBuildFile;
+			fileRef = 578CD507F722E760C935881C;
+		};
+		D90FD2C460026D1DA4FBB89D = {
+			isa = PBXBuildFile;
+			fileRef = 3AE29EBC13F7E1BFA0AA9EAB;
+		};
+		9E49C40FB50557C9F06A6911 = {
+			isa = PBXBuildFile;
+			fileRef = 99723A9C7E66A457784C8349;
+		};
+		FA0007CC05F39913C14821B9 = {
+			isa = PBXBuildFile;
+			fileRef = A749247C0210BA19B466DABA;
+		};
+		CCF82762222E89BCDEDC1139 = {
+			isa = PBXBuildFile;
+			fileRef = DA22C3FB410121C8078F7923;
+		};
+		016D07C5A8C15E7CFC638418 = {
+			isa = PBXBuildFile;
+			fileRef = 545799B04800B352503919B6;
+		};
+		FEA1D225357AC722A1A8AE48 = {
+			isa = PBXBuildFile;
+			fileRef = 48474229109471AC4891893A;
+		};
+		D3C958DA5F5D72787AD087CC = {
+			isa = PBXBuildFile;
+			fileRef = 416888FE4EA7A43EF59520DA;
+		};
+		758CFA73B697251F14BE6AAC = {
+			isa = PBXBuildFile;
+			fileRef = 9EEA8538AAD72051B68D5D57;
+		};
+		0AB59CD76FC17E0E0523D059 = {
+			isa = PBXBuildFile;
+			fileRef = DB216BDDF372D300B11CCA84;
+		};
+		D832A9B950C753BDE1256AB0 = {
+			isa = PBXBuildFile;
+			fileRef = 7B746526CAB8BA124B4BF5E3;
+		};
+		610644B7DBBCFA1C5E15D6BA = {
+			isa = PBXBuildFile;
+			fileRef = 125F1F82E21D683A6D9E1073;
+		};
+		D5D4E506061F6FE3BF56990D = {
+			isa = PBXBuildFile;
+			fileRef = 977B2C2C9B969B98F87ACFC1;
+		};
+		0F17503611AA5DBEB2F7B028 = {
+			isa = PBXBuildFile;
+			fileRef = FCB05DBA7402A06266E20901;
+		};
+		ECC2A530AB8960A1F5407B44 = {
+			isa = PBXBuildFile;
+			fileRef = AB1FC213E3903A7F4CB60795;
+		};
+		CF57AF8C1A82E97705477816 = {
+			isa = PBXBuildFile;
+			fileRef = 94038C5B7031F84DD3E8B98B;
+		};
+		97AC244C17706F5D4C1E84B1 = {
+			isa = PBXBuildFile;
+			fileRef = A02120C36A15B44C809620A0;
+		};
+		D4E85767E1340A4DE01B7BF4 = {
+			isa = PBXBuildFile;
+			fileRef = C652EA5BC6D15B8F5A0D007D;
+		};
+		2C6457288E188E5D2B046D62 = {
+			isa = PBXBuildFile;
+			fileRef = 44957B3FADED8AE41A296401;
+		};
+		E6B5FD71E0FE1268DD754ECF = {
+			isa = PBXBuildFile;
+			fileRef = 514AABE913D5A4562D2A9DBB;
+		};
+		897C9EA729B5B6EE7AB8FD60 = {
+			isa = PBXBuildFile;
+			fileRef = F188D2A6660A04434033725A;
+		};
+		DB802615E31EE3EA7F35E204 = {
+			isa = PBXBuildFile;
+			fileRef = 6CE764E6BF9720E0B5F03D95;
+		};
+		13D8AC62E41FD7BAA52726E9 = {
+			isa = PBXBuildFile;
+			fileRef = 71538D1C0DC24E26BC4E0905;
+		};
+		BB7B8A01CB1A561BC27C4FFD = {
+			isa = PBXBuildFile;
+			fileRef = 752FF0397E45FE2814D17884;
+		};
+		69363FC522A05E3E57D43C6E = {
+			isa = PBXBuildFile;
+			fileRef = D4D925083867D8811FE231A8;
+		};
+		33D482EC188EF42D9AE86CBF = {
+			isa = PBXBuildFile;
+			fileRef = A602A9F2C241572DC1976F25;
+		};
+		5BE535766BDF7E567A38E9A6 = {
+			isa = PBXBuildFile;
+			fileRef = 0CA1EF874E9E1434E2770A90;
+		};
+		BCAECE7FCA39C1939678D462 = {
+			isa = PBXBuildFile;
+			fileRef = 4CF5B186681B7D2B9AE513ED;
+		};
+		F15C09A0CADEC781C676F3A3 = {
+			isa = PBXBuildFile;
+			fileRef = 9D959606447A29E97B85C04C;
+		};
+		273B5AA74FE1E2CE7BB2B3E3 = {
+			isa = PBXBuildFile;
+			fileRef = 58839B8CE76EC0D8CF60316D;
+		};
+		492710FC9C0F9A0228A8D9A7 = {
+			isa = PBXBuildFile;
+			fileRef = A266C7F1E46CB7F580765503;
+		};
+		DD12918928AE8307FD061A34 = {
+			isa = PBXBuildFile;
+			fileRef = 7AA94DE54C67C09F524E9217;
+		};
+		1486BF4697CA265EA23A17B7 = {
+			isa = PBXBuildFile;
+			fileRef = 11BE833B89F9640FB5E90023;
+		};
+		C70A72A06F013CB8B51F5099 = {
+			isa = PBXBuildFile;
+			fileRef = DA87B44897A5F91DD746581E;
+		};
+		475C4D1D8607697782693CEA = {
+			isa = PBXBuildFile;
+			fileRef = C8B4A2E4D78BD6782BC72745;
+		};
+		8A535E9888BD8D0AD18159CB = {
+			isa = PBXBuildFile;
+			fileRef = 1E9F3F40EC7FF1AF206A15E6;
+		};
+		0CD14078AE37DB2F2C136DDF = {
+			isa = PBXBuildFile;
+			fileRef = 6B1A80A2CA4BE5814567B8BD;
+		};
+		3DBA6C6E110DDFAD5ECDD2AC = {
+			isa = PBXBuildFile;
+			fileRef = DCC59F62A29061E6ACF036C2;
+		};
+		1BA964313CD4592A6A0A986C = {
+			isa = PBXBuildFile;
+			fileRef = 68AAA5D0613BB9F5A601B43E;
+		};
+		5D9FAB1AC199976EA759DB4E = {
+			isa = PBXBuildFile;
+			fileRef = BD35C06BBAF1E5C984F3698D;
+		};
+		51584E17E5F86C2BFA9E00D6 = {
+			isa = PBXBuildFile;
+			fileRef = F2F16E487DA13C2051766AC5;
+		};
+		6FAB82C8E79DD1088195E36C = {
+			isa = PBXBuildFile;
+			fileRef = 228FB950B1E2470978388A45;
+		};
+		3F9CF4EC9A7A7EA465645AA5 = {
+			isa = PBXBuildFile;
+			fileRef = 952CF367AED20AA5831BFCCC;
+		};
+		7C83D5EF389747810EDE4306 = {
+			isa = PBXBuildFile;
+			fileRef = F1F9D8ED23B4C86CD4233990;
+		};
+		A27658181BE806A4AB179BB4 = {
+			isa = PBXBuildFile;
+			fileRef = 445C2316DC15C112C4FEC805;
+		};
+		D462D5B9C483C10B04A0437A = {
+			isa = PBXBuildFile;
+			fileRef = F1F9D8ED23B4C86CD4233990;
+		};
+		1BFC088B02438D1138C4E6C0 = {
+			isa = PBXBuildFile;
+			fileRef = 644A77A01DB2D08F9A29BD97;
+		};
+		66ADF6A573785CABAD5468B0 = {
+			isa = PBXBuildFile;
+			fileRef = 68B1B2735906CFEA9BA5D0A7;
+		};
+		28842FE674F014EB8ACCCCDA = {
+			isa = PBXBuildFile;
+			fileRef = 517EFACE3B5A79564B5816F1;
+		};
+		0781B5C4EADE4716E23EAB0A = {
+			isa = PBXBuildFile;
+			fileRef = 7956BAE7E149463D53E5D70E;
+		};
+		583699F78CE8BD42AB22EE69 = {
+			isa = PBXBuildFile;
+			fileRef = DFC03820EF3BA092FC07A1DF;
+		};
+		D6FC983085BF19E23B967CBD = {
+			isa = PBXBuildFile;
+			fileRef = AF8EBEF1A38828A7489F25C7;
+		};
+		7F90943348BD5247B5AC0EB3 = {
+			isa = PBXBuildFile;
+			fileRef = 81915448735BC9D299713367;
+		};
+		F4497B1295E6F0EB8E324AF0 = {
+			isa = PBXBuildFile;
+			fileRef = D09A702F2D7AABE30A6E1443;
+		};
+		9559B1FAC9655CF9480CF1E2 = {
+			isa = PBXBuildFile;
+			fileRef = 2D89DF7D85D7E10958B1B54E;
+		};
+		458F82E503D9E11BBED042D4 = {
+			isa = PBXBuildFile;
+			fileRef = 147F279F2BE797F2857ED67A;
+		};
+		46695496011E3E0A51F2358B = {
+			isa = PBXBuildFile;
+			fileRef = 5C1C46472243D5B37E2158C2;
+		};
+		F11583964084C4B207FBE7B8 = {
+			isa = PBXBuildFile;
+			fileRef = 36070571A9A3A71282B834AD;
+		};
+		491396E241D5EDFE07A3F8D5 = {
+			isa = PBXBuildFile;
+			fileRef = 5F2B4A6C7CAFB61A3A6AD196;
+		};
+		7B658EBB14DF6F69F3AFB35D = {
+			isa = PBXBuildFile;
+			fileRef = 50FADF2971BE6DDCB8C4457C;
+		};
+		429DEF54AC2DB2D5F8F69493 = {
+			isa = PBXBuildFile;
+			fileRef = D673C57CD7ED139D84CBE276;
+		};
+		59DBA9CDE5B757635F369410 = {
+			isa = PBXBuildFile;
+			fileRef = CD30EF0386A679879C4A3351;
+		};
+		8EEE1602DD87135DE77F3E34 = {
+			isa = PBXBuildFile;
+			fileRef = 96D0B6C1E49001123109C589;
+		};
+		7C33026A48344F075A739559 = {
+			isa = PBXBuildFile;
+			fileRef = 9397937C9BCE49D2BD3079E7;
+		};
+		2C065B04D42C1402296A76DB = {
+			isa = PBXBuildFile;
+			fileRef = 01FA5627321E92B2D8EA1F66;
+		};
+		4152EFBAB1DBBCB8799E1808 = {
+			isa = PBXBuildFile;
+			fileRef = 0532D57BE9EBDC2B4753E1F8;
+		};
+		855C0295DC0EE49B0F60247A = {
+			isa = PBXBuildFile;
+			fileRef = C63AFD13C101E20EAEDF9486;
+		};
+		52538B41C81803AB63BF2430 = {
+			isa = PBXBuildFile;
+			fileRef = 9D4A07EF193D86D6145069B7;
+		};
+		3ABBA547459FB0160C71EB38 = {
+			isa = PBXBuildFile;
+			fileRef = CF8691C25036CCC52268DF08;
+		};
+		30790E92E63E5D17E4C4E17B = {
+			isa = PBXBuildFile;
+			fileRef = 47FBC45D18841C3B453805F3;
+		};
+		B0FF2451F5A754DB2956BDA7 = {
+			isa = PBXBuildFile;
+			fileRef = 88C78938D15249512AC8D303;
+		};
+		1DD639FD86A962B9AF1DE51E = {
+			isa = PBXBuildFile;
+			fileRef = E3692FA5E5CD11BF8D371293;
+		};
+		C26E4C36D4C46C44361CD8E9 = {
+			isa = PBXBuildFile;
+			fileRef = 7BE089BC9BA781311019F04C;
+		};
+		A4F2F45AD875C0CF9983A5D8 = {
+			isa = PBXBuildFile;
+			fileRef = 69AAA01CF6E29D851E631F30;
+		};
+		BE637503745166D8D1FBD770 = {
+			isa = PBXBuildFile;
+			fileRef = 37E4285ADC62D7C0E7AE757B;
+		};
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -611,17 +925,125 @@
 			remoteGlobalIDString = 0C91C2496BEC31D2AE16F949;
 			remoteInfo = CamiTune;
 		};
+		AA85301E088875FA6EF8CBF7 = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 98F54143AB4E86B28C3AFEE0;
+			proxyType = 1;
+			remoteGlobalIDString = B5C24F0F3C5AC4A7399C2099;
+			remoteInfo = CamiTuneDomain;
+		};
+		960764708CF37B13F7027A85 = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 98F54143AB4E86B28C3AFEE0;
+			proxyType = 1;
+			remoteGlobalIDString = B5C24F0F3C5AC4A7399C2099;
+			remoteInfo = CamiTuneDomain;
+		};
+		B161EF8493784BD0DA01A2FC = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 98F54143AB4E86B28C3AFEE0;
+			proxyType = 1;
+			remoteGlobalIDString = 22ACCE1465E8CCE9A7F1AD34;
+			remoteInfo = CamiTuneAtomics;
+		};
+		1B29819C4A09C5E0BC73AAF4 = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 98F54143AB4E86B28C3AFEE0;
+			proxyType = 1;
+			remoteGlobalIDString = 39B7054AB3FF8B415696AF0A;
+			remoteInfo = CamiTuneAudio;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CA5D00000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/AudioClockSelfTests.swift"; sourceTree = SOURCE_ROOT; };
+		CA5D00000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/CamillaPlaybackClock.swift"; sourceTree = SOURCE_ROOT; };
+		CA5D00000000000000000203 = {
+			path = Delivery/AudioClockDrift.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA5D00000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/PCMRouterFixtures.swift"; sourceTree = SOURCE_ROOT; };
+		CA5D00000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/PCMSinkSelfTests.swift"; sourceTree = SOURCE_ROOT; };
+		CA5D00000000000000000200 = {
+			path = Delivery/CamillaPCMSink.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA5C00000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/ProducerCompletionSelfTests.swift"; sourceTree = SOURCE_ROOT; };
+		CA5C00000000000000000200 = {
+			path = Timeline/ProducerCompletion.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA5B00000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/ReferencePCMDelivery.swift"; sourceTree = SOURCE_ROOT; };
+		CA5B00000000000000000202 = {
+			path = Delivery/BoundedPCMQueue.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA5B00000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/PCMDeliverySelfTests.swift"; sourceTree = SOURCE_ROOT; };
+		CA5B00000000000000000200 = {
+			path = Delivery/PCMDeliveryEvents.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA5A00000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diagnostics/TimelineReorderPolicySelfTests.swift; sourceTree = "<group>"; };
+		CA5A00000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Performance/TimelinePolicyTrace.swift; sourceTree = "<group>"; };
+		CA5A00000000000000000200 = {
+			path = Timeline/TimelineReorderPolicy.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA5900000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diagnostics/ReferenceLinearTimelineMixer.swift; sourceTree = "<group>"; };
+		CA5900000000000000000202 = {
+			path = Timeline/TimelineCircularStorage.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA5900000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diagnostics/TimelineMixerSelfTests.swift; sourceTree = "<group>"; };
+		CA5900000000000000000200 = {
+			path = Timeline/PerAppTimelineMixer.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA5800000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diagnostics/ProfileRepositorySelfTests.swift; sourceTree = "<group>"; };
+		CA5800000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfilePersistenceTransactions.swift; sourceTree = "<group>"; };
+		CA5800000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileRepositoryFileIO.swift; sourceTree = "<group>"; };
+		CA5800000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileRepository.swift; sourceTree = "<group>"; };
+		CA5800000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileDocument.swift; sourceTree = "<group>"; };
+        CA5700000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diagnostics/CoreAudioHandoffSelfTests.swift; sourceTree = "<group>"; };
+		CA5700000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeHandoffLease.swift; sourceTree = "<group>"; };
+		CA5700000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreAudioRuntimeBinding.swift; sourceTree = "<group>"; };
+		CA5700000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreAudioReadiness.swift; sourceTree = "<group>"; };
+		CA5700000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreAudioHALBackend.swift; sourceTree = "<group>"; };
+		CA5700000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreAudioSnapshotStore.swift; sourceTree = "<group>"; };
 		CA4900000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/LiveRuntimeBaseline.swift"; sourceTree = SOURCE_ROOT; };
 		CA4900000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/RuntimeCoordinatorSelfTests.swift"; sourceTree = SOURCE_ROOT; };
 		CA4900000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/OwnedRuntimeSession.swift"; sourceTree = SOURCE_ROOT; };
 		CA4900000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/RuntimeCoordinatorState.swift"; sourceTree = SOURCE_ROOT; };
 		CA4900000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/AudioRuntimeCoordinator.swift"; sourceTree = SOURCE_ROOT; };
 		CA4800000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/RuntimePlanDifferSelfTests.swift"; sourceTree = SOURCE_ROOT; };
-		CA4800000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/RuntimePlanDiffer.swift"; sourceTree = SOURCE_ROOT; };
-		CA4800000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/RuntimePlanDelta.swift"; sourceTree = SOURCE_ROOT; };
+		CA4800000000000000000201 = {
+			path = Runtime/RuntimePlanDiffer.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA4800000000000000000200 = {
+			path = Runtime/RuntimePlanDelta.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
 		CA4700000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/RuntimePlanSelfTests.swift"; sourceTree = SOURCE_ROOT; };
 		CA4700000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/AudioRuntimePlanPreparer.swift"; sourceTree = SOURCE_ROOT; };
 		CA4600000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/PresentationSelfTests.swift"; sourceTree = SOURCE_ROOT; };
@@ -631,8 +1053,18 @@
 		CA4500000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Performance/RuntimePerformanceRecorder.swift"; sourceTree = SOURCE_ROOT; };
 		CA4500000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Performance/PerformanceReport.swift"; sourceTree = SOURCE_ROOT; };
 		CA4500000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Performance/PerformanceModels.swift"; sourceTree = SOURCE_ROOT; };
-		CA4500000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Performance/PerformanceClock.swift"; sourceTree = SOURCE_ROOT; };
-		CA4500000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Performance/AudioLatencyCapture.swift"; sourceTree = SOURCE_ROOT; };
+		CA4500000000000000000201 = {
+			path = Support/PerformanceClock.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA4500000000000000000200 = {
+			path = Observation/AudioLatencyCapture.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
 		CA4400000000000000000206 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/AudioRuntimeServices.swift"; sourceTree = SOURCE_ROOT; };
 		CA4400000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/SystemDiagnostics.swift"; sourceTree = SOURCE_ROOT; };
 		CA4400000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/DiagnosticsView.swift"; sourceTree = SOURCE_ROOT; };
@@ -644,22 +1076,82 @@
 		CA4300000000000000000210 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/SpeakerVerification.swift"; sourceTree = SOURCE_ROOT; };
 		CA4300000000000000000209 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/SpeakerAuditionProtection.swift"; sourceTree = SOURCE_ROOT; };
 		CA4300000000000000000208 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/MultichannelProcessingView.swift"; sourceTree = SOURCE_ROOT; };
-		CA4300000000000000000207 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/MultichannelGraphCompiler.swift"; sourceTree = SOURCE_ROOT; };
-		CA4300000000000000000206 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/MultichannelProcessingSettings.swift"; sourceTree = SOURCE_ROOT; };
+		CA4300000000000000000207 = {
+			path = Processing/MultichannelGraphCompiler.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA4300000000000000000206 = {
+			path = "Profile/DeviceProfile+Multichannel.swift";
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
 		CA4300000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/MultichannelMeterLayout.swift"; sourceTree = SOURCE_ROOT; };
-		CA4300000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/GroupProcessing.swift"; sourceTree = SOURCE_ROOT; };
-		CA4300000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/ActiveAudioRoute.swift"; sourceTree = SOURCE_ROOT; };
+		CA4300000000000000000204 = {
+			path = "Profile/DeviceProfile+Groups.swift";
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA4300000000000000000203 = {
+			path = "Routing/ActiveAudioRoute+PCM.swift";
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
 		CA4300000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/ProfileEndpointPublication.swift"; sourceTree = SOURCE_ROOT; };
-		CA4300000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/ProcessingGraphValidation.swift"; sourceTree = SOURCE_ROOT; };
-		CA4200000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/HardwareOutputConfiguration.swift"; sourceTree = SOURCE_ROOT; };
-		CA4200000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/InterfaceTopologyMigration.swift"; sourceTree = SOURCE_ROOT; };
-		CA4100000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/Speaker/SpeakerGroup.swift"; sourceTree = SOURCE_ROOT; };
-		CA4100000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/Speaker/SpeakerLayoutTemplate.swift"; sourceTree = SOURCE_ROOT; };
+		CA4300000000000000000201 = {
+			path = "Processing/ProcessingGraphBuilder+Routing.swift";
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA4200000000000000000201 = {
+			path = Topology/HardwareOutputConfiguration.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA4200000000000000000202 = {
+			path = Profile/InterfaceTopologyMigration.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA4100000000000000000201 = {
+			path = Topology/SpeakerGroup.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA4100000000000000000202 = {
+			path = Topology/SpeakerLayoutTemplate.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
 		CA4100000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/UI/SpeakerSetupControls.swift"; sourceTree = SOURCE_ROOT; };
 		CA4100000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/UI/SpeakerSetupPreview.swift"; sourceTree = SOURCE_ROOT; };
-		CA4000000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioFormatDescriptor.swift; sourceTree = "<group>"; };
-		CA4000000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioBus.swift; sourceTree = "<group>"; };
-		CA4000000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HardwareTopologyFingerprint.swift; sourceTree = "<group>"; };
+		CA4000000000000000000201 = {
+			path = Formats/AudioFormatDescriptor.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA4000000000000000000202 = {
+			path = Formats/AudioBus.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA4000000000000000000203 = {
+			path = Topology/HardwareTopologyFingerprint.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
 		CA4000000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioHardwareTopologyProvider.swift; sourceTree = "<group>"; };
 		CA4000000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRuntimePlan.swift; sourceTree = "<group>"; };
 		CA3900000000000000000401 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileRenameEditingTests.swift; sourceTree = "<group>"; };
@@ -682,56 +1174,196 @@
 		CA3500000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/CorrectionFilterTable.swift"; sourceTree = SOURCE_ROOT; };
 		CA3500000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/ReferenceCorrectionView.swift"; sourceTree = SOURCE_ROOT; };
 		CA3500000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/ReferenceCorrection.swift"; sourceTree = SOURCE_ROOT; };
-		CA3500000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/UI/SpeakerLayoutGeometry.swift"; sourceTree = SOURCE_ROOT; };
+		CA3500000000000000000002 = {
+			path = Topology/SpeakerLayoutGeometry.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
         CA3300000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		3BB3CD1B243E9D023FB1E9C3 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Tests/CamiTuneTests/SpeakerTopologyProbeTests.swift"; sourceTree = SOURCE_ROOT; };
 		5A2E1F952D18506134163551 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Tests/CamiTuneTests/SpatialInputDetectionTests.swift"; sourceTree = SOURCE_ROOT; };
 		412254C9FCC8F1B095E341C9 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Tests/CamiTuneTests/ReferenceSpeakerTests.swift"; sourceTree = SOURCE_ROOT; };
 		38CC719DC88135DBDCEF0A80 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Tests/CamiTuneTests/PhysicalSpeakerPlaybackTests.swift"; sourceTree = SOURCE_ROOT; };
 		3F9FD71C6CD44FAF98677C35 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/UI/SpeakerSystemView.swift"; sourceTree = SOURCE_ROOT; };
-		BA8C33326DE49D7DE7378C40 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/SpeakerRenderer/VBAPSolver.swift"; sourceTree = SOURCE_ROOT; };
-		FB2672C5306A4A9AD0960219 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/SpeakerRenderer/ReferenceSpeakerRenderer.swift"; sourceTree = SOURCE_ROOT; };
-		DA3D7277FF919E238DA7B483 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/Speaker/StandardSpeakerPositions.swift"; sourceTree = SOURCE_ROOT; };
+		BA8C33326DE49D7DE7378C40 = {
+			path = Spatial/SpeakerRenderer/VBAPSolver.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		FB2672C5306A4A9AD0960219 = {
+			path = Spatial/SpeakerRenderer/ReferenceSpeakerRenderer.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		DA3D7277FF919E238DA7B483 = {
+			path = Topology/StandardSpeakerPositions.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
 		93F292239E2881FC65B374DB = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/Speaker/SpeakerTopologyResolver.swift"; sourceTree = SOURCE_ROOT; };
 		ADD9225ACDE30A7C5F0E22D9 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/Speaker/SpeakerTopologyProbe.swift"; sourceTree = SOURCE_ROOT; };
-		8793652710319F894A7F836B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/Scene/SpatialScene.swift"; sourceTree = SOURCE_ROOT; };
-		7D63D366F0E3D6C7A7D539A2 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Spatial/Input/EffectiveLayoutDetector.swift"; sourceTree = SOURCE_ROOT; };
+		8793652710319F894A7F836B = {
+			path = Spatial/Scene/SpatialScene.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		7D63D366F0E3D6C7A7D539A2 = {
+			path = Spatial/Input/EffectiveLayoutDetector.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
 		CA3200000000000000000302 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultichannelReadinessTests.swift; sourceTree = "<group>"; };
 		CA3200000000000000000301 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeakerTopologyTests.swift; sourceTree = "<group>"; };
-		CA3200000000000000000104 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speaker/SpeakerTopology.swift"; sourceTree = "<group>"; };
-		CA3200000000000000000103 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speaker/SpeakerEndpoint.swift"; sourceTree = "<group>"; };
-		CA3200000000000000000102 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speaker/SpatialPosition.swift"; sourceTree = "<group>"; };
-		CA3200000000000000000101 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speaker/PhysicalOutputID.swift"; sourceTree = "<group>"; };
+		CA3200000000000000000104 = {
+			path = Topology/SpeakerTopology.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA3200000000000000000103 = {
+			path = Topology/SpeakerEndpoint.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA3200000000000000000102 = {
+			path = Topology/SpatialPosition.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		CA3200000000000000000101 = {
+			path = Topology/PhysicalOutputID.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
 		CA119B900000000000000011 = {isa = PBXFileReference; lastKnownFileType = folder; path = Sources/CamiTune/SpatialAssets; sourceTree = SOURCE_ROOT; };
 		3F55C60FB215D2D7357B67B6 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SpatialChannelCheckView.swift"; sourceTree = "<group>"; };
-		21675E9304ED2A6AA84438EE = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Headphones/VirtualSpeakerBinauralizer.swift"; sourceTree = "<group>"; };
+		21675E9304ED2A6AA84438EE = {
+			path = Spatial/Headphones/VirtualSpeakerBinauralizer.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
 		B365846B28087A0692856BBF = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Headphones/BundledHRTFDatabase.swift"; sourceTree = "<group>"; };
 		41204B470ED142696FC00B72 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SpatialSeatingCalibrationView.swift"; sourceTree = "<group>"; };
-		DB6FA792520461A8A254D85D = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Headphones/HRTFDatabase.swift"; sourceTree = "<group>"; };
-		74B8F63750AAACE8767EC7F7 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Headphones/BinauralConvolver.swift"; sourceTree = "<group>"; };
-		FDE7BB300CF334A26EFAA2DC = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/SpatialSeatingCalibration.swift"; sourceTree = "<group>"; };
-		AEC06FA3E528EF2AF0C343A8 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/SpatialFilterCrossfader.swift"; sourceTree = "<group>"; };
+		DB6FA792520461A8A254D85D = {
+			path = Spatial/Headphones/HRTFDatabase.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		74B8F63750AAACE8767EC7F7 = {
+			path = Spatial/Headphones/BinauralConvolver.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		FDE7BB300CF334A26EFAA2DC = {
+			path = Spatial/Core/SpatialSeatAligner.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		AEC06FA3E528EF2AF0C343A8 = {
+			path = Spatial/Core/SpatialFilterCrossfader.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
 		C164B4B1A1FF3A9919ACA648 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SpatialAudioEditorView.swift"; sourceTree = "<group>"; };
-		8E810D2F76142E2872AE917B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speakers/StereoDecorrelator.swift"; sourceTree = "<group>"; };
-		0A5C95504FB080A0067FF1EA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speakers/StereoAmbienceExtractor.swift"; sourceTree = "<group>"; };
-		1CEEA9AD208CC63C0D105AAB = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speakers/SpeakerSpatialRenderer.swift"; sourceTree = "<group>"; };
-		7071FC95C5507CFE112FBE3E = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speakers/MovieDownmixer.swift"; sourceTree = "<group>"; };
-		5D04D480DDD2FE10F5310C32 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Speakers/FrequencyDependentWidth.swift"; sourceTree = "<group>"; };
-		E99EE877ED2190A49D40EAFD = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Layout/SemanticChannelMapper.swift"; sourceTree = "<group>"; };
-		1150B923491588732A57776A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Headphones/HeadphoneSpatialRenderer.swift"; sourceTree = "<group>"; };
-		2B23ACE2C13E8CAEC6E6E100 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/SpatialSafety.swift"; sourceTree = "<group>"; };
-		2E32FDC537715DE75E2AA55F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/SpatialRenderSettings.swift"; sourceTree = "<group>"; };
-		ECDAD64B7971715A7C3E8264 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/SpatialRenderContext.swift"; sourceTree = "<group>"; };
-		FE397D86A6B82EB70DF6F0DE = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/SpatialAudioEngine.swift"; sourceTree = "<group>"; };
+		8E810D2F76142E2872AE917B = {
+			path = Spatial/Speakers/StereoDecorrelator.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		0A5C95504FB080A0067FF1EA = {
+			path = Spatial/Speakers/StereoAmbienceExtractor.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		1CEEA9AD208CC63C0D105AAB = {
+			path = Spatial/Speakers/SpeakerSpatialRenderer.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		7071FC95C5507CFE112FBE3E = {
+			path = Spatial/Speakers/MovieDownmixer.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		5D04D480DDD2FE10F5310C32 = {
+			path = Spatial/Speakers/FrequencyDependentWidth.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		E99EE877ED2190A49D40EAFD = {
+			path = Spatial/Layout/SemanticChannelMapper.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		1150B923491588732A57776A = {
+			path = Spatial/Headphones/HeadphoneSpatialRenderer.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		2B23ACE2C13E8CAEC6E6E100 = {
+			path = Spatial/Core/SpatialSafety.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		2E32FDC537715DE75E2AA55F = {
+			path = Spatial/SpatialRenderSettings.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		ECDAD64B7971715A7C3E8264 = {
+			path = Spatial/Core/SpatialRenderContext.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
+		FE397D86A6B82EB70DF6F0DE = {
+			path = Spatial/Core/SpatialAudioEngine.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
         CA118B800000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialRoomCorrection.swift; sourceTree = "<group>"; };
         CA117B700000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSurroundLayout.swift; sourceTree = "<group>"; };
-        CA117B700000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSurroundRenderer.swift; sourceTree = "<group>"; };
+
 
         CA117B700000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSurroundTests.swift; sourceTree = "<group>"; };
-        CA116B600000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialContentPolicy.swift; sourceTree = "<group>"; };
+		CA116B600000000000000011 = {
+			path = Spatial/SpatialContentAnalysis.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
         CA116B600000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialContentPolicyTests.swift; sourceTree = "<group>"; };
         CA115B500000000000000015 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialAcousticMeasurementTests.swift; sourceTree = "<group>"; };
-        CA115B500000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialAcousticMeasurement.swift; sourceTree = "<group>"; };
+		CA115B500000000000000011 = {
+			path = Spatial/SpatialAcousticProfile.swift;
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			sourceTree = "<group>";
+		};
         CA115B500000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AcousticSweepAnalyzer.swift; sourceTree = "<group>"; };
         CA115B500000000000000013 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialMicrophoneCapture.swift; sourceTree = "<group>"; };
         CA115B500000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialMicrophoneCalibrationView.swift; sourceTree = "<group>"; };
@@ -778,9 +1410,9 @@
 			sourceTree = "<group>";
 		};
 		0728AFF584D7415331145589 = {
+			path = Processing/EQResponseCalculator.swift;
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = EQResponseCalculator.swift;
 			sourceTree = "<group>";
 		};
 		0A1BE14A6E8F329E9C48F007 = {
@@ -790,9 +1422,9 @@
 			sourceTree = "<group>";
 		};
 		0DC8194EE9D70DE26823C71C = {
+			path = Processing/EqualizerAPOParser.swift;
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = EqualizerAPOParser.swift;
 			sourceTree = "<group>";
 		};
 		1137C261AF0EEFC6A90083D6 = {
@@ -815,9 +1447,9 @@
 			sourceTree = "<group>";
 		};
 		122AD48AA60E766A88B806E8 = {
+			path = Processing/ProcessingProfile.swift;
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = ProcessingProfile.swift;
 			sourceTree = "<group>";
 		};
 		14C9869259F14FE6380CCFA1 = {
@@ -829,7 +1461,7 @@
 		17BD1088BA5EBE5AEFC871E2 = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = SystemVolumeBridge.swift;
+			path = VolumeHandoffService.swift;
 			sourceTree = "<group>";
 		};
 		17FB83A0849DEE9ACFFAB171 = {
@@ -935,9 +1567,9 @@
 			sourceTree = "<group>";
 		};
 		4A34C089B55DA904AB4AE5D6 = {
+			path = Processing/ProcessingGraphDiff.swift;
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = ProcessingGraphDiff.swift;
 			sourceTree = "<group>";
 		};
 		4B1F60A36418774FA08832BA = {
@@ -946,12 +1578,7 @@
 			path = LoginItemManager.swift;
 			sourceTree = "<group>";
 		};
-		52ABD1D3F5BC5C1E0E208365 = {
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			path = MultichannelMovieRenderer.swift;
-			sourceTree = "<group>";
-		};
+
 		52F7971D72574AA835947469 = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
@@ -983,9 +1610,9 @@
 			sourceTree = "<group>";
 		};
 		5E422A1D8A49974F8BC70A87 = {
+			path = Routing/SpatialSourceRouter.swift;
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = SpatialSourceRouter.swift;
 			sourceTree = "<group>";
 		};
 		609FC765119DE32DFC895DD2 = {
@@ -994,12 +1621,7 @@
 			path = SpectrumAnalyzerTests.swift;
 			sourceTree = "<group>";
 		};
-		6154D02D5D2B4B73FAEA68D8 = {
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			path = CrosstalkProcessor.swift;
-			sourceTree = "<group>";
-		};
+
 		61DBC31E131653812FBDA5E1 = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
@@ -1043,9 +1665,9 @@
 			sourceTree = "<group>";
 		};
 		7EA0A802461577D9770FC168 = {
+			path = Processing/CamillaDSPCompiler.swift;
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = CamillaDSPCompiler.swift;
 			sourceTree = "<group>";
 		};
 		7F1508359F4FB2423B9B4CB3 = {
@@ -1054,24 +1676,14 @@
 			path = CamiTune-Info.plist;
 			sourceTree = "<group>";
 		};
-		8153B007346754CFD4C54028 = {
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			path = SpatialPolicy.swift;
-			sourceTree = "<group>";
-		};
+
 		85B34B5E386DEC4F74486B40 = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
 			path = GlobalEqualizerEditorView.swift;
 			sourceTree = "<group>";
 		};
-		91F9868CC1008E967B573580 = {
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			path = SpatialCalibrationProfile.swift;
-			sourceTree = "<group>";
-		};
+
 		92EBDB5ABB5737E00E819D59 = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
@@ -1091,12 +1703,7 @@
 			path = Documentation/RELEASING.md;
 			sourceTree = "<group>";
 		};
-		984578BB0AD4799495528409 = {
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			path = TimbreCompensator.swift;
-			sourceTree = "<group>";
-		};
+
 		997C1521CD6BD533AD6A7CD3 = {
 			isa = PBXFileReference;
 			lastKnownFileType = text.script.sh;
@@ -1104,9 +1711,9 @@
 			sourceTree = "<group>";
 		};
 		9BCED525A497AB36741425C3 = {
+			path = Profile/ProfileRoutingDescriptor.swift;
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = ProfileRoutingDescriptor.swift;
 			sourceTree = "<group>";
 		};
 		9FAB4EB8375959F5700C4963 = {
@@ -1139,12 +1746,7 @@
 			path = AudioRuntimeSession.swift;
 			sourceTree = "<group>";
 		};
-		AC6C231D56CFAC403ECCBE70 = {
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			path = SpatialParameterSmoother.swift;
-			sourceTree = "<group>";
-		};
+
 		AFD924572EA5B9D920D1D8A8 = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
@@ -1170,9 +1772,9 @@
 			sourceTree = "<group>";
 		};
 		BEBD131DBE0197C7B4835499 = {
+			path = Formats/LPCMSourceFormat.swift;
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = LPCMSourceFormat.swift;
 			sourceTree = "<group>";
 		};
 		C27016A99BB4DC8A5B25A3AA = {
@@ -1181,12 +1783,7 @@
 			path = DeviceProfileMigrationTests.swift;
 			sourceTree = "<group>";
 		};
-		C393C80F0A6351A34B95F79A = {
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			path = FrontStageRenderer.swift;
-			sourceTree = "<group>";
-		};
+
 
 		C587195BCEF3DC3C18C19663 = {
 			isa = PBXFileReference;
@@ -1207,9 +1804,9 @@
 			sourceTree = "<group>";
 		};
 		D0C1C6852DDFBC26F0F7E99F = {
+			path = Delivery/AdaptiveRateMatcher.swift;
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = AdaptiveRateMatcher.swift;
 			sourceTree = "<group>";
 		};
 		D1970930BDC2A77DEF7270DA = {
@@ -1218,12 +1815,7 @@
 			path = DeviceCorrectionView.swift;
 			sourceTree = "<group>";
 		};
-		D2783A0108B44779E0197A65 = {
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			path = VirtualSourceRenderer.swift;
-			sourceTree = "<group>";
-		};
+
 		D713469F5B32ED43EDD0BC4A = {
 			isa = PBXFileReference;
 			lastKnownFileType = folder.assetcatalog;
@@ -1231,9 +1823,9 @@
 			sourceTree = "<group>";
 		};
 		E2FF442F7433284D2AE3DFE2 = {
+			path = Processing/ProcessingGraphBuilder.swift;
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = ProcessingGraph.swift;
 			sourceTree = "<group>";
 		};
 		E34C54670C8A33EABC3405A0 = {
@@ -1263,7 +1855,7 @@
 		F001EB5772DC1DAFE1A15B70 = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = CoreAudioManager.swift;
+			path = CoreAudioService.swift;
 			sourceTree = "<group>";
 		};
 		F2A8E1344C36C10E0DEA01E6 = {
@@ -1285,9 +1877,9 @@
 			sourceTree = "<group>";
 		};
 		F7D111AA94D95E978710C639 = {
+			path = "SimpleEQRange+Display.swift";
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = SimpleEQControl.swift;
 			sourceTree = "<group>";
 		};
 		F86B98A5D65177AF7614C652 = {
@@ -1453,9 +2045,9 @@
 			sourceTree = "<group>";
 		};
 		68E6D4EBFC10B7451E6F61F2 = {
+			path = "Topology/ChannelRole+Display.swift";
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = "ChannelRole+Display.swift";
 			sourceTree = "<group>";
 		};
 		183363314F878C9B69E2A155 = {
@@ -1488,6 +2080,459 @@
 			path = ProfileConnectionStatusView.swift;
 			sourceTree = "<group>";
 		};
+		952CF367AED20AA5831BFCCC = {
+			isa = PBXFileReference;
+			explicitFileType = archive.ar;
+			includeInIndex = 0;
+			path = libCamiTuneDomain.a;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		044EAAD76038F5B5E8D187AE = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = PCMDeliveryConfiguration.swift;
+			sourceTree = "<group>";
+		};
+		578CD507F722E760C935881C = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = RuntimeIntentRevision.swift;
+			sourceTree = "<group>";
+		};
+		3AE29EBC13F7E1BFA0AA9EAB = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = ProfileDocumentRevision.swift;
+			sourceTree = "<group>";
+		};
+		99723A9C7E66A457784C8349 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = PlaybackMode.swift;
+			sourceTree = "<group>";
+		};
+		A749247C0210BA19B466DABA = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = ChannelRole.swift;
+			sourceTree = "<group>";
+		};
+		DA22C3FB410121C8078F7923 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Topology/HardwareTopologyReview.swift;
+			sourceTree = "<group>";
+		};
+		545799B04800B352503919B6 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Topology/SpeakerLayoutTemplateID.swift;
+			sourceTree = "<group>";
+		};
+		48474229109471AC4891893A = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Formats/SpeakerChannelDescription.swift;
+			sourceTree = "<group>";
+		};
+		416888FE4EA7A43EF59520DA = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Processing/EQBand.swift;
+			sourceTree = "<group>";
+		};
+		9EEA8538AAD72051B68D5D57 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Processing/ParsedEQ.swift;
+			sourceTree = "<group>";
+		};
+		DB216BDDF372D300B11CCA84 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Processing/EQDefaults.swift;
+			sourceTree = "<group>";
+		};
+		7B746526CAB8BA124B4BF5E3 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Processing/EqualizerAPOSerializer.swift;
+			sourceTree = "<group>";
+		};
+		125F1F82E21D683A6D9E1073 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Processing/ProfileSettingsError.swift;
+			sourceTree = "<group>";
+		};
+		977B2C2C9B969B98F87ACFC1 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Processing/ProcessingGraphError.swift;
+			sourceTree = "<group>";
+		};
+		FCB05DBA7402A06266E20901 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Processing/ImpulseResponseAsset.swift;
+			sourceTree = "<group>";
+		};
+		AB1FC213E3903A7F4CB60795 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Processing/SimpleToneSettings.swift;
+			sourceTree = "<group>";
+		};
+		94038C5B7031F84DD3E8B98B = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Correction/ResponseValues.swift;
+			sourceTree = "<group>";
+		};
+		A02120C36A15B44C809620A0 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Correction/CorrectionIdentity.swift;
+			sourceTree = "<group>";
+		};
+		C652EA5BC6D15B8F5A0D007D = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Correction/CorrectionTargetSelection.swift;
+			sourceTree = "<group>";
+		};
+		44957B3FADED8AE41A296401 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Correction/DeviceCorrectionProfile.swift;
+			sourceTree = "<group>";
+		};
+		514AABE913D5A4562D2A9DBB = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Processing/MultichannelProcessingSettings.swift;
+			sourceTree = "<group>";
+		};
+		F188D2A6660A04434033725A = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Processing/PreparedRuntimeAssets.swift;
+			sourceTree = "<group>";
+		};
+		6CE764E6BF9720E0B5F03D95 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Processing/GroupProcessing.swift;
+			sourceTree = "<group>";
+		};
+		71538D1C0DC24E26BC4E0905 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Processing/ProcessingGraph.swift;
+			sourceTree = "<group>";
+		};
+		752FF0397E45FE2814D17884 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Processing/ProcessingGraphValidation.swift;
+			sourceTree = "<group>";
+		};
+		D4D925083867D8811FE231A8 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Spatial/SpatialRenderIntent.swift;
+			sourceTree = "<group>";
+		};
+		A602A9F2C241572DC1976F25 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Spatial/SpatialContentMode.swift;
+			sourceTree = "<group>";
+		};
+		0CA1EF874E9E1434E2770A90 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Spatial/SpatialSeatingCalibration.swift;
+			sourceTree = "<group>";
+		};
+		4CF5B186681B7D2B9AE513ED = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Spatial/SpatialListenerProfile.swift;
+			sourceTree = "<group>";
+		};
+		9D959606447A29E97B85C04C = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Spatial/VirtualSurroundLayout.swift;
+			sourceTree = "<group>";
+		};
+		58839B8CE76EC0D8CF60316D = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Topology/SpeakerVerificationRecord.swift;
+			sourceTree = "<group>";
+		};
+		A266C7F1E46CB7F580765503 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Profile/ProfileOutput.swift;
+			sourceTree = "<group>";
+		};
+		7AA94DE54C67C09F524E9217 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Profile/ProfileSectionLayout.swift;
+			sourceTree = "<group>";
+		};
+		11BE833B89F9640FB5E90023 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Profile/DeviceProfile.swift;
+			sourceTree = "<group>";
+		};
+		DA87B44897A5F91DD746581E = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Profile/ProfileSettingsDraft.swift;
+			sourceTree = "<group>";
+		};
+		C8B4A2E4D78BD6782BC72745 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Correction/ReferenceCorrection.swift;
+			sourceTree = "<group>";
+		};
+		1E9F3F40EC7FF1AF206A15E6 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Profile/ProfileOrganization.swift;
+			sourceTree = "<group>";
+		};
+		6B1A80A2CA4BE5814567B8BD = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Profile/ProfileDocument.swift;
+			sourceTree = "<group>";
+		};
+		DCC59F62A29061E6ACF036C2 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Runtime/ActiveAudioRoute.swift;
+			sourceTree = "<group>";
+		};
+		68AAA5D0613BB9F5A601B43E = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = "Sources/CamiTune/ProfileRoutingDescriptor+Transport.swift";
+			sourceTree = SOURCE_ROOT;
+		};
+		BD35C06BBAF1E5C984F3698D = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Runtime/PerAppPlaybackContext.swift;
+			sourceTree = "<group>";
+		};
+		F2F16E487DA13C2051766AC5 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Runtime/AudioRuntimePlan.swift;
+			sourceTree = "<group>";
+		};
+		F1F9D8ED23B4C86CD4233990 = {
+			isa = PBXFileReference;
+			explicitFileType = archive.ar;
+			includeInIndex = 0;
+			path = libCamiTuneAtomics.a;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		228FB950B1E2470978388A45 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.c.c;
+			path = CamiTuneAtomics.c;
+			sourceTree = "<group>";
+		};
+		445C2316DC15C112C4FEC805 = {
+			isa = PBXFileReference;
+			explicitFileType = archive.ar;
+			includeInIndex = 0;
+			path = libCamiTuneAudio.a;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		644A77A01DB2D08F9A29BD97 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Observation/AudioPerformanceValues.swift;
+			sourceTree = "<group>";
+		};
+		68B1B2735906CFEA9BA5D0A7 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = PCMFrame.swift;
+			sourceTree = "<group>";
+		};
+		517EFACE3B5A79564B5816F1 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Timeline/TimelinePolicyValues.swift;
+			sourceTree = "<group>";
+		};
+		7956BAE7E149463D53E5D70E = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Timeline/TimelineValues.swift;
+			sourceTree = "<group>";
+		};
+		DFC03820EF3BA092FC07A1DF = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Observation/TimelinePolicyTrace.swift;
+			sourceTree = "<group>";
+		};
+		AF8EBEF1A38828A7489F25C7 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Delivery/AdaptiveRateController.swift;
+			sourceTree = "<group>";
+		};
+		81915448735BC9D299713367 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Timeline/PerAppAudioResults.swift;
+			sourceTree = "<group>";
+		};
+		D09A702F2D7AABE30A6E1443 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Processing/PerAppFilterBank.swift;
+			sourceTree = "<group>";
+		};
+		2D89DF7D85D7E10958B1B54E = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Profiles/PerAppAudioSettings.swift;
+			sourceTree = "<group>";
+		};
+		147F279F2BE797F2857ED67A = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Processing/PerAppDSPRuntime.swift;
+			sourceTree = "<group>";
+		};
+		5C1C46472243D5B37E2158C2 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Sources/CamiTune/PerAppApplicationIdentityPolicy.swift;
+			sourceTree = SOURCE_ROOT;
+		};
+		36070571A9A3A71282B834AD = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Sources/CamiTune/PerAppSettingsStore.swift;
+			sourceTree = SOURCE_ROOT;
+		};
+		5F2B4A6C7CAFB61A3A6AD196 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Delivery/SystemMasterStage.swift;
+			sourceTree = "<group>";
+		};
+		50FADF2971BE6DDCB8C4457C = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Routing/RouteRenderer.swift;
+			sourceTree = "<group>";
+		};
+		D673C57CD7ED139D84CBE276 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Delivery/RateMatchedPCMStage.swift;
+			sourceTree = "<group>";
+		};
+		CD30EF0386A679879C4A3351 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Spatial/SpatialCalibrationPlayback.swift;
+			sourceTree = "<group>";
+		};
+		96D0B6C1E49001123109C589 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Delivery/CamillaDeliveryPipeline.swift;
+			sourceTree = "<group>";
+		};
+		9397937C9BCE49D2BD3079E7 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Delivery/PCMDeliveryStatistics.swift;
+			sourceTree = "<group>";
+		};
+		01FA5627321E92B2D8EA1F66 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Sources/CamiTune/PerAppClientRegistry.swift;
+			sourceTree = SOURCE_ROOT;
+		};
+		0532D57BE9EBDC2B4753E1F8 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Sources/CamiTune/Diagnostics/ArchitectureOwnerSelfTests.swift;
+			sourceTree = SOURCE_ROOT;
+		};
+		C63AFD13C101E20EAEDF9486 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Tests/CamiTuneTests/HistoricalSpatialReference/FrontStageRenderer.swift;
+			sourceTree = SOURCE_ROOT;
+		};
+		9D4A07EF193D86D6145069B7 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Tests/CamiTuneTests/HistoricalSpatialReference/VirtualSurroundRenderer.swift;
+			sourceTree = SOURCE_ROOT;
+		};
+		CF8691C25036CCC52268DF08 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Tests/CamiTuneTests/HistoricalSpatialReference/MultichannelMovieRenderer.swift;
+			sourceTree = SOURCE_ROOT;
+		};
+		47FBC45D18841C3B453805F3 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Tests/CamiTuneTests/HistoricalSpatialReference/VirtualSourceRenderer.swift;
+			sourceTree = SOURCE_ROOT;
+		};
+		88C78938D15249512AC8D303 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Tests/CamiTuneTests/HistoricalSpatialReference/CrosstalkProcessor.swift;
+			sourceTree = SOURCE_ROOT;
+		};
+		E3692FA5E5CD11BF8D371293 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Tests/CamiTuneTests/HistoricalSpatialReference/TimbreCompensator.swift;
+			sourceTree = SOURCE_ROOT;
+		};
+		7BE089BC9BA781311019F04C = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Tests/CamiTuneTests/HistoricalSpatialReference/SpatialParameterSmoother.swift;
+			sourceTree = SOURCE_ROOT;
+		};
+		69AAA01CF6E29D851E631F30 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Tests/CamiTuneTests/HistoricalSpatialReference/SpatialCalibrationProfile.swift;
+			sourceTree = SOURCE_ROOT;
+		};
+		37E4285ADC62D7C0E7AE757B = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Tests/CamiTuneTests/HistoricalSpatialReference/SpatialPolicy.swift;
+			sourceTree = SOURCE_ROOT;
+		};
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1495,7 +2540,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-			    808DF9CC26C349C76E095C99,
+				808DF9CC26C349C76E095C99,
+				B4B109935E6D583AC6942F67,
+				A27658181BE806A4AB179BB4,
+				D462D5B9C483C10B04A0437A,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1514,17 +2562,43 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		95D7BA38F9C37A33748379B8 = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		30331BB1E6473285D077D142 = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		68D659E373228F96597D8A70 = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3F9CF4EC9A7A7EA465645AA5,
+				7C83D5EF389747810EDE4306,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		00C45FD35CB0F9C5F764F070 = {
 			isa = PBXGroup;
-			children = (
-			    68619BC0F5483BFBCEF55744,
-			    FEE49C506843B296250B60E4,
-			    115E8709BC85A21335BA7659,
-			);
 			name = Products;
+			children = (
+				68619BC0F5483BFBCEF55744,
+				FEE49C506843B296250B60E4,
+				115E8709BC85A21335BA7659,
+				952CF367AED20AA5831BFCCC,
+				F1F9D8ED23B4C86CD4233990,
+				445C2316DC15C112C4FEC805,
+			);
 			sourceTree = "<group>";
 		};
 		1B4FFFFBDA5103C7E9E4DCCA = {
@@ -1583,20 +2657,12 @@
 			sourceTree = "<group>";
 		};
 		BF488F0E1E816939FCAC0EE2 = {
+			path = Spatial;
 			isa = PBXGroup;
 			children = (
 				CA119B900000000000000011,
-				CA3200000000000000000101,
-				CA3200000000000000000102,
-				CA3200000000000000000103,
-				CA3200000000000000000104,
-				7D63D366F0E3D6C7A7D539A2,
-				8793652710319F894A7F836B,
 				ADD9225ACDE30A7C5F0E22D9,
 				93F292239E2881FC65B374DB,
-				DA3D7277FF919E238DA7B483,
-				FB2672C5306A4A9AD0960219,
-				BA8C33326DE49D7DE7378C40,
 				3F9FD71C6CD44FAF98677C35,
 				CA3500000000000000000204,
 				CA3600000000000000000205,
@@ -1609,47 +2675,18 @@
 				CA3500000000000000000203,
 				CA3500000000000000000202,
 				CA3500000000000000000201,
-				CA3500000000000000000002,
 				3F55C60FB215D2D7357B67B6,
-				21675E9304ED2A6AA84438EE,
 				B365846B28087A0692856BBF,
 				41204B470ED142696FC00B72,
-				DB6FA792520461A8A254D85D,
-				74B8F63750AAACE8767EC7F7,
-				FDE7BB300CF334A26EFAA2DC,
-				AEC06FA3E528EF2AF0C343A8,
 				C164B4B1A1FF3A9919ACA648,
-				8E810D2F76142E2872AE917B,
-				0A5C95504FB080A0067FF1EA,
-				1CEEA9AD208CC63C0D105AAB,
-				7071FC95C5507CFE112FBE3E,
-				5D04D480DDD2FE10F5310C32,
-				E99EE877ED2190A49D40EAFD,
-				1150B923491588732A57776A,
-				2B23ACE2C13E8CAEC6E6E100,
-				2E32FDC537715DE75E2AA55F,
-				ECDAD64B7971715A7C3E8264,
-				FE397D86A6B82EB70DF6F0DE,
-			    CA114B400000000000000011,
-                CA115B500000000000000011,
-                CA116B600000000000000011,
-                CA118B800000000000000011,
-                CA117B700000000000000011,
-                CA117B700000000000000012,
-                CA115B500000000000000012,
-                CA115B500000000000000013,
-                CA115B500000000000000014,
-			    CA114B400000000000000012,
-			    6154D02D5D2B4B73FAEA68D8,
-			    C393C80F0A6351A34B95F79A,
-			    52ABD1D3F5BC5C1E0E208365,
-			    91F9868CC1008E967B573580,
-			    AC6C231D56CFAC403ECCBE70,
-			    8153B007346754CFD4C54028,
-			    984578BB0AD4799495528409,
-			    D2783A0108B44779E0197A65,
+				CA114B400000000000000011,
+				CA118B800000000000000011,
+				CA117B700000000000000011,
+				CA115B500000000000000012,
+				CA115B500000000000000013,
+				CA115B500000000000000014,
+				CA114B400000000000000012,
 			);
-			path = Spatial;
 			sourceTree = "<group>";
 		};
 		C15F9E5857C45879F2DB9A88 = {
@@ -1661,12 +2698,11 @@
 			sourceTree = "<group>";
 		};
 		CF8D0BD4B75E8C2C174692A5 = {
+			path = Sources/CamiTune;
 			isa = PBXGroup;
+			name = CamiTune;
 			children = (
-				CA4300000000000000000204,
 				CA4300000000000000000205,
-				CA4500000000000000000200,
-				CA4500000000000000000201,
 				CA4500000000000000000202,
 				CA4500000000000000000203,
 				CA4500000000000000000204,
@@ -1676,8 +2712,6 @@
 				CA4900000000000000000203,
 				CA4900000000000000000204,
 				CA4900000000000000000200,
-				CA4800000000000000000200,
-				CA4800000000000000000201,
 				CA4800000000000000000202,
 				CA4700000000000000000201,
 				CA4700000000000000000200,
@@ -1695,112 +2729,110 @@
 				CA4300000000000000000210,
 				CA4300000000000000000209,
 				CA4300000000000000000208,
-				CA4300000000000000000207,
-				CA4300000000000000000206,
-				CA4300000000000000000203,
 				CA4300000000000000000202,
-				CA4300000000000000000201,
-				CA4200000000000000000201,
-				CA4200000000000000000202,
-				CA4100000000000000000201,
-				CA4100000000000000000202,
 				CA4100000000000000000203,
 				CA4100000000000000000204,
-				CA4000000000000000000201,
-				CA4000000000000000000202,
-				CA4000000000000000000203,
 				CA4000000000000000000204,
 				CA4000000000000000000205,
-			    341C724F30589B07009B5620,
-			    EBC5D752DAE6939C8C8E3B1D,
-			    12B57DB1B029F6B63B79DBFE,
-			    826F6EFC1EE9CD4FF66D94B3,
-			    5F803A730290DF4DF2DFE484,
-			    33E80496FFC68D15014B54F2,
-			    80D4FF6AAD48B1E2083F08E3,
-			    A4D8458165009F363AFF39BF,
-			    53896D09F2D384F33ABAAAB5,
-			    63C1D346E91955DC641FEA5A,
-			    26EC81E72099207C97BC0CBC,
-			    9C4CB97BDF353FAB8BDE566B,
-			    7B9321652EC295997BABF24E,
-			    4D546714ACBE91575A5D8ADF,
-			    EF906983DF7B1A16BAF6B42E,
-			    0F6D7D15F18B55DABB360EDB,
-			    9921C9EBAADF67A16CDDC6AF,
-			    CA3800000000000000000002,
-			    CA3900000000000000000203,
-			    CA3900000000000000000202,
-			    CA3900000000000000000201,
-			    CA3900000000000000000200,
-			    CA3800000000000000000004,
-			    2B1FF247511D3BC1C71AB018,
-			    68E6D4EBFC10B7451E6F61F2,
-			    183363314F878C9B69E2A155,
-			    D83C7B0B6E330C4073B3F6BA,
-			    D0C1C6852DDFBC26F0F7E99F,
-			    C587195BCEF3DC3C18C19663,
-			    793942D831F21933D7F013F0,
-			    F34F09C350FEFEAECAF05185,
-			    A8D0128ACA3AA5114A452008,
-			    0A1BE14A6E8F329E9C48F007,
-                CA3300000000000000000002,
-			    356E5942FA333F1538E02434,
-			    7EA0A802461577D9770FC168,
-			    33E9A29DC002A4A4D35C4C60,
-			    54AD836F473CDD1C37F2E0B4,
-			    AFD924572EA5B9D920D1D8A8,
-			    14C9869259F14FE6380CCFA1,
-			    1D004D644CC58C36FE76FD48,
-			    C918E1BD8F850B389F1EE5F9,
-			    343BD3712D5E0A3CDFC1F23B,
-			    2CCC7DB8DC22E3DAD74403E8,
-			    B751C267879319A59482AA5D,
-			    5BFEA9F39DF864A79D51513D,
-			    C31607BD1549E8258CE7BACC,
-			    70F410E98370E0505AE0EB38,
-			    532A1764CA97052552237E61,
-			    002F0ED64C65B2D748394B8D,
-			    F001EB5772DC1DAFE1A15B70,
-			    53653AA54D5A3EFE38528693,
-			    A566B02D3307BD5D7DDF1F49,
-			    3C922D1B2EC37F8F35722C3F,
-			    E5E85BE1D3387AFAE9884BC1,
-			    52F7971D72574AA835947469,
-			    D1970930BDC2A77DEF7270DA,
-			    61DBC31E131653812FBDA5E1,
-			    B37BF2ED2851B4D9AFB57B89,
-			    0728AFF584D7415331145589,
-			    0DC8194EE9D70DE26823C71C,
-			    85B34B5E386DEC4F74486B40,
-			    FD5E4E39A7F0F882253699AE,
-			    1AAEC3AC65BA7141C64CD233,
-			    BEBD131DBE0197C7B4835499,
-			    4B1F60A36418774FA08832BA,
-			    0220C780A3EB2499A9CE521C,
-			    0680471C758C9A02A80CCD88,
-			    2DE83E5CB9F32E3259E9E3F8,
-			    FCDFC28BEF5A52A4B93F8918,
-			    03FAE1FDD57D8B202DEE35F0,
-			    492315B0D46B00758567DC3E,
-			    E2FF442F7433284D2AE3DFE2,
-			    4A34C089B55DA904AB4AE5D6,
-			    122AD48AA60E766A88B806E8,
-			    9BCED525A497AB36741425C3,
-			    F86B98A5D65177AF7614C652,
-			    F7D111AA94D95E978710C639,
-			    5E422A1D8A49974F8BC70A87,
-			    17FB83A0849DEE9ACFFAB171,
-			    92EBDB5ABB5737E00E819D59,
-			    17BD1088BA5EBE5AEFC871E2,
-			    AB109A719BE042A098FE1002,
-			    4791E297AF25EFCA8AC9783E,
-			    BF488F0E1E816939FCAC0EE2,
-			    67B1EB01B195F34F0294962D,
-			    F4954A91479FDFCD4959E39C,
+				341C724F30589B07009B5620,
+				EBC5D752DAE6939C8C8E3B1D,
+				12B57DB1B029F6B63B79DBFE,
+				826F6EFC1EE9CD4FF66D94B3,
+				5F803A730290DF4DF2DFE484,
+				33E80496FFC68D15014B54F2,
+				80D4FF6AAD48B1E2083F08E3,
+				A4D8458165009F363AFF39BF,
+				53896D09F2D384F33ABAAAB5,
+				63C1D346E91955DC641FEA5A,
+				26EC81E72099207C97BC0CBC,
+				9C4CB97BDF353FAB8BDE566B,
+				7B9321652EC295997BABF24E,
+				4D546714ACBE91575A5D8ADF,
+				EF906983DF7B1A16BAF6B42E,
+				0F6D7D15F18B55DABB360EDB,
+				9921C9EBAADF67A16CDDC6AF,
+				CA3800000000000000000002,
+				CA3900000000000000000203,
+				CA3900000000000000000202,
+				CA3900000000000000000201,
+				CA3900000000000000000200,
+				CA3800000000000000000004,
+				2B1FF247511D3BC1C71AB018,
+				183363314F878C9B69E2A155,
+				D83C7B0B6E330C4073B3F6BA,
+				C587195BCEF3DC3C18C19663,
+				793942D831F21933D7F013F0,
+				F34F09C350FEFEAECAF05185,
+				A8D0128ACA3AA5114A452008,
+				0A1BE14A6E8F329E9C48F007,
+				CA3300000000000000000002,
+				356E5942FA333F1538E02434,
+				33E9A29DC002A4A4D35C4C60,
+				54AD836F473CDD1C37F2E0B4,
+				AFD924572EA5B9D920D1D8A8,
+				14C9869259F14FE6380CCFA1,
+				1D004D644CC58C36FE76FD48,
+				C918E1BD8F850B389F1EE5F9,
+				343BD3712D5E0A3CDFC1F23B,
+				2CCC7DB8DC22E3DAD74403E8,
+				B751C267879319A59482AA5D,
+				5BFEA9F39DF864A79D51513D,
+				C31607BD1549E8258CE7BACC,
+				70F410E98370E0505AE0EB38,
+				532A1764CA97052552237E61,
+				002F0ED64C65B2D748394B8D,
+				F001EB5772DC1DAFE1A15B70,
+				CA5700000000000000000200,
+				CA5800000000000000000204,
+				CA5800000000000000000203,
+				CA5800000000000000000202,
+				CA5800000000000000000201,
+				CA5800000000000000000200,
+				CA5900000000000000000203,
+				CA5900000000000000000201,
+				CA5B00000000000000000201,
+				CA5C00000000000000000201,
+				CA5D00000000000000000202,
+				CA5D00000000000000000204,
+				CA5D00000000000000000205,
+				CA5D00000000000000000201,
+				CA5B00000000000000000203,
+				CA5A00000000000000000202,
+				CA5A00000000000000000201,
+				CA5700000000000000000205,
+				CA5700000000000000000204,
+				CA5700000000000000000203,
+				CA5700000000000000000202,
+				CA5700000000000000000201,
+				53653AA54D5A3EFE38528693,
+				A566B02D3307BD5D7DDF1F49,
+				3C922D1B2EC37F8F35722C3F,
+				E5E85BE1D3387AFAE9884BC1,
+				52F7971D72574AA835947469,
+				D1970930BDC2A77DEF7270DA,
+				61DBC31E131653812FBDA5E1,
+				B37BF2ED2851B4D9AFB57B89,
+				85B34B5E386DEC4F74486B40,
+				FD5E4E39A7F0F882253699AE,
+				1AAEC3AC65BA7141C64CD233,
+				4B1F60A36418774FA08832BA,
+				0220C780A3EB2499A9CE521C,
+				0680471C758C9A02A80CCD88,
+				2DE83E5CB9F32E3259E9E3F8,
+				FCDFC28BEF5A52A4B93F8918,
+				03FAE1FDD57D8B202DEE35F0,
+				492315B0D46B00758567DC3E,
+				F86B98A5D65177AF7614C652,
+				F7D111AA94D95E978710C639,
+				17FB83A0849DEE9ACFFAB171,
+				92EBDB5ABB5737E00E819D59,
+				17BD1088BA5EBE5AEFC871E2,
+				AB109A719BE042A098FE1002,
+				4791E297AF25EFCA8AC9783E,
+				BF488F0E1E816939FCAC0EE2,
+				67B1EB01B195F34F0294962D,
+				F4954A91479FDFCD4959E39C,
 			);
-			name = CamiTune;
-			path = Sources/CamiTune;
 			sourceTree = "<group>";
 		};
 		D35BDCF6803CCB1A9C4483A8 = {
@@ -1813,21 +2845,38 @@
 		};
 		DF891E785808226D241F246E = {
 			isa = PBXGroup;
-			children = (
-			    CF8D0BD4B75E8C2C174692A5,
-			    91EC18FD9536795D65E7D52C,
-			    EEFE21A1443933CA4DE017DA,
-			    22D02A9EFAC9B3FBBAEBE062,
-			    D35BDCF6803CCB1A9C4483A8,
-			    B293F2A4508E5EA7D2629486,
-			    C15F9E5857C45879F2DB9A88,
-			    1B4FFFFBDA5103C7E9E4DCCA,
-			    44912F8409D65584B966D5E6,
-			    26FA998D8F4AC3E7400D300F,
-			    7962442C1190A76918B703B4,
-			    00C45FD35CB0F9C5F764F070,
-			);
 			sourceTree = "<group>";
+			children = (
+				CF8D0BD4B75E8C2C174692A5,
+				91EC18FD9536795D65E7D52C,
+				EEFE21A1443933CA4DE017DA,
+				22D02A9EFAC9B3FBBAEBE062,
+				D35BDCF6803CCB1A9C4483A8,
+				B293F2A4508E5EA7D2629486,
+				C15F9E5857C45879F2DB9A88,
+				1B4FFFFBDA5103C7E9E4DCCA,
+				44912F8409D65584B966D5E6,
+				26FA998D8F4AC3E7400D300F,
+				7962442C1190A76918B703B4,
+				00C45FD35CB0F9C5F764F070,
+				4D17FADECB7FC9A3ABAEF37B,
+				68AAA5D0613BB9F5A601B43E,
+				7A9D97F4E56ECC498C43537C,
+				E33F39D0DCFA592EAA28FD0D,
+				5C1C46472243D5B37E2158C2,
+				36070571A9A3A71282B834AD,
+				01FA5627321E92B2D8EA1F66,
+				0532D57BE9EBDC2B4753E1F8,
+				C63AFD13C101E20EAEDF9486,
+				9D4A07EF193D86D6145069B7,
+				CF8691C25036CCC52268DF08,
+				47FBC45D18841C3B453805F3,
+				88C78938D15249512AC8D303,
+				E3692FA5E5CD11BF8D371293,
+				7BE089BC9BA781311019F04C,
+				69AAA01CF6E29D851E631F30,
+				37E4285ADC62D7C0E7AE757B,
+			);
 		};
 		EEFE21A1443933CA4DE017DA = {
 			isa = PBXGroup;
@@ -1871,6 +2920,148 @@
 			path = Tests/CamiTuneTests;
 			sourceTree = "<group>";
 		};
+		4D17FADECB7FC9A3ABAEF37B = {
+			path = Sources/CamiTuneDomain;
+			isa = PBXGroup;
+			children = (
+				044EAAD76038F5B5E8D187AE,
+				578CD507F722E760C935881C,
+				3AE29EBC13F7E1BFA0AA9EAB,
+				99723A9C7E66A457784C8349,
+				A749247C0210BA19B466DABA,
+				CA3200000000000000000101,
+				CA3200000000000000000102,
+				CA3200000000000000000103,
+				CA4100000000000000000201,
+				CA3200000000000000000104,
+				CA4000000000000000000203,
+				DA22C3FB410121C8078F7923,
+				545799B04800B352503919B6,
+				CA4000000000000000000201,
+				CA4000000000000000000202,
+				BEBD131DBE0197C7B4835499,
+				48474229109471AC4891893A,
+				416888FE4EA7A43EF59520DA,
+				9EEA8538AAD72051B68D5D57,
+				DB216BDDF372D300B11CCA84,
+				7B746526CAB8BA124B4BF5E3,
+				0DC8194EE9D70DE26823C71C,
+				0728AFF584D7415331145589,
+				125F1F82E21D683A6D9E1073,
+				977B2C2C9B969B98F87ACFC1,
+				FCB05DBA7402A06266E20901,
+				AB1FC213E3903A7F4CB60795,
+				94038C5B7031F84DD3E8B98B,
+				A02120C36A15B44C809620A0,
+				C652EA5BC6D15B8F5A0D007D,
+				44957B3FADED8AE41A296401,
+				514AABE913D5A4562D2A9DBB,
+				F188D2A6660A04434033725A,
+				122AD48AA60E766A88B806E8,
+				6CE764E6BF9720E0B5F03D95,
+				71538D1C0DC24E26BC4E0905,
+				752FF0397E45FE2814D17884,
+				7EA0A802461577D9770FC168,
+				4A34C089B55DA904AB4AE5D6,
+				D4D925083867D8811FE231A8,
+				A602A9F2C241572DC1976F25,
+				0CA1EF874E9E1434E2770A90,
+				4CF5B186681B7D2B9AE513ED,
+				9D959606447A29E97B85C04C,
+				58839B8CE76EC0D8CF60316D,
+				CA115B500000000000000011,
+				2E32FDC537715DE75E2AA55F,
+				CA4200000000000000000201,
+				DA3D7277FF919E238DA7B483,
+				A266C7F1E46CB7F580765503,
+				7AA94DE54C67C09F524E9217,
+				11BE833B89F9640FB5E90023,
+				DA87B44897A5F91DD746581E,
+				CA4200000000000000000202,
+				CA4300000000000000000204,
+				CA4300000000000000000206,
+				CA4100000000000000000202,
+				CA3500000000000000000002,
+				68E6D4EBFC10B7451E6F61F2,
+				C8B4A2E4D78BD6782BC72745,
+				1E9F3F40EC7FF1AF206A15E6,
+				6B1A80A2CA4BE5814567B8BD,
+				E2FF442F7433284D2AE3DFE2,
+				CA4300000000000000000201,
+				CA4300000000000000000207,
+				DCC59F62A29061E6ACF036C2,
+				9BCED525A497AB36741425C3,
+				BD35C06BBAF1E5C984F3698D,
+				F2F16E487DA13C2051766AC5,
+				CA4800000000000000000200,
+				CA4800000000000000000201,
+				2D89DF7D85D7E10958B1B54E,
+			);
+			sourceTree = SOURCE_ROOT;
+		};
+		7A9D97F4E56ECC498C43537C = {
+			isa = PBXGroup;
+			children = (
+				228FB950B1E2470978388A45,
+			);
+			path = Sources/CamiTuneAtomics;
+			sourceTree = SOURCE_ROOT;
+		};
+		E33F39D0DCFA592EAA28FD0D = {
+			path = Sources/CamiTuneAudio;
+			isa = PBXGroup;
+			children = (
+				CA4500000000000000000201,
+				CA5D00000000000000000200,
+				644A77A01DB2D08F9A29BD97,
+				CA4500000000000000000200,
+				68B1B2735906CFEA9BA5D0A7,
+				CA5B00000000000000000200,
+				517EFACE3B5A79564B5816F1,
+				7956BAE7E149463D53E5D70E,
+				DFC03820EF3BA092FC07A1DF,
+				CA5D00000000000000000203,
+				AF8EBEF1A38828A7489F25C7,
+				81915448735BC9D299713367,
+				CA5900000000000000000202,
+				CA5A00000000000000000200,
+				CA5900000000000000000200,
+				CA5C00000000000000000200,
+				CA5B00000000000000000202,
+				D0C1C6852DDFBC26F0F7E99F,
+				D09A702F2D7AABE30A6E1443,
+				DB6FA792520461A8A254D85D,
+				74B8F63750AAACE8767EC7F7,
+				AEC06FA3E528EF2AF0C343A8,
+				2B23ACE2C13E8CAEC6E6E100,
+				ECDAD64B7971715A7C3E8264,
+				E99EE877ED2190A49D40EAFD,
+				7D63D366F0E3D6C7A7D539A2,
+				FE397D86A6B82EB70DF6F0DE,
+				FDE7BB300CF334A26EFAA2DC,
+				1150B923491588732A57776A,
+				21675E9304ED2A6AA84438EE,
+				5D04D480DDD2FE10F5310C32,
+				7071FC95C5507CFE112FBE3E,
+				1CEEA9AD208CC63C0D105AAB,
+				0A5C95504FB080A0067FF1EA,
+				8E810D2F76142E2872AE917B,
+				CA116B600000000000000011,
+				8793652710319F894A7F836B,
+				FB2672C5306A4A9AD0960219,
+				BA8C33326DE49D7DE7378C40,
+				5E422A1D8A49974F8BC70A87,
+				CA4300000000000000000203,
+				147F279F2BE797F2857ED67A,
+				5F2B4A6C7CAFB61A3A6AD196,
+				50FADF2971BE6DDCB8C4457C,
+				D673C57CD7ED139D84CBE276,
+				CD30EF0386A679879C4A3351,
+				96D0B6C1E49001123109C589,
+				9397937C9BCE49D2BD3079E7,
+			);
+			sourceTree = SOURCE_ROOT;
+		};
 /* End PBXGroup section */
 
 /* Begin PBXHeadersBuildPhase section */
@@ -1886,22 +3077,25 @@
 
 /* Begin PBXNativeTarget section */
 		0C91C2496BEC31D2AE16F949 = {
-			isa = PBXNativeTarget;
+			productType = "com.apple.product-type.application";
+			productReference = 68619BC0F5483BFBCEF55744;
 			buildConfigurationList = 32995943DE67267A65D32CA9;
+			productName = CamiTune;
+			isa = PBXNativeTarget;
 			buildPhases = (
-			    507A349611DBB42F9CF9069B,
-			    2D3446C63F9EEB9172CAE05B,
-			    4C29BBC16528FEA9E858725B,
-			    E39D18B115C55F55F5F0B75A,
+				507A349611DBB42F9CF9069B,
+				2D3446C63F9EEB9172CAE05B,
+				4C29BBC16528FEA9E858725B,
+				E39D18B115C55F55F5F0B75A,
 			);
-			buildRules = ();
 			dependencies = (
-			    3B65C7AA77488F390CC562E1,
+				3B65C7AA77488F390CC562E1,
+				B77896DFDB41E6BC2ECAA35B,
+				BE7554918EB2DDFD55C78480,
 			);
 			name = CamiTune;
-			productName = CamiTune;
-			productReference = 68619BC0F5483BFBCEF55744;
-			productType = com.apple.product-type.application;
+			buildRules = (
+			);
 		};
 		3A211C2DD970E0AE847CFE32 = {
 			isa = PBXNativeTarget;
@@ -1937,35 +3131,98 @@
 			productReference = 115E8709BC85A21335BA7659;
 			productType = com.apple.product-type.bundle.unit-test;
 		};
+		B5C24F0F3C5AC4A7399C2099 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8532DAADC99D3F6C9B4E068C;
+			buildPhases = (
+				991ABD524D4C3B5FE9C645C7,
+				95D7BA38F9C37A33748379B8,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CamiTuneDomain;
+			productName = CamiTuneDomain;
+			productReference = 952CF367AED20AA5831BFCCC;
+			productType = "com.apple.product-type.library.static";
+		};
+		22ACCE1465E8CCE9A7F1AD34 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 92482CB1457FB05252430F2E;
+			buildPhases = (
+				0ECC71DB5477D382C9269CEB,
+				30331BB1E6473285D077D142,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CamiTuneAtomics;
+			productName = CamiTuneAtomics;
+			productReference = F1F9D8ED23B4C86CD4233990;
+			productType = "com.apple.product-type.library.static";
+		};
+		39B7054AB3FF8B415696AF0A = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F91F09F86BDAE9E8C69AD664;
+			buildPhases = (
+				95E47C22BCB190D28F6D1FF9,
+				68D659E373228F96597D8A70,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BF43C98D7EAE33DAC98077CC,
+				CFB950AF545DC25CBD30C129,
+			);
+			name = CamiTuneAudio;
+			productName = CamiTuneAudio;
+			productReference = 445C2316DC15C112C4FEC805;
+			productType = "com.apple.product-type.library.static";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
 		98F54143AB4E86B28C3AFEE0 = {
-			isa = PBXProject;
-			attributes = {
-			    BuildIndependentTargetsInParallel = 1;
-			    LastSwiftUpdateCheck = 2600;
-			    LastUpgradeCheck = 2600;
-			    TargetAttributes = {
-			        0C91C2496BEC31D2AE16F949 = { CreatedOnToolsVersion = 26.0; };
-			        3A211C2DD970E0AE847CFE32 = { CreatedOnToolsVersion = 26.0; };
-			        458905BF1200B0DF06C835D9 = { CreatedOnToolsVersion = 26.0; TestTargetID = 0C91C2496BEC31D2AE16F949; };
-			    };
-			};
 			buildConfigurationList = 12D04D787E90C9B967248BFD;
-			compatibilityVersion = "Xcode 14.0";
+			targets = (
+				0C91C2496BEC31D2AE16F949,
+				3A211C2DD970E0AE847CFE32,
+				458905BF1200B0DF06C835D9,
+				B5C24F0F3C5AC4A7399C2099,
+				22ACCE1465E8CCE9A7F1AD34,
+				39B7054AB3FF8B415696AF0A,
+			);
 			developmentRegion = en;
-			hasScannedForEncodings = 0;
-			knownRegions = (en, Base,);
-			mainGroup = DF891E785808226D241F246E;
+			knownRegions = (
+				en,
+				Base,
+			);
+			isa = PBXProject;
+			compatibilityVersion = "Xcode 14.0";
 			productRefGroup = 00C45FD35CB0F9C5F764F070;
 			projectDirPath = "";
+			attributes = {
+				LastSwiftUpdateCheck = 2600;
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					458905BF1200B0DF06C835D9 = {
+						TestTargetID = 0C91C2496BEC31D2AE16F949;
+						CreatedOnToolsVersion = 26.0;
+					};
+					0C91C2496BEC31D2AE16F949 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					3A211C2DD970E0AE847CFE32 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+				};
+			};
+			hasScannedForEncodings = 0;
 			projectRoot = "";
-			targets = (
-			    0C91C2496BEC31D2AE16F949,
-			    3A211C2DD970E0AE847CFE32,
-			    458905BF1200B0DF06C835D9,
-			 );
+			mainGroup = DF891E785808226D241F246E;
 		};
 /* End PBXProject section */
 
@@ -2011,40 +3268,49 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-			    CA3900000000000000000300,
-			    CA3900000000000000000301,
-			    CA3200000000000000000401,
-			    CA3200000000000000000402,
+				CA3900000000000000000300,
+				CA3900000000000000000301,
+				CA3200000000000000000401,
+				CA3200000000000000000402,
 				2DBE10AACB842FA4770E398C,
 				03873F6A543C0FC7E3B5F27F,
 				728B17019F77D3D62CB27FBC,
 				6E230EE1DB6F0ECCA260B06E,
-			    CA114B400000000000000004,
-                CA115B500000000000000005,
-                CA116B600000000000000002,
-                CA117B700000000000000004,
-			    AB109A719BE042A098FE1003,
-			    0ED50744FEC92A92D538EFC6,
-			    C9AF18BB6D5E5794291732CB,
-			    DA9A90764D4B050384240AFE,
-			    4AD46F1CDB78A9417F06B9CB,
-			    CF90AA12604956DE61E4A3B6,
-			    1DD2A9F73706E48E725A1AC3,
-			    A0659F5EAC3A27D7946A3BAF,
-			    30223A0B09D40ACD10C5F606,
-			    E3CE966CAF01EB88BF554E98,
-			    259F95DC467138F16BE03DA4,
-			    A74EA3476AC0185359E36A82,
-			    929FFA8CA7D3170B808EF928,
-			    E7CAEAF77BF9B96DF7CBAF7A,
-			    75B09E83CD63B4A49119D676,
-			    0C2CD94427BD95ED983C0C85,
-			    F5E1FBD7249EB4CDB3FE2105,
-			    3C6B930508DC64F2CE368803,
-			    37B318D4A61C1B52120198C7,
-			    0BCBF49C538F05685167B361,
-			    3FB7127C98E67710942BD24B,
-			    1260B219A837E31FA470E058,
+				CA114B400000000000000004,
+				CA115B500000000000000005,
+				CA116B600000000000000002,
+				CA117B700000000000000004,
+				AB109A719BE042A098FE1003,
+				0ED50744FEC92A92D538EFC6,
+				C9AF18BB6D5E5794291732CB,
+				DA9A90764D4B050384240AFE,
+				4AD46F1CDB78A9417F06B9CB,
+				CF90AA12604956DE61E4A3B6,
+				1DD2A9F73706E48E725A1AC3,
+				A0659F5EAC3A27D7946A3BAF,
+				30223A0B09D40ACD10C5F606,
+				E3CE966CAF01EB88BF554E98,
+				259F95DC467138F16BE03DA4,
+				A74EA3476AC0185359E36A82,
+				929FFA8CA7D3170B808EF928,
+				E7CAEAF77BF9B96DF7CBAF7A,
+				75B09E83CD63B4A49119D676,
+				0C2CD94427BD95ED983C0C85,
+				F5E1FBD7249EB4CDB3FE2105,
+				3C6B930508DC64F2CE368803,
+				37B318D4A61C1B52120198C7,
+				0BCBF49C538F05685167B361,
+				3FB7127C98E67710942BD24B,
+				1260B219A837E31FA470E058,
+				855C0295DC0EE49B0F60247A,
+				52538B41C81803AB63BF2430,
+				3ABBA547459FB0160C71EB38,
+				30790E92E63E5D17E4C4E17B,
+				B0FF2451F5A754DB2956BDA7,
+				1DD639FD86A962B9AF1DE51E,
+				C26E4C36D4C46C44361CD8E9,
+				A4F2F45AD875C0CF9983A5D8,
+				BE637503745166D8D1FBD770,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2052,10 +3318,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				CA4300000000000000000104,
 				CA4300000000000000000105,
-				CA4500000000000000000100,
-				CA4500000000000000000101,
 				CA4500000000000000000102,
 				CA4500000000000000000103,
 				CA4500000000000000000104,
@@ -2065,8 +3328,6 @@
 				CA4900000000000000000103,
 				CA4900000000000000000104,
 				CA4900000000000000000100,
-				CA4800000000000000000100,
-				CA4800000000000000000101,
 				CA4800000000000000000102,
 				CA4700000000000000000101,
 				CA4700000000000000000100,
@@ -2084,20 +3345,9 @@
 				CA4300000000000000000110,
 				CA4300000000000000000109,
 				CA4300000000000000000108,
-				CA4300000000000000000107,
-				CA4300000000000000000106,
-				CA4300000000000000000103,
 				CA4300000000000000000102,
-				CA4300000000000000000101,
-				CA4200000000000000000101,
-				CA4200000000000000000102,
-				CA4100000000000000000101,
-				CA4100000000000000000102,
 				CA4100000000000000000103,
 				CA4100000000000000000104,
-				CA4000000000000000000101,
-				CA4000000000000000000102,
-				CA4000000000000000000103,
 				CA4000000000000000000104,
 				CA4000000000000000000105,
 				CA3600000000000000000105,
@@ -2106,145 +3356,124 @@
 				CA3600000000000000000103,
 				CA3600000000000000000102,
 				CA3600000000000000000101,
-                CA3300000000000000000001,
-				CA3200000000000000000201,
-				CA3200000000000000000202,
-				CA3200000000000000000203,
-				CA3200000000000000000204,
-				16E47513AA99C560116D6F57,
-				27ED9ABDBCEE938E05585E06,
+				CA3300000000000000000001,
 				AEB5057153288C947AAD5996,
 				2A7264C9989ECD0167283B81,
-				08D5EE3A08897A2560928956,
-				C0569044922206EAF897B43F,
-				C4D3B43F1EDEDEAB76D6094D,
 				E66876429BA9C91C7EA92BAD,
 				CA3500000000000000000104,
 				CA3500000000000000000105,
 				CA3500000000000000000103,
 				CA3500000000000000000102,
 				CA3500000000000000000101,
-				CA3500000000000000000001,
 				98F1B04221D097DE32257EB7,
-				ED6A249F4F2EFA9666989753,
 				F59C47E32FA4422B4EA97A34,
 				E784866DF02BE1B95F156D45,
-				D47275A799CC59AB9CECE186,
-				55A73285A0879925E4E44ED9,
-				7B7B769DDD2CE747DADEE7BD,
-				D1244D3128CEAE6664AE9A86,
 				6B5FD6FD181F0513BAE1071E,
-				8F1E5DD009C5F4A3C2A11D92,
-				11810D2A45B604DB2954306E,
-				CADAB5229C0D374ADB5FD2F4,
-				4254C2D6B6D79DA2A7159A55,
-				1654233E92A2CD17F3495AF7,
-				A94C1FDDFF5A8E454D71D3F4,
-				7FCFA418D171E66C73222BD6,
-				C11FF9DA9524780ECE8EAC47,
-				6C3962DA4B04B9D6DEEBFCE4,
-				88252F214F9E3637A1D2E9E0,
-				3AEBCC5F09FFB466C6149F72,
-			    CA114B400000000000000001,
-                CA115B500000000000000001,
-                CA116B600000000000000001,
-                CA118B800000000000000001,
-                CA117B700000000000000001,
-                CA117B700000000000000002,
-                CA115B500000000000000002,
-                CA115B500000000000000003,
-                CA115B500000000000000004,
-			    CA114B400000000000000002,
-			    AB109A719BE042A098FE1001,
-			    087A85F6C26B99E3E3C61059,
-			    5802CB74AF55627F307EC03B,
-			    7B13E9F7E8EF7D313E920F4A,
-			    06F64858B33C6F9F239329CF,
-			    995FE7CE49E61DC6264BCDE3,
-			    675CD0199229C54508272FB7,
-			    32A465B4EEF0EDC9E3886AB3,
-			    403739B22A89C7CC4E5CC7E2,
-			    E554103F88F20A31CBF75B1F,
-			    A505381A5B62508FD87621D8,
-			    4994DDE2553CD1CCC8288994,
-			    58EEE33394783A30E0954279,
-			    942D79935013F7AFEC6603CA,
-			    44F88181A401C63820D8CC5C,
-			    A3072837EA10693843941059,
-			    EE4A5684E848611F7843501D,
-			    CA3800000000000000000001,
-			    CA3900000000000000000103,
-			    CA3900000000000000000102,
-			    CA3900000000000000000101,
-			    CA3900000000000000000100,
-			    CA3800000000000000000003,
-			    5573C1A6D9065B3100EBE6D4,
-			    C2ACF77A1A999ACC4000D794,
-			    A9DBD461ACA04B76EA7AB692,
-			    3A087F0D5494A44369795017,
-			    4E62E554615D1032F6D7156A,
-			    D9563506C004E2F5E72F9447,
-			    B27B789FDF81AD9876965548,
-			    DBA1BC0B4654B65B3F3E9502,
-			    54976AE88F40EA0DE7A084FC,
-			    0FD67D107ECD39DAAECD65CB,
-			    FB868D40AC429CE6DC46A4F7,
-			    F0FF4BCCB5EF30EE72943F94,
-			    76F238270E55B728ADECC8EC,
-			    30983C1FD6022394DB4A1CDA,
-			    C3F6D440FFCA99488342062D,
-			    6A7F2D6E29A7E10F4F7D1814,
-			    9349B3AF0D91C1A063D1C17B,
-			    A454D686F17A506B69B8E9A4,
-			    0485234882EFDA37C5482A2B,
-			    089F9CF6C20B70134E163B7A,
-			    F80C81CE3E1FA9078676B4A2,
-			    D7DE6B0E1876E088705098B5,
-			    51E6DAC550E03849F7140E17,
-			    D4ABE088B8A4675F31A98642,
-			    EE00D42EA8621530B2E444EF,
-			    7448FEFF18961DE53AA9B447,
-			    A79D907D0583593BD6D6327B,
-			    7AA9FA3B01D1FA95F9B4D726,
-			    E653A3A6ACC4D88435BD7980,
-			    68609869E637BD85A0B1592E,
-			    42273FCFDA09576CF9E7B0F2,
-			    CF349CACB2AE9E050843682D,
-			    006E4CF2229A129990165B4E,
-			    8E0526E5976E17DAE21FCA1E,
-			    EF2F7A2F5BAA89067C387ABD,
-			    E1D2B518CB870609758A5538,
-			    2EEE754D0F31F42A9EF60AD6,
-			    B73D2599DA238497F52A627D,
-			    A8B057B777F722E23A7DD33D,
-			    E49D4408F63428EA93D8F3BE,
-			    85B82B0221B80AD2AFB280B8,
-			    AB49C3006C72FA2E780F819D,
-			    70E5A104D3F176241A45054E,
-			    4BCB7311E13892A01B41B223,
-			    9ACFCDC029F1C3AB19455554,
-			    3829137DC87109D1F5DA23D0,
-			    B0E4D72FE339637D604EF8BB,
-			    4C906885A2CFE6D4394FF9E6,
-			    2A91E9B7AA9C81FA7E76B7B1,
-			    13F0CF3206DCD63C82196123,
-			    2FBCE96F9CEF76CDBACAF430,
-			    68C29BA9C1C941A9391DD569,
-			    6E748E6F25E048DFB8F9A8FB,
-			    8997C43FCE53A94BD6A09027,
-			    4F46291C9C388B617853C93C,
-			    A07CDF21B959E4B5B9F0D601,
-			    AD28B41EB8446A514BB3863B,
-			    6301C43CCA0E7DB4B88A3563,
-			    CCC46CD02CC53F166DA3A6AD,
-			    6E30A0A4A8F0269DDCAFF53D,
-			    6FF20D9AC22785421F2B749F,
-			    96BC01AEF791977512A3F6AF,
-			    0CDA16E5900EA2AE4510D64F,
-			    3A3C9F83E871D59061BF54AD,
-			    CDAD70D2653C37AFBD71DD2C,
-			    84D671C519AF93D0AA71AC88,
-			    199293AC7AD1C3C5546A51E1,
+				CA114B400000000000000001,
+				CA118B800000000000000001,
+				CA117B700000000000000001,
+				CA115B500000000000000002,
+				CA115B500000000000000003,
+				CA115B500000000000000004,
+				CA114B400000000000000002,
+				AB109A719BE042A098FE1001,
+				087A85F6C26B99E3E3C61059,
+				5802CB74AF55627F307EC03B,
+				7B13E9F7E8EF7D313E920F4A,
+				06F64858B33C6F9F239329CF,
+				995FE7CE49E61DC6264BCDE3,
+				675CD0199229C54508272FB7,
+				32A465B4EEF0EDC9E3886AB3,
+				403739B22A89C7CC4E5CC7E2,
+				E554103F88F20A31CBF75B1F,
+				A505381A5B62508FD87621D8,
+				4994DDE2553CD1CCC8288994,
+				58EEE33394783A30E0954279,
+				942D79935013F7AFEC6603CA,
+				44F88181A401C63820D8CC5C,
+				A3072837EA10693843941059,
+				EE4A5684E848611F7843501D,
+				CA3800000000000000000001,
+				CA3900000000000000000103,
+				CA3900000000000000000102,
+				CA3900000000000000000101,
+				CA3900000000000000000100,
+				CA3800000000000000000003,
+				5573C1A6D9065B3100EBE6D4,
+				A9DBD461ACA04B76EA7AB692,
+				3A087F0D5494A44369795017,
+				D9563506C004E2F5E72F9447,
+				B27B789FDF81AD9876965548,
+				DBA1BC0B4654B65B3F3E9502,
+				54976AE88F40EA0DE7A084FC,
+				0FD67D107ECD39DAAECD65CB,
+				FB868D40AC429CE6DC46A4F7,
+				76F238270E55B728ADECC8EC,
+				30983C1FD6022394DB4A1CDA,
+				C3F6D440FFCA99488342062D,
+				6A7F2D6E29A7E10F4F7D1814,
+				9349B3AF0D91C1A063D1C17B,
+				A454D686F17A506B69B8E9A4,
+				0485234882EFDA37C5482A2B,
+				089F9CF6C20B70134E163B7A,
+				F80C81CE3E1FA9078676B4A2,
+				D7DE6B0E1876E088705098B5,
+				51E6DAC550E03849F7140E17,
+				D4ABE088B8A4675F31A98642,
+				EE00D42EA8621530B2E444EF,
+				7448FEFF18961DE53AA9B447,
+				A79D907D0583593BD6D6327B,
+				CA5700000000000000000100,
+				CA5800000000000000000104,
+				CA5800000000000000000103,
+				CA5800000000000000000102,
+				CA5800000000000000000101,
+				CA5800000000000000000100,
+				CA5900000000000000000103,
+				CA5900000000000000000101,
+				CA5B00000000000000000101,
+				CA5C00000000000000000101,
+				CA5D00000000000000000102,
+				CA5D00000000000000000104,
+				CA5D00000000000000000105,
+				CA5D00000000000000000101,
+				CA5B00000000000000000103,
+				CA5A00000000000000000102,
+				CA5A00000000000000000101,
+				CA5700000000000000000105,
+				CA5700000000000000000104,
+				CA5700000000000000000103,
+				CA5700000000000000000102,
+				CA5700000000000000000101,
+				7AA9FA3B01D1FA95F9B4D726,
+				E653A3A6ACC4D88435BD7980,
+				68609869E637BD85A0B1592E,
+				42273FCFDA09576CF9E7B0F2,
+				CF349CACB2AE9E050843682D,
+				006E4CF2229A129990165B4E,
+				8E0526E5976E17DAE21FCA1E,
+				EF2F7A2F5BAA89067C387ABD,
+				B73D2599DA238497F52A627D,
+				A8B057B777F722E23A7DD33D,
+				E49D4408F63428EA93D8F3BE,
+				AB49C3006C72FA2E780F819D,
+				70E5A104D3F176241A45054E,
+				4BCB7311E13892A01B41B223,
+				9ACFCDC029F1C3AB19455554,
+				3829137DC87109D1F5DA23D0,
+				B0E4D72FE339637D604EF8BB,
+				4C906885A2CFE6D4394FF9E6,
+				6E748E6F25E048DFB8F9A8FB,
+				8997C43FCE53A94BD6A09027,
+				3A3C9F83E871D59061BF54AD,
+				CDAD70D2653C37AFBD71DD2C,
+				84D671C519AF93D0AA71AC88,
+				199293AC7AD1C3C5546A51E1,
+				1BA964313CD4592A6A0A986C,
+				46695496011E3E0A51F2358B,
+				F11583964084C4B207FBE7B8,
+				2C065B04D42C1402296A76DB,
+				4152EFBAB1DBBCB8799E1808,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2253,6 +3482,148 @@
 			buildActionMask = 2147483647;
 			files = (
 			    C1A89AB5587776BCF42367A4,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		991ABD524D4C3B5FE9C645C7 = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4D049C05192C85016E5941D7,
+				6D07CAC5D178B9F21C862EF2,
+				D90FD2C460026D1DA4FBB89D,
+				9E49C40FB50557C9F06A6911,
+				FA0007CC05F39913C14821B9,
+				CA3200000000000000000201,
+				CA3200000000000000000202,
+				CA3200000000000000000203,
+				CA4100000000000000000101,
+				CA3200000000000000000204,
+				CA4000000000000000000103,
+				CCF82762222E89BCDEDC1139,
+				016D07C5A8C15E7CFC638418,
+				CA4000000000000000000101,
+				CA4000000000000000000102,
+				85B82B0221B80AD2AFB280B8,
+				FEA1D225357AC722A1A8AE48,
+				D3C958DA5F5D72787AD087CC,
+				758CFA73B697251F14BE6AAC,
+				0AB59CD76FC17E0E0523D059,
+				D832A9B950C753BDE1256AB0,
+				2EEE754D0F31F42A9EF60AD6,
+				E1D2B518CB870609758A5538,
+				610644B7DBBCFA1C5E15D6BA,
+				D5D4E506061F6FE3BF56990D,
+				0F17503611AA5DBEB2F7B028,
+				ECC2A530AB8960A1F5407B44,
+				CF57AF8C1A82E97705477816,
+				97AC244C17706F5D4C1E84B1,
+				D4E85767E1340A4DE01B7BF4,
+				2C6457288E188E5D2B046D62,
+				E6B5FD71E0FE1268DD754ECF,
+				897C9EA729B5B6EE7AB8FD60,
+				2FBCE96F9CEF76CDBACAF430,
+				DB802615E31EE3EA7F35E204,
+				13D8AC62E41FD7BAA52726E9,
+				BB7B8A01CB1A561BC27C4FFD,
+				F0FF4BCCB5EF30EE72943F94,
+				13F0CF3206DCD63C82196123,
+				69363FC522A05E3E57D43C6E,
+				33D482EC188EF42D9AE86CBF,
+				5BE535766BDF7E567A38E9A6,
+				BCAECE7FCA39C1939678D462,
+				F15C09A0CADEC781C676F3A3,
+				273B5AA74FE1E2CE7BB2B3E3,
+				CA115B500000000000000001,
+				6C3962DA4B04B9D6DEEBFCE4,
+				CA4200000000000000000101,
+				08D5EE3A08897A2560928956,
+				492710FC9C0F9A0228A8D9A7,
+				DD12918928AE8307FD061A34,
+				1486BF4697CA265EA23A17B7,
+				C70A72A06F013CB8B51F5099,
+				CA4200000000000000000102,
+				CA4300000000000000000104,
+				CA4300000000000000000106,
+				CA4100000000000000000102,
+				CA3500000000000000000001,
+				C2ACF77A1A999ACC4000D794,
+				475C4D1D8607697782693CEA,
+				8A535E9888BD8D0AD18159CB,
+				0CD14078AE37DB2F2C136DDF,
+				2A91E9B7AA9C81FA7E76B7B1,
+				CA4300000000000000000101,
+				CA4300000000000000000107,
+				3DBA6C6E110DDFAD5ECDD2AC,
+				68C29BA9C1C941A9391DD569,
+				5D9FAB1AC199976EA759DB4E,
+				51584E17E5F86C2BFA9E00D6,
+				CA4800000000000000000100,
+				CA4800000000000000000101,
+				9559B1FAC9655CF9480CF1E2,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0ECC71DB5477D382C9269CEB = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6FAB82C8E79DD1088195E36C,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		95E47C22BCB190D28F6D1FF9 = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CA4500000000000000000101,
+				CA5D00000000000000000100,
+				1BFC088B02438D1138C4E6C0,
+				CA4500000000000000000100,
+				66ADF6A573785CABAD5468B0,
+				CA5B00000000000000000100,
+				28842FE674F014EB8ACCCCDA,
+				0781B5C4EADE4716E23EAB0A,
+				583699F78CE8BD42AB22EE69,
+				CA5D00000000000000000103,
+				D6FC983085BF19E23B967CBD,
+				7F90943348BD5247B5AC0EB3,
+				CA5900000000000000000102,
+				CA5A00000000000000000100,
+				CA5900000000000000000100,
+				CA5C00000000000000000100,
+				CA5B00000000000000000102,
+				4E62E554615D1032F6D7156A,
+				F4497B1295E6F0EB8E324AF0,
+				D47275A799CC59AB9CECE186,
+				55A73285A0879925E4E44ED9,
+				D1244D3128CEAE6664AE9A86,
+				C11FF9DA9524780ECE8EAC47,
+				88252F214F9E3637A1D2E9E0,
+				A94C1FDDFF5A8E454D71D3F4,
+				16E47513AA99C560116D6F57,
+				3AEBCC5F09FFB466C6149F72,
+				7B7B769DDD2CE747DADEE7BD,
+				7FCFA418D171E66C73222BD6,
+				ED6A249F4F2EFA9666989753,
+				1654233E92A2CD17F3495AF7,
+				4254C2D6B6D79DA2A7159A55,
+				CADAB5229C0D374ADB5FD2F4,
+				11810D2A45B604DB2954306E,
+				8F1E5DD009C5F4A3C2A11D92,
+				CA116B600000000000000001,
+				27ED9ABDBCEE938E05585E06,
+				C0569044922206EAF897B43F,
+				C4D3B43F1EDEDEAB76D6094D,
+				0CDA16E5900EA2AE4510D64F,
+				CA4300000000000000000103,
+				458F82E503D9E11BBED042D4,
+				491396E241D5EDFE07A3F8D5,
+				7B658EBB14DF6F69F3AFB35D,
+				429DEF54AC2DB2D5F8F69493,
+				59DBA9CDE5B757635F369410,
+				8EEE1602DD87135DE77F3E34,
+				7C33026A48344F075A739559,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2273,6 +3644,26 @@
 			isa = PBXTargetDependency;
 			target = 3A211C2DD970E0AE847CFE32;
 			targetProxy = 37F236080A8663C5E991AC1B;
+		};
+		B77896DFDB41E6BC2ECAA35B = {
+			isa = PBXTargetDependency;
+			target = B5C24F0F3C5AC4A7399C2099;
+			targetProxy = AA85301E088875FA6EF8CBF7;
+		};
+		BF43C98D7EAE33DAC98077CC = {
+			isa = PBXTargetDependency;
+			target = B5C24F0F3C5AC4A7399C2099;
+			targetProxy = 960764708CF37B13F7027A85;
+		};
+		CFB950AF545DC25CBD30C129 = {
+			isa = PBXTargetDependency;
+			target = 22ACCE1465E8CCE9A7F1AD34;
+			targetProxy = B161EF8493784BD0DA01A2FC;
+		};
+		BE7554918EB2DDFD55C78480 = {
+			isa = PBXTargetDependency;
+			target = 39B7054AB3FF8B415696AF0A;
+			targetProxy = 1B29819C4A09C5E0BC73AAF4;
 		};
 /* End PBXTargetDependency section */
 
@@ -2314,110 +3705,117 @@
 		3412FDD5ECECD61BD8B5B2BB = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-			    CODE_SIGN_ENTITLEMENTS = CamiTune.entitlements;
-			    ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-			    CODE_SIGN_IDENTITY = -;
-			    CODE_SIGN_STYLE = Manual;
-			    COMBINE_HIDPI_IMAGES = YES;
-			    CURRENT_PROJECT_VERSION = 1;
-			    ENABLE_HARDENED_RUNTIME = NO;
-			    ENABLE_USER_SCRIPT_SANDBOXING = NO;
-			    GENERATE_INFOPLIST_FILE = NO;
-			    INFOPLIST_FILE = Config/CamiTune-Info.plist;
-			    LD_RUNPATH_SEARCH_PATHS = (
-			        "$(inherited)",
-			        "@executable_path/../Frameworks",
-			    );
-			    MARKETING_VERSION = 0.3.0;
-			    PRODUCT_BUNDLE_IDENTIFIER = local.camilla.app;
-			    PRODUCT_NAME = "$(TARGET_NAME)";
-			    SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Sources/SystemAudioBridgeC/include";
-			    HEADER_SEARCH_PATHS = (
-			        "$(inherited)",
-			        "$(SRCROOT)/Sources/SystemAudioBridgeC/include",
-			        "$(SRCROOT)/Drivers/SystemAudioBridge/Shared",
-			    );
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				ENABLE_HARDENED_RUNTIME = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				MARKETING_VERSION = 0.3.0;
+				INFOPLIST_FILE = "Config/CamiTune-Info.plist";
+				CODE_SIGN_IDENTITY = "-";
+				GENERATE_INFOPLIST_FILE = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Sources/SystemAudioBridgeC/include",
+					"$(SRCROOT)/Drivers/SystemAudioBridge/Shared",
+					"$(SRCROOT)/Sources/CamiTuneAtomics/include",
+				);
+				CODE_SIGN_ENTITLEMENTS = CamiTune.entitlements;
+				CODE_SIGN_STYLE = Manual;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				PRODUCT_BUNDLE_IDENTIFIER = local.camilla.app;
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Sources/SystemAudioBridgeC/include";
+				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
 			name = Debug;
 		};
 		AC90D544CD03C7C42D6B6F5F = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-			    CODE_SIGN_ENTITLEMENTS = CamiTune.entitlements;
-			    ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-			    CODE_SIGN_IDENTITY = -;
-			    CODE_SIGN_STYLE = Manual;
-			    COMBINE_HIDPI_IMAGES = YES;
-			    CURRENT_PROJECT_VERSION = 1;
-			    ENABLE_HARDENED_RUNTIME = NO;
-			    ENABLE_USER_SCRIPT_SANDBOXING = NO;
-			    GENERATE_INFOPLIST_FILE = NO;
-			    INFOPLIST_FILE = Config/CamiTune-Info.plist;
-			    LD_RUNPATH_SEARCH_PATHS = (
-			        "$(inherited)",
-			        "@executable_path/../Frameworks",
-			    );
-			    MARKETING_VERSION = 0.3.0;
-			    PRODUCT_BUNDLE_IDENTIFIER = local.camilla.app;
-			    PRODUCT_NAME = "$(TARGET_NAME)";
-			    SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Sources/SystemAudioBridgeC/include";
-			    HEADER_SEARCH_PATHS = (
-			        "$(inherited)",
-			        "$(SRCROOT)/Sources/SystemAudioBridgeC/include",
-			        "$(SRCROOT)/Drivers/SystemAudioBridge/Shared",
-			    );
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				ENABLE_HARDENED_RUNTIME = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				MARKETING_VERSION = 0.3.0;
+				INFOPLIST_FILE = "Config/CamiTune-Info.plist";
+				CODE_SIGN_IDENTITY = "-";
+				GENERATE_INFOPLIST_FILE = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Sources/SystemAudioBridgeC/include",
+					"$(SRCROOT)/Drivers/SystemAudioBridge/Shared",
+					"$(SRCROOT)/Sources/CamiTuneAtomics/include",
+				);
+				CODE_SIGN_ENTITLEMENTS = CamiTune.entitlements;
+				CODE_SIGN_STYLE = Manual;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				PRODUCT_BUNDLE_IDENTIFIER = local.camilla.app;
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Sources/SystemAudioBridgeC/include";
+				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
 			name = Release;
 		};
 		BCA0D6469D4A7CB6FB1754E7 = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-			    ALWAYS_SEARCH_USER_PATHS = NO;
-			    CLANG_ANALYZER_NONNULL = YES;
-			    CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
-			    CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
-			    CLANG_ENABLE_MODULES = YES;
-			    CLANG_ENABLE_OBJC_ARC = YES;
-			    CLANG_ENABLE_OBJC_WEAK = YES;
-			    CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
-			    CLANG_WARN_BOOL_CONVERSION = YES;
-			    CLANG_WARN_COMMA = YES;
-			    CLANG_WARN_CONSTANT_CONVERSION = YES;
-			    CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
-			    CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
-			    CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
-			    CLANG_WARN_EMPTY_BODY = YES;
-			    CLANG_WARN_ENUM_CONVERSION = YES;
-			    CLANG_WARN_INFINITE_RECURSION = YES;
-			    CLANG_WARN_INT_CONVERSION = YES;
-			    CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
-			    CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
-			    CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
-			    CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
-			    CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
-			    CLANG_WARN_STRICT_PROTOTYPES = YES;
-			    CLANG_WARN_SUSPICIOUS_MOVE = YES;
-			    CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
-			    CLANG_WARN_UNREACHABLE_CODE = YES;
-			    CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-			    COPY_PHASE_STRIP = NO;
-			    DEAD_CODE_STRIPPING = YES;
-			    ENABLE_STRICT_OBJC_MSGSEND = YES;
-			    GCC_C_LANGUAGE_STANDARD = gnu11;
-			    GCC_NO_COMMON_BLOCKS = YES;
-			    GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
-			    GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
-			    GCC_WARN_UNDECLARED_SELECTOR = YES;
-			    GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
-			    GCC_WARN_UNUSED_FUNCTION = YES;
-			    GCC_WARN_UNUSED_VARIABLE = YES;
-			    MACOSX_DEPLOYMENT_TARGET = 13.0;
-			    SDKROOT = macosx;
-			    SWIFT_VERSION = 5.0;
-			    DEBUG_INFORMATION_FORMAT = dwarf-with-dsym;
-			    ENABLE_NS_ASSERTIONS = NO;
-			    SWIFT_COMPILATION_MODE = wholemodule;
-			    SWIFT_OPTIMIZATION_LEVEL = -O;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				DEAD_CODE_STRIPPING = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				SDKROOT = macosx;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				SWIFT_VERSION = 5.0;
+				CLANG_WARN_EMPTY_BODY = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				CLANG_WARN_COMMA = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_ENABLE_MODULES = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				COPY_PHASE_STRIP = NO;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				OTHER_SWIFT_FLAGS = (
+					"$(inherited)",
+					"-package-name",
+					camitune,
+				);
 			};
 			name = Release;
 		};
@@ -2458,57 +3856,144 @@
 		EB1246BEA99C808D5386FC2F = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-			    ALWAYS_SEARCH_USER_PATHS = NO;
-			    CLANG_ANALYZER_NONNULL = YES;
-			    CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
-			    CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
-			    CLANG_ENABLE_MODULES = YES;
-			    CLANG_ENABLE_OBJC_ARC = YES;
-			    CLANG_ENABLE_OBJC_WEAK = YES;
-			    CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
-			    CLANG_WARN_BOOL_CONVERSION = YES;
-			    CLANG_WARN_COMMA = YES;
-			    CLANG_WARN_CONSTANT_CONVERSION = YES;
-			    CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
-			    CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
-			    CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
-			    CLANG_WARN_EMPTY_BODY = YES;
-			    CLANG_WARN_ENUM_CONVERSION = YES;
-			    CLANG_WARN_INFINITE_RECURSION = YES;
-			    CLANG_WARN_INT_CONVERSION = YES;
-			    CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
-			    CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
-			    CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
-			    CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
-			    CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
-			    CLANG_WARN_STRICT_PROTOTYPES = YES;
-			    CLANG_WARN_SUSPICIOUS_MOVE = YES;
-			    CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
-			    CLANG_WARN_UNREACHABLE_CODE = YES;
-			    CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-			    COPY_PHASE_STRIP = NO;
-			    DEAD_CODE_STRIPPING = YES;
-			    ENABLE_STRICT_OBJC_MSGSEND = YES;
-			    GCC_C_LANGUAGE_STANDARD = gnu11;
-			    GCC_NO_COMMON_BLOCKS = YES;
-			    GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
-			    GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
-			    GCC_WARN_UNDECLARED_SELECTOR = YES;
-			    GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
-			    GCC_WARN_UNUSED_FUNCTION = YES;
-			    GCC_WARN_UNUSED_VARIABLE = YES;
-			    MACOSX_DEPLOYMENT_TARGET = 13.0;
-			    SDKROOT = macosx;
-			    SWIFT_VERSION = 5.0;
-			    DEBUG_INFORMATION_FORMAT = dwarf;
-			    SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
-			    ENABLE_TESTABILITY = YES;
-			    GCC_OPTIMIZATION_LEVEL = 0;
-			    ONLY_ACTIVE_ARCH = YES;
-			    SWIFT_OPTIMIZATION_LEVEL = -Onone;
-			    SWIFT_COMPILATION_MODE = incremental;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				SWIFT_COMPILATION_MODE = incremental;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				DEAD_CODE_STRIPPING = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				SDKROOT = macosx;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				ENABLE_TESTABILITY = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				SWIFT_VERSION = 5.0;
+				CLANG_WARN_EMPTY_BODY = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				CLANG_WARN_COMMA = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_ENABLE_MODULES = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				COPY_PHASE_STRIP = NO;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				ONLY_ACTIVE_ARCH = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				OTHER_SWIFT_FLAGS = (
+					"$(inherited)",
+					"-package-name",
+					camitune,
+				);
 			};
 			name = Debug;
+		};
+		3C5AF53EA6FA21F1C934C2B5 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				DEFINES_MODULE = YES;
+				SKIP_INSTALL = YES;
+				SWIFT_INSTALL_OBJC_HEADER = NO;
+			};
+			name = Debug;
+		};
+		B7DA6478D06937AEFEC72095 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				DEFINES_MODULE = YES;
+				SKIP_INSTALL = YES;
+				SWIFT_INSTALL_OBJC_HEADER = NO;
+			};
+			name = Release;
+		};
+		06C27028C84FDB68B71837DC = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				DEFINES_MODULE = YES;
+				SKIP_INSTALL = YES;
+				SWIFT_INSTALL_OBJC_HEADER = NO;
+				CLANG_ENABLE_MODULES = YES;
+				PUBLIC_HEADERS_FOLDER_PATH = "include/$(PRODUCT_NAME)";
+				MODULEMAP_FILE = "$(SRCROOT)/Sources/CamiTuneAtomics/include/module.modulemap";
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Sources/CamiTuneAtomics/include",
+				);
+			};
+			name = Debug;
+		};
+		509E35DF19B7C5187DB99C70 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				DEFINES_MODULE = YES;
+				SKIP_INSTALL = YES;
+				SWIFT_INSTALL_OBJC_HEADER = NO;
+				CLANG_ENABLE_MODULES = YES;
+				PUBLIC_HEADERS_FOLDER_PATH = "include/$(PRODUCT_NAME)";
+				MODULEMAP_FILE = "$(SRCROOT)/Sources/CamiTuneAtomics/include/module.modulemap";
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Sources/CamiTuneAtomics/include",
+				);
+			};
+			name = Release;
+		};
+		5944664DF7F06CBA22247537 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				DEFINES_MODULE = YES;
+				SKIP_INSTALL = YES;
+				SWIFT_INSTALL_OBJC_HEADER = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Sources/CamiTuneAtomics/include",
+				);
+			};
+			name = Debug;
+		};
+		86BF5DE926E9787D43C5CE24 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				DEFINES_MODULE = YES;
+				SKIP_INSTALL = YES;
+				SWIFT_INSTALL_OBJC_HEADER = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Sources/CamiTuneAtomics/include",
+				);
+			};
+			name = Release;
 		};
 /* End XCBuildConfiguration section */
 
@@ -2545,6 +4030,33 @@
 			buildConfigurations = (
 			    118364FB9D52DD875A9AEC90,
 			    BFC5812E606F412B53CC5AB4,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		8532DAADC99D3F6C9B4E068C = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3C5AF53EA6FA21F1C934C2B5,
+				B7DA6478D06937AEFEC72095,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		92482CB1457FB05252430F2E = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				06C27028C84FDB68B71837DC,
+				509E35DF19B7C5187DB99C70,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F91F09F86BDAE9E8C69AD664 = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5944664DF7F06CBA22247537,
+				86BF5DE926E9787D43C5CE24,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

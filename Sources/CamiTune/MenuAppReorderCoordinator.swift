@@ -20,8 +20,8 @@ final class MenuAppReorderCoordinator: ObservableObject {
     init(store: AppPresentationStore) { self.store = store }
 
     static func canBegin(applicationID: String, modifiers: NSEvent.ModifierFlags, requiresModifier: Bool = true) -> Bool {
-        (!requiresModifier || !modifiers.intersection([.option, .command]).isEmpty)
-            && PerAppAudioController.isPersistentApplicationID(applicationID)
+        (!requiresModifier || modifiers.contains(.command))
+            && PerAppApplicationIdentityPolicy.isPersistentApplicationID(applicationID)
     }
 
     @discardableResult

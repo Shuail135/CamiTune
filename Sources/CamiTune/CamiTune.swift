@@ -1,3 +1,5 @@
+import CamiTuneAudio
+import CamiTuneDomain
 import SwiftUI
 import AppKit
 import Darwin
@@ -20,6 +22,54 @@ private var isSpeakerSetupPreview: Bool {
 @main
 enum CamiTuneLauncher {
     static func main() {
+        if let index = CommandLine.arguments.firstIndex(of: "--replay-producer-completion"), CommandLine.arguments.count > index + 1 {
+            let source = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+            Task { @MainActor in
+                do { print(try DeveloperSelfTests.replayProducerCompletion(from: source)); Darwin.exit(0) }
+                catch { print("Producer completion replay failed: \(error.localizedDescription)"); Darwin.exit(1) }
+            }
+            RunLoop.main.run(); return
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--pcm-delivery-baseline"), CommandLine.arguments.count > index + 2 {
+            let destination = CommandLine.arguments[index + 1], silence = CommandLine.arguments[index + 2]
+            let showsUI = ProcessInfo.processInfo.environment["CAMITUNE_DELIVERY_UI"] == "1"
+            if showsUI { NSApplication.shared.setActivationPolicy(.regular) }
+            Task { @MainActor in
+                do { try await LiveRuntimeBaseline.capture(destination: destination, silence: silence, deliveryEvidence: true); Darwin.exit(0) }
+                catch { print("PCM delivery baseline failed: \(error.localizedDescription)"); Darwin.exit(1) }
+            }
+            if showsUI { NSApplication.shared.run() }
+            else { RunLoop.main.run() }
+            return
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--timeline-policy-soak"), CommandLine.arguments.count > index + 2 {
+            let destination = CommandLine.arguments[index + 1], silence = CommandLine.arguments[index + 2]
+            Task { @MainActor in
+                do { try await LiveRuntimeBaseline.policySoak(destination: destination, silence: silence); Darwin.exit(0) }
+                catch { print("Policy soak failed: \(error.localizedDescription)"); Darwin.exit(1) }
+            }
+            RunLoop.main.run(); return
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--replay-timeline-policy"), CommandLine.arguments.count > index + 1 {
+            do {
+                let data = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
+                let document = try JSONDecoder().decode(TimelinePolicyTraceDocument.self, from: data)
+                let override = CommandLine.arguments.count > index + 2
+                    ? try JSONDecoder().decode(TimelineReorderPolicyConfiguration.self, from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[index + 2]))) : nil
+                let result = document.replay(configuration: override)
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                print(String(decoding: try encoder.encode(result), as: UTF8.self))
+                Darwin.exit(result.decisionMismatches == 0 && document.droppedEvents == 0 ? 0 : 1)
+            } catch { print("Policy replay failed: \(error.localizedDescription)"); Darwin.exit(1) }
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--live-route-handoff"), CommandLine.arguments.count > index + 2 {
+            let destination = CommandLine.arguments[index + 1], silence = CommandLine.arguments[index + 2]
+            Task { @MainActor in
+                do { try await LiveRuntimeBaseline.routeHandoff(destination: destination, silence: silence); Darwin.exit(0) }
+                catch { print("Live handoff failed: \(error.localizedDescription)"); Darwin.exit(1) }
+            }
+            RunLoop.main.run(); return
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--live-runtime-baseline"),
            CommandLine.arguments.count > index + 2 {
             let destination = CommandLine.arguments[index + 1]
@@ -215,13 +265,13 @@ final class CamiTunePresentationCoordinator {
                     || self.state.setupPresentation.isPresented
                     || self.state.profileConfirmations.showEnabledExplanation
                     || self.state.errorMessage != nil || self.state.updateChecker.isDownloadingUpdate,
-                transitionInProgress: self.state.transitionInProgress || self.state.isSavingProfileSettings,
+                transitionInProgress: self.state.transitionInProgress,
                 sidebarVisible: sidebar)
         }
         bridge.performDomainAction = { [weak self] id, action in
             guard let self else { return }
             Task { @MainActor [weak self] in
-                guard let self, !self.state.transitionInProgress, !self.state.isSavingProfileSettings,
+                guard let self, !self.state.transitionInProgress,
                       let profile = self.state.profiles.profiles.first(where: { $0.id == id }) else { return }
                 switch action {
                 case .setEnabled(let enabled): await self.state.setProfileEnabled(id: id, enabled: enabled)

@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import AppKit
 import SwiftUI
 
@@ -72,7 +73,7 @@ struct SpeakerVerificationView: View {
     private func play(_ id: PhysicalOutputID, topology: SpeakerTopology) {
         played = id; message = nil
         if previewOnly { message = "Simulated test selected: hardware output \(id.channelIndex + 1)" }
-        else { audition.toggle(id, topology: topology, audio: state.coreAudio, profile: profile) }
+        else { audition.toggle(id, topology: topology, audio: state.coreAudioService, profile: profile) }
     }
 
     private func save() {

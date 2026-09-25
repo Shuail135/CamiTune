@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import SwiftUI
 
 @MainActor
@@ -114,11 +115,11 @@ struct SpatialAudioEditorView: View {
                                 HStack {
                                     Button("Calibrate by Listening…") {
                                         creatingPosition = false
-                                        seatingContext = state.beginSpatialCalibration(profileID: profile.id, spatialAudio: true)
+                                        seatingContext = state.beginSpatialCalibration(profileID: profile.id)
                                         calibrationError = seatingContext == nil ? "Activate Spatial on this output before calibrating." : nil
                                     }.disabled(!active)
                                     Button("Room Correct…") {
-                                        microphoneContext = state.beginSpatialCalibration(profileID: profile.id, spatialAudio: true)
+                                        microphoneContext = state.beginSpatialCalibration(profileID: profile.id)
                                         calibrationError = microphoneContext == nil ? "Activate Spatial Audio on this output before measuring." : nil
                                     }.disabled(!active || !profile.spatialSettings.enabled || SpatialRoomCorrection.isApplied(to: profile.processing))
                                     if SpatialRoomCorrection.isApplied(to: profile.processing) {
@@ -139,7 +140,7 @@ struct SpatialAudioEditorView: View {
                             }
                             if profile.effectiveEndpointKind == .speakers {
                             Button("Test Speakers…") {
-                                channelContext = state.beginSpatialCalibration(profileID: profile.id, spatialAudio: true)
+                                channelContext = state.beginSpatialCalibration(profileID: profile.id)
                                 calibrationError = channelContext == nil ? "Activate Spatial Audio on this output first." : nil
                             }.disabled(!active || !profile.spatialSettings.enabled)
                             }

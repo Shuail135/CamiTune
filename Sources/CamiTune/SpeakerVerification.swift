@@ -1,29 +1,5 @@
+import CamiTuneDomain
 import Foundation
-
-struct SpeakerVerificationRecord: Codable, Hashable, Sendable {
-    struct Assignment: Codable, Hashable, Sendable {
-        var id: PhysicalOutputID
-        var role: ChannelRole
-        var function: SpeakerFunction
-    }
-    var completedAt = Date()
-    var simulated: Bool
-    var hardware: HardwareTopologyFingerprint
-    var assignments: [Assignment]
-
-    init(topology: SpeakerTopology, simulated: Bool) throws {
-        self.simulated = simulated
-        hardware = try .init(topology: topology)
-        assignments = Self.assignments(topology)
-    }
-    func matches(_ topology: SpeakerTopology) -> Bool {
-        hardware == (try? .init(topology: topology)) && assignments == Self.assignments(topology)
-    }
-    private static func assignments(_ topology: SpeakerTopology) -> [Assignment] {
-        topology.endpoints.filter { $0.connectionState != .disabledByUser }.sorted { $0.id.channelIndex < $1.id.channelIndex }
-            .map { Assignment(id: $0.id, role: $0.role, function: $0.function) }
-    }
-}
 
 struct SpeakerVerificationSession {
     var topology: SpeakerTopology

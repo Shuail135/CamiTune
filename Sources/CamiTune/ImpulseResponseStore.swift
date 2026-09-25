@@ -1,42 +1,7 @@
+import CamiTuneDomain
 import Accelerate
 import AVFoundation
 import Foundation
-
-struct ImpulseResponseAsset: Codable, Hashable, Sendable {
-    var id: UUID
-    var fileName: String
-    var displayName: String
-    var sampleRate: Int
-    var channelCount: Int
-    var frameCount: Int
-    /// FFT-derived maximum magnitude for each WAV channel. The importer adds a
-    /// small inter-bin safety margin, and the graph uses positive values as
-    /// automatic headroom just like response-raising EQ.
-    var maximumMagnitudeDBByChannel: [Double]
-
-    init(
-        id: UUID = UUID(),
-        fileName: String,
-        displayName: String,
-        sampleRate: Int,
-        channelCount: Int,
-        frameCount: Int,
-        maximumMagnitudeDBByChannel: [Double]
-    ) {
-        self.id = id
-        self.fileName = fileName
-        self.displayName = displayName
-        self.sampleRate = sampleRate
-        self.channelCount = channelCount
-        self.frameCount = frameCount
-        self.maximumMagnitudeDBByChannel = maximumMagnitudeDBByChannel
-    }
-
-    func maximumMagnitudeDB(forChannel channel: Int) -> Double? {
-        guard maximumMagnitudeDBByChannel.indices.contains(channel) else { return nil }
-        return maximumMagnitudeDBByChannel[channel]
-    }
-}
 
 /// Imports external impulse responses into immutable app-managed storage.
 /// CamillaDSP is then free to reload them after the file importer's temporary

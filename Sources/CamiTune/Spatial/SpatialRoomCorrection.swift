@@ -1,10 +1,10 @@
+import CamiTuneDomain
 import AVFoundation
 import Foundation
 
 /// Conservative low-frequency peak reduction in the measured output chain.
 /// Never boosts a null or claims to separate room response from the microphone.
 struct SpatialRoomCorrection {
-    static let stageID = UUID(uuidString: "CA117B70-0000-4000-8000-000000000051")!
 
     static func bands(for measurement: SpatialAcousticProfile) -> [EQBand] {
         guard let center = measurement.positions.first(where: { $0.position == .listeningPosition }),
@@ -28,7 +28,7 @@ struct SpatialRoomCorrection {
     }
 
     static func isApplied(to processing: ProcessingProfile) -> Bool {
-        processing.global.stages.contains { $0.id == stageID }
+        processing.global.stages.contains { $0.id == ProcessingProfile.spatialRoomCorrectionStageID }
     }
 
     /// The imported recording must contain this session's complete two sweeps.

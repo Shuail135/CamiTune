@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
@@ -128,7 +129,6 @@ extension DeviceCorrectionEditorView {
             switch result {
             case .success(let correction):
                 generated = correction
-                generatedAutomaticHeadroomDB = automaticHeadroom(correction.filters)
                 errorMessage = nil
             case .failure(let error):
                 generated = nil

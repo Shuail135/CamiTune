@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import Foundation
 
 /// A validated discovery snapshot; editable profile intent remains in SpeakerTopology.
@@ -24,8 +25,10 @@ struct CoreAudioHardwareTopologyProvider: AudioHardwareTopologyProvider {
 
     func topology(for deviceUID: String, sampleRate: Double) throws -> DetectedHardwareTopology {
         guard device.id == deviceUID else { throw SpeakerTopologyError.invalidDeviceUID }
+        guard !device.isRoutingDevice else { throw SpeakerTopologyProbe.ProbeError.routingDevice }
         guard sampleRate.isFinite, sampleRate > 0 else { throw SpeakerTopologyError.invalidSampleRate }
-        let topology = try SpeakerTopologyProbe().probe(device)
+        guard let fresh = CoreAudioService.deviceInfo(forUID: deviceUID) else { throw SpeakerTopologyError.invalidDeviceUID }
+        let topology = try SpeakerTopologyProbe().probe(fresh)
         guard topology.sampleRate == sampleRate else { throw SpeakerTopologyError.invalidSampleRate }
         return try DetectedHardwareTopology(speakerTopology: topology)
     }

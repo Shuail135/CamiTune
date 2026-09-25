@@ -1,3 +1,4 @@
+import CamiTuneAudio
 import CryptoKit
 import Foundation
 
@@ -12,6 +13,8 @@ final class BundledHRTFDatabase: HRTFDatabase {
     }
     enum LoadError: Error { case missingAsset, invalidAsset, unsupportedDirectionOrRate }
     static let shared: BundledHRTFDatabase? = try? BundledHRTFDatabase()
+    var profileName: String { manifest.name }
+    var supportedSampleRates: [Double] { manifest.rates.map(\.sampleRate) }
     let manifest: Manifest
     private let filters: [Double: [HRIRPair]]
 

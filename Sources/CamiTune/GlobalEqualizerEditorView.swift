@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import AppKit
 import Combine
 import SwiftUI
@@ -206,11 +207,11 @@ struct GlobalEqualizerEditorView: View {
                 sampleRate: Double(profile.sampleRate),
                 automaticHeadroom: automaticHeadroomForCorrection,
                 shouldConfirmReplacement: {
-                    EQEditorSupport.hasMeaningfulProcessing(ParsedEQ(
+                    (ParsedEQ(
                         preampDB: preampDB,
                         bands: graphicBands,
                         warnings: []
-                    ))
+                    )).hasMeaningfulProcessing
                 },
                 onCancel: { showDeviceCorrectionEditor = false },
                 onLoad: loadDeviceCorrectionEQ

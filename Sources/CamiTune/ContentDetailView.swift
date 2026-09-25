@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import SwiftUI
 import Foundation
 
@@ -5,7 +6,7 @@ import Foundation
 struct ContentDetailView: View {
     let state: AppState
     @ObservedObject var profileStore: ProfileStore
-    let coreAudio: CoreAudioManager
+    let coreAudio: CoreAudioSnapshotStore
     let selection: SidebarDestination
 
     // SwiftUI may read a departing editor's binding after deletion or reordering.

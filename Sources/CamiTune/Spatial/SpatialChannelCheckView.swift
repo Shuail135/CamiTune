@@ -1,3 +1,5 @@
+import CamiTuneAudio
+import CamiTuneDomain
 import SwiftUI
 
 @MainActor
@@ -44,7 +46,7 @@ struct SpatialChannelCheckView: View {
             }.value
             guard requestID == request else { return }
             guard let clip = prepared else { playing = nil; error = "This sample rate is not supported for the check."; return }
-            if !state.playSpatialCalibration(context: context, clip: clip, tuning: .neutral, completion: {
+            if !state.playSpatialCalibration(context: context, clip: clip, completion: {
                 Task { @MainActor in if requestID == request { playing = nil } }
             }) { playing = nil; error = "The output changed. Reopen the check." }
         }

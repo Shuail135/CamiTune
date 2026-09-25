@@ -1,3 +1,5 @@
+import CamiTuneAudio
+import CamiTuneDomain
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
@@ -146,7 +148,15 @@ struct PerformanceDiagnosticsView: View {
     private func queueView(_ queue: PCMQueueSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(String(format: "Writer queue: %d frames / %.1f ms @ %.0f Hz", queue.queuedFrames, queue.durationMilliseconds, queue.sampleRate))
-            Text(String(format: "Session peak: %d frames / %.1f ms · Capacity: %d frames / %.1f ms", queue.peakQueuedFrames, queue.peakDurationMilliseconds, queue.capacityFrames, queue.capacityMilliseconds))
+            Text(String(format: "Session peak: %d frames / %.1f ms · Hard limit: %d frames / %.1f ms", queue.peakQueuedFrames, queue.peakDurationMilliseconds, queue.capacityFrames, queue.capacityMilliseconds))
+            if let target = queue.operatingTargetFrames, let recovery = queue.recoveryTargetFrames {
+                Text("Configured operating target: \(target) frames · Recovery target: \(recovery) frames")
+            }
+            if let mode = queue.rateTargetMode {
+                Text(mode == .legacyBlockTarget ? "Rate target: legacy per-block reference"
+                    : mode == .clockTracked ? "Rate target: fixed, with measured clock drift"
+                    : mode == .configuredWhenQueued ? "Rate target: fixed, with empty-queue guard" : "Rate target: fixed configuration")
+            }
         }.font(.caption).foregroundStyle(.secondary).monospacedDigit()
     }
     private func export(_ baseline: PerformanceBaseline) {

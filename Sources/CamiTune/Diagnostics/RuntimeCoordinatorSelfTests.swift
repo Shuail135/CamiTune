@@ -1,3 +1,5 @@
+import CamiTuneAudio
+import CamiTuneDomain
 import Foundation
 
 @MainActor
@@ -79,9 +81,17 @@ extension DeveloperSelfTests {
                 await f.state.activate(profile: f.profile)
                 f.state.shutdownSynchronously(); f.state.shutdownSynchronously()
                 try diagnosticRequire(!f.state.isActive && f.fake.resources.isEmpty, "Shutdown leaked")
+                let cleanup = f.fake.events.lastIndex(of: "remove profile devices")
+                let stop = f.fake.events.lastIndex(of: "stop volume")
+                try diagnosticRequire(cleanup != nil && stop != nil && cleanup! > stop!, "Profile devices must be removed after audio stops")
+                try diagnosticRequire(f.fake.events.filter { $0 == "remove profile devices" }.count == 1, "Duplicate profile cleanup")
                 for name in ["transport", "PCM", "engine", "volume", "spectrum", "observations"] {
                     try diagnosticRequire(f.fake.events.filter { $0 == "stop \(name)" }.count == 1, "Duplicate/missing stop: \(name)")
                 }
+            },
+            fixture("C04b", "Inactive shutdown removes published profile devices exactly once") { f in
+                f.state.shutdownSynchronously(); f.state.shutdownSynchronously()
+                try diagnosticRequire(f.fake.events.filter { $0 == "remove profile devices" }.count == 1, "Profile devices survived inactive shutdown")
             },
             fixture("C05", "Stop during endpoint wait never acknowledges the provisional session") { f in
                 let gate = DiagnosticManualGate(); defer { gate.release() }
@@ -359,6 +369,20 @@ extension DeveloperSelfTests {
                 await f.state.activate(profile: f.profile)
                 try diagnosticRequire(!f.state.isActive && f.fake.resources.isEmpty && !f.fake.events.contains("notify activation"),
                     "Known failed transport was acknowledged")
+            },
+            check("C40", "Delivery faults retire the active session without presentation telemetry") {
+                var failure: String?
+                let f = try CoordinatorFixture { services, _ in services.transportError = { failure } }
+                do {
+                    await f.state.activate(profile: f.profile)
+                    try diagnosticRequire(f.state.isActive, "Fixture did not activate")
+                    failure = "Required source clock unavailable"
+                    await f.state.monitorRouting()
+                    try diagnosticRequire(!f.state.isActive && f.fake.resources.isEmpty,
+                        "Delivery failure remained active without visible meters")
+                    try diagnosticRequire(f.state.errorMessage == failure, "Delivery fault reason was lost")
+                    await f.cleanUp()
+                } catch { await f.cleanUp(); throw error }
             },
             fixture("C39", "Same-profile activation intent uses plan requirements without needless restart") { f in
                 await f.state.activate(profile: f.profile)

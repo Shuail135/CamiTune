@@ -1,8 +1,12 @@
+import CamiTuneAudio
+import CamiTuneDomain
 import Foundation
 import CoreAudio
 import SystemAudioBridgeC
 
 final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
+    static var maximumPacketFrameCapacity: Int { Int(sabr_client_transport_default_frame_capacity()) }
+
     struct Statistics: Sendable {
         var packetCount: UInt64 = 0
         var latestPacketFrames: UInt32 = 0
@@ -24,6 +28,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         var ringCapacityFrames: UInt32 = 0
         var rateAdjustmentPPM: Double = 0
         var rateMatchBufferedFrames: UInt64 = 0
+        var completion = ProducerCompletionStatistics()
     }
 
     @Published private(set) var status = "Driver transport idle"
@@ -41,14 +46,31 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
     private final class RunContext: @unchecked Sendable {
         let transport: SABRClientTransportRef
         let deviceObjectID: AudioObjectID
-        let controlDeviceObjectID: AudioObjectID
+        private let controlBindingLock = NSLock()
+        private var storedControlDeviceObjectID: AudioObjectID
+        var controlDeviceObjectID: AudioObjectID {
+            controlBindingLock.lock(); defer { controlBindingLock.unlock() }
+            return storedControlDeviceObjectID
+        }
+        func updateControlBinding(_ id: AudioObjectID, consumer: @escaping @Sendable (Float, Bool) -> Void) {
+            controlBindingLock.lock(); storedControlDeviceObjectID = id; storedMasterControlConsumer = consumer; controlBindingLock.unlock()
+        }
         let pcmRouter: PCMRouter
         let perAppAudio: PerAppAudioController
-        let masterControlConsumer: @Sendable (Float, Bool) -> Void
+        private var storedMasterControlConsumer: @Sendable (Float, Bool) -> Void
+        func consumeControl(_ control: SABRClientControlState) -> Bool {
+            controlBindingLock.lock()
+            let consumer = control.deviceObjectID == storedControlDeviceObjectID ? storedMasterControlConsumer : nil
+            controlBindingLock.unlock()
+            guard let consumer else { return false }
+            consumer(control.linearGain, control.muted.boolValue)
+            return true
+        }
         let expectedSampleRate: Double
         let channelCapacity: UInt32
         let generation: UInt64
         // Reader-owned values; publication happens on this same worker.
+        let capturesReservationEvidence = ProcessInfo.processInfo.environment["CAMITUNE_POLICY_TRACE_PATH"] != nil
         var packetCount: UInt64 = 0
         var latestPacketFrames: UInt32 = 0
         var minimumPacketFrames: UInt32 = 0
@@ -57,6 +79,10 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         private let condition = NSCondition()
         private var stopRequested = false
         private var finished = false
+        private var failed = false
+        var didFail: Bool { condition.lock(); defer { condition.unlock() }; return failed }
+        func markFailed() { condition.lock(); failed = true; condition.unlock() }
+        let completion: ProducerCompletionAssembler
         private var wakeDeadline: Date?
         private var wakeTimerFinished = false
         private var disconnectStatus: OSStatus = noErr
@@ -74,13 +100,14 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         ) {
             self.transport = transport
             self.deviceObjectID = deviceObjectID
-            self.controlDeviceObjectID = controlDeviceObjectID
+            self.storedControlDeviceObjectID = controlDeviceObjectID
             self.pcmRouter = pcmRouter
             self.perAppAudio = perAppAudio
-            self.masterControlConsumer = masterControlConsumer
+            self.storedMasterControlConsumer = masterControlConsumer
             self.expectedSampleRate = expectedSampleRate
             self.channelCapacity = channelCapacity
             self.generation = generation
+            self.completion = ProducerCompletionAssembler(generation: generation)
         }
 
         func requestStop() {
@@ -166,6 +193,10 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
     private static let shutdownTimeout: TimeInterval = 2
     private let state = NSLock()
     private var context: RunContext?
+    func updateControlDeviceObjectID(_ objectID: AudioObjectID, consumer: @escaping @Sendable (Float, Bool) -> Void) {
+        state.lock(); let current = context; state.unlock()
+        current?.updateControlBinding(objectID, consumer: consumer)
+    }
     private var worker: Thread?
     private var generation: UInt64 = 0
 
@@ -206,6 +237,8 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         }.value
 
         guard isCurrentGeneration(runGeneration) else { return }
+        state.lock(); let failed = context?.didFail ?? false; state.unlock()
+        guard !failed else { return }
         runtimeError = nil
         status = "Waiting for System Audio Bridge frames…"
     }
@@ -371,11 +404,11 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         var nextStatisticsUpdate = Date(timeIntervalSinceNow: 0.5)
         var mixFlushDeadline: Date?
         var reportedSourceFormat: SpatialSourceFormat?
-        var reportedUnsupportedLayoutTag: UInt32?
-        var reportedUnsupportedChannelCount: UInt32?
-        var reportedSampleRateMismatch: Double?
         var lastClientGeneration: UInt64 = .max
         var lastMasterControlGeneration: UInt64 = .max
+#if DEBUG
+        var loggedPacketIdentities = Set<String>()
+#endif
 
         context.scheduleWake(at: nextStatisticsUpdate)
         while !context.shouldStop() {
@@ -400,13 +433,9 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                     context.transport,
                     &masterControl
                 ),
-               masterControl.deviceObjectID == context.controlDeviceObjectID,
-               masterControl.generation != lastMasterControlGeneration {
+               masterControl.generation != lastMasterControlGeneration,
+               context.consumeControl(masterControl) {
                 lastMasterControlGeneration = masterControl.generation
-                context.masterControlConsumer(
-                    masterControl.linearGain,
-                    masterControl.muted.boolValue
-                )
             }
 
             let clientGeneration = sabr_client_transport_client_generation(transport)
@@ -417,137 +446,110 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             }
 
             var packet = SABRClientAudioPacketInfo()
-            // Always ask the transport reader for the next *committed* packet.
-            // `writePacket` is a reservation cursor and may run ahead of packet
-            // commits when driver callbacks overlap; using it as a readiness
-            // predicate can strand audio forever after one incomplete reservation.
-            // The reader already implements the authoritative READY/CONSUMED
-            // descriptor scan and safely returns 0 on timer/registry wakes.
-            let frames: UInt32 = samples.withUnsafeMutableBufferPointer { buffer in
-                sabr_client_transport_read_packet(
-                    transport,
-                    buffer.baseAddress,
-                    channelCapacity,
-                    maximumFrames,
-                    &packet
-                )
+            let receivedRecord = samples.withUnsafeMutableBufferPointer { buffer in
+                sabr_client_transport_read_event(transport, buffer.baseAddress, channelCapacity,
+                    maximumFrames, &packet)
             }
-            let performance = frames > 0 ? context.pcmRouter.performanceSource.snapshot() : nil
-            let received = performance.map { _ in PerformanceClock.now() }
-            if frames > 0 {
-                context.packetCount &+= 1
-                context.latestPacketFrames = frames
-                context.minimumPacketFrames = context.minimumPacketFrames == 0 ? frames : min(context.minimumPacketFrames, frames)
-                context.maximumPacketFrames = max(context.maximumPacketFrames, frames)
-            }
-            if frames == 0 {
-                if let deadline = mixFlushDeadline, deadline <= Date() {
-                    // More than one reordered cycle can become eligible on the
-                    // same timer wake. Drain every expired cycle now so idle or
-                    // short-lived clients cannot leave stale timeline audio
-                    // parked until another unrelated packet arrives.
-                    while true {
-                        switch context.perAppAudio.flushExpiredMix() {
-                        case .flushed(let mixed):
-                            context.pcmRouter.route(mixed)
-                            continue
-                        case .retryAfter(let delay):
-                            mixFlushDeadline = Date(timeIntervalSinceNow: delay)
-                        case .idle:
-                            mixFlushDeadline = nil
-                        }
-                        break
+            let tick = PerformanceClock.now()
+            do {
+                var completed: [ProducerCompletedInterval] = []
+                if receivedRecord {
+                    guard let kind = ProducerRecordKind(rawValue: packet.eventKind),
+                          let layout = LPCMChannelLayout(coreAudioTag: packet.channelLayoutTag,
+                            channelCount: Int(packet.channelCount)),
+                          packet.sampleTime.isFinite, packet.sampleTime >= Double(Int64.min),
+                          packet.sampleTime < Double(Int64.max), packet.sampleTime.rounded() == packet.sampleTime,
+                          (kind == .end || kind == .fault || packet.timestampFlags & 1 != 0),
+                          abs(packet.sampleRate - context.expectedSampleRate) < 0.5 else {
+                        try context.completion.fail("invalid timestamp, format or source sample rate")
                     }
+                    let frames = Int(packet.frameCount)
+                    let isPCM = kind == .pcm
+#if DEBUG
+                    if isPCM, loggedPacketIdentities.count < 16 {
+                        let signature = "\(packet.deviceObjectID):\(packet.clientID):\(packet.processID)"
+                        if loggedPacketIdentities.insert(signature).inserted {
+                            NSLog("[SABRIdentity] PCM device=%u client=%u pid=%d frames=%u",
+                                packet.deviceObjectID, packet.clientID, packet.processID, packet.frameCount)
+                        }
+                    }
+#endif
+                    let sampleCount = isPCM ? frames * Int(packet.channelCount) : 0
+                    guard sampleCount <= samples.count else { try context.completion.fail("source packet exceeds the negotiated storage") }
+                    let performance = isPCM ? context.pcmRouter.performanceSource.snapshot() : nil
+                    let trace = performance.flatMap { binding -> PacketPerformanceContext? in
+                        guard let session = binding.sessionID else { return nil }
+                        return .init(capture: binding.capture,
+                            identity: .init(captureID: binding.capture.id, runtimeSessionID: session,
+                                transportGeneration: context.generation, streamEpoch: packet.producerEpoch,
+                                deviceObjectID: packet.deviceObjectID, startSampleTime: Int64(packet.sampleTime),
+                                frameCount: frames, sampleRate: packet.sampleRate, channelCount: Int(packet.channelCount)),
+                            received: tick)
+                    }
+                    let record = ProducerCompletionRecord(generation: context.generation,
+                        sequence: packet.reservationSequence, epoch: packet.producerEpoch, kind: kind,
+                        device: packet.deviceObjectID, client: packet.clientID, process: packet.processID,
+                        cycle: packet.cycleCounter, start: Int64(packet.sampleTime), frames: frames,
+                        channels: Int(packet.channelCount), layout: layout, rate: packet.sampleRate,
+                        received: tick, samples: Array(samples.prefix(sampleCount)), performance: trace,
+                        hostTime: packet.outputHostTime, timestampFlags: packet.timestampFlags)
+                    completed = try context.completion.ingest(record)
+                    if isPCM {
+                        context.packetCount &+= 1
+                        context.latestPacketFrames = packet.frameCount
+                        context.minimumPacketFrames = context.minimumPacketFrames == 0 ? packet.frameCount : min(context.minimumPacketFrames, packet.frameCount)
+                        context.maximumPacketFrames = max(context.maximumPacketFrames, packet.frameCount)
+                    }
+                } else {
+                    // A missing/unready reservation is never a fence. Detect
+                    // malformed/dropped records even when no valid event follows.
+                    var raw = SABRClientTransportStatistics()
+                    sabr_client_transport_get_statistics(transport, &raw)
+                    if raw.droppedPackets > 0 || raw.malformedPacketCount > 0 || raw.consumerOverrunCount > 0 {
+                        try context.completion.fail("the completion transport lost or rejected a record")
+                    }
+                    try context.completion.checkDeadline(at: tick)
                 }
-            } else if let channelLayout = LPCMChannelLayout(
-                coreAudioTag: packet.channelLayoutTag,
-                channelCount: Int(packet.channelCount)
-            ) {
-                let hasSampleRateMismatch =
-                    abs(packet.sampleRate - context.expectedSampleRate) >= 0.5
-                if hasSampleRateMismatch {
-                    let actualRate = packet.sampleRate
-                    let requestedRate = context.expectedSampleRate
-                    if reportedSampleRateMismatch != actualRate {
-                        reportedSourceFormat = nil
-                        reportedSampleRateMismatch = actualRate
-                        let message = "System Audio Bridge is producing \(rateDescription(actualRate)), but the profile expects \(rateDescription(requestedRate)). Audio is paused until the rates match. Check the source app's selected output and sample rate."
+                for interval in completed {
+                    if let clock = interval.clock { context.pcmRouter.observeSourceClock(clock) }
+                    if interval.end > interval.start {
+                        let frame = try context.perAppAudio.ingestCompletedInterval(interval)
+                        context.pcmRouter.route(frame)
+                    }
+                    if interval.terminal { context.pcmRouter.finishProducerEpoch() }
+                    let sourceFormat = SpatialSourceFormat(layout: interval.layout)
+                    if reportedSourceFormat != sourceFormat {
+                        reportedSourceFormat = sourceFormat
+                        let formatName = sourceFormat.displayName
                         Task { @MainActor [owner] in
-                            guard let target = owner.value,
+                            guard !context.didFail, let target = owner.value,
                                   target.isCurrentGeneration(context.generation) else { return }
-                            target.status = "Paused: source sample rate does not match"
-                            target.runtimeError = message
+                            target.status = "Streaming \(formatName) LPCM from System Audio Bridge"
+                            target.runtimeError = nil
                         }
                     }
-                    continue
                 }
-                let sampleCount = Int(frames * packet.channelCount)
-                let metadata = PerAppAudioPacket(
-                    deviceObjectID: packet.deviceObjectID,
-                    clientID: packet.clientID,
-                    processID: packet.processID,
-                    cycleCounter: packet.cycleCounter,
-                    sampleTime: packet.sampleTime,
-                    interleaved: [],
-                    channelCount: Int(packet.channelCount),
-                    sampleRate: packet.sampleRate,
-                    channelLayout: channelLayout,
-                    // SABR per-client occupancy is not timeline latency and
-                    // must never feed clock control. Keep these legacy metadata
-                    // fields neutral; the writer's post-mix queue owns rate
-                    // matching now.
-                    sourceBufferedFrames: 0,
-                    sourceCapacityFrames: Int(maximumFrames)
-                )
-                let mixed = samples.withUnsafeBufferPointer { buffer in
-                    context.perAppAudio.ingestTransportPacket(
-                        metadata,
-                        samples: buffer,
-                        sampleCount: sampleCount,
-                        performance: performance.flatMap { binding in
-                            guard let session = binding.sessionID, let received,
-                                  packet.sampleTime.isFinite, packet.sampleTime >= Double(Int64.min), packet.sampleTime < Double(Int64.max) else { return nil }
-                            return PacketPerformanceContext(capture: binding.capture,
-                                identity: AudioTraceIdentity(captureID: binding.capture.id, runtimeSessionID: session,
-                                    transportGeneration: context.generation, streamEpoch: 0,
-                                    deviceObjectID: packet.deviceObjectID, startSampleTime: Int64(packet.sampleTime.rounded()),
-                                    frameCount: Int(frames), sampleRate: packet.sampleRate, channelCount: Int(packet.channelCount)), received: received)
-                        }
-                    )
+                let scheduledAt = PerformanceClock.now()
+                mixFlushDeadline = context.completion.nextDeadline.map { deadline in
+                    Date(timeIntervalSinceNow: max(0, PerformanceClock.milliseconds(scheduledAt, deadline) / 1000))
                 }
-                if let mixed { context.pcmRouter.route(mixed) }
-                let packetDuration = Double(frames) / packet.sampleRate
-                mixFlushDeadline = Date(
-                    timeIntervalSinceNow: max(0.003, packetDuration)
-                )
-                let sourceFormat = SpatialSourceFormat(layout: channelLayout)
-                if !hasSampleRateMismatch, reportedSourceFormat != sourceFormat {
-                    reportedSourceFormat = sourceFormat
-                    reportedUnsupportedLayoutTag = nil
-                    reportedUnsupportedChannelCount = nil
-                    reportedSampleRateMismatch = nil
-                    let formatName = sourceFormat.displayName
-                    Task { @MainActor [owner] in
-                        guard let target = owner.value,
-                              target.isCurrentGeneration(context.generation) else { return }
-                        target.status = "Streaming \(formatName) LPCM from System Audio Bridge"
-                        target.runtimeError = nil
-                    }
+            } catch {
+                context.markFailed()
+                let failure = context.completion.latchFailure(error.localizedDescription)
+                publishStatistics(context: context, owner: owner)
+                let message = failure.localizedDescription
+                NSLog("System Audio Bridge completion fault: %@", message)
+                Task { @MainActor [owner] in
+                    guard let target = owner.value, target.isCurrentGeneration(context.generation) else { return }
+                    target.status = "Paused: producer completion failed"
+                    target.runtimeError = message
                 }
-            } else {
-                let tag = packet.channelLayoutTag
-                let channelCount = packet.channelCount
-                if reportedUnsupportedLayoutTag != tag ||
-                    reportedUnsupportedChannelCount != channelCount {
-                    reportedSourceFormat = nil
-                    reportedUnsupportedLayoutTag = tag
-                    reportedUnsupportedChannelCount = channelCount
-                    Task { @MainActor [owner] in
-                        guard let target = owner.value,
-                              target.isCurrentGeneration(context.generation) else { return }
-                        target.status = "Unsupported \(channelCount)-channel LPCM layout (tag \(tag))"
-                    }
-                }
+                // Reader-owned fault shutdown. The writer's existing bounded
+                // stop drops queued PCM and DSP history; the runtime coordinator
+                // observes runtimeError and restores the physical route.
+                context.pcmRouter.stop()
+                context.perAppAudio.resetRuntime()
+                return
             }
 
             let now = Date()
@@ -577,7 +579,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         sabr_client_transport_get_statistics(context.transport, &raw)
         let rateMatching = context.pcmRouter.statistics
         let modularDistance = raw.writeFrame &- raw.readFrame
-        let value = Statistics(
+        var value = Statistics(
             packetCount: context.packetCount, latestPacketFrames: context.latestPacketFrames,
             minimumPacketFrames: context.minimumPacketFrames, maximumPacketFrames: context.maximumPacketFrames,
             bufferedFrames: modularDistance <= UInt64(raw.frameCapacity) ? modularDistance : 0,
@@ -597,10 +599,12 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             rateAdjustmentPPM: rateMatching.rateAdjustmentPPM,
             rateMatchBufferedFrames: rateMatching.rateMatchBufferedFrames
         )
+        value.completion = context.completion.statistics
+        let snapshot = value
         Task { @MainActor [owner] in
             guard let target = owner.value,
                   target.isCurrentGeneration(context.generation) else { return }
-            target.statistics = value
+            target.statistics = snapshot
         }
     }
 
@@ -648,6 +652,11 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                 generation: raw.generation
             )
         }
+#if DEBUG
+        let roster = clients.map { "\($0.deviceObjectID):\($0.clientID):\($0.processID):\($0.isActive ? 1 : 0)" }
+        NSLog("[SABRIdentity] roster generation=%llu count=%u entries=%@",
+            sabr_client_transport_client_generation(transport), count, roster.joined(separator: ","))
+#endif
         perAppAudio.updateClients(clients)
         return true
     }
@@ -696,18 +705,21 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             case .couldNotCreateSharedRegion:
                 return "CamiTune could not create the private driver audio transport."
             case .incompatibleDriver:
-                return "The live System Audio Bridge driver does not support this SABR transport v5 ABI. Use Setup → Install / Repair Everything to install driver 0.8.2, then ensure coreaudiod reloads."
+                return "The live System Audio Bridge driver does not support this SABR transport v6 completion ABI. Use Setup → Install / Repair Everything to install driver 0.9.0, then ensure coreaudiod reloads."
             case .disconnect(let status):
                 return "System Audio Bridge did not acknowledge transport disconnect after three attempts (Core Audio \(Self.describe(status))). The worker released its local mapping safely; repair or reload the driver before starting another route."
             case .shutdownTimedOut:
                 return "System Audio Bridge shutdown exceeded 2 seconds. Its worker still owns the mapped region and will release it when the in-flight audio operation returns."
             case .coreAudio(let status):
+                if status == SABR_TRANSPORT_PRODUCER_ACTIVE_ERROR {
+                    return "System Audio Bridge is still processing an earlier audio session. Pause applications using the bridge, then restart CamiTune audio. The connection was refused because earlier contributions could be missing."
+                }
                 if status == kAudioHardwareUnknownPropertyError ||
                     status == kAudioHardwareBadPropertySizeError {
-                    return "The live System Audio Bridge driver is incompatible with this SABR transport v5 ABI (Core Audio \(Self.describe(status))). Use Setup → Install / Repair Everything to install driver 0.8.2 and reload coreaudiod."
+                    return "The live System Audio Bridge driver is incompatible with this SABR transport v6 completion ABI (Core Audio \(Self.describe(status))). Use Setup → Install / Repair Everything to install driver 0.9.0 and reload coreaudiod."
                 }
                 if status == kAudioHardwareIllegalOperationError {
-                    return "System Audio Bridge rejected transport authorization or shared-region validation (Core Audio \(Self.describe(status))). Install driver 0.8.2 with Setup → Install / Repair Everything and reload coreaudiod."
+                    return "System Audio Bridge rejected transport authorization or shared-region validation (Core Audio \(Self.describe(status))). Install driver 0.9.0 with Setup → Install / Repair Everything and reload coreaudiod."
                 }
                 return "System Audio Bridge rejected the transport connection (Core Audio \(Self.describe(status)))."
             }

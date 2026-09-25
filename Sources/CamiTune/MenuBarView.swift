@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import AppKit
 import Combine
 import SwiftUI
@@ -133,8 +134,8 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     func setRuntimeActive(_ enabled: Bool) {
-        guard !actionInFlight, !state.transitionInProgress, !state.isSavingProfileSettings, let profile else { return }
-        if !enabled && state.profiles.activationMode(for: profile) == .physicalOutput {
+        guard !actionInFlight, !state.transitionInProgress, let profile else { return }
+        if !enabled && !state.profiles.hasDurableCommit && state.profiles.activationMode(for: profile) == .physicalOutput {
             pendingOffProfileID = profile.id
             return
         }
@@ -163,7 +164,7 @@ final class MenuBarViewModel: ObservableObject {
 
     func selectOutputProfile(_ id: UUID) {
         guard !actionInFlight, !state.transitionInProgress,
-              !state.isSavingProfileSettings, state.spatialCalibrationContext == nil,
+              state.spatialCalibrationContext == nil,
               let profile = state.profiles.profiles.first(where: { $0.id == id && $0.isEnabled }),
               !(state.isActive && state.activeProfileID == id) else { return }
         pendingOffProfileID = nil
@@ -300,12 +301,10 @@ struct MenuBarRootView: View {
                     MenuBarRuntimeControl(
                         isActive: model.runtimeControlSelection,
                         isVisuallyEnabled:
-                            !model.state.isSavingProfileSettings
-                            && model.state.spatialCalibrationContext == nil,
+                            model.state.spatialCalibrationContext == nil,
                         isInteractive:
                             !model.actionInFlight
                             && !model.state.transitionInProgress
-                            && !model.state.isSavingProfileSettings
                             && model.state.spatialCalibrationContext == nil,
                         confirmationID: model.pendingOffProfileID,
                         confirmation: AnyView(offConfirmation),
@@ -364,7 +363,7 @@ struct MenuBarRootView: View {
                 .accessibilityLabel("Output profile: \(title)")
             }
         .disabled(model.actionInFlight || model.state.transitionInProgress
-            || model.state.isSavingProfileSettings || model.state.spatialCalibrationContext != nil)
+            || model.state.spatialCalibrationContext != nil)
     }
 
     private func outputProfileLabel(title: String) -> some View {

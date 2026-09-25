@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import Foundation
 
 struct ReferenceCorrectionSession {
@@ -47,28 +48,28 @@ extension AppState: HistoryRestoring {
     }
 
     func restoreHistoryState(_ snapshot: HistoryState, target: HistoryTarget) async throws {
-        guard !isSavingProfileSettings, !transitionInProgress else { throw HistoryRestoreError.busy }
+        guard !isSavingProfileSettings, !profiles.hasDurableCommit, !transitionInProgress else { throw HistoryRestoreError.busy }
         let previous = try currentHistoryState(matching: snapshot, target: target)
         invalidateDeferredEdits()
         do {
             try await restoreHistoryValue(snapshot, target: target)
-            try persistHistoryChanges(for: snapshot)
+            try await persistHistoryChanges(for: snapshot)
             if let id = activeProfileID, pendingEditorApplies.contains(id) { try await applyHistoryProfileIfActive(id) }
             publishHistoryReplay()
         } catch {
             // Restore the same domain slice only. Unrelated state and later
             // runtime observations never come from a historical app snapshot.
             try? await restoreHistoryValue(previous, target: target)
-            try? persistHistoryChanges(for: previous)
+            try? await persistHistoryChanges(for: previous)
             publishHistoryReplay()
             throw error
         }
     }
 
-    private func persistHistoryChanges(for snapshot: HistoryState) throws {
+    private func persistHistoryChanges(for snapshot: HistoryState) async throws {
         switch snapshot {
         case .crossfeed, .convolution, .profileName, .profileOrganization, .deletion, .referenceTransfer:
-            try profiles.persistHistoryChanges()
+            try await profiles.persistHistoryChanges()
         case .perAppAudio, .perAppBatch: try perAppAudio.persistHistoryChanges()
         case .appAlias, .appPlacement: try perAppAudio.presentationStore.persistHistoryChanges()
         default: break
@@ -185,7 +186,7 @@ extension AppState: HistoryRestoring {
             } else {
                 try profiles.restoreDeletedProfiles(value)
                 do {
-                    try await coreAudio.synchronizeProfileRoutingDevicesWithoutBlockingUI(profiles: profiles.profiles, activeProfileID: activeProfileID)
+                    try await runtimeCoordinator.synchronizeProfileEndpoints()
                 } catch { errorMessage = "Profile data was restored, but its audio device label could not be synchronized: \(error.localizedDescription)" }
             }
         case let (.profileOrganization(value), .profileOrganization):

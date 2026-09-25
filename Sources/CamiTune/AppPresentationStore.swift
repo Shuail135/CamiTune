@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import Combine
 import Foundation
 
@@ -57,7 +58,7 @@ struct AppPresentationDocument: Codable, Equatable, Sendable {
     }
 
     mutating func sanitize() {
-        records = records.filter { PerAppAudioController.isPersistentApplicationID($0.key) }
+        records = records.filter { PerAppApplicationIdentityPolicy.isPersistentApplicationID($0.key) }
         for id in records.keys {
             let alias = Self.normalizedAlias(records[id]?.userAlias)
             records[id]?.userAlias = alias
@@ -138,7 +139,7 @@ final class AppPresentationStore: ObservableObject, @unchecked Sendable {
                   let ids = try? JSONDecoder().decode([String].self, from: data) {
             // Legacy history contains no manual order. Stable-ID order is the
             // one-time migration default; leave the original file as backup.
-            for id in ids where PerAppAudioController.isPersistentApplicationID(id) {
+            for id in ids where PerAppApplicationIdentityPolicy.isPersistentApplicationID(id) {
                 var record = AppPresentationRecord()
                 record.hasBeenSeen = true
                 loaded.records[id] = record
@@ -186,7 +187,7 @@ final class AppPresentationStore: ObservableObject, @unchecked Sendable {
 
     func observeAudioProvenApplication(_ observation: AppPresentationObservation) {
         let id = observation.applicationID
-        guard PerAppAudioController.isPersistentApplicationID(id) else { return }
+        guard PerAppApplicationIdentityPolicy.isPersistentApplicationID(id) else { return }
         mutate { document in
             var record = document.records[id] ?? AppPresentationRecord()
             if !record.hasBeenSeen {

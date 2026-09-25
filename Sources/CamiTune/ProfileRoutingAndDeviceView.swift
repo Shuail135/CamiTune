@@ -1,10 +1,11 @@
+import CamiTuneDomain
 import AppKit
 import SwiftUI
 
 @MainActor
 struct ProfileRoutingAndDeviceView: View {
     @ObservedObject var state: AppState
-    @ObservedObject var coreAudio: CoreAudioManager
+    @ObservedObject var coreAudio: CoreAudioSnapshotStore
     @Binding var profile: DeviceProfile
     let graphModel: ProfileEditorGraphModel
 

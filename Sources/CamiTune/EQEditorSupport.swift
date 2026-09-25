@@ -1,18 +1,7 @@
+import CamiTuneDomain
 import Foundation
 
 enum EQEditorSupport {
-    static func hasMeaningfulProcessing(_ parsed: ParsedEQ) -> Bool {
-        if abs(parsed.preampDB) > 0.000_001 { return true }
-        return parsed.bands.contains { band in
-            guard band.enabled else { return false }
-            switch band.kind {
-            case .peaking, .lowShelf, .highShelf:
-                return abs(band.gain ?? 0) > 0.000_001
-            case .lowPass, .highPass, .notch, .allPass:
-                return true
-            }
-        }
-    }
 
     static func resizedBands(_ bands: [EQBand], count requestedCount: Int) -> [EQBand] {
         let target = min(20, max(0, requestedCount))

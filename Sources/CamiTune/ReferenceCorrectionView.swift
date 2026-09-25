@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -107,7 +108,10 @@ struct ReferenceCorrectionView: View {
                     var correction = draft ?? DeviceCorrectionProfile(deviceName: "Correction", policy: .recommended,
                         measurement: .flat(), target: .flat(), curve: CorrectionCurve(points: []), filters: [], preampDB: 0)
                     correction.filters = filters
-                    return ReferenceCorrection.headroomDB(correction, sampleRate: Double(candidate.sampleRate))
+                    let snapshot = correction
+                    return await Task.detached(priority: .utility) {
+                        ReferenceCorrection.headroomDB(snapshot, sampleRate: Double(candidate.sampleRate))
+                    }.value
                 }, shouldConfirmReplacement: { false }, onCancel: { showingCorrection = false },
                 onLoad: { correction in showingCorrection = false; draft = correction })
         }
@@ -163,7 +167,7 @@ struct ReferenceCorrectionView: View {
         pendingProfile = profile; pendingEQ = state.eqDraft(for: profile.id)
         do {
             let current = try state.applyingSessionEQDrafts(to: profile)
-            if EQEditorSupport.hasMeaningfulProcessing(current.processing.globalEqualizerIncludingDeviceCorrection) { confirmTransfer = true }
+            if (current.processing.globalEqualizerIncludingDeviceCorrection).hasMeaningfulProcessing { confirmTransfer = true }
             else { transfer() }
         } catch { message = error.localizedDescription }
     }

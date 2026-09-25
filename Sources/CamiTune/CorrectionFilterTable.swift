@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import SwiftUI
 
 struct CorrectionFilterTable: View {

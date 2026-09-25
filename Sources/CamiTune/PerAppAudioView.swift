@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import AppKit
 import SwiftUI
 
@@ -31,7 +32,7 @@ struct PerAppAudioView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("App Audio").font(.largeTitle.bold())
-                    Text("Drag an app’s icon to reorder or move between sections. ⌥-drag its name.")
+                    Text("Press ⌘ and drag an app to reorder. Work in menu bar too.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -242,7 +243,7 @@ struct PerAppAudioList: View {
             }
         }
         .contextMenu {
-            if PerAppAudioController.isPersistentApplicationID(application.id) {
+            if PerAppApplicationIdentityPolicy.isPersistentApplicationID(application.id) {
                 let section = presentation.snapshot.section(for: application.id)
                 Button(section == .shown ? "Hide from Menu Bar" : "Show in Menu Bar") {
                     presentation.moveApplication(application.id, to: section == .shown ? .hidden : .shown)
@@ -276,7 +277,7 @@ private struct PerApplicationIdentityHeader: View {
     @FocusState private var fieldFocused: Bool
     @FocusState private var nameFocused: Bool
 
-    private var canRename: Bool { PerAppAudioController.isPersistentApplicationID(application.id) }
+    private var canRename: Bool { PerAppApplicationIdentityPolicy.isPersistentApplicationID(application.id) }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -285,7 +286,7 @@ private struct PerApplicationIdentityHeader: View {
                 .overlay {
                     if canRename && !editing {
                         MenuAppDragSource(application: application, displayedName: name, coordinator: reorder,
-                            drawsIdentity: false, requiresModifier: false)
+                            drawsIdentity: false, modifierOnlyHitTesting: true)
                             .accessibilityHidden(true)
                     }
                 }
@@ -334,7 +335,7 @@ private struct PerApplicationIdentityHeader: View {
                     .accessibilityHidden(true)
             }
         }
-        .help(canRename ? "\(name) — Click name to rename; drag icon or ⌥-drag name to move" : name)
+        .help(canRename ? "\(name) — Click name to rename; Command-drag icon or name to move" : name)
         .onHover { hovering = $0 }
         .onDisappear { finish(save: true) }
     }
@@ -530,8 +531,8 @@ private struct PerApplicationEQControls: View, Equatable {
             let input = HeadroomInput(tone: simpleTone, bands: bands, sampleRate: sampleRate)
             do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
             let headroom = await Task.detached(priority: .utility) {
-                PerAppAudioController.automaticSystemHeadroomDB(
-                    PerAppAudioSettings(eqBypassed: false, equalizerBands: input.bands, simpleTone: input.tone), sampleRate: input.sampleRate)
+                PerAppAudioSettings(eqBypassed: false, equalizerBands: input.bands, simpleTone: input.tone)
+                    .automaticHeadroomDB(sampleRate: input.sampleRate)
             }.value
             guard !Task.isCancelled else { return }
             automaticSystemHeadroomDB = headroom

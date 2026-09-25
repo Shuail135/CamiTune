@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import Foundation
 
 struct RuntimeIntentGeneration: Hashable, Comparable, Sendable {

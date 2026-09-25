@@ -12,8 +12,9 @@ extern "C" {
 #endif
 
 #define SABR_TRANSPORT_MAGIC UINT32_C(0x53414252) /* 'SABR' */
-#define SABR_TRANSPORT_PROTOCOL_VERSION UINT32_C(5)
-#define SABR_TRANSPORT_ABI_VERSION UINT32_C(5)
+#define SABR_TRANSPORT_PROTOCOL_VERSION UINT32_C(6)
+#define SABR_TRANSPORT_ABI_VERSION UINT32_C(6)
+#define SABR_TRANSPORT_PRODUCER_ACTIVE_ERROR ((OSStatus)0x73616374) /* 'sact' */
 #define SABR_TRANSPORT_PROPERTY ((AudioObjectPropertySelector)UINT32_C(0x73616272)) /* 'sabr' */
 #define SABR_TRANSPORT_SHM_NAME_CAPACITY 128
 #define SABR_TRANSPORT_MAX_CHANNELS 32
@@ -73,15 +74,17 @@ typedef struct SABRTransportConfiguration {
 } SABRTransportConfiguration;
 
 /*
- * Protocol version 5 identifies the source endpoint and sample rate in every
- * packet and reserves a lock-free diagnostics/control snapshot lane. ABI revision 5 also
- * requires the token-derived wake semaphore and channel-capacity capability
- * used by the companion during negotiation.
+ * Protocol/ABI version 6 adds epoch-bearing source PCM, exact host interval
+ * closures and producer-owned seals. Version 5 peers are rejected during
+ * negotiation; its additive-only packet stream cannot claim completeness.
+ * The token-derived wake semaphore and diagnostics/control lane remain.
  * The latest* fields are producer diagnostics only; consumers must use packet
  * metadata for queued audio. writeFrame and writePacket are reservation
  * cursors. Each packet's committed state publishes that producer's completed
  * descriptor independently, so overlapping real-time writers never wait for
  * an earlier writer to finish.
+ * The companion sequences ALL records by reservationSequence before applying
+ * closures. Frame-ring read order alone does not order completion evidence.
  */
 typedef struct SABRTransportHeader {
     uint32_t magic;
@@ -163,7 +166,22 @@ typedef struct SABRTransportPacket {
     uint64_t reservationSequence;
     _Atomic uint32_t committed;
     uint32_t reservedCommit32;
+    uint64_t producerEpoch;
+    uint64_t outputHostTime;
+    uint32_t timestampFlags;
+    uint32_t eventKind;
 } SABRTransportPacket;
+
+/* A closure is an ordered record, never a zero-length audio packet. END is
+ * emitted only after admission is sealed and all admitted callbacks publish.
+ * PCM=0 keeps internal test/diagnostic writers explicit about legacy metadata;
+ * the completion consumer requires a nonzero producerEpoch for every record. */
+enum {
+    SABR_EVENT_PCM = 0,
+    SABR_EVENT_CLOSE = 1,
+    SABR_EVENT_END = 2,
+    SABR_EVENT_FAULT = 3
+};
 
 typedef struct SABRTransportStatistics {
     uint64_t writeFrame;
@@ -253,7 +271,7 @@ static inline Float32* sabr_transport_samples(SABRTransportHeader* header) {
 
 _Static_assert(sizeof(SABRTransportHeader) == 192, "Transport header layout changed");
 _Static_assert(sizeof(SABRTransportClient) == 288, "Transport client layout changed");
-_Static_assert(sizeof(SABRTransportPacket) == 80, "Transport packet layout changed");
+_Static_assert(sizeof(SABRTransportPacket) == 104, "Transport packet layout changed");
 _Static_assert(ATOMIC_CHAR_LOCK_FREE == 2, "Byte transport atomics must be lock-free");
 _Static_assert(ATOMIC_INT_LOCK_FREE == 2, "32-bit transport atomics must be lock-free");
 _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2, "64-bit transport atomics must be lock-free");

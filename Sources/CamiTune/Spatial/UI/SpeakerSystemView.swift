@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import SwiftUI
 
 @MainActor
@@ -50,7 +51,7 @@ struct SpeakerSystemView: View {
                     }
                 }
             }
-            Text("Configure speaker position and user position for best performance.")
+            Text("Drag and Configure speaker position and user position for best performance.")
                 .font(.callout).foregroundStyle(.secondary)
             if let draft {
                 if !listeningOnly {
@@ -73,10 +74,6 @@ struct SpeakerSystemView: View {
                             zoomControls
                         }
                     }
-                }
-                if !listeningOnly {
-                    Text("If the default role is wrong, click the down arrow to change it.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if let index = draft.endpoints.firstIndex(where: { $0.id == selected }), !listeningOnly {
                     speakerTitle(draft.endpoints[index])
@@ -183,20 +180,11 @@ struct SpeakerSystemView: View {
 
     private func testSpeaker(_ id: PhysicalOutputID, topology: SpeakerTopology) {
         if let auditionOverride { auditionOverride(id) }
-        else { audition.toggle(id, topology: topology, audio: state.coreAudio, profile: profile) }
+        else { audition.toggle(id, topology: topology, audio: state.coreAudioService, profile: profile) }
     }
 
     private func speakerDetails(_ endpoint: SpeakerEndpoint) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(String(format: "Distance: %.2f m", SpeakerLayoutGeometry.distance(from: endpoint.position,
-                    listenerX: seat?.roomX ?? 0, listenerY: seat?.roomY ?? 0)))
-                    .font(.callout).foregroundStyle(.secondary)
-                Spacer()
-                Button(audition.output == endpoint.id ? "Stop Test" : "Test Speaker") {
-                    if let draft { testSpeaker(endpoint.id, topology: draft) }
-                }.disabled(busy || endpoint.connectionState == .disabledByUser)
-            }
             DisclosureGroup("Advanced") {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Hardware output \(endpoint.id.channelIndex + 1)").font(.caption).foregroundStyle(.secondary)
@@ -399,10 +387,10 @@ struct SpeakerSystemView: View {
         Task {
             defer { busy = false }
             do {
-                guard let device = await state.coreAudio.resolveDeviceWithoutBlockingUI(uid: uid) else {
+                guard let device = await state.coreAudioService.resolveDeviceWithoutBlockingUI(uid: uid) else {
                     throw SpeakerTopologyProbe.ProbeError.malformedProperty
                 }
-                var found = try await Task.detached(priority: .userInitiated) { try SpeakerTopologyProbe().probe(device) }.value
+                var found = try await state.coreAudioService.probeSpeakerTopology(uid: device.id)
                 guard generation == state.editGeneration, profile.outputDeviceUID == uid else { return }
                 // Use the profile's requested processing rate; activation negotiates it.
                 found.sampleRate = Double(profile.sampleRate)

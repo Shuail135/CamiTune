@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import SwiftUI
 
 @MainActor
@@ -114,7 +115,6 @@ extension DeviceCorrectionEditorView {
 
             CorrectionFilterTable(filters: Binding(get: { generated?.filters ?? [] }, set: { filters in
                 generated?.filters = filters
-                generatedAutomaticHeadroomDB = automaticHeadroom(filters)
             }))
         }
     }

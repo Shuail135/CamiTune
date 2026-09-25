@@ -9,13 +9,24 @@ BUILD_ROOT="$ROOT/build"
 DRIVER_CACHE="$BUILD_ROOT/driver/CamillaAudio.driver"
 DRIVER_STAMP="$BUILD_ROOT/driver/build-key"
 CAMILLADSP_REV="05e9cfcdf43c0dfe078ed3feb8af4c8bd701fd74"
-CAMILLADSP_PATCH="$ROOT/Contributions/CamillaDSP/0001-coreaudio-accept-device-uid.patch"
+CAMILLADSP_PATCHES=(
+    "$ROOT/Contributions/CamillaDSP/0001-coreaudio-accept-device-uid.patch"
+    "$ROOT/Contributions/CamillaDSP/0002-coreaudio-buffer-telemetry-without-rate-adjust.patch"
+    "$ROOT/Contributions/CamillaDSP/0004-coreaudio-playback-clock-feedback.patch"
+)
+CAMILLADSP_CAPABILITY="coreaudio-uid-playback-clock-v1"
 CAMILLADSP_BUILD_ROOT="$BUILD_ROOT/camilladsp"
 CAMILLADSP_SOURCE="$CAMILLADSP_BUILD_ROOT/source"
 CAMILLADSP_BINARY="$CAMILLADSP_BUILD_ROOT/camilladsp"
 CAMILLADSP_STAMP="$CAMILLADSP_BUILD_ROOT/build-key"
 
 mkdir -p "$RESOURCE_DIR/Drivers" "$RESOURCE_DIR/CamillaDSP"
+
+has_required_camilla_capability() {
+    local camitune_capability
+    camitune_capability="$("$1" --cami-tune-capabilities 2>/dev/null)" || return 1
+    [[ "$camitune_capability" == "$CAMILLADSP_CAPABILITY" ]]
+}
 
 copy_cached_components() {
     local copied=0
@@ -24,10 +35,13 @@ copy_cached_components() {
         /usr/bin/ditto "$DRIVER_CACHE" "$RESOURCE_DIR/Drivers/CamillaAudio.driver"
         copied=1
     fi
-    if [[ -x "$CAMILLADSP_BINARY" ]]; then
+    if [[ -x "$CAMILLADSP_BINARY" ]] && has_required_camilla_capability "$CAMILLADSP_BINARY"; then
         cp "$CAMILLADSP_BINARY" "$RESOURCE_DIR/CamillaDSP/camilladsp"
         chmod +x "$RESOURCE_DIR/CamillaDSP/camilladsp"
         copied=1
+    else
+        rm -f "$RESOURCE_DIR/CamillaDSP/camilladsp"
+        echo "CamiTune: no compatible cached engine; prepare Release audio components."
     fi
     return $((1 - copied))
 }
@@ -59,6 +73,7 @@ DRIVER_INPUT_HASH="$({
         find "$ROOT/Drivers/SystemAudioBridge/Driver" -type f -print
         find "$ROOT/Drivers/SystemAudioBridge/Shared" -type f -print
         echo "$ROOT/Sources/SystemAudioBridgeC/include/SystemAudioBridgeTransport.h"
+        echo "$ROOT/Sources/SystemAudioBridgeC/include/SystemAudioBridgeCompletion.h"
         echo "$ROOT/Sources/SystemAudioBridgeC/include/SystemAudioBridgeProfileFormat.h"
         echo "$ROOT/Drivers/SystemAudioBridge/build-driver.sh"
     } | LC_ALL=C sort | while IFS= read -r file; do
@@ -83,18 +98,23 @@ if [[ -n "${CAMITUNE_CAMILLADSP_BINARY:-}" ]]; then
         echo "ERROR: CAMITUNE_CAMILLADSP_BINARY is not executable: $CAMITUNE_CAMILLADSP_BINARY" >&2
         exit 1
     fi
+    if ! has_required_camilla_capability "$CAMITUNE_CAMILLADSP_BINARY"; then
+        echo "ERROR: CAMITUNE_CAMILLADSP_BINARY lacks required CamiTune audio capabilities." >&2
+        exit 1
+    fi
     INPUT_HASH="$(/usr/bin/shasum -a 256 "$CAMITUNE_CAMILLADSP_BINARY" | /usr/bin/awk '{print $1}')"
     CAMILLADSP_BUILD_KEY="override-${ARCH}-${INPUT_HASH}"
 else
-    PATCH_HASH="$(/usr/bin/shasum -a 256 "$CAMILLADSP_PATCH" | /usr/bin/awk '{print $1}')"
+    PATCH_HASH="$(/usr/bin/shasum -a 256 "${CAMILLADSP_PATCHES[@]}" | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
     CAMILLADSP_BUILD_KEY="source-${ARCH}-${CAMILLADSP_REV}-${PATCH_HASH}"
 fi
 CURRENT_CAMILLA_KEY="$(/bin/cat "$CAMILLADSP_STAMP" 2>/dev/null || true)"
 
-if [[ -x "$CAMILLADSP_BINARY" && "$CURRENT_CAMILLA_KEY" == "$CAMILLADSP_BUILD_KEY" ]]; then
-    echo "CamiTune: reusing cached UID-capable CamillaDSP."
+if [[ -x "$CAMILLADSP_BINARY" && "$CURRENT_CAMILLA_KEY" == "$CAMILLADSP_BUILD_KEY" ]] \
+    && has_required_camilla_capability "$CAMILLADSP_BINARY"; then
+    echo "CamiTune: reusing cached CamillaDSP."
 else
-    echo "CamiTune: building UID-capable CamillaDSP…"
+    echo "CamiTune: building CamillaDSP with output-clock support…"
     if [[ -n "${CAMITUNE_CAMILLADSP_BINARY:-}" ]]; then
         cp "$CAMITUNE_CAMILLADSP_BINARY" "$CAMILLADSP_BINARY"
     else
@@ -109,13 +129,22 @@ else
         git -C "$CAMILLADSP_SOURCE" remote add origin https://github.com/HEnquist/camilladsp.git
         git -C "$CAMILLADSP_SOURCE" fetch --depth 1 origin "$CAMILLADSP_REV"
         git -C "$CAMILLADSP_SOURCE" checkout -q --detach FETCH_HEAD
-        git -C "$CAMILLADSP_SOURCE" apply "$CAMILLADSP_PATCH"
+        for camitune_patch in "${CAMILLADSP_PATCHES[@]}"; do
+            git -C "$CAMILLADSP_SOURCE" apply "$camitune_patch"
+        done
         cargo build --release --manifest-path "$CAMILLADSP_SOURCE/Cargo.toml"
         cp "$CAMILLADSP_SOURCE/target/release/camilladsp" "$CAMILLADSP_BINARY"
     fi
     chmod +x "$CAMILLADSP_BINARY"
-    echo "$CAMILLADSP_BUILD_KEY" > "$CAMILLADSP_STAMP"
 fi
+
+# Verify both rebuilt and reused/overridden binaries before publishing the cache
+# key or embedding. Old cached Debug binaries are also rejected by the installer.
+if ! has_required_camilla_capability "$CAMILLADSP_BINARY"; then
+    echo "ERROR: CamillaDSP does not provide the required CamiTune audio capabilities." >&2
+    exit 1
+fi
+echo "$CAMILLADSP_BUILD_KEY" > "$CAMILLADSP_STAMP"
 
 rm -rf "$RESOURCE_DIR/Drivers/CamillaAudio.driver"
 /usr/bin/ditto "$DRIVER_CACHE" "$RESOURCE_DIR/Drivers/CamillaAudio.driver"

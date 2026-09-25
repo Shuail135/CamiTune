@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import SwiftUI
 
 /// One local value owns every step. No profile exists in the store until Add.
@@ -14,7 +15,7 @@ struct AddOutputDraft {
     var needsSpeakers: Bool { deviceType == .speakers || (deviceType == .audioInterface && connectedEndpoint == .speakers) }
     var canAdd: Bool { (try? candidate()) != nil }
 
-    mutating func selectDevice(_ device: AudioDeviceInfo, name: String) {
+    mutating func selectDevice(_ device: CoreAudioOutputSnapshot, name: String) {
         profile.outputDevice = PhysicalOutputIdentity(uid: device.id, name: device.name)
         profile.name = name
         profile.speakerTopology = nil
@@ -23,6 +24,10 @@ struct AddOutputDraft {
         leftOutput = nil
         rightOutput = nil
         selectedOutputs = []
+    }
+
+    mutating func selectDevice(_ device: AudioDeviceInfo, name: String) {
+        selectDevice(CoreAudioOutputSnapshot(device), name: name)
     }
 
     func candidate() throws -> DeviceProfile {
@@ -76,7 +81,7 @@ struct AddOutputDraft {
 @MainActor
 struct AddOutputProfileSheet: View {
     let state: AppState
-    @ObservedObject private var audio: CoreAudioManager
+    @ObservedObject private var audio: CoreAudioSnapshotStore
     @ObservedObject private var store: ProfileStore
     let onCancel: @MainActor () -> Void
     let onAdded: @MainActor (UUID) -> Void
@@ -234,7 +239,7 @@ struct AddOutputProfileSheet: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button {
-                    Task { await audio.refreshWithoutBlockingUI() }
+                    Task { await state.coreAudioService.refreshWithoutBlockingUI() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -397,8 +402,8 @@ struct AddOutputProfileSheet: View {
         Task {
             defer { busy = false }
             do {
-                guard let device = await audio.resolveDeviceWithoutBlockingUI(uid: uid) else { throw AppState.AppError.outputMissing(draft.profile.outputDeviceName) }
-                var topology = try await Task.detached(priority: .userInitiated) { try SpeakerTopologyProbe().probe(device) }.value
+                guard let device = await state.coreAudioService.resolveDeviceWithoutBlockingUI(uid: uid) else { throw AppState.AppError.outputMissing(draft.profile.outputDeviceName) }
+                var topology = try await state.coreAudioService.probeSpeakerTopology(uid: device.id)
                 guard draft.profile.outputDeviceUID == uid else { return }
                 topology.sampleRate = Double(draft.profile.sampleRate)
                 draft.discovered = topology

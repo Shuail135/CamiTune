@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import SwiftUI
 
 struct SpeakerLayoutSelector: View {
@@ -20,9 +21,11 @@ struct SpeakerLayoutSelector: View {
             HStack {
                 Text("Speakers").font(.callout)
                 Spacer()
+                /*
                 if topology.layoutTemplateID == nil, selected != nil {
                     Text("Estimated").font(.caption).foregroundStyle(.secondary)
                 }
+                 */
                 Menu {
                     ForEach(available) { template in
                         Button {

@@ -1,93 +1,26 @@
+import CamiTuneAudio
+import CamiTuneDomain
 import Foundation
 
-struct AudioTraceIdentity: Sendable, Codable, Equatable {
-    let captureID: UInt64
-    let runtimeSessionID: UUID
-    let transportGeneration: UInt64
-    var streamEpoch: UInt64
-    let deviceObjectID: UInt32
-    var startSampleTime: Int64
-    var frameCount: Int
-    let sampleRate: Double
-    let channelCount: Int
-}
 
-struct PacketPerformanceContext: Sendable {
-    let capture: AudioLatencyCapture
-    var identity: AudioTraceIdentity
-    let received: PerformanceTick
-    var policyTick: PerformanceTick? = nil
-}
 
-struct TraceContribution: Sendable {
-    var startSampleTime: Int64
-    let endSampleTime: Int64
-    let received: PerformanceTick
-    let processingCompleted: PerformanceTick
-}
 
-struct AudioIntervalTraceContext: Sendable {
-    let capture: AudioLatencyCapture
-    var identity: AudioTraceIdentity
-    let firstPacketReceived: PerformanceTick
-    let lastPacketReceived: PerformanceTick
-    let firstPacketProcessed: PerformanceTick
-    let lastPacketProcessed: PerformanceTick
-    let becameEligible: PerformanceTick
-    var emitted: PerformanceTick
-    let contributingPackets: Int
-    let idleDeadline: PerformanceTick?
-    let idleFlushStarted: PerformanceTick?
-}
 
-struct PCMWriterTraceContext: Sendable {
-    let capture: AudioLatencyCapture
-    let identity: AudioTraceIdentity
-    let interval: AudioIntervalTraceContext?
-    let entered: PerformanceTick
-    let queueBefore: Int
-    let queueAfter: Int
-    let capacity: Int
-}
 
-struct PacketLatencySample: Sendable, Codable {
-    let identity: AudioTraceIdentity
-    let received: PerformanceTick
-    let processed: PerformanceTick
-}
 
-struct AudioLatencySample: Sendable, Codable {
-    let identity: AudioTraceIdentity
-    let packetReceived: PerformanceTick?
-    let lastPacketReceived: PerformanceTick?
-    let firstPacketProcessed: PerformanceTick?
-    let packetProcessed: PerformanceTick?
-    let mixEligible: PerformanceTick?
-    let mixEmitted: PerformanceTick?
-    let idleDeadline: PerformanceTick?
-    let idleFlushStarted: PerformanceTick?
-    let queueEntered: PerformanceTick
-    let queueLeft: PerformanceTick
-    let renderCompleted: PerformanceTick
-    let resampleCompleted: PerformanceTick
-    let masterCompleted: PerformanceTick
-    let pipeWriteStarted: PerformanceTick
-    let pipeWriteCompleted: PerformanceTick
-    let queueFramesBeforeEntry: Int
-    let queueFramesAtEntry: Int
-    let queueFramesAfterDequeue: Int
-    let queueCapacityFrames: Int
-    let blockFrames: Int
-    let contributorCount: Int
-}
 
-struct QueueTimingSample: Sendable, Codable {
-    let identity: AudioTraceIdentity
-    let timestamp: PerformanceTick
-    let isEntry: Bool
-    let queuedFrames: Int
-    let capacityFrames: Int
-}
+
+
+
+
+
+
+
+
+
+
+
+
 
 struct FrameSizeDistribution: Sendable, Codable {
     let sampleCount: Int
@@ -103,49 +36,11 @@ struct FrameSizeDistribution: Sendable, Codable {
     }
 }
 
-struct PCMQueueRecoverySample: Sendable, Codable {
-    let captureID: UInt64
-    let runtimeSessionID: UUID
-    let timestamp: PerformanceTick
-    let queuedFramesBeforeRecovery: Int
-    let incomingFrames: Int
-    let droppedFrames: Int
-    let sampleRate: Double
-    let writerBlockInProgressFrames: Int
-}
 
-struct PCMQueueSnapshot: Sendable, Codable, Equatable {
-    var queuedFrames = 0
-    var peakQueuedFrames = 0
-    var capacityFrames = 0
-    var sampleRate = 0.0
-    var peakDurationMilliseconds = 0.0
-    var latestBlockFrames = 0
-    var lastRecoveryUptime: UInt64?
-    var lastRecoveryDroppedFrames = 0
-    var lastRecoveryQueuedFrames = 0
-    var lastRecoveryIncomingFrames = 0
-    var lastRecoverySampleRate = 0.0
-    var durationMilliseconds: Double { sampleRate > 0 ? Double(queuedFrames) * 1000 / sampleRate : 0 }
-    var capacityMilliseconds: Double { sampleRate > 0 ? Double(capacityFrames) * 1000 / sampleRate : 0 }
-}
 
-enum PerformanceEvent: Sendable {
-    case packet(PacketLatencySample)
-    case audio(AudioLatencySample)
-    case recovery(PCMQueueRecoverySample)
-    case queue(QueueTimingSample)
-    case presentation(PresentationPerformanceSample)
-    var timestamp: PerformanceTick {
-        switch self {
-        case .packet(let sample): return sample.received
-        case .audio(let sample): return sample.packetReceived ?? sample.queueEntered
-        case .recovery(let sample): return sample.timestamp
-        case .queue(let sample): return sample.timestamp
-        case .presentation(let sample): return sample.started
-        }
-    }
-}
+
+
+
 
 struct PerformanceOperationID: Sendable, Codable, Equatable { let rawValue: UInt64 }
 struct PerformancePhase: Sendable, Codable { let name: String; let timestamp: PerformanceTick }
@@ -190,6 +85,14 @@ struct PerformanceEnvironment: Sendable, Codable {
     var transportDroppedFrames: UInt64
     var processCPUSeconds: Double
     var presentationStatistics: PresentationPublicationStatistics? = nil
+    var timelineMixerStatistics: PerAppTimelineMixerStatistics? = nil
+    var writerRateAdjustmentPPM: Double? = nil
+    var writerRateBufferedFrames: UInt64? = nil
+    var deliveryConfiguration: PCMDeliveryConfiguration? = nil
+    var producerCompletion: ProducerCompletionStatistics? = nil
+    var playbackClock: CamillaPlaybackClock? = nil
+    var deliveryError: String? = nil
+    var producerDrains: PCMProducerDrainStatistics? = nil
 }
 
 struct PerformanceScenario: Sendable, Codable {
@@ -211,6 +114,9 @@ struct PerformanceCaptureOptions: Sendable, Codable {
     var scenario = PerformanceScenario()
     var redactNames = true
     var detailedAudioTracing = true
+    // Keep long coarse soaks below the existing 1,024-observation bound.
+    // Short captures retain their original half-second sampling cadence.
+    var observationInterval: Double { max(0.5, duration / 900) }
 }
 
 struct PerformanceEnvironmentObservation: Sendable, Codable {
@@ -311,13 +217,7 @@ struct PresentationPublicationStatistics: Sendable, Codable, Equatable {
     }
 }
 
-struct PresentationPerformanceSample: Sendable, Codable {
-    let phase: String
-    let started: PerformanceTick
-    let ended: PerformanceTick
-    let revision: UInt64
-    var builtOnPublicationWorker: Bool? = nil
-}
+
 
 struct PresentationPerformanceSummary: Sendable, Codable {
     let statistics: PresentationPublicationStatistics?

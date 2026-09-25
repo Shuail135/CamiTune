@@ -1,3 +1,4 @@
+import CamiTuneDomain
 import SwiftUI
 import AppKit
 import Foundation
@@ -339,7 +340,7 @@ final class SectionLayoutCellView: NSTableCellView {
 struct ProfileSettingsView: View {
     let state: AppState
     @ObservedObject private var store: ProfileStore
-    @ObservedObject private var audio: CoreAudioManager
+    @ObservedObject private var audio: CoreAudioSnapshotStore
     @State private var draft: ProfileSettingsDraft
     @State private var category = "General"
     @State private var saving = false
@@ -467,7 +468,7 @@ struct ProfileSettingsView: View {
         .onChange(of: draft.selectedType) { _ in
             if !categories.contains(category) { category = "General" }
         }
-        .task { await audio.refreshWithoutBlockingUI() }
+        .task { await state.coreAudioService.refreshWithoutBlockingUI() }
     }
 }
 
@@ -553,8 +554,8 @@ struct InterfaceAssignmentEditor: View {
         Task {
             defer { discovering = false }
             do {
-                guard let device = await state.coreAudio.resolveDeviceWithoutBlockingUI(uid: requested.uid) else { throw SpeakerTopologyError.invalidDeviceUID }
-                var found = try await Task.detached(priority: .userInitiated) { try SpeakerTopologyProbe().probe(device) }.value
+                guard let device = await state.coreAudioService.resolveDeviceWithoutBlockingUI(uid: requested.uid) else { throw SpeakerTopologyError.invalidDeviceUID }
+                var found = try await state.coreAudioService.probeSpeakerTopology(uid: device.id)
                 guard output.uid == requested.uid else { return }
                 found.sampleRate = Double(sampleRate)
                 if assignment?.deviceUID != requested.uid || assignment?.hardwareChannelCount != found.declaredChannelCount {
