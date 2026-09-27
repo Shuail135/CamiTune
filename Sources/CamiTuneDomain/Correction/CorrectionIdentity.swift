@@ -47,6 +47,10 @@ package struct MeasurementRigIdentity: Codable, Hashable, Sendable {
             family = .bk5128
             fixture = "B&K 5128"
             coupler = "B&K Type 4620"
+        } else if value.contains("43ag") || value.contains("45ca") {
+            family = .iec711
+            fixture = value.contains("43ag") ? "GRAS 43AG" : "GRAS 45CA"
+            coupler = "GRAS RA0045"
         } else if value.contains("711") || value.contains("60318 4")
             || value.contains("43ac") || value.contains("ra0045")
             || value.contains("kemar") || value.contains("ears") {
@@ -72,7 +76,7 @@ package struct MeasurementRigIdentity: Codable, Hashable, Sendable {
             "iec", "60318", "4", "711", "b", "k", "bruel", "kjaer",
             "5128", "4620", "type", "gras", "43ac", "ra0045", "kemar",
             "minidsp", "ears", "kb5000", "anthropometric", "pinna",
-            "fixture", "coupler"
+            "fixture", "coupler", "43ag", "45ca"
         ]
         let residualTokens = value.split(separator: " ").map(String.init).filter { token in
             !structuralTokens.contains(token)
@@ -349,5 +353,24 @@ package enum DeviceNameAliasCatalog {
             value = rule.canonical + String(value.dropFirst(rule.alias.count))
         }
         return value
+    }
+}
+
+/// Form and fixture jointly define a domain. The structured rig key still partitions
+/// pinna/coupler/calibration variants within each domain.
+package enum MeasurementDomain: String, Codable, Hashable, Sendable {
+    case grasOverEar, iec711InEar, bk5128OverEar, bk5128InEar, unknown
+
+    package init(source: DeviceMeasurementReference) {
+        let rig = source.resolvedRigIdentity
+        let form = DeviceForm(catalogValue: source.form)
+        switch (rig.family, form) {
+        case (.bk5128, .overEar), (.bk5128, .onEar): self = .bk5128OverEar
+        case (.bk5128, .inEar): self = .bk5128InEar
+        case (.iec711, .inEar): self = .iec711InEar
+        case (.iec711, .overEar), (.iec711, .onEar):
+            self = ["GRAS 43AG", "GRAS 45CA"].contains(rig.fixtureModel ?? "") ? .grasOverEar : .unknown
+        default: self = .unknown
+        }
     }
 }

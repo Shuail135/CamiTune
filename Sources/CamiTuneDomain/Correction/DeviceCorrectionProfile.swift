@@ -13,8 +13,11 @@ package enum DeviceCorrectionPolicyKind: String, Codable, Hashable, Sendable, Ca
 }
 
 package struct DeviceCorrectionProfile: Codable, Hashable, Sendable, Identifiable {
-    package static let currentSchemaVersion = 7
+    package static let currentSchemaVersion = 8
 
+    package var targetRegistryVersion: Int = 3
+    package var autoEQSettings: AutoEQSettings = .init()
+    package var correctionEngineVersion: Int = 3
     package var schemaVersion: Int
     package var id: UUID
     package var deviceName: String
@@ -71,6 +74,7 @@ package struct DeviceCorrectionProfile: Codable, Hashable, Sendable, Identifiabl
     }
 
     private enum CodingKeys: String, CodingKey {
+        case autoEQSettings, correctionEngineVersion, targetRegistryVersion
         case schemaVersion
         case id
         case deviceName
@@ -103,6 +107,9 @@ package struct DeviceCorrectionProfile: Codable, Hashable, Sendable, Identifiabl
                 debugDescription: "Unsupported Device Correction schema version \(storedSchemaVersion)."
             )
         }
+        targetRegistryVersion = try values.decodeIfPresent(Int.self, forKey: .targetRegistryVersion) ?? 1
+        autoEQSettings = try values.decodeIfPresent(AutoEQSettings.self, forKey: .autoEQSettings) ?? .init()
+        correctionEngineVersion = try values.decodeIfPresent(Int.self, forKey: .correctionEngineVersion) ?? 1
         id = try values.decode(UUID.self, forKey: .id)
         deviceName = try values.decode(String.self, forKey: .deviceName)
         deviceIdentity = try values.decodeIfPresent(
@@ -145,6 +152,9 @@ package struct DeviceCorrectionProfile: Codable, Hashable, Sendable, Identifiabl
 
     package func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(targetRegistryVersion, forKey: .targetRegistryVersion)
+        try values.encode(autoEQSettings, forKey: .autoEQSettings)
+        try values.encode(correctionEngineVersion, forKey: .correctionEngineVersion)
         try values.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
         try values.encode(id, forKey: .id)
         try values.encode(deviceName, forKey: .deviceName)
@@ -163,4 +173,35 @@ package struct DeviceCorrectionProfile: Codable, Hashable, Sendable, Identifiabl
         try values.encode(createdAt, forKey: .createdAt)
         try values.encode(importedAPOText, forKey: .importedAPOText)
     }
+}
+
+/// Requested bounds are persisted independently of the policy's effective bounds.
+package struct AutoEQSettings: Codable, Hashable, Sendable {
+    package var minimumFrequency: Double = 20
+    package var maximumFrequency: Double = 10_000
+    package var minimumGain: Double = -12
+    package var maximumGain: Double = 6
+    package var minimumQ: Double = 0.3
+    package var maximumQ: Double = 6
+    package init() {}
+    package var isValid: Bool {
+        [minimumFrequency, maximumFrequency, minimumGain, maximumGain, minimumQ, maximumQ].allSatisfy(\.isFinite)
+        && minimumFrequency >= 20 && maximumFrequency <= 20_000 && minimumFrequency < maximumFrequency
+        && minimumGain >= -24 && maximumGain <= 12 && minimumGain <= 0 && maximumGain >= 0
+        && minimumGain < maximumGain && minimumQ >= 0.1 && maximumQ <= 12 && minimumQ <= maximumQ
+    }
+}
+
+package enum DeviceForm: String, Codable, Sendable {
+    case overEar, onEar, inEar, earbud
+    package init?(catalogValue: String?) {
+        switch DeviceNameNormalizer.key(for: catalogValue ?? "") {
+        case "over ear", "overear", "headphone", "headphones": self = .overEar
+        case "on ear", "onear": self = .onEar
+        case "in ear", "inear", "iem": self = .inEar
+        case "earbud", "earbuds": self = .earbud
+        default: return nil
+        }
+    }
+    package var isIEM: Bool { self == .inEar || self == .earbud }
 }

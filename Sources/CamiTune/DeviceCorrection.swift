@@ -54,6 +54,10 @@ struct MeasurementConsensusBuilder {
         deviceName: String,
         measurements: [DeviceCorrectionMeasurement]
     ) throws -> MeasurementConsensus {
+        let variants = Set(measurements.map {
+            ($0.source.deviceIdentity ?? .inferred(from: $0.source.catalogName)).stableKey
+        })
+        guard variants.count <= 1 else { throw ConsensusError.mixedVariants }
         let plannedSources = Set(MeasurementSetPlanner.references(
             from: measurements.map(\.source)
         ).map(\.id))
@@ -276,10 +280,13 @@ struct MeasurementConsensusBuilder {
 
     enum ConsensusError: LocalizedError, Equatable {
         case noMeasurements
+        case mixedVariants
         case insufficientOverlap
 
         var errorDescription: String? {
             switch self {
+            case .mixedVariants:
+                return "Measurements belong to different device variants."
             case .noMeasurements:
                 return "No compatible measurements are available for this device configuration."
             case .insufficientOverlap:
@@ -312,6 +319,7 @@ extension CorrectionPolicy {
 
 struct BaselineCorrectionPolicy: CorrectionPolicy {
     var kind: DeviceCorrectionPolicyKind
+    var domain: MeasurementDomain = .unknown
 
     func makeCurve(
         measurement: FrequencyResponse,
@@ -320,50 +328,26 @@ struct BaselineCorrectionPolicy: CorrectionPolicy {
     ) throws -> CorrectionCurve {
         let measurement = measurement.normalized()
         let target = target.normalized()
-        let frequencies = Self.logFrequencies(count: 181)
-        let available = frequencies.compactMap { frequency -> (Double, Double)? in
+        let grid = Self.logFrequencies(count: 181)
+        let available = grid.compactMap { frequency -> (Double, Double)? in
             guard let measured = measurement.magnitude(at: frequency),
                   let desired = target.magnitude(at: frequency) else { return nil }
             return (frequency, desired - measured)
         }
         guard available.count >= 24 else { throw PolicyError.insufficientOverlap }
 
-        let raw = available.map(\.1)
-        let smoothed = smooth(raw, radius: kind == .recommended ? 4 : 2)
+        let frequencies = available.map(\.0)
+        let safe = SafeCorrectionProcessing.process(available.map(\.1), frequencies: frequencies, interferenceRanges: MeasurementDomainPolicy.metadata[domain]?.interferenceRanges ?? [])
         let points = available.indices.map { index in
-            let frequency = available[index].0
-            var confidence = kind == .recommended
-                ? recommendedConfidence(frequency: frequency, values: smoothed, index: index)
-                : 1
-            confidence *= measurementConfidence?.confidence(at: frequency)
+            let frequency = frequencies[index]
+            let evidence = measurementConfidence?.confidence(at: frequency)
                 ?? MeasurementConfidenceCurve.unknownValue
-            // Confidence controls optimizer priority only. Scaling amplitude here
-            // as well would apply the same uncertainty twice.
-            let desiredGain = smoothed[index]
-            let limits = kind == .recommended
-                ? recommendedGainLimits(at: frequency)
-                : (lower: -12.0, upper: 12.0)
-            return CorrectionCurve.Point(
-                frequency: frequency,
-                gainDB: min(limits.upper, max(limits.lower, desiredGain)),
-                confidence: confidence
-            )
+            let reliability = recommendedConfidence(frequency: frequency, values: safe, index: index)
+            let confidence = kind == .recommended ? evidence * reliability : 1
+            let gain = kind == .recommended ? safe[index] * sqrt(max(0, confidence)) : safe[index]
+            return CorrectionCurve.Point(frequency: frequency, gainDB: gain, confidence: confidence)
         }
         return CorrectionCurve(points: points)
-    }
-
-    private func smooth(_ values: [Double], radius: Int) -> [Double] {
-        values.indices.map { index in
-            var weightedTotal = 0.0
-            var totalWeight = 0.0
-            for neighbor in max(0, index - radius)...min(values.count - 1, index + radius) {
-                let distance = Double(neighbor - index) / Double(max(1, radius))
-                let weight = exp(-2 * distance * distance)
-                weightedTotal += values[neighbor] * weight
-                totalWeight += weight
-            }
-            return weightedTotal / max(totalWeight, 1e-9)
-        }
     }
 
     private func recommendedConfidence(
@@ -382,38 +366,6 @@ struct BaselineCorrectionPolicy: CorrectionPolicy {
         let curvature = abs(values[index - 1] - 2 * values[index] + values[index + 1])
         let stability = 1 / (1 + curvature * 0.8)
         return min(1, max(0, frequencyConfidence * stability))
-    }
-
-    /// Safety bounds are frequency-dependent policy constraints, independent
-    /// of measurement confidence. Confidence remains optimizer priority only.
-    private func recommendedGainLimits(at frequency: Double) -> (lower: Double, upper: Double) {
-        let anchors: [(frequency: Double, cut: Double, boost: Double)] = [
-            (20, 1.0, 0.5),
-            (30, 4.0, 2.0),
-            (60, 8.0, 4.0),
-            (100, 9.0, 5.0),
-            (1_000, 9.0, 5.0),
-            (3_000, 8.0, 4.0),
-            (6_000, 6.0, 3.0),
-            (8_000, 4.5, 2.0),
-            (12_000, 2.5, 1.0),
-            (16_000, 1.2, 0.5),
-            (20_000, 0.5, 0.25)
-        ]
-        guard frequency > anchors[0].frequency else {
-            return (-anchors[0].cut, anchors[0].boost)
-        }
-        guard frequency < anchors[anchors.count - 1].frequency else {
-            let last = anchors[anchors.count - 1]
-            return (-last.cut, last.boost)
-        }
-        let upperIndex = anchors.firstIndex { $0.frequency >= frequency } ?? anchors.count - 1
-        let lower = anchors[upperIndex - 1]
-        let upper = anchors[upperIndex]
-        let position = log(frequency / lower.frequency) / log(upper.frequency / lower.frequency)
-        let cut = lower.cut + (upper.cut - lower.cut) * position
-        let boost = lower.boost + (upper.boost - lower.boost) * position
-        return (-cut, boost)
     }
 
     private static func logFrequencies(count: Int) -> [Double] {
@@ -441,37 +393,103 @@ protocol PEQOptimizer {
 }
 
 struct NativePEQOptimizer: PEQOptimizer {
+    var settings = AutoEQSettings()
+    var lockedBands: [EQBand] = []
+    var mode: DeviceCorrectionPolicyKind = .exactTarget
+    var averagesUpperTreble = true
+    var combinedBoostCeiling: Double = 6
+
+    private func bounded(_ band: EQBand, sampleRate: Double) -> EQBand {
+        var result = band
+        result.frequency = min(min(20_000, sampleRate * 0.49), max(20, band.frequency))
+        result.gain = min(settings.maximumGain, max(settings.minimumGain, band.gain ?? 0))
+        let policyQ = mode == .recommended && result.frequency > 6_000 ? 2.0 : settings.maximumQ
+        result.q = max(settings.minimumQ, min(policyQ, band.q ?? 0.707))
+        return result
+    }
+
     func optimize(
         curve: CorrectionCurve,
         filterCount requestedCount: Int,
         sampleRate: Double
     ) -> [EQBand] {
-        // Device Correction currently exposes at most 16 filters, while the
-        // normal EQ editor can also use this fitter to reduce layouts up to 20.
-        let count = min(20, max(1, requestedCount))
+        // The requested count is a ceiling; the objective chooses the useful count.
+        let count = min(20, max(0, requestedCount))
+        guard settings.isValid, sampleRate.isFinite, sampleRate > 40, lockedBands.count <= count else { return lockedBands }
         let usable = curve.points.filter {
-            $0.frequency >= 20 && $0.frequency < min(20_000, sampleRate * 0.49)
+            $0.frequency >= settings.minimumFrequency && $0.frequency <= settings.maximumFrequency && $0.frequency < sampleRate * 0.49
         }
         guard !usable.isEmpty else { return [] }
-        var bands: [EQBand] = []
+        var bands: [EQBand] = lockedBands
         var bestLoss = loss(bands: bands, points: usable, sampleRate: sampleRate)
 
-        for _ in 0..<count {
-            guard !Task.isCancelled else { return [] }
+        for _ in 0..<max(0, count - lockedBands.count) {
+            guard !Task.isCancelled else { return bands }
+            if fitIsSufficient(bands: bands, points: usable, sampleRate: sampleRate) { break }
             let residual = residuals(bands: bands, points: usable, sampleRate: sampleRate)
-            let candidates = candidates(residual: residual, points: usable)
-            guard let choice = candidates.map({ candidate in
-                (candidate, loss: loss(
-                    bands: bands + [candidate],
-                    points: usable,
-                    sampleRate: sampleRate
-                ))
-            }).min(by: { $0.loss < $1.loss }), choice.loss < bestLoss * 0.995 else { break }
-            bands.append(choice.0)
-            bestLoss = choice.loss
+            let ranked = candidates(residual: residual, points: usable)
+                .map { bounded($0, sampleRate: sampleRate) }
+                .map { ($0, loss(bands: bands + [$0], points: usable, sampleRate: sampleRate)) }
+                .sorted { $0.1 < $1.1 }
+            // A useful seed can initially overlap another filter. Judge it after
+            // joint refinement instead of rejecting its unrefined response.
+            var bestProposal: [EQBand]?
+            var proposedLoss = bestLoss
+            for (candidate, _) in ranked.prefix(3) {
+                let proposed = refine(bands: bands + [candidate], points: usable, sampleRate: sampleRate)
+                let score = loss(bands: proposed, points: usable, sampleRate: sampleRate)
+                if score < proposedLoss { bestProposal = proposed; proposedLoss = score }
+            }
+            guard let proposed = bestProposal, bestLoss - proposedLoss > 0.0005 else { break }
+            bands = proposed
+            bestLoss = proposedLoss
         }
         bands = refine(bands: bands, points: usable, sampleRate: sampleRate)
+        bestLoss = loss(bands: bands, points: usable, sampleRate: sampleRate)
+        // Backward elimination re-fits the remaining free filters before deciding.
+        for index in bands.indices.reversed() where !bands[index].isLocked {
+            var proposed = bands
+            proposed.remove(at: index)
+            proposed = refine(bands: proposed, points: usable, sampleRate: sampleRate)
+            let score = loss(bands: proposed, points: usable, sampleRate: sampleRate)
+            if score <= bestLoss + 0.0005 { bands = proposed; bestLoss = score }
+        }
+        // Final dense-grid check catches combined overshoot between fit samples.
+        // Locked response is immutable, including intentional boosts over the ceiling.
+        let ceiling = max(combinedBoostCeiling, combinedPeak(lockedBands, sampleRate: sampleRate))
+        for _ in 0..<120 {
+            guard combinedPeak(bands, sampleRate: sampleRate) > ceiling + 0.01 else { break }
+            var changed = false
+            for index in bands.indices where !bands[index].isLocked && (bands[index].gain ?? 0) > 0 {
+                bands[index].gain = (bands[index].gain ?? 0) * 0.95
+                changed = true
+            }
+            if !changed { break }
+        }
         return bands.sorted { $0.frequency < $1.frequency }
+    }
+
+    private func combinedPeak(_ bands: [EQBand], sampleRate: Double) -> Double {
+        let parsed = ParsedEQ(preampDB: 0, bands: bands, warnings: [])
+        let frequencies = (0..<1025).map { index in
+            20 * pow(min(1_000, sampleRate * 0.49 / 20), Double(index) / 1024)
+        }
+        return EQResponseCalculator().gainsDB(at: frequencies, parsed: parsed, sampleRate: sampleRate).max() ?? 0
+    }
+
+    private func fitIsSufficient(bands: [EQBand], points: [CorrectionCurve.Point], sampleRate: Double) -> Bool {
+        let residual = residuals(bands: bands, points: points, sampleRate: sampleRate)
+        var weightedSquares = 0.0
+        var weightSum = 0.0
+        var peak = 0.0
+        for (point, error) in zip(points, residual) {
+            let weight = max(0.02, min(1, point.confidence))
+            weightedSquares += error * error * weight
+            weightSum += weight
+            peak = max(peak, abs(error) * sqrt(weight))
+        }
+        let rms = sqrt(weightedSquares / max(weightSum, 1e-9))
+        return rms <= (mode == .recommended ? 0.20 : 0.15) && peak <= (mode == .recommended ? 0.65 : 0.5)
     }
 
     private func candidates(
@@ -482,14 +500,24 @@ struct NativePEQOptimizer: PEQOptimizer {
             abs(residual[$0]) * max(0.02, points[$0].confidence)
                 > abs(residual[$1]) * max(0.02, points[$1].confidence)
         }
-        var result = ranked.prefix(14).compactMap { index -> EQBand? in
-            guard abs(residual[index]) >= 0.25 else { return nil }
-            return EQBand(
-                kind: .peaking,
-                frequency: points[index].frequency,
-                gain: min(10, max(-12, residual[index])),
-                q: estimatedQ(residual: residual, points: points, peakIndex: index)
-            )
+        // Cover separate residual features, rather than spending every seed on
+        // adjacent samples of the largest peak. Try both narrower and broader Q.
+        var centers: [Int] = []
+        for index in ranked where abs(residual[index]) >= 0.2 {
+            let amplitude = abs(residual[index])
+            guard (index == 0 || amplitude >= abs(residual[index - 1])),
+                  (index == residual.count - 1 || amplitude >= abs(residual[index + 1])),
+                  centers.allSatisfy({ abs(log2(points[index].frequency / points[$0].frequency)) >= 0.35 }) else { continue }
+            centers.append(index)
+            if centers.count == 12 { break }
+        }
+        var result = centers.flatMap { index in
+            let q = estimatedQ(residual: residual, points: points, peakIndex: index)
+            return [0.65, 1.0, 1.6].map { scale in
+                EQBand(kind: .peaking, frequency: points[index].frequency,
+                       gain: min(settings.maximumGain, max(settings.minimumGain, residual[index])),
+                       q: min(settings.maximumQ, max(settings.minimumQ, q * scale)))
+            }
         }
 
         for (kind, frequencies) in [
@@ -511,7 +539,7 @@ struct NativePEQOptimizer: PEQOptimizer {
                 result.append(EQBand(
                     kind: kind,
                     frequency: frequency,
-                    gain: min(10, max(-12, gain)),
+                    gain: min(settings.maximumGain, max(settings.minimumGain, gain)),
                     q: 0.707
                 ))
             }
@@ -525,20 +553,24 @@ struct NativePEQOptimizer: PEQOptimizer {
         sampleRate: Double
     ) -> [EQBand] {
         var bands = initial
-        var bestLoss = loss(bands: bands, points: points, sampleRate: sampleRate)
+        let frequencies = points.map(\.frequency)
+        let calculator = EQResponseCalculator()
+        var bandResponses = bands.map { calculator.gainsDB(at: frequencies, parsed: .init(preampDB: 0, bands: [$0], warnings: []), sampleRate: sampleRate) }
+        var response = calculator.gainsDB(at: frequencies, parsed: .init(preampDB: 0, bands: bands, warnings: []), sampleRate: sampleRate)
+        var bestLoss = loss(bands: bands, points: points, sampleRate: sampleRate, response: response)
         let passes: [(gain: Double, octave: Double, qScale: Double)] = [
-            (1.5, 0.35, 1.45), (0.6, 0.14, 1.18), (0.2, 0.05, 1.07)
+            (1.5, 0.35, 1.45), (0.6, 0.14, 1.18), (0.2, 0.05, 1.07), (0.06, 0.015, 1.025)
         ]
         let maximumFrequency = min(20_000, sampleRate * 0.49)
 
         for pass in passes {
             for _ in 0..<2 {
-                for index in bands.indices {
-                    guard !Task.isCancelled else { return [] }
+                for index in bands.indices where !bands[index].isLocked {
+                    guard !Task.isCancelled else { return bands }
                     var variants: [EQBand] = []
                     for delta in [-pass.gain, pass.gain] {
                         var candidate = bands[index]
-                        candidate.gain = min(10, max(-12, (candidate.gain ?? 0) + delta))
+                        candidate.gain = min(settings.maximumGain, max(settings.minimumGain, (candidate.gain ?? 0) + delta))
                         variants.append(candidate)
                     }
                     for delta in [-pass.octave, pass.octave] {
@@ -551,19 +583,19 @@ struct NativePEQOptimizer: PEQOptimizer {
                     }
                     for scale in [1 / pass.qScale, pass.qScale] {
                         var candidate = bands[index]
-                        candidate.q = min(8, max(0.25, (candidate.q ?? 0.707) * scale))
+                        candidate.q = min(settings.maximumQ, max(settings.minimumQ, (candidate.q ?? 0.707) * scale))
                         variants.append(candidate)
                     }
                     for candidate in variants {
                         var proposed = bands
-                        proposed[index] = candidate
-                        let proposedLoss = loss(
-                            bands: proposed,
-                            points: points,
-                            sampleRate: sampleRate
-                        )
+                        proposed[index] = bounded(candidate, sampleRate: sampleRate)
+                        let values = calculator.gainsDB(at: frequencies, parsed: .init(preampDB: 0, bands: [proposed[index]], warnings: []), sampleRate: sampleRate)
+                        let proposedResponse = points.indices.map { response[$0] - bandResponses[index][$0] + values[$0] }
+                        let proposedLoss = loss(bands: proposed, points: points, sampleRate: sampleRate, response: proposedResponse)
                         if proposedLoss < bestLoss {
                             bands = proposed
+                            response = proposedResponse
+                            bandResponses[index] = values
                             bestLoss = proposedLoss
                         }
                     }
@@ -578,29 +610,35 @@ struct NativePEQOptimizer: PEQOptimizer {
         points: [CorrectionCurve.Point],
         sampleRate: Double
     ) -> [Double] {
-        let parsed = ParsedEQ(preampDB: 0, bands: bands, warnings: [])
-        let calculator = EQResponseCalculator()
-        return points.map {
-            $0.gainDB - calculator.gainDB(
-                at: $0.frequency,
-                parsed: parsed,
-                sampleRate: sampleRate
-            )
-        }
+        let response = EQResponseCalculator().gainsDB(at: points.map(\.frequency),
+            parsed: .init(preampDB: 0, bands: bands, warnings: []), sampleRate: sampleRate)
+        return zip(points, response).map { $0.gainDB - $1 }
     }
 
     private func loss(
         bands: [EQBand],
         points: [CorrectionCurve.Point],
-        sampleRate: Double
+        sampleRate: Double,
+        response: [Double]? = nil
     ) -> Double {
-        let residual = residuals(bands: bands, points: points, sampleRate: sampleRate)
+        let residual = response.map { zip(points, $0).map { $0.gainDB - $1 } }
+            ?? residuals(bands: bands, points: points, sampleRate: sampleRate)
         let weights = points.map { max(0.02, min(1, $0.confidence)) }
-        let weightedSquares = zip(residual, weights).map { residualValue, weight in
-            residualValue * residualValue * weight
+        let high = points.indices.filter { points[$0].frequency > 10_000 }
+        let highMean = high.isEmpty ? 0 : high.map { residual[$0] }.reduce(0, +) / Double(high.count)
+        let weightedSquares = points.indices.map { index in
+            let error = averagesUpperTreble && points[index].frequency > 10_000 ? highMean : residual[index]
+            return error * error * weights[index]
         }
+        let penalty = bands.filter { !$0.isLocked }.reduce(0.0) { sum, band in
+            let sharpness = max(0, (band.q ?? 0.707) - 2)
+            return sum + (mode == .recommended ? 0.006 : 0.003) + sharpness * sharpness * (mode == .recommended ? 0.001 : 0.0003)
+                + pow(max(0, abs(band.gain ?? 0) - 6), 2) * 0.002
+        }
+        let peak = zip(points, residual).map { $0.0.gainDB - $0.1 }.max() ?? 0
+        let boostPenalty = pow(max(0, peak - combinedBoostCeiling), 2) * 10
         return weightedSquares.reduce(0, +)
-            / max(weights.reduce(0, +), 1e-9)
+            / max(weights.reduce(0, +), 1e-9) + penalty + boostPenalty
     }
 
     private func estimatedQ(
@@ -631,8 +669,10 @@ struct DeviceCorrectionEngine {
         target: FrequencyResponse = .flat(),
         targetSelection: DeviceCorrectionTargetSelection = .flat,
         policy: DeviceCorrectionPolicyKind,
-        filterCount: Int,
+        filterCount: Int = 20,
         sampleRate: Double,
+        settings: AutoEQSettings = .init(),
+        lockedBands: [EQBand] = [],
         preservingID id: UUID? = nil
     ) throws -> DeviceCorrectionProfile {
         let local = DeviceCorrectionMeasurement.local(response: measurement)
@@ -644,6 +684,8 @@ struct DeviceCorrectionEngine {
             policy: policy,
             filterCount: filterCount,
             sampleRate: sampleRate,
+            settings: settings,
+            lockedBands: lockedBands,
             preservingID: id
         )
     }
@@ -654,8 +696,10 @@ struct DeviceCorrectionEngine {
         target: FrequencyResponse = .flat(),
         targetSelection: DeviceCorrectionTargetSelection = .flat,
         policy: DeviceCorrectionPolicyKind,
-        filterCount: Int,
+        filterCount: Int = 20,
         sampleRate: Double,
+        settings: AutoEQSettings = .init(),
+        lockedBands: [EQBand] = [],
         preservingID id: UUID? = nil,
         preservingSources: [DeviceMeasurementReference]? = nil,
         targetConfidence: MeasurementConfidenceCurve? = nil
@@ -672,6 +716,8 @@ struct DeviceCorrectionEngine {
             policy: policy,
             filterCount: filterCount,
             sampleRate: sampleRate,
+            settings: settings,
+            lockedBands: lockedBands,
             preservingID: id,
             preservingSources: preservingSources,
             targetConfidence: targetConfidence
@@ -684,26 +730,33 @@ struct DeviceCorrectionEngine {
         target: FrequencyResponse = .flat(),
         targetSelection: DeviceCorrectionTargetSelection = .flat,
         policy: DeviceCorrectionPolicyKind,
-        filterCount: Int,
+        filterCount: Int = 20,
         sampleRate: Double,
+        settings: AutoEQSettings = .init(),
+        lockedBands: [EQBand] = [],
         preservingID id: UUID? = nil,
         preservingSources: [DeviceMeasurementReference]? = nil,
         targetConfidence: MeasurementConfidenceCurve? = nil
     ) throws -> DeviceCorrectionProfile {
+        guard sampleRate.isFinite, sampleRate > 40, lockedBands.count <= 20,
+              ReferenceCorrection.validFilters(lockedBands, sampleRate: sampleRate), settings.isValid else {
+            throw GenerationError.invalidConstraints
+        }
         let optimizerConfidence = targetConfidence.map {
             consensus.confidence.combinedForDifference(with: $0)
         } ?? consensus.confidence
-        let curve = try BaselineCorrectionPolicy(kind: policy).makeCurve(
+        let curve = try BaselineCorrectionPolicy(kind: policy, domain: consensus.sources.first.map { MeasurementDomain(source: $0) } ?? .unknown).makeCurve(
             measurement: consensus.response,
             target: target,
             measurementConfidence: optimizerConfidence
         )
-        let filters = NativePEQOptimizer().optimize(
+        guard settings.isValid else { throw GenerationError.invalidConstraints }
+        let filters = NativePEQOptimizer(settings: settings, lockedBands: lockedBands, mode: policy).optimize(
             curve: curve,
             filterCount: filterCount,
             sampleRate: sampleRate
         )
-        return DeviceCorrectionProfile(
+        var profile = DeviceCorrectionProfile(
             id: id ?? UUID(),
             deviceName: deviceName,
             deviceIdentity: consensus.sources.compactMap(\.deviceIdentity).first,
@@ -718,5 +771,89 @@ struct DeviceCorrectionEngine {
             filters: filters,
             preampDB: 0
         )
+        profile.autoEQSettings = settings
+        return profile
     }
+
+    enum GenerationError: LocalizedError {
+        case invalidConstraints
+        var errorDescription: String? { "Enter valid frequency, gain, and Q ranges." }
+    }
+}
+
+/// Independently implemented AutoEq-style stages. Values are correction (target − measurement).
+/// Each stage is exposed internally for regression tests; no processing runs on the audio callback.
+enum SafeCorrectionProcessing {
+    static func smooth(_ values: [Double], frequencies: [Double], octaves: Double) -> [Double] {
+        values.indices.map { index in
+            var total = 0.0, weight = 0.0
+            for other in values.indices {
+                let distance = abs(log2(frequencies[other] / frequencies[index]))
+                guard distance <= octaves else { continue }
+                let w = exp(-8 * pow(distance / octaves, 2))
+                total += values[other] * w
+                weight += w
+            }
+            return total / max(weight, 1e-12)
+        }
+    }
+
+    static func limit(_ values: [Double], frequencies: [Double], reverse: Bool, slope: Double = 18) -> [Double] {
+        guard values.count > 1 else { return values }
+        var result = values
+        let order = reverse ? Array((0..<values.count - 1).reversed()) : Array(1..<values.count)
+        for index in order {
+            let previous = reverse ? index + 1 : index - 1
+            let width = abs(log2(frequencies[index] / frequencies[previous]))
+            result[index] = min(result[index], result[previous] + slope * width)
+        }
+        return result
+    }
+
+    static func protectionMask(_ values: [Double], frequencies: [Double]) -> [Bool] {
+        guard values.count > 2 else { return values.map { _ in false } }
+        var mask = values.map { _ in false }
+        for index in 1..<values.count - 1 where values[index] > 0 {
+            guard values[index] > values[index - 1], values[index] >= values[index + 1] else { continue }
+            let neighbors = values.indices.filter { abs(log2(frequencies[$0] / frequencies[index])) <= 0.35 }
+            let floor = neighbors.map { values[$0] }.min() ?? values[index]
+            if values[index] - floor > 3 { for neighbor in neighbors { mask[neighbor] = true } }
+        }
+        return mask
+    }
+
+    static func process(_ raw: [Double], frequencies: [Double], interferenceRanges: [ClosedRange<Double>] = []) -> [Double] {
+        let normal = smooth(raw, frequencies: frequencies, octaves: 1 / 12)
+        let treble = smooth(raw, frequencies: frequencies, octaves: 2)
+        let dual = raw.indices.map { i -> Double in
+            let t = min(1, max(0, log2(frequencies[i] / 6_000) / log2(8_000.0 / 6_000)))
+            let blend = t * t * (3 - 2 * t)
+            return normal[i] * (1 - blend) + treble[i] * blend
+        }
+        var mask = protectionMask(dual, frequencies: frequencies)
+        for index in mask.indices where interferenceRanges.contains(where: { $0.contains(frequencies[index]) }) {
+            mask[index] = dual[index] > 0
+        }
+        let broad = smooth(dual, frequencies: frequencies, octaves: 0.5)
+        let protected = dual.indices.map { mask[$0] ? min(dual[$0], broad[$0]) : dual[$0] }
+        let left = limit(protected, frequencies: frequencies, reverse: false)
+        let right = limit(protected, frequencies: frequencies, reverse: true)
+        let limited = dual.indices.map { i -> Double in
+            let t = min(1, max(0, log2(frequencies[i] / 6_000) / log2(10_000.0 / 6_000)))
+            return min(6, max(-12, min(left[i], right[i]) * (1 - 0.5 * t)))
+        }
+        return smooth(limited, frequencies: frequencies, octaves: 1 / 6)
+    }
+}
+
+struct MeasurementDomainPolicy {
+    var interferenceRanges: [ClosedRange<Double>]
+    // Concha protection is attached to the measured domain, never to a UI category.
+    static let metadata: [MeasurementDomain: MeasurementDomainPolicy] = [
+        .bk5128OverEar: .init(interferenceRanges: [8_000...10_000]),
+        .grasOverEar: .init(interferenceRanges: [8_000...10_000]),
+        .bk5128InEar: .init(interferenceRanges: []),
+        .iec711InEar: .init(interferenceRanges: []),
+        .unknown: .init(interferenceRanges: [])
+    ]
 }

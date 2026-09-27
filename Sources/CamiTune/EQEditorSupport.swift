@@ -89,7 +89,14 @@ enum EQEditorSupport {
         let curve = CorrectionCurve(points: response.map {
             .init(frequency: $0.frequency, gainDB: $0.gainDB, confidence: 1)
         })
-        let optimized = NativePEQOptimizer().optimize(
+        // User-EQ refitting preserves the existing full-band response. Auto EQ's
+        // correction window and boost ceiling do not apply to this operation.
+        var settings = AutoEQSettings()
+        settings.maximumFrequency = 20_000
+        settings.maximumGain = 10
+        settings.minimumQ = 0.25
+        settings.maximumQ = 8
+        let optimized = NativePEQOptimizer(settings: settings, averagesUpperTreble: false, combinedBoostCeiling: .infinity).optimize(
             curve: curve,
             filterCount: target,
             sampleRate: sampleRate

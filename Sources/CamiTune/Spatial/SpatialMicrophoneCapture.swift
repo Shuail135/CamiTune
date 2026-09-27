@@ -13,8 +13,20 @@ final class SpatialMicrophoneCapture: NSObject, AVCaptureAudioDataOutputSampleBu
     private var failed = false
     private var previousEnd: Double?
 
+    private static var audioDevices: [AVCaptureDevice] {
+        let deviceTypes: [AVCaptureDevice.DeviceType]
+        if #available(macOS 14.0, *) {
+            deviceTypes = [.microphone, .external]
+        } else {
+            deviceTypes = [.builtInMicrophone, .externalUnknown]
+        }
+        return AVCaptureDevice.DiscoverySession(
+            deviceTypes: deviceTypes, mediaType: .audio, position: .unspecified
+        ).devices
+    }
+
     static var microphones: [MeasurementMicrophone] {
-        AVCaptureDevice.devices(for: .audio).map {
+        audioDevices.map {
             MeasurementMicrophone(id: $0.uniqueID, name: $0.localizedName,
                                   isBuiltIn: $0.deviceType == .builtInMicrophone)
         }
@@ -27,7 +39,7 @@ final class SpatialMicrophoneCapture: NSObject, AVCaptureAudioDataOutputSampleBu
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
                 do {
-                    guard let device = AVCaptureDevice.devices(for: .audio).first(where: { $0.uniqueID == id }) else {
+                    guard let device = Self.audioDevices.first(where: { $0.uniqueID == id }) else {
                         throw AcousticMeasurementError.noMicrophone
                     }
                     let input = try AVCaptureDeviceInput(device: device)

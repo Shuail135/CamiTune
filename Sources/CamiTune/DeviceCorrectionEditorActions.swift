@@ -30,6 +30,7 @@ extension DeviceCorrectionEditorView {
                         targetSelection.preset = .custom
                         targetSelection.customTargetRigIdentity = nil
                     } else {
+                        history.reset()
                         loadCoordinator.sourceGeneration &+= 1
                         isLoadingMeasurements = false
                         clearDeviceMatchTarget(clearSearch: true)
@@ -64,7 +65,11 @@ extension DeviceCorrectionEditorView {
         let capturedCustomTarget = customTarget
         let capturedDeviceMatchConsensus = deviceMatchConsensus
         let capturedPolicy = policy
-        let capturedFilterCount = filterCount
+        let capturedFilters = generated?.filters
+        let capturedTargetChosen = targetChosen
+        let capturedSettings = autoEQSettings
+        let capturedLockedBands = (generated?.filters ?? (existing?.deviceName == capturedDeviceName ? existing?.filters : nil) ?? []).filter(\.isLocked)
+        let capturedFilterCount = 20
         let capturedSampleRate = sampleRate
         let capturedExisting = existing
 
@@ -74,9 +79,21 @@ extension DeviceCorrectionEditorView {
             let result = await Task.detached(priority: .userInitiated) {
                 Result {
                     let engine = DeviceCorrectionEngine()
+                    let matcher = TargetCompatibilityEngine()
+                    let paths = capturedMeasurements.isEmpty
+                        ? matcher.validPaths(sources: capturedTargetSources)
+                        : try matcher.rankedPaths(measurements: capturedMeasurements)
+                    let path = paths.first { $0.target == capturedTargetSelection.preset }
+                    let resolvedSources: [DeviceMeasurementReference]
+                    if capturedTargetSelection.preset == .deviceMatch, let target = capturedDeviceMatchConsensus {
+                        let targetKeys = Set(target.sources.map(\.compatibilityKey))
+                        resolvedSources = capturedTargetSources.filter { targetKeys.contains($0.compatibilityKey) }
+                    } else {
+                        resolvedSources = path?.sources ?? capturedTargetSources
+                    }
                     let resolution = try DeviceCorrectionTargetCatalog().resolve(
                         selection: capturedTargetSelection,
-                        sources: capturedTargetSources,
+                        sources: resolvedSources,
                         customResponse: capturedCustomTarget,
                         deviceMatchConsensus: capturedDeviceMatchConsensus
                     )
@@ -94,6 +111,8 @@ extension DeviceCorrectionEditorView {
                             policy: capturedPolicy,
                             filterCount: capturedFilterCount,
                             sampleRate: capturedSampleRate,
+                            settings: capturedSettings,
+                            lockedBands: capturedLockedBands,
                             preservingID: capturedExisting.id,
                             preservingSources: capturedExisting.sources,
                             targetConfidence: resolution.confidence
@@ -101,12 +120,14 @@ extension DeviceCorrectionEditorView {
                     }
                     return try engine.generate(
                         deviceName: capturedDeviceName,
-                        measurements: capturedMeasurements,
+                        measurements: capturedMeasurements.filter { item in resolvedSources.contains { $0.id == item.source.id } },
                         target: resolution.response,
                         targetSelection: capturedTargetSelection,
                         policy: capturedPolicy,
                         filterCount: capturedFilterCount,
                         sampleRate: capturedSampleRate,
+                        settings: capturedSettings,
+                        lockedBands: capturedLockedBands,
                         preservingID: capturedExisting?.id,
                         targetConfidence: resolution.confidence
                     )
@@ -120,7 +141,9 @@ extension DeviceCorrectionEditorView {
                 && customTarget == capturedCustomTarget
                 && deviceMatchConsensus == capturedDeviceMatchConsensus
                 && policy == capturedPolicy
-                && filterCount == capturedFilterCount
+                && autoEQSettings == capturedSettings
+                && generated?.filters == capturedFilters
+                && targetChosen == capturedTargetChosen
             guard inputsAreCurrent else {
                 isGenerating = false
                 return
@@ -131,7 +154,6 @@ extension DeviceCorrectionEditorView {
                 generated = correction
                 errorMessage = nil
             case .failure(let error):
-                generated = nil
                 errorMessage = error.localizedDescription
             }
             isGenerating = false
@@ -142,6 +164,7 @@ extension DeviceCorrectionEditorView {
         guard var generated else { return }
         generated.deviceName = trimmedDeviceName
         generated.isEnabled = true
+        accepted = true
         onLoad(generated)
     }
 
@@ -180,11 +203,9 @@ extension DeviceCorrectionEditorView {
                         measurements: loaded
                     )
                 }.value
-                let retainedSourceIDs = Set(consensus.sources.map(\.id))
-                sourceMeasurements = loaded.filter {
-                    retainedSourceIDs.contains($0.source.id)
-                }
+                sourceMeasurements = loaded
                 measurement = consensus.response
+                reconcileTargetSelection()
                 generated = nil
                 isLoadingMeasurements = false
             } catch {
@@ -202,16 +223,23 @@ extension DeviceCorrectionEditorView {
         defer { isLoadingCatalog = false }
         do {
             let entries = try await catalog.entries()
-            catalogEntries = referenceEndpoint.map { ReferenceCorrection.catalog(entries, endpoint: $0) } ?? entries
+            let filtered = ReferenceCorrection.catalog(entries, endpoint: referenceEndpoint ?? .headphones)
+            let index = await Task.detached(priority: .userInitiated) { DeviceCatalogSearch.Index(entries: filtered) }.value
+            guard !Task.isCancelled else { return }
+            catalogEntries = filtered
+            searchIndex = index
         } catch {
             errorMessage = "Online device data is unavailable. You can still import a custom CSV."
         }
     }
 
     func select(_ entry: DeviceCatalogEntry) {
+        history.reset()
         loadCoordinator.sourceGeneration &+= 1
         let loadGeneration = loadCoordinator.sourceGeneration
         clearDeviceMatchTarget(clearSearch: true)
+        targetSelection = .init(preset: .neutral)
+        targetChosen = false
         deviceName = entry.displayName
         searchText = entry.displayName
         selectedCatalogID = entry.id
@@ -232,11 +260,9 @@ extension DeviceCorrectionEditorView {
                         measurements: loaded
                     )
                 }.value
-                let retainedSourceIDs = Set(consensus.sources.map(\.id))
-                sourceMeasurements = loaded.filter {
-                    retainedSourceIDs.contains($0.source.id)
-                }
+                sourceMeasurements = loaded
                 measurement = consensus.response
+                reconcileTargetSelection()
                 errorMessage = nil
                 isLoadingMeasurements = false
             } catch {

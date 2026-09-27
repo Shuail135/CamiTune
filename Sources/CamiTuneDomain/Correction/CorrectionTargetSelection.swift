@@ -2,7 +2,13 @@ import Foundation
 
 package enum DeviceCorrectionTargetPreset: String, Codable, Hashable, Sendable, CaseIterable {
     case flat
+    case neutral
+    case autoEqInEar
+    case jm1Harman
+    case lmg5128
+    case optimumHiFi
     case jm1PopAvgDFTilt
+    case harmanOverEar2018
     case harmanInEar2019V2
     case iefPreference2025
     case iefNeutral2023
@@ -13,8 +19,14 @@ package enum DeviceCorrectionTargetPreset: String, Codable, Hashable, Sendable, 
 
     package var title: String {
         switch self {
+        case .neutral: return "Neutral"
+        case .autoEqInEar: return "AutoEq In-Ear"
+        case .jm1Harman: return "JM-1 with Harman Filters"
+        case .lmg5128: return "LMG 5128 (0.6)"
+        case .optimumHiFi: return "oratory1990 Optimum HiFi"
         case .flat: return "Flat (no target compensation)"
         case .jm1PopAvgDFTilt: return "JM-1 / PopAvg-DF + Tilt"
+        case .harmanOverEar2018: return "Harman Over-Ear 2018"
         case .harmanInEar2019V2: return "Harman In-Ear 2019 v2"
         case .iefPreference2025: return "IEF Preference 2025"
         case .iefNeutral2023: return "IEF Neutral 2023"
@@ -27,10 +39,17 @@ package enum DeviceCorrectionTargetPreset: String, Codable, Hashable, Sendable, 
 
     package var shortDescription: String {
         switch self {
+        case .neutral: return "A fixture-matched neutral baseline without an additional preference bass shelf."
+        case .autoEqInEar: return "AutoEq in-ear preference target with fixture-specific compensation."
+        case .jm1Harman: return "JM-1 with published Harman bass and treble shelves for B&K 5128."
+        case .lmg5128: return "LMG 0.6 preference target for B&K 5128."
+        case .optimumHiFi: return "oratory1990 Optimum HiFi over-ear target for GRAS-compatible measurements."
         case .flat:
             return "Corrects the measurement toward a mathematically flat coupler response. This is mainly a diagnostic option, not a perceptual listening target."
         case .jm1PopAvgDFTilt:
             return "A population-average diffuse-field reference. The adjustable tilt changes the overall warm-to-bright balance; −1.0 dB per octave is a useful neutral starting point."
+        case .harmanOverEar2018:
+            return "Harman over-ear preference target for GRAS measurements."
         case .harmanInEar2019V2:
             return "A listener-preference target with strong bass and forward upper mids. It is a familiar, energetic consumer reference rather than a universal definition of neutral."
         case .iefPreference2025:
@@ -72,6 +91,7 @@ package struct DeviceMatchTargetMetadata: Codable, Hashable, Sendable {
 }
 
 package struct DeviceCorrectionTargetSelection: Codable, Hashable, Sendable {
+    package var modifiers: TargetModifiers? = nil
     package var preset: DeviceCorrectionTargetPreset
     package var tiltDBPerOctave: Double
     /// Custom target files contain only frequency and magnitude columns, so
@@ -117,4 +137,11 @@ package enum DeviceCorrectionRigFamily: String, Codable, Hashable, Sendable {
             ? families.subtracting([.unknown]).first ?? .unknown
             : .unknown
     }
+}
+
+package struct TargetModifiers: Codable, Hashable, Sendable {
+    package var bassGainDB: Double = 0
+    package var trebleGainDB: Double = 0
+    package var tiltDBPerOctave: Double = 0
+    package init() {}
 }

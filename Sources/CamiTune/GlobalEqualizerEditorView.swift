@@ -205,6 +205,7 @@ struct GlobalEqualizerEditorView: View {
             DeviceCorrectionEditorView(
                 existing: currentDeviceCorrectionProvenance,
                 sampleRate: Double(profile.sampleRate),
+                referenceEndpoint: profile.effectiveEndpointKind,
                 automaticHeadroom: automaticHeadroomForCorrection,
                 shouldConfirmReplacement: {
                     (ParsedEQ(
@@ -212,6 +213,13 @@ struct GlobalEqualizerEditorView: View {
                         bands: graphicBands,
                         warnings: []
                     )).hasMeaningfulProcessing
+                },
+                onPreview: { correction in
+                    guard var candidate = try? state.applyingSessionEQDrafts(to: profile) else { return }
+                    if let correction {
+                        candidate.setGlobalEqualizer(preampDB: 0, bands: correction.filters)
+                    }
+                    await state.apply(profile: candidate)
                 },
                 onCancel: { showDeviceCorrectionEditor = false },
                 onLoad: loadDeviceCorrectionEQ

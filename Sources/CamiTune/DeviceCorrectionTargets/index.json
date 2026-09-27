@@ -1,0 +1,1635 @@
+[
+  {
+    "target": "neutral",
+    "forms": [],
+    "families": [],
+    "isConverted": false,
+    "catalogMatches": [
+      {
+        "source": "Ted's Squig Hoard",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Auriculares Argentina",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Auriculares Argentina",
+        "form": "in-ear",
+        "rig": "KB501x + 711"
+      },
+      {
+        "source": "Bakkwatan",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "DHRME",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Fahryst",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Filk",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Filk",
+        "form": "in-ear",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "Harpo",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Hi End Portable",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "HypetheSonics",
+        "form": "in-ear",
+        "rig": "GRAS RA0045"
+      },
+      {
+        "source": "Jaytiss",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Kazi",
+        "form": "earbud",
+        "rig": "711"
+      },
+      {
+        "source": "Kazi",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "earbud",
+        "rig": "711"
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "earbud",
+        "rig": "KB500x + 711"
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "RikudouGoku",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Super Review",
+        "form": "earbud",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "Super Review",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Super Review",
+        "form": "in-ear",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "ToneDeafMonk",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "crinacle",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "freeryder05",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "freeryder05",
+        "form": "in-ear",
+        "rig": null
+      },
+      {
+        "source": "kr0mka",
+        "form": "earbud",
+        "rig": "KB501x + 711"
+      },
+      {
+        "source": "kr0mka",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "kr0mka",
+        "form": "in-ear",
+        "rig": null
+      },
+      {
+        "source": "oratory1990",
+        "form": "earbud",
+        "rig": "GRAS 43AC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "earbud",
+        "rig": "GRAS 43AG"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 43AC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 43AC"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 43ACB"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 45BC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 45BC-10"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS GRAS 43AC"
+      }
+    ],
+    "resource": "ief-neutral-2023-711",
+    "bassGain": 0,
+    "preferred": true,
+    "author": "Crinacle",
+    "version": "3",
+    "source": "https://github.com/HarutoHiroki/PublicGraphTool",
+    "citation": "DeviceCorrectionTargets/NOTICE.md#neutral-baselines-registry-3",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md",
+    "displayName": "IEF Neutral 2023"
+  },
+  {
+    "target": "neutral",
+    "forms": [],
+    "families": [],
+    "isConverted": true,
+    "catalogMatches": [
+      {
+        "source": "Headphone.com Legacy",
+        "form": "over-ear",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Innerfidelity",
+        "form": "over-ear",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Rtings",
+        "form": "over-ear",
+        "rig": "HMS II.3"
+      }
+    ],
+    "resource": "hms-harman-over-ear",
+    "bassGain": 0,
+    "preferred": true,
+    "author": "AutoEq and attributed target authors",
+    "version": "3",
+    "source": "https://autoeq.app/targets",
+    "citation": "DeviceCorrectionTargets/NOTICE.md#neutral-baselines-registry-3",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md",
+    "displayName": "Harman Over-Ear 2018 (HMS II.3, no bass shelf)"
+  },
+  {
+    "target": "neutral",
+    "forms": [],
+    "families": [],
+    "isConverted": true,
+    "catalogMatches": [
+      {
+        "source": "Headphone.com Legacy",
+        "form": "earbud",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Headphone.com Legacy",
+        "form": "in-ear",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Innerfidelity",
+        "form": "earbud",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Innerfidelity",
+        "form": "in-ear",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Rtings",
+        "form": "earbud",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Rtings",
+        "form": "in-ear",
+        "rig": "HMS II.3"
+      }
+    ],
+    "resource": "hms-harman-in-ear",
+    "bassGain": 0,
+    "preferred": true,
+    "author": "AutoEq and attributed target authors",
+    "version": "3",
+    "source": "https://autoeq.app/targets",
+    "citation": "DeviceCorrectionTargets/NOTICE.md#neutral-baselines-registry-3",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md",
+    "displayName": "Harman In-Ear 2019 (HMS II.3, no bass shelf)"
+  },
+  {
+    "target": "neutral",
+    "forms": [],
+    "families": [],
+    "isConverted": false,
+    "catalogMatches": [
+      {
+        "source": "Ted's Squig Hoard",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Auriculares Argentina",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Auriculares Argentina",
+        "form": "in-ear",
+        "rig": "KB501x + 711"
+      },
+      {
+        "source": "Bakkwatan",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "DHRME",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Fahryst",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Filk",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Filk",
+        "form": "in-ear",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "Harpo",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Hi End Portable",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "HypetheSonics",
+        "form": "in-ear",
+        "rig": "GRAS RA0045"
+      },
+      {
+        "source": "Jaytiss",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Kazi",
+        "form": "earbud",
+        "rig": "711"
+      },
+      {
+        "source": "Kazi",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "earbud",
+        "rig": "711"
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "earbud",
+        "rig": "KB500x + 711"
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "RikudouGoku",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Super Review",
+        "form": "earbud",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "Super Review",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Super Review",
+        "form": "in-ear",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "ToneDeafMonk",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "crinacle",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "freeryder05",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "freeryder05",
+        "form": "in-ear",
+        "rig": null
+      },
+      {
+        "source": "kr0mka",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "kr0mka",
+        "form": "in-ear",
+        "rig": null
+      },
+      {
+        "source": "oratory1990",
+        "form": "earbud",
+        "rig": "GRAS 43AC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "earbud",
+        "rig": "GRAS 43AG"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 43AC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 43AC"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 43ACB"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 45BC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 45BC-10"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS GRAS 43AC"
+      }
+    ],
+    "resource": "ief-neutral-2023-711",
+    "bassGain": 0,
+    "preferred": true,
+    "author": "Crinacle",
+    "version": "3",
+    "source": "https://github.com/HarutoHiroki/PublicGraphTool",
+    "citation": "DeviceCorrectionTargets/NOTICE.md#neutral-baselines-registry-3",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md",
+    "displayName": "IEF Neutral 2023"
+  },
+  {
+    "target": "neutral",
+    "forms": [],
+    "families": [],
+    "isConverted": true,
+    "catalogMatches": [
+      {
+        "source": "crinacle",
+        "form": "over-ear",
+        "rig": "EARS + 711"
+      }
+    ],
+    "resource": "ears-harman-over-ear-without-bass",
+    "bassGain": 0,
+    "preferred": true,
+    "author": "AutoEq and attributed target authors",
+    "version": "3",
+    "source": "https://autoeq.app/targets",
+    "citation": "DeviceCorrectionTargets/NOTICE.md#neutral-baselines-registry-3",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md",
+    "displayName": "Harman Over-Ear 2018 (EARS + 711, no bass shelf)"
+  },
+  {
+    "target": "neutral",
+    "forms": [
+      "inEar",
+      "overEar",
+      "onEar",
+      "earbud"
+    ],
+    "families": [
+      "bk5128"
+    ],
+    "author": "JM-1",
+    "version": "3",
+    "source": "https://github.com/jaakkopasanen/AutoEq",
+    "citation": "DeviceCorrectionTargets/NOTICE.md#neutral-baselines-registry-3",
+    "licenseStatus": "Existing bundled data; redistribution source and notices recorded in NOTICE.md",
+    "isConverted": false,
+    "bassGain": 0,
+    "preferred": true,
+    "displayName": "JM-1 / PopAvg-DF (−1 dB/oct)"
+  },
+  {
+    "target": "neutral",
+    "forms": [
+      "inEar"
+    ],
+    "families": [
+      "iec711"
+    ],
+    "author": "Crinacle",
+    "version": "3",
+    "source": "https://github.com/HarutoHiroki/PublicGraphTool",
+    "citation": "DeviceCorrectionTargets/NOTICE.md#neutral-baselines-registry-3",
+    "licenseStatus": "Existing bundled data; redistribution source and notices recorded in NOTICE.md",
+    "isConverted": false,
+    "bassGain": 0,
+    "preferred": true,
+    "resource": "ief-neutral-2023-711",
+    "displayName": "IEF Neutral 2023"
+  },
+  {
+    "target": "neutral",
+    "forms": [],
+    "families": [],
+    "isConverted": false,
+    "catalogMatches": [
+      {
+        "source": "Auriculares Argentina",
+        "form": "over-ear",
+        "rig": "KB501x + 711"
+      },
+      {
+        "source": "Filk",
+        "form": "over-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Filk",
+        "form": "over-ear",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "Kuulokenurkka",
+        "form": "over-ear",
+        "rig": "KB501x + 711"
+      },
+      {
+        "source": "Kuulokenurkka",
+        "form": "over-ear",
+        "rig": null
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "over-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "over-ear",
+        "rig": "KB500x + 711"
+      },
+      {
+        "source": "Super Review",
+        "form": "over-ear",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "crinacle",
+        "form": "over-ear",
+        "rig": "GRAS 43AG-7"
+      },
+      {
+        "source": "kr0mka",
+        "form": "over-ear",
+        "rig": "KB501x + 711"
+      },
+      {
+        "source": "oratory1990",
+        "form": "over-ear",
+        "rig": "GRAS 43AC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "over-ear",
+        "rig": "GRAS 43AG"
+      },
+      {
+        "source": "oratory1990",
+        "form": "over-ear",
+        "rig": "GRAS 45BC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "over-ear",
+        "rig": "GRAS 45BC"
+      },
+      {
+        "source": "oratory1990",
+        "form": "over-ear",
+        "rig": "GRAS 45BC-10"
+      }
+    ],
+    "resource": "oratory-optimum-hifi",
+    "bassGain": 0,
+    "preferred": true,
+    "author": "oratory1990",
+    "version": "3",
+    "source": "https://github.com/jaakkopasanen/AutoEq/blob/7ae0f56d53074872b028649617a22bbb4232feb7/targets/oratory1990%20optimum%20hifi%20over-ear.csv",
+    "citation": "DeviceCorrectionTargets/NOTICE.md#neutral-baselines-registry-3",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md",
+    "displayName": "oratory1990 Optimum HiFi"
+  },
+  {
+    "target": "neutral",
+    "forms": [
+      "overEar",
+      "onEar"
+    ],
+    "families": [
+      "iec711"
+    ],
+    "fixtures": [
+      "GRAS 43AG",
+      "GRAS 45CA"
+    ],
+    "author": "oratory1990",
+    "version": "3",
+    "source": "https://github.com/jaakkopasanen/AutoEq/blob/7ae0f56d53074872b028649617a22bbb4232feb7/targets/oratory1990%20optimum%20hifi%20over-ear.csv",
+    "citation": "DeviceCorrectionTargets/NOTICE.md#neutral-baselines-registry-3",
+    "licenseStatus": "Distributed by AutoEq under its bundled MIT notice; underlying target attributed to Harman",
+    "isConverted": false,
+    "resource": "oratory-optimum-hifi",
+    "bassGain": 0,
+    "preferred": true,
+    "displayName": "oratory1990 Optimum HiFi"
+  },
+  {
+    "target": "jm1Harman",
+    "forms": [
+      "inEar",
+      "overEar",
+      "onEar",
+      "earbud"
+    ],
+    "families": [
+      "bk5128"
+    ],
+    "isConverted": false,
+    "resource": "jm1-harman",
+    "bassGain": 0,
+    "author": "JM-1",
+    "version": "2",
+    "source": "https://github.com/jaakkopasanen/AutoEq",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md"
+  },
+  {
+    "target": "lmg5128",
+    "forms": [
+      "inEar",
+      "overEar",
+      "onEar",
+      "earbud"
+    ],
+    "families": [
+      "bk5128"
+    ],
+    "isConverted": false,
+    "resource": "lmg-5128",
+    "bassGain": 0,
+    "author": "LMG",
+    "version": "2",
+    "source": "https://github.com/jaakkopasanen/AutoEq",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md"
+  },
+  {
+    "target": "lmg5128",
+    "forms": [],
+    "families": [],
+    "isConverted": false,
+    "catalogMatches": [
+      {
+        "source": "HypetheSonics",
+        "form": "earbud",
+        "rig": "Bruel & Kjaer 5128"
+      },
+      {
+        "source": "HypetheSonics",
+        "form": "over-ear",
+        "rig": "Bruel & Kjaer 5128"
+      }
+    ],
+    "resource": "lmg-5128",
+    "bassGain": 0,
+    "preferred": true,
+    "author": "AutoEq and attributed target authors",
+    "version": "2; AutoEq 7ae0f56d53074872b028649617a22bbb4232feb7",
+    "source": "https://autoeq.app/targets",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md"
+  },
+  {
+    "target": "jm1Harman",
+    "forms": [],
+    "families": [],
+    "isConverted": false,
+    "catalogMatches": [
+      {
+        "source": "HypetheSonics",
+        "form": "in-ear",
+        "rig": "Bruel & Kjaer 5128"
+      },
+      {
+        "source": "crinacle",
+        "form": "in-ear",
+        "rig": "Bruel & Kjaer 4620"
+      }
+    ],
+    "resource": "jm1-harman",
+    "bassGain": 0,
+    "preferred": true,
+    "author": "AutoEq and attributed target authors",
+    "version": "2; AutoEq 7ae0f56d53074872b028649617a22bbb4232feb7",
+    "source": "https://autoeq.app/targets",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md"
+  },
+  {
+    "target": "harmanOverEar2018",
+    "forms": [],
+    "families": [],
+    "isConverted": true,
+    "catalogMatches": [
+      {
+        "source": "Headphone.com Legacy",
+        "form": "over-ear",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Innerfidelity",
+        "form": "over-ear",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Rtings",
+        "form": "over-ear",
+        "rig": "HMS II.3"
+      }
+    ],
+    "resource": "hms-harman-over-ear",
+    "bassGain": 6,
+    "preferred": true,
+    "author": "AutoEq and attributed target authors",
+    "version": "2; AutoEq 7ae0f56d53074872b028649617a22bbb4232feb7",
+    "source": "https://autoeq.app/targets",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md"
+  },
+  {
+    "target": "harmanInEar2019V2",
+    "forms": [],
+    "families": [],
+    "isConverted": true,
+    "catalogMatches": [
+      {
+        "source": "Headphone.com Legacy",
+        "form": "earbud",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Headphone.com Legacy",
+        "form": "in-ear",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Innerfidelity",
+        "form": "earbud",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Innerfidelity",
+        "form": "in-ear",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Rtings",
+        "form": "earbud",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Rtings",
+        "form": "in-ear",
+        "rig": "HMS II.3"
+      }
+    ],
+    "resource": "hms-harman-in-ear",
+    "bassGain": 9.5,
+    "preferred": false,
+    "author": "AutoEq and attributed target authors",
+    "version": "2; AutoEq 7ae0f56d53074872b028649617a22bbb4232feb7",
+    "source": "https://autoeq.app/targets",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md"
+  },
+  {
+    "target": "autoEqInEar",
+    "forms": [],
+    "families": [],
+    "isConverted": true,
+    "catalogMatches": [
+      {
+        "source": "Headphone.com Legacy",
+        "form": "earbud",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Headphone.com Legacy",
+        "form": "in-ear",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Innerfidelity",
+        "form": "earbud",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Innerfidelity",
+        "form": "in-ear",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Rtings",
+        "form": "earbud",
+        "rig": "HMS II.3"
+      },
+      {
+        "source": "Rtings",
+        "form": "in-ear",
+        "rig": "HMS II.3"
+      }
+    ],
+    "resource": "hms-autoeq-in-ear",
+    "bassGain": 8,
+    "preferred": true,
+    "author": "AutoEq and attributed target authors",
+    "version": "2; AutoEq 7ae0f56d53074872b028649617a22bbb4232feb7",
+    "source": "https://autoeq.app/targets",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md"
+  },
+  {
+    "target": "harmanOverEar2018",
+    "forms": [],
+    "families": [],
+    "isConverted": false,
+    "catalogMatches": [
+      {
+        "source": "Auriculares Argentina",
+        "form": "over-ear",
+        "rig": "KB501x + 711"
+      },
+      {
+        "source": "Filk",
+        "form": "over-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Filk",
+        "form": "over-ear",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "Kuulokenurkka",
+        "form": "over-ear",
+        "rig": "KB501x + 711"
+      },
+      {
+        "source": "Kuulokenurkka",
+        "form": "over-ear",
+        "rig": null
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "over-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "over-ear",
+        "rig": "KB500x + 711"
+      },
+      {
+        "source": "Super Review",
+        "form": "over-ear",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "crinacle",
+        "form": "over-ear",
+        "rig": "GRAS 43AG-7"
+      },
+      {
+        "source": "kr0mka",
+        "form": "over-ear",
+        "rig": "KB501x + 711"
+      },
+      {
+        "source": "oratory1990",
+        "form": "over-ear",
+        "rig": "GRAS 43AC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "over-ear",
+        "rig": "GRAS 43AG"
+      },
+      {
+        "source": "oratory1990",
+        "form": "over-ear",
+        "rig": "GRAS 45BC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "over-ear",
+        "rig": "GRAS 45BC"
+      },
+      {
+        "source": "oratory1990",
+        "form": "over-ear",
+        "rig": "GRAS 45BC-10"
+      }
+    ],
+    "resource": "harman-over-ear-2018",
+    "bassGain": 0,
+    "preferred": true,
+    "author": "AutoEq and attributed target authors",
+    "version": "2; AutoEq 7ae0f56d53074872b028649617a22bbb4232feb7",
+    "source": "https://autoeq.app/targets",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md"
+  },
+  {
+    "target": "harmanInEar2019V2",
+    "forms": [],
+    "families": [],
+    "isConverted": false,
+    "catalogMatches": [
+      {
+        "source": "Ted's Squig Hoard",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Auriculares Argentina",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Auriculares Argentina",
+        "form": "in-ear",
+        "rig": "KB501x + 711"
+      },
+      {
+        "source": "Bakkwatan",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "DHRME",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Fahryst",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Filk",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Filk",
+        "form": "in-ear",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "Harpo",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Hi End Portable",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "HypetheSonics",
+        "form": "in-ear",
+        "rig": "GRAS RA0045"
+      },
+      {
+        "source": "Jaytiss",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Kazi",
+        "form": "earbud",
+        "rig": "711"
+      },
+      {
+        "source": "Kazi",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "earbud",
+        "rig": "711"
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "earbud",
+        "rig": "KB500x + 711"
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "RikudouGoku",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Super Review",
+        "form": "earbud",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "Super Review",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Super Review",
+        "form": "in-ear",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "ToneDeafMonk",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "crinacle",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "freeryder05",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "freeryder05",
+        "form": "in-ear",
+        "rig": null
+      },
+      {
+        "source": "kr0mka",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "kr0mka",
+        "form": "in-ear",
+        "rig": null
+      },
+      {
+        "source": "oratory1990",
+        "form": "earbud",
+        "rig": "GRAS 43AC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "earbud",
+        "rig": "GRAS 43AG"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 43AC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 43AC"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 43ACB"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 45BC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 45BC-10"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS GRAS 43AC"
+      }
+    ],
+    "resource": "harman-in-ear-2019-v2",
+    "bassGain": 0,
+    "preferred": false,
+    "author": "AutoEq and attributed target authors",
+    "version": "2; AutoEq 7ae0f56d53074872b028649617a22bbb4232feb7",
+    "source": "https://autoeq.app/targets",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md"
+  },
+  {
+    "target": "harmanOverEar2018",
+    "forms": [],
+    "families": [],
+    "isConverted": true,
+    "catalogMatches": [
+      {
+        "source": "crinacle",
+        "form": "over-ear",
+        "rig": "EARS + 711"
+      }
+    ],
+    "resource": "ears-harman-over-ear",
+    "bassGain": 0,
+    "preferred": true,
+    "author": "AutoEq and attributed target authors",
+    "version": "2; AutoEq 7ae0f56d53074872b028649617a22bbb4232feb7",
+    "source": "https://autoeq.app/targets",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md"
+  },
+  {
+    "target": "autoEqInEar",
+    "forms": [],
+    "families": [],
+    "isConverted": false,
+    "catalogMatches": [
+      {
+        "source": "Ted's Squig Hoard",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Auriculares Argentina",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Auriculares Argentina",
+        "form": "in-ear",
+        "rig": "KB501x + 711"
+      },
+      {
+        "source": "Bakkwatan",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "DHRME",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Fahryst",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Filk",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Filk",
+        "form": "in-ear",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "Harpo",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Hi End Portable",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "HypetheSonics",
+        "form": "in-ear",
+        "rig": "GRAS RA0045"
+      },
+      {
+        "source": "Jaytiss",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Kazi",
+        "form": "earbud",
+        "rig": "711"
+      },
+      {
+        "source": "Kazi",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "earbud",
+        "rig": "711"
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "earbud",
+        "rig": "KB500x + 711"
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "RikudouGoku",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Super Review",
+        "form": "earbud",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "Super Review",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Super Review",
+        "form": "in-ear",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "ToneDeafMonk",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "crinacle",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "freeryder05",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "freeryder05",
+        "form": "in-ear",
+        "rig": null
+      },
+      {
+        "source": "kr0mka",
+        "form": "earbud",
+        "rig": "KB501x + 711"
+      },
+      {
+        "source": "kr0mka",
+        "form": "in-ear",
+        "rig": "711"
+      },
+      {
+        "source": "kr0mka",
+        "form": "in-ear",
+        "rig": null
+      },
+      {
+        "source": "oratory1990",
+        "form": "earbud",
+        "rig": "GRAS 43AC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "earbud",
+        "rig": "GRAS 43AG"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 43AC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 43AC"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 43ACB"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 45BC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS 45BC-10"
+      },
+      {
+        "source": "oratory1990",
+        "form": "in-ear",
+        "rig": "GRAS GRAS 43AC"
+      }
+    ],
+    "resource": "autoeq-in-ear",
+    "bassGain": 8,
+    "preferred": true,
+    "author": "AutoEq and attributed target authors",
+    "version": "2; AutoEq 7ae0f56d53074872b028649617a22bbb4232feb7",
+    "source": "https://autoeq.app/targets",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md"
+  },
+  {
+    "target": "jm1PopAvgDFTilt",
+    "forms": [
+      "inEar",
+      "overEar",
+      "onEar"
+    ],
+    "families": [
+      "bk5128"
+    ],
+    "author": "JM-1",
+    "version": "1",
+    "source": "https://github.com/jaakkopasanen/AutoEq",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "Existing bundled data; redistribution source and notices recorded in NOTICE.md",
+    "isConverted": false
+  },
+  {
+    "target": "harmanInEar2019V2",
+    "forms": [
+      "inEar"
+    ],
+    "families": [
+      "iec711"
+    ],
+    "author": "Harman International",
+    "version": "1",
+    "source": "https://github.com/jaakkopasanen/AutoEq",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "Existing bundled data; redistribution source and notices recorded in NOTICE.md",
+    "isConverted": false
+  },
+  {
+    "target": "iefPreference2025",
+    "forms": [
+      "inEar"
+    ],
+    "families": [
+      "bk5128"
+    ],
+    "author": "Crinacle",
+    "version": "1",
+    "source": "https://github.com/jaakkopasanen/AutoEq",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "Existing bundled data; redistribution source and notices recorded in NOTICE.md",
+    "isConverted": false
+  },
+  {
+    "target": "iefPreference2025",
+    "forms": [
+      "inEar"
+    ],
+    "families": [
+      "iec711"
+    ],
+    "author": "Crinacle",
+    "version": "1",
+    "source": "https://github.com/jaakkopasanen/AutoEq",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "Existing bundled data; redistribution source and notices recorded in NOTICE.md",
+    "isConverted": true
+  },
+  {
+    "target": "iefNeutral2023",
+    "forms": [
+      "inEar"
+    ],
+    "families": [
+      "iec711"
+    ],
+    "author": "Crinacle",
+    "version": "1",
+    "source": "https://github.com/HarutoHiroki/PublicGraphTool",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "Existing bundled data; redistribution source and notices recorded in NOTICE.md",
+    "isConverted": false
+  },
+  {
+    "target": "diffuseFieldReference",
+    "forms": [
+      "inEar",
+      "overEar",
+      "onEar"
+    ],
+    "families": [
+      "bk5128"
+    ],
+    "author": "B&K",
+    "version": "1",
+    "source": "https://github.com/jaakkopasanen/AutoEq",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "Existing bundled data; redistribution source and notices recorded in NOTICE.md",
+    "isConverted": false
+  },
+  {
+    "target": "etymotic",
+    "forms": [
+      "inEar"
+    ],
+    "families": [
+      "iec711"
+    ],
+    "author": "Etymotic Research",
+    "version": "1",
+    "source": "https://github.com/HarutoHiroki/PublicGraphTool",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "Existing bundled data; redistribution source and notices recorded in NOTICE.md",
+    "isConverted": false
+  },
+  {
+    "target": "harmanOverEar2018",
+    "forms": [
+      "overEar",
+      "onEar"
+    ],
+    "families": [
+      "iec711"
+    ],
+    "fixtures": [
+      "GRAS 43AG",
+      "GRAS 45CA"
+    ],
+    "author": "Harman International",
+    "version": "2018; AutoEq 7ae0f56d53074872b028649617a22bbb4232feb7",
+    "source": "https://github.com/jaakkopasanen/AutoEq/blob/7ae0f56d53074872b028649617a22bbb4232feb7/targets/Harman%20over-ear%202018.csv",
+    "citation": "Harman Over-Ear 2018 preference target",
+    "licenseStatus": "Distributed by AutoEq under its bundled MIT notice; underlying target attributed to Harman",
+    "isConverted": false
+  },
+  {
+    "target": "jm1PopAvgDFTilt",
+    "forms": [
+      "inEar"
+    ],
+    "families": [
+      "iec711"
+    ],
+    "author": "JM-1",
+    "version": "1; published 711 transfer",
+    "source": "https://github.com/jaakkopasanen/AutoEq",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "Existing bundled data; redistribution source and notices recorded in NOTICE.md",
+    "isConverted": true
+  },
+  {
+    "target": "diffuseFieldReference",
+    "forms": [
+      "inEar"
+    ],
+    "families": [
+      "iec711"
+    ],
+    "author": "KEMAR diffuse-field reference",
+    "version": "1",
+    "source": "https://github.com/jaakkopasanen/AutoEq",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "Existing bundled data; redistribution source and notices recorded in NOTICE.md",
+    "isConverted": false
+  },
+  {
+    "target": "optimumHiFi",
+    "forms": [],
+    "families": [],
+    "isConverted": false,
+    "catalogMatches": [
+      {
+        "source": "Auriculares Argentina",
+        "form": "over-ear",
+        "rig": "KB501x + 711"
+      },
+      {
+        "source": "Filk",
+        "form": "over-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Filk",
+        "form": "over-ear",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "Kuulokenurkka",
+        "form": "over-ear",
+        "rig": "KB501x + 711"
+      },
+      {
+        "source": "Kuulokenurkka",
+        "form": "over-ear",
+        "rig": null
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "over-ear",
+        "rig": "711"
+      },
+      {
+        "source": "Regan Cipher",
+        "form": "over-ear",
+        "rig": "KB500x + 711"
+      },
+      {
+        "source": "Super Review",
+        "form": "over-ear",
+        "rig": "KB006x + 711"
+      },
+      {
+        "source": "crinacle",
+        "form": "over-ear",
+        "rig": "GRAS 43AG-7"
+      },
+      {
+        "source": "kr0mka",
+        "form": "over-ear",
+        "rig": "KB501x + 711"
+      },
+      {
+        "source": "oratory1990",
+        "form": "over-ear",
+        "rig": "GRAS 43AC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "over-ear",
+        "rig": "GRAS 43AG"
+      },
+      {
+        "source": "oratory1990",
+        "form": "over-ear",
+        "rig": "GRAS 45BC "
+      },
+      {
+        "source": "oratory1990",
+        "form": "over-ear",
+        "rig": "GRAS 45BC"
+      },
+      {
+        "source": "oratory1990",
+        "form": "over-ear",
+        "rig": "GRAS 45BC-10"
+      }
+    ],
+    "resource": "oratory-optimum-hifi",
+    "bassGain": 0,
+    "preferred": false,
+    "author": "oratory1990",
+    "version": "2; AutoEq 7ae0f56d53074872b028649617a22bbb4232feb7",
+    "source": "https://github.com/jaakkopasanen/AutoEq/blob/7ae0f56d53074872b028649617a22bbb4232feb7/targets/oratory1990%20optimum%20hifi%20over-ear.csv",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "AutoEq MIT; see NOTICE.md"
+  },
+  {
+    "target": "optimumHiFi",
+    "forms": [
+      "overEar",
+      "onEar"
+    ],
+    "families": [
+      "iec711"
+    ],
+    "fixtures": [
+      "GRAS 43AG",
+      "GRAS 45CA"
+    ],
+    "author": "oratory1990",
+    "version": "2; AutoEq 7ae0f56d53074872b028649617a22bbb4232feb7",
+    "source": "https://github.com/jaakkopasanen/AutoEq/blob/7ae0f56d53074872b028649617a22bbb4232feb7/targets/oratory1990%20optimum%20hifi%20over-ear.csv",
+    "citation": "DeviceCorrectionTargets/NOTICE.md",
+    "licenseStatus": "Distributed by AutoEq under its bundled MIT notice; underlying target attributed to Harman",
+    "isConverted": false,
+    "resource": "oratory-optimum-hifi",
+    "bassGain": 0,
+    "preferred": false
+  }
+]

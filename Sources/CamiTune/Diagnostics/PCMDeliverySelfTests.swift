@@ -640,7 +640,7 @@ extension DeveloperSelfTests {
             }
             try diagnosticRequire(!gate.timedOut && capture.counts().audio == expectedWrites, "Recovery writer failed to drain")
             let statistics = router.statistics
-            await router.stop()
+            router.stop()
             let writes = capture.events().compactMap { event -> AudioLatencySample? in
                 if case .audio(let value) = event { return value }; return nil
             }
@@ -649,7 +649,7 @@ extension DeveloperSelfTests {
             try diagnosticRequire(!samples.isEmpty && capture.telemetryDrops == 0, "Missing fixture PCM or trace events")
             return .init(samples: samples, statistics: statistics, writes: writes, recovery: recovery)
         } catch {
-            gate.release(); await router.stop(); throw error
+            gate.release(); router.stop(); throw error
         }
     }
 
@@ -857,7 +857,7 @@ extension DeveloperSelfTests {
                             }
                             try diagnosticRequire(capture.counts().audio == block + 1, "Ramp fixture failed to drain")
                         }
-                        await router.stop()
+                        router.stop()
                         let writes = capture.events().compactMap { event -> AudioLatencySample? in
                             if case .audio(let value) = event { return value }; return nil
                         }
@@ -872,7 +872,7 @@ extension DeveloperSelfTests {
                         try diagnosticRequire(samples[start + 384 * 2] == 0.75
                             && router.statistics.camillaWriteFailures == 0 && capture.telemetryDrops == 0,
                             "Ramp did not finish at eight milliseconds")
-                    } catch { await router.stop(); throw error }
+                    } catch { router.stop(); throw error }
                 }
             },
             check("PD46", "Calibration bypass preserves exact PCM length, gain and reset classification") {
@@ -893,14 +893,14 @@ extension DeveloperSelfTests {
                     while !completed.completed && PerformanceClock.now() < deadline { try await Task.sleep(for: .milliseconds(1)) }
                     try diagnosticRequire(completed.completed, "Calibration writer did not complete")
                     let stats = router.statistics
-                    router.endSpatialCalibration(id: id); await router.stop()
+                    router.endSpatialCalibration(id: id); router.stop()
                     let bytes = try Data(contentsOf: path)
                     let samples = bytes.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
                     try diagnosticRequire(samples == input.map { $0 * 0.25 }
                         && stats.rateAdjustmentPPM == 0 && stats.camillaQueueRecoveries == 0
                         && stats.camillaQueue.lastRecovery?.reason == .explicitCalibrationReset,
                         "Calibration was resampled, changed gain or counted as overflow")
-                } catch { await router.stop(); throw error }
+                } catch { router.stop(); throw error }
             },
             check("PD61", "Candidate survives settings save and telemetry describes the applied profile") {
                 let box = try DiagnosticSandbox(); defer { box.cleanUp() }

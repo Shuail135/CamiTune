@@ -237,7 +237,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         }.value
 
         guard isCurrentGeneration(runGeneration) else { return }
-        state.lock(); let failed = context?.didFail ?? false; state.unlock()
+        let failed = state.withLock { context?.didFail ?? false }
         guard !failed else { return }
         runtimeError = nil
         status = "Waiting for System Audio Bridge frames…"

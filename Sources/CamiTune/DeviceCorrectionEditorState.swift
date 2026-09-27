@@ -4,26 +4,31 @@ import SwiftUI
 
 @MainActor
 extension DeviceCorrectionEditorView {
+    var editorSnapshot: CorrectionEditorSnapshot {
+        .init(generated: generated, target: targetSelection, policy: policy, settings: autoEQSettings, targetChosen: targetChosen)
+    }
+
     var trimmedDeviceName: String {
         deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    var searchResults: [DeviceCatalogEntry] {
-        DeviceCatalogSearch.results(in: catalogEntries, matching: searchText)
+    var sourceSearchRequest: DeviceCatalogSearch.Request {
+        .init(query: selectedCatalogID == nil ? searchText : "", indexID: searchIndex.id)
     }
 
-    var deviceMatchSearchResults: [DeviceCatalogEntry] {
-        DeviceCatalogSearch.results(
-            in: catalogEntries,
-            matching: deviceMatchSearchText,
-            limit: max(40, catalogEntries.count)
-        ).filter { entry in
-            entry.identity.stableKey != sourceDeviceIdentityKey
-                && !DeviceMatchPlanner.compatibleReferences(
-                    in: entry,
-                    sourceReferences: targetSources
-                ).isEmpty
-        }.prefix(40).map { $0 }
+    var matchSearchRequest: DeviceCatalogSearch.Request {
+        .init(query: selectedDeviceMatchCatalogID == nil ? deviceMatchSearchText : "", indexID: searchIndex.id,
+              compatibleKeys: Set(targetSources.map(\.compatibilityKey)), excludedIdentity: sourceDeviceIdentityKey)
+    }
+
+    func updateSearch(_ request: DeviceCatalogSearch.Request, deviceMatch: Bool = false) async {
+        let index = searchIndex
+        do { try await Task.sleep(for: .milliseconds(80)) } catch { return }
+        let results = await Task.detached(priority: .userInitiated) {
+            index.results(matching: request.query, compatibleKeys: request.compatibleKeys, excluding: request.excludedIdentity)
+        }.value
+        guard !Task.isCancelled else { return }
+        if deviceMatch { deviceMatchSearchResults = results } else { searchResults = results }
     }
 
     var sourceDeviceIdentityKey: String? {
@@ -40,32 +45,62 @@ extension DeviceCorrectionEditorView {
     var policyBinding: Binding<DeviceCorrectionPolicyKind> {
         Binding(get: { policy }, set: {
             policy = $0
-            generated = nil
-        })
-    }
-
-    var filterCountBinding: Binding<Int> {
-        Binding(get: { filterCount }, set: {
-            filterCount = $0
-            generated = nil
-        })
-    }
-
-    var targetPresetBinding: Binding<DeviceCorrectionTargetPreset> {
-        Binding(get: { targetSelection.preset }, set: {
-            if $0 != .deviceMatch {
-                clearDeviceMatchTarget(clearSearch: true)
+            if policy == .exactTarget, var modifiers = targetSelection.modifiers {
+                modifiers.bassGainDB = 0
+                targetSelection.modifiers = modifiers
             }
-            targetSelection.preset = $0
-            generated = nil
-            errorMessage = nil
         })
+    }
+
+    func targetTitle(_ preset: DeviceCorrectionTargetPreset) -> String {
+        let sources = resultIsCurrent ? (generated?.sources ?? targetSources) : targetSources
+        return DeviceCorrectionTargetCatalog().displayName(for: preset, sources: sources, paths: preset == .neutral ? loadCoordinator.targetPaths(for: sources) : [])
+    }
+
+    var availableTargets: [DeviceCorrectionTargetPreset] {
+        guard measurement != nil else { return [] }
+        let valid = Set(loadCoordinator.targetPaths(for: targetSources).map(\.target))
+        var result = DeviceCorrectionTargetPreset.allCases.filter { valid.contains($0) }
+        if customTarget != nil, let rig = targetSelection.customTargetRigIdentity,
+           !targetSources.isEmpty, targetSources.allSatisfy({ $0.resolvedRigIdentity == rig }) { result.append(.custom) }
+        if hasCompatibleDeviceMatch {
+            result.append(.deviceMatch)
+        }
+        // The default alias and its named preset can resolve to the same curve.
+        // Keep the current selection when collapsing identical menu labels.
+        if targetChosen, let index = result.firstIndex(of: targetSelection.preset) {
+            let selected = result.remove(at: index)
+            result.insert(selected, at: 0)
+        }
+        var titles = Set<String>()
+        return result.filter { titles.insert(targetTitle($0)).inserted }
+    }
+
+    func updateDeviceMatchAvailability() {
+        let keys = Set(targetSources.map(\.compatibilityKey))
+        hasCompatibleDeviceMatch = searchIndex.hasCompatibleDevice(keys: keys, excluding: sourceDeviceIdentityKey)
+    }
+
+    var compatibleTargetBinding: Binding<DeviceCorrectionTargetPreset?> {
+        Binding(get: { targetChosen ? targetSelection.preset : nil }, set: { value in
+            targetChosen = value != nil
+            if let value { targetSelection.preset = value }
+        })
+    }
+
+    func reconcileTargetSelection() {
+        if targetChosen && availableTargets.contains(targetSelection.preset) { return }
+        if let preset = TargetCompatibilityEngine().preferredTarget(sources: targetSources) {
+            targetSelection.preset = preset
+            targetChosen = true
+        } else {
+            targetChosen = false
+        }
     }
 
     var targetTiltBinding: Binding<Double> {
         Binding(get: { targetSelection.tiltDBPerOctave }, set: {
             targetSelection.tiltDBPerOctave = min(1, max(-2, $0))
-            generated = nil
             errorMessage = nil
         })
     }
@@ -79,7 +114,7 @@ extension DeviceCorrectionEditorView {
                         $0.family == selectedFamily
                     } ?? MeasurementRigIdentity.canonical(for: selectedFamily)
                 }
-                generated = nil
+                targetChosen = availableTargets.contains(.custom)
                 errorMessage = nil
             }
         )
@@ -90,43 +125,31 @@ extension DeviceCorrectionEditorView {
         return existing?.sources ?? []
     }
 
-    var targetCompatibilityMessage: String {
-        DeviceCorrectionTargetCatalog().compatibilityMessage(
-            for: targetSelection,
-            sources: targetSources,
-            deviceMatchSources: deviceMatchSources
-        )
+    var resultIsCurrent: Bool {
+        generated?.targetSelection == targetSelection && generated?.policy == policy && generated?.autoEQSettings == autoEQSettings
     }
 
     var targetIsIncompatible: Bool {
-        if targetSelection.preset == .deviceMatch {
-            guard targetSelection.deviceMatchTarget != nil else { return false }
-            return !DeviceMatchPlanner.isCompatible(
-                sourceReferences: targetSources,
-                targetReferences: deviceMatchSources
-            )
-        }
-        let measurementFamily = DeviceCorrectionRigFamily.identify(from: targetSources)
-        if targetSelection.preset == .custom,
-           let targetFamily = targetSelection.customTargetRigIdentity?.family,
-           measurementFamily != .unknown,
-           targetFamily != measurementFamily {
-            return true
-        }
-        guard measurementFamily == .bk5128 else {
-            return false
-        }
-        return [.harmanInEar2019V2, .iefNeutral2023, .etymotic]
-            .contains(targetSelection.preset)
+        !targetChosen || !availableTargets.contains(targetSelection.preset)
     }
 
-    var policyExplanation: String {
-        switch policy {
-        case .recommended:
-            return "Uses frequency-dependent confidence, stronger cut limits, restrained boosts, and smoothing to avoid correcting unreliable narrow features."
-        case .exactTarget:
-            return "Tracks the selected target more closely with wider gain limits. Use this only with a measurement you trust."
-        }
+    var sourceRigBinding: Binding<DeviceCorrectionRigFamily?> {
+        Binding(get: { sourceMeasurements.first?.source.rigIdentity?.family }, set: { family in
+            guard let family else { return }
+            for index in sourceMeasurements.indices {
+                sourceMeasurements[index].source.rigIdentity = .canonical(for: family)
+                sourceMeasurements[index].source.form = catalogIsIEM ? "in-ear" : "over-ear"
+            }
+            reconcileTargetSelection()
+        })
+    }
+
+    func modifierBinding(_ keyPath: WritableKeyPath<TargetModifiers, Double>) -> Binding<Double> {
+        Binding(get: { (targetSelection.modifiers ?? .init())[keyPath: keyPath] }, set: { value in
+            var modifiers = targetSelection.modifiers ?? .init()
+            modifiers[keyPath: keyPath] = value
+            targetSelection.modifiers = modifiers
+        })
     }
 
 }

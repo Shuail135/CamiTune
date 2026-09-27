@@ -19,21 +19,17 @@ struct ReferenceCorrectionView: View {
     @State private var pendingEQ: String?
     @State private var busy = false
     @State private var message: String?
+    @State private var selectedBandID: UUID?
     @State private var headroom: Double?
     @StateObject private var importOperation = UIBackgroundOperation<DeviceCorrectionProfile>()
 
     private var dirty: Bool { draft != snapshot?.personalReferenceCorrection }
-    private var headphones: Bool { profile.effectiveEndpointKind == .headphones }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if profile.processing.deviceCorrection != nil { Text("Your legacy correction still applies globally. Open Equalizer to edit it.").font(.caption).foregroundStyle(.secondary) }
-            if headphones {
-                Text("Measured headphone correction is still in development. You can import compatible filters below.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
             HStack {
-                Button("Device Correction…") { showingCorrection = true }.disabled(headphones)
-                    .help("Choose a measured earphone response and target.")
+                Button("Device Correction…") { showingCorrection = true }
+                    .help("Choose a device and compatible target.")
                 Button("Import .txt") { importing = true }.help("Import compatible filter values from a text file.")
                 Button("Paste APO Text") { importText(NSPasteboard.general.string(forType: .string) ?? "", name: "Pasted APO correction") }
                     .help("Paste Equalizer APO-compatible filter text.")
@@ -46,14 +42,13 @@ struct ReferenceCorrectionView: View {
                     Spacer()
                     Button("Clear") { draft = nil }
                 }
-                if correction.importedAPOText {
-                    Text("Imported correction is separate from User Equalizer. APO Preamp is ignored; use User Preamp instead. Import or paste again to replace these filters.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
+                Group {
                     Text("Graph").font(.headline)
                     if ReferenceCorrection.validFilters(correction.filters, sampleRate: Double(profile.sampleRate)) {
-                        CorrectionResponseGraph(profile: correction, sampleRate: Double(profile.sampleRate))
-                            .equatable().frame(height: 230)
+                        CorrectionResponseGraph(profile: correction, sampleRate: Double(profile.sampleRate), onEdit: { band in
+                            guard let index = draft?.filters.firstIndex(where: { $0.id == band.id }) else { return }
+                            draft?.filters[index] = band
+                        }, selectedBandID: $selectedBandID).frame(height: 230)
                     } else {
                         Text("Enter a valid frequency below Nyquist, finite gain, and positive Q.").foregroundStyle(.orange)
                     }
@@ -61,7 +56,7 @@ struct ReferenceCorrectionView: View {
                         Text("Automatic headroom: \(headroom, format: .number.precision(.fractionLength(2))) dB")
                             .font(.caption.monospacedDigit())
                     }
-                    CorrectionFilterTable(filters: Binding(get: { draft?.filters ?? [] }, set: { draft?.filters = $0 }))
+                    CorrectionFilterTable(filters: Binding(get: { draft?.filters ?? [] }, set: { draft?.filters = $0 }), selectedBandID: $selectedBandID)
                 }
                 HStack {
                     if dirty {
@@ -92,6 +87,13 @@ struct ReferenceCorrectionView: View {
         .onChange(of: profile.id) { _ in reload() }
         .onChange(of: profile) { _ in if !dirty { reload() } }
         .task(id: draft) {
+            let captured = draft
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            if var candidate = try? state.applyingSessionEQDrafts(to: profile),
+               captured == nil || ReferenceCorrection.validFilters(captured!.filters, sampleRate: Double(profile.sampleRate)) {
+                candidate.setPersonalReferenceCorrection(captured)
+                await state.apply(profile: candidate)
+            }
             guard let draft else { headroom = nil; return }
             let sampleRate = Double(profile.sampleRate)
             let result = await Task.detached(priority: .utility) {
@@ -101,7 +103,7 @@ struct ReferenceCorrectionView: View {
             headroom = result
         }
         .sheet(isPresented: $showingCorrection) {
-            DeviceCorrectionEditorView(existing: draft?.importedAPOText == false ? draft : nil,
+            DeviceCorrectionEditorView(existing: draft,
                 sampleRate: Double(profile.sampleRate), referenceEndpoint: profile.effectiveEndpointKind,
                 automaticHeadroom: { filters in
                     let candidate = (try? state.applyingSessionEQDrafts(to: profile)) ?? profile
@@ -112,7 +114,11 @@ struct ReferenceCorrectionView: View {
                     return await Task.detached(priority: .utility) {
                         ReferenceCorrection.headroomDB(snapshot, sampleRate: Double(candidate.sampleRate))
                     }.value
-                }, shouldConfirmReplacement: { false }, onCancel: { showingCorrection = false },
+                }, shouldConfirmReplacement: { false }, onPreview: { correction in
+                    guard var candidate = try? state.applyingSessionEQDrafts(to: profile) else { return }
+                    candidate.setPersonalReferenceCorrection(correction ?? draft)
+                    await state.apply(profile: candidate)
+                }, onCancel: { showingCorrection = false },
                 onLoad: { correction in showingCorrection = false; draft = correction })
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText]) { result in

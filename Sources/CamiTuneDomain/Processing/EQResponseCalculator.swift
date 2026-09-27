@@ -25,12 +25,24 @@ package struct EQResponseCalculator {
     package func gainDB(at frequency: Double, parsed: ParsedEQ, sampleRate: Double) -> Double {
         var db = parsed.preampDB
         for band in parsed.bands where band.enabled {
-            db += responseDB(band: band, frequency: frequency, sampleRate: sampleRate)
+            db += responseDB(coefficients: coefficients(for: band, sampleRate: sampleRate), frequency: frequency, sampleRate: sampleRate)
         }
         return db
     }
 
-    private func responseDB(band: EQBand, frequency f: Double, sampleRate fs: Double) -> Double {
+    /// Prepare each biquad once for a display sweep, instead of once per point.
+    package func gainsDB(at frequencies: [Double], parsed: ParsedEQ, sampleRate: Double) -> [Double] {
+        let prepared = parsed.bands.filter(\.enabled).map { coefficients(for: $0, sampleRate: sampleRate) }
+        return frequencies.map { frequency in
+            prepared.reduce(parsed.preampDB) { $0 + responseDB(coefficients: $1, frequency: frequency, sampleRate: sampleRate) }
+        }
+    }
+
+    private struct Coefficients {
+        var b0: Double, b1: Double, b2: Double, a0: Double, a1: Double, a2: Double
+    }
+
+    private func coefficients(for band: EQBand, sampleRate fs: Double) -> Coefficients {
         let q = band.q ?? qFromBandwidth(band.bandwidth) ?? 0.70710678
         let w0 = 2 * Double.pi * band.frequency / fs
         let cosw = cos(w0)
@@ -76,6 +88,11 @@ package struct EQResponseCalculator {
             }
         }
 
+        return Coefficients(b0: b0, b1: b1, b2: b2, a0: a0, a1: a1, a2: a2)
+    }
+
+    private func responseDB(coefficients c: Coefficients, frequency f: Double, sampleRate fs: Double) -> Double {
+        let (b0, b1, b2, a0, a1, a2) = (c.b0, c.b1, c.b2, c.a0, c.a1, c.a2)
         let w = 2 * Double.pi * f / fs
         let z1r = cos(-w), z1i = sin(-w)
         let z2r = cos(-2*w), z2i = sin(-2*w)

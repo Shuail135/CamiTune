@@ -73,32 +73,58 @@ struct DeviceCatalogEntry: Codable, Hashable, Sendable, Identifiable {
 /// pad, revision, ANC mode, and so on) remains part of configuration identity.
 
 enum DeviceCatalogSearch {
-    static func results(
-        in entries: [DeviceCatalogEntry],
-        matching query: String,
-        limit: Int = 40
-    ) -> [DeviceCatalogEntry] {
-        let normalizedQuery = DeviceNameAliasCatalog.canonicalKey(for: query)
-        guard !normalizedQuery.isEmpty else { return [] }
-        let tokens = normalizedQuery.split(separator: " ").map(String.init)
-        return entries.compactMap { entry -> (DeviceCatalogEntry, Int)? in
-            let name = DeviceNameAliasCatalog.canonicalKey(for: entry.displayName)
-            guard tokens.allSatisfy(name.contains) else { return nil }
-            let score: Int
-            if name == normalizedQuery { score = 0 }
-            else if name.hasPrefix(normalizedQuery) { score = 1 }
-            else { score = 2 }
-            return (entry, score)
+    struct Index: Sendable {
+        struct Row: Sendable {
+            var entry: DeviceCatalogEntry
+            var key: String
+            var compact: String
+            var identity: String
+            var compatibilityKeys: Set<String>
         }
-        .sorted {
-            if $0.1 != $1.1 { return $0.1 < $1.1 }
-            if $0.0.displayName.count != $1.0.displayName.count {
-                return $0.0.displayName.count < $1.0.displayName.count
+        let id = UUID()
+        private let rows: [Row]
+
+        init(entries: [DeviceCatalogEntry]) {
+            rows = entries.sorted {
+                if $0.displayName.count != $1.displayName.count { return $0.displayName.count < $1.displayName.count }
+                return $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+            }.map {
+                let key = DeviceNameAliasCatalog.canonicalKey(for: $0.displayName)
+                return Row(entry: $0, key: key, compact: key.replacingOccurrences(of: " ", with: ""),
+                           identity: $0.identity.stableKey, compatibilityKeys: Set($0.measurements.map(\.compatibilityKey)))
             }
-            return $0.0.displayName.localizedStandardCompare($1.0.displayName) == .orderedAscending
         }
-        .prefix(max(1, limit))
-        .map(\.0)
+
+        func hasCompatibleDevice(keys: Set<String>, excluding identity: String?) -> Bool {
+            !keys.isEmpty && rows.contains { $0.identity != identity && !$0.compatibilityKeys.isDisjoint(with: keys) }
+        }
+
+        func results(matching query: String, limit: Int = 40, compatibleKeys: Set<String>? = nil, excluding identity: String? = nil) -> [DeviceCatalogEntry] {
+            let key = DeviceNameAliasCatalog.canonicalKey(for: query)
+            guard !key.isEmpty, limit > 0 else { return [] }
+            let compact = key.replacingOccurrences(of: " ", with: "")
+            let tokens = key.split(separator: " ").map(String.init)
+            var buckets = [[DeviceCatalogEntry](), [], []]
+            for row in rows {
+                if let identity, row.identity == identity { continue }
+                if let compatibleKeys, row.compatibilityKeys.isDisjoint(with: compatibleKeys) { continue }
+                guard row.compact.contains(compact) || tokens.allSatisfy(row.compact.contains) else { continue }
+                let rank = row.compact == compact ? 0 : (row.compact.hasPrefix(compact) ? 1 : 2)
+                if buckets[rank].count < limit { buckets[rank].append(row.entry) }
+            }
+            return Array(buckets.joined().prefix(limit))
+        }
+    }
+
+    struct Request: Hashable {
+        var query: String
+        var indexID: UUID
+        var compatibleKeys: Set<String>? = nil
+        var excludedIdentity: String? = nil
+    }
+
+    static func results(in entries: [DeviceCatalogEntry], matching query: String, limit: Int = 40) -> [DeviceCatalogEntry] {
+        Index(entries: entries).results(matching: query, limit: limit)
     }
 }
 
@@ -201,7 +227,8 @@ struct DeviceMeasurementCatalog: Sendable {
         refresh: Bool = false
     ) async throws
         -> [DeviceCorrectionMeasurement] {
-        let selected = MeasurementSetPlanner.references(from: entry.measurements)
+        let selected = Dictionary(grouping: entry.measurements, by: \.compatibilityKey)
+            .sorted { $0.key < $1.key }.flatMap { MeasurementSetPlanner.references(from: $0.value) }
         guard !selected.isEmpty else { throw SourceError.noCompatibleMeasurements }
         let providersByID = Dictionary(
             providers.map { ($0.id, $0) },

@@ -169,7 +169,10 @@ struct NativeProfileEndpointBackend: ProfileEndpointPublicationBackend {
         if id == kAudioObjectUnknown { return nil }
         address.mSelector = kAudioDevicePropertyDeviceUID
         var uid: CFString?; size = UInt32(MemoryLayout<CFString?>.size)
-        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &uid) == noErr else {
+        let status = withUnsafeMutablePointer(to: &uid) { pointer in
+            AudioObjectGetPropertyData(id, &address, 0, nil, &size, pointer)
+        }
+        guard status == noErr else {
             throw ProfileSettingsError.runtime("Could not preserve the current macOS output.")
         }
         return uid as String?
@@ -189,7 +192,10 @@ struct NativeProfileEndpointBackend: ProfileEndpointPublicationBackend {
         var value = uid as CFString, id = AudioObjectID(0), size = UInt32(MemoryLayout<AudioObjectID>.size)
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, UInt32(MemoryLayout<CFString>.size), &value, &size, &id) == noErr else { return kAudioObjectUnknown }
+        let status = withUnsafePointer(to: &value) { pointer in
+            AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, UInt32(MemoryLayout<CFString>.size), pointer, &size, &id)
+        }
+        guard status == noErr else { return kAudioObjectUnknown }
         return id
     }
 }

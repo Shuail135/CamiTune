@@ -59,7 +59,7 @@ struct ImpulseResponseAssignmentSheet: View {
             if let errorMessage { Text(errorMessage).font(.caption).foregroundStyle(.red) }
             HStack {
                 Spacer()
-                Button("Cancel", action: onCancel).keyboardShortcut(.cancelAction)
+                Button("Cancel") { onCancel() }.keyboardShortcut(.cancelAction)
                 Button("Apply") {
                     do {
                         if assignSpeakers { try onAssign(assignments) }

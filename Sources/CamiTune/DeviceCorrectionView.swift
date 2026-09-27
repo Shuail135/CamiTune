@@ -9,16 +9,25 @@ struct DeviceCorrectionEditorView: View {
     let referenceEndpoint: ProfileEndpointKind?
     let automaticHeadroom: @MainActor ([EQBand]) async -> Double
     let shouldConfirmReplacement: @MainActor () -> Bool
+    let onPreview: (@MainActor (DeviceCorrectionProfile?) async -> Void)?
     let onCancel: @MainActor () -> Void
     let onLoad: @MainActor (DeviceCorrectionProfile) -> Void
 
     let catalog = DeviceMeasurementCatalog.online
+    @StateObject var history = CorrectionEditorHistory()
     @StateObject var loadCoordinator = DeviceCorrectionLoadCoordinator()
 
     @State var deviceName: String
     @State var searchText: String
     @State var policy: DeviceCorrectionPolicyKind
-    @State var filterCount: Int
+    @State var autoEQSettings: AutoEQSettings
+    var catalogIsIEM: Bool { referenceEndpoint == .iem }
+    @State var selectedBandID: UUID?
+    @State var targetChosen = false
+    @State var hasCompatibleDeviceMatch = false
+    @State var searchIndex = DeviceCatalogSearch.Index(entries: [])
+    @State var searchResults: [DeviceCatalogEntry] = []
+    @State var deviceMatchSearchResults: [DeviceCatalogEntry] = []
     @State var catalogEntries: [DeviceCatalogEntry] = []
     @State var selectedCatalogID: String?
     @State var sourceMeasurements: [DeviceCorrectionMeasurement] = []
@@ -30,6 +39,7 @@ struct DeviceCorrectionEditorView: View {
     @State var deviceMatchConsensus: MeasurementConsensus?
     @State var generated: DeviceCorrectionProfile?
     @State var generatedAutomaticHeadroomDB: Double
+    @State var accepted = false
     @State var errorMessage: String?
     @State var isLoadingCatalog = false
     @State var isLoadingMeasurements = false
@@ -45,6 +55,7 @@ struct DeviceCorrectionEditorView: View {
         referenceEndpoint: ProfileEndpointKind? = nil,
         automaticHeadroom: @escaping @MainActor ([EQBand]) async -> Double,
         shouldConfirmReplacement: @escaping @MainActor () -> Bool,
+        onPreview: (@MainActor (DeviceCorrectionProfile?) async -> Void)? = nil,
         onCancel: @escaping @MainActor () -> Void,
         onLoad: @escaping @MainActor (DeviceCorrectionProfile) -> Void
     ) {
@@ -53,6 +64,7 @@ struct DeviceCorrectionEditorView: View {
         self.referenceEndpoint = referenceEndpoint
         self.automaticHeadroom = automaticHeadroom
         self.shouldConfirmReplacement = shouldConfirmReplacement
+        self.onPreview = onPreview
         self.onCancel = onCancel
         self.onLoad = onLoad
         _deviceName = State(initialValue: existing?.deviceName ?? "")
@@ -61,7 +73,8 @@ struct DeviceCorrectionEditorView: View {
             $0.deviceIdentity.stableKey
         })
         _policy = State(initialValue: existing?.policy ?? .recommended)
-        _filterCount = State(initialValue: min(16, max(3, existing?.filters.count ?? 10)))
+        _autoEQSettings = State(initialValue: existing?.autoEQSettings ?? .init())
+        _targetChosen = State(initialValue: existing != nil)
         _measurement = State(initialValue: existing?.measurement)
         _targetSelection = State(initialValue: existing?.targetSelection ?? .flat)
         _customTarget = State(initialValue:
@@ -89,16 +102,14 @@ struct DeviceCorrectionEditorView: View {
     }
 
     var body: some View {
-        let sourceSearchResults = searchResults
+        let sourceSearchResults = selectedCatalogID == nil ? searchResults : []
 
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Device Correction")
                         .font(.title2.bold())
-                    Text("Select one device configuration and combine its compatible measurements.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+
                 }
                 Spacer()
             }
@@ -110,7 +121,7 @@ struct DeviceCorrectionEditorView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     GroupBox("Device and source data") {
                         VStack(alignment: .leading, spacing: 12) {
-                            TextField("Search earphones", text: $searchText)
+                            TextField(catalogIsIEM ? "Search IEMs" : "Search headphones", text: $searchText)
                                 .textFieldStyle(.roundedBorder)
 
                             if isLoadingCatalog {
@@ -153,13 +164,6 @@ struct DeviceCorrectionEditorView: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
-                            } else if !sourceMeasurements.isEmpty {
-                                let evidenceCount = Set(sourceMeasurements.map {
-                                    $0.source.laboratoryCorrelationKey
-                                }).count
-                                Text("Ready from \(evidenceCount) compatible independent lab group\(evidenceCount == 1 ? "" : "s").")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
                             }
 
                             if sourceMeasurements.isEmpty,
@@ -179,21 +183,28 @@ struct DeviceCorrectionEditorView: View {
                                 buttonTitle: "Import Custom CSV…"
                             ) { showingMeasurementImporter = true }
 
+                            if sourceMeasurements.first?.source.origin == .local {
+                                Picker("Measurement fixture", selection: sourceRigBinding) {
+                                    Text("—").tag(DeviceCorrectionRigFamily?.none)
+                                    Text("IEC 711").tag(DeviceCorrectionRigFamily?.some(.iec711))
+                                    Text("B&K 5128").tag(DeviceCorrectionRigFamily?.some(.bk5128))
+                                }
+                            }
                             Divider()
 
                             VStack(alignment: .leading, spacing: 8) {
-                                Picker("Correction target", selection: targetPresetBinding) {
-                                    ForEach(DeviceCorrectionTargetPreset.allCases, id: \.self) {
-                                        Text($0.title).tag($0)
+                                Picker("Target", selection: compatibleTargetBinding) {
+                                    Text("—").tag(DeviceCorrectionTargetPreset?.none)
+                                    ForEach(availableTargets, id: \.self) {
+                                        Text(targetTitle($0)).tag(Optional($0))
                                     }
+                                }.pickerStyle(.menu).disabled(measurement == nil)
+                                if measurement != nil && availableTargets.isEmpty {
+                                    Text("No compatible target is available for this measurement data.")
+                                        .font(.caption).foregroundStyle(.secondary)
                                 }
-                                .pickerStyle(.menu)
 
-                                Text(targetSelection.preset.shortDescription)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-
-                                if targetSelection.preset == .jm1PopAvgDFTilt {
+                                if targetChosen && targetSelection.preset == .jm1PopAvgDFTilt {
                                     HStack(spacing: 10) {
                                         Text("Tilt")
                                             .font(.caption.weight(.medium))
@@ -204,15 +215,12 @@ struct DeviceCorrectionEditorView: View {
                                     }
                                 }
 
-                                if targetSelection.preset == .deviceMatch {
+                                if targetChosen && targetSelection.preset == .deviceMatch {
                                     deviceMatchControls
                                 }
 
-                                Text(targetCompatibilityMessage)
-                                    .font(.caption)
-                                    .foregroundStyle(targetIsIncompatible ? .orange : .secondary)
-
-                                if targetSelection.preset == .custom {
+                                Button("Import Target…") { showingTargetImporter = true }.disabled(measurement == nil)
+                                if customTarget != nil {
                                     responseRow(
                                         title: "Custom target",
                                         response: customTarget,
@@ -231,10 +239,6 @@ struct DeviceCorrectionEditorView: View {
                                             .tag(DeviceCorrectionRigFamily?.some(.bk5128))
                                     }
                                     .pickerStyle(.menu)
-                                } else if let generated {
-                                    Text("Resolved curve: \(generated.target.name)")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
                                 }
                             }
                         }
@@ -243,36 +247,47 @@ struct DeviceCorrectionEditorView: View {
 
                     GroupBox("Correction policy") {
                         VStack(alignment: .leading, spacing: 12) {
-                            Picker("Policy", selection: policyBinding) {
-                                ForEach(DeviceCorrectionPolicyKind.allCases, id: \.self) {
-                                    Text($0.title).tag($0)
+                            JoinedSegmentedControl(
+                                options: DeviceCorrectionPolicyKind.allCases,
+                                selection: policyBinding,
+                                title: { $0.title }
+                            )
+                            .accessibilityLabel("Policy")
+
+                            if policy == .recommended && targetChosen && targetSelection.preset != .deviceMatch && targetSelection.preset != .custom {
+                                HStack {
+                                    Text("Bass")
+                                    Slider(value: modifierBinding(\.bassGainDB), in: -12...12, step: 0.5)
+                                    TextField("dB", value: modifierBinding(\.bassGainDB), format: .number.precision(.fractionLength(0...1))).frame(width: 55)
+                                    Text("dB").foregroundStyle(.secondary)
                                 }
                             }
-                            .pickerStyle(.segmented)
-
-                            Text(policyExplanation)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-
-                            Stepper(value: filterCountBinding, in: 3...16) {
-                                Text("PEQ filters: \(filterCount)")
+                            if policy == .exactTarget {
+                                advancedCorrectionControls
+                            } else {
+                                DisclosureGroup("Advanced") {
+                                    advancedCorrectionControls.padding(.top, 8)
+                                }
                             }
+
                         }
                         .padding(6)
                     }
 
                     HStack {
+                        Spacer()
                         Button { generate() } label: {
                             if isGenerating {
                                 ProgressView()
                                     .controlSize(.small)
                             } else {
-                                Text("Generate Correction")
+                                Text((generated?.filters.contains { $0.isLocked } ?? false) ? "Re-optimize Unlocked Bands" : "Auto EQ")
                             }
                         }
                             .buttonStyle(.borderedProminent)
                             .disabled(
                                 isGenerating
+                                    || !targetChosen || !autoEQSettings.isValid
                                     || measurement == nil
                                     || trimmedDeviceName.isEmpty
                                     || isLoadingMeasurements
@@ -284,35 +299,18 @@ struct DeviceCorrectionEditorView: View {
                                         && deviceMatchConsensus == nil)
                                     || targetIsIncompatible
                             )
-                        if generated == nil, existing != nil {
-                            Text("Regenerate after changing measurement, target, policy, or filter count.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+
                     }
 
                     if let generated {
                         GroupBox("Graph") {
                             VStack(alignment: .leading, spacing: 10) {
                                 if ReferenceCorrection.validFilters(generated.filters, sampleRate: sampleRate) {
-                                    CorrectionResponseGraph(profile: generated, sampleRate: sampleRate)
-                                        .equatable().frame(height: 260)
+                                    CorrectionResponseGraph(profile: generated, sampleRate: sampleRate, onEdit: { band in editBand(band) }, selectedBandID: $selectedBandID)
+                                        .frame(height: 300)
                                 } else {
                                     Text("Enter a valid frequency below Nyquist, finite gain, and positive Q.").foregroundStyle(.orange)
                                 }
-                                HStack(spacing: 16) {
-                                    Label("Measurement", systemImage: "minus")
-                                        .foregroundStyle(.secondary)
-                                    Label("Target", systemImage: "minus")
-                                        .foregroundStyle(.blue)
-                                    Label("Corrected", systemImage: "minus")
-                                        .foregroundStyle(.green)
-                                    Label("Equalizer", systemImage: "minus")
-                                        .foregroundStyle(.orange)
-                                    Label("Residual error", systemImage: "minus")
-                                        .foregroundStyle(.red)
-                                }
-                                .font(.caption)
                                 Divider()
                                 generatedEqualizerValues(generated)
                             }
@@ -331,26 +329,55 @@ struct DeviceCorrectionEditorView: View {
 
             Divider()
             HStack {
+                Button { history.manager.undo() } label: { Image(systemName: "arrow.uturn.backward") }
+                    .disabled(!history.manager.canUndo).keyboardShortcut("z", modifiers: .command).help("Undo")
+                Button { history.manager.redo() } label: { Image(systemName: "arrow.uturn.forward") }
+                    .disabled(!history.manager.canRedo).keyboardShortcut("z", modifiers: [.command, .shift]).help("Redo")
                 Spacer()
                 Button("Cancel") { onCancel() }
                 Button(referenceEndpoint == nil ? "Load into Equalizer" : "Load Correction") { requestLoadIntoEqualizer() }
                     .buttonStyle(.bordered)
-                    .disabled(generated == nil || trimmedDeviceName.isEmpty || !ReferenceCorrection.validFilters(generated?.filters ?? [], sampleRate: sampleRate))
+                    .disabled(generated == nil || !resultIsCurrent || trimmedDeviceName.isEmpty || !ReferenceCorrection.validFilters(generated?.filters ?? [], sampleRate: sampleRate))
             }
             .padding(16)
         }
         .frame(minWidth: 700, idealWidth: 760, minHeight: 620, idealHeight: 720)
+        .onAppear {
+            history.current = editorSnapshot
+            history.restore = { snapshot in
+                generated = snapshot.generated
+                targetSelection = snapshot.target
+                policy = snapshot.policy
+                autoEQSettings = snapshot.settings
+                targetChosen = snapshot.targetChosen
+            }
+        }
+        .onChange(of: editorSnapshot) { history.record($0) }
         .task { await loadCatalog() }
+        .task(id: sourceSearchRequest) { await updateSearch(sourceSearchRequest) }
+        .task(id: matchSearchRequest) { await updateSearch(matchSearchRequest, deviceMatch: true) }
+        .onChange(of: searchIndex.id) { _ in updateDeviceMatchAvailability() }
+        .onChange(of: targetSources) { _ in updateDeviceMatchAvailability() }
+        .task(id: generated) {
+            guard let generated, ReferenceCorrection.validFilters(generated.filters, sampleRate: sampleRate) else { return }
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            guard !Task.isCancelled else { return }
+            await onPreview?(generated)
+        }
         .task(id: generated?.filters) {
             guard let filters = generated?.filters else { generatedAutomaticHeadroomDB = 0; return }
+            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
             let result = await automaticHeadroom(filters)
             guard !Task.isCancelled, generated?.filters == filters else { return }
             generatedAutomaticHeadroomDB = result
         }
         .onChange(of: searchText) { newValue in
+            searchResults = []
             guard newValue != deviceName else { return }
+            history.reset()
             loadCoordinator.sourceGeneration &+= 1
             selectedCatalogID = nil
+            targetChosen = false
             deviceName = ""
             sourceMeasurements = []
             measurement = nil
@@ -359,6 +386,7 @@ struct DeviceCorrectionEditorView: View {
             isLoadingMeasurements = false
         }
         .onChange(of: deviceMatchSearchText) { newValue in
+            deviceMatchSearchResults = []
             guard newValue != targetSelection.deviceMatchTarget?.deviceName,
                   !(selectedDeviceMatchCatalogID != nil && isLoadingDeviceMatch) else {
                 return
@@ -396,6 +424,9 @@ struct DeviceCorrectionEditorView: View {
             importResponse(result, asTarget: true)
         }
         .onDisappear {
+            if !accepted { Task { await onPreview?(nil) } }
+            history.restore = nil
+            history.manager.removeAllActions()
             loadCoordinator.sourceGeneration &+= 1
             loadCoordinator.deviceMatchGeneration &+= 1
         }

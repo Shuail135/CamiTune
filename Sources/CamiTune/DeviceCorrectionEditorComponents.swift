@@ -3,6 +3,28 @@ import SwiftUI
 
 @MainActor
 extension DeviceCorrectionEditorView {
+    var advancedCorrectionControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            boundsRow("Frequency (Hz)", lower: $autoEQSettings.minimumFrequency, upper: $autoEQSettings.maximumFrequency, digits: 0)
+            boundsRow("Gain (dB)", lower: $autoEQSettings.minimumGain, upper: $autoEQSettings.maximumGain, digits: 1)
+            boundsRow("Q", lower: $autoEQSettings.minimumQ, upper: $autoEQSettings.maximumQ)
+            if targetChosen && targetSelection.preset != .deviceMatch && targetSelection.preset != .custom {
+                modifierRow("Treble (dB)", value: modifierBinding(\.trebleGainDB))
+                modifierRow("Tilt (dB/oct)", value: modifierBinding(\.tiltDBPerOctave))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func modifierRow(_ title: String, value: Binding<Double>) -> some View {
+        HStack {
+            Text(title).frame(width: 120, alignment: .leading)
+            TextField(title, value: value, format: .number.precision(.fractionLength(0...2))).frame(width: 95)
+            Spacer()
+        }
+        .textFieldStyle(.roundedBorder)
+    }
+
     @ViewBuilder
     var deviceMatchControls: some View {
         let matchSearchResults = deviceMatchSearchResults
@@ -109,14 +131,59 @@ extension DeviceCorrectionEditorView {
                 Text("Equalizer values")
                     .font(.headline)
                 Spacer()
+                Button { replaceFilters((generated?.filters ?? []) + [EQBand(kind: .peaking, frequency: 1_000, gain: 0, q: 0.707)]) } label: {
+                    Image(systemName: "plus")
+                }.disabled((generated?.filters.count ?? 0) >= 20).help("Add band")
                 Text("Automatic headroom \(generatedAutomaticHeadroomDB, format: .number.precision(.fractionLength(2))) dB")
                     .font(.caption.monospacedDigit().weight(.medium))
             }
 
             CorrectionFilterTable(filters: Binding(get: { generated?.filters ?? [] }, set: { filters in
-                generated?.filters = filters
-            }))
+                replaceFilters(filters)
+            }), selectedBandID: $selectedBandID)
+
+            DisclosureGroup("Details") {
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+                    GridRow {
+                        Text("Target")
+                        Text(profile.targetSelection.preset == .neutral
+                            ? DeviceCorrectionTargetCatalog().displayName(for: .neutral, sources: profile.sources)
+                            : profile.target.name)
+                    }
+                    GridRow { Text("Domain"); Text(profile.sources.first?.resolvedRigIdentity.stableKey ?? "Unknown") }
+                    GridRow { Text("Sources"); Text(profile.sources.map(\.sourceName).joined(separator: ", ")) }
+                    GridRow { Text("Engine / registry"); Text("\(profile.correctionEngineVersion) / \(profile.targetRegistryVersion)") }
+                    GridRow { Text("Frequency"); Text("\(Int(profile.autoEQSettings.minimumFrequency))–\(Int(profile.autoEQSettings.maximumFrequency)) Hz") }
+                    GridRow { Text("Gain"); Text("\(profile.autoEQSettings.minimumGain.formatted())–\(profile.autoEQSettings.maximumGain.formatted()) dB") }
+                    GridRow { Text("Q"); Text("\(profile.autoEQSettings.minimumQ.formatted())–\(profile.autoEQSettings.maximumQ.formatted())") }
+                    if profile.policy == .recommended {
+                        GridRow { Text("Treble Q"); Text("≤ \(max(profile.autoEQSettings.minimumQ, min(2, profile.autoEQSettings.maximumQ)).formatted()) above 6 kHz") }
+                    }
+                    GridRow { Text("Combined boost ceiling"); Text("6 dB; locked filters preserved") }
+                }.font(.caption).foregroundStyle(.secondary).padding(.top, 6)
+            }
+
         }
+    }
+
+    func boundsRow(_ title: String, lower: Binding<Double>, upper: Binding<Double>, digits: Int = 2) -> some View {
+        HStack {
+            Text(title).frame(width: 120, alignment: .leading)
+            TextField("Minimum", value: lower, format: .number.precision(.fractionLength(0...digits))).frame(width: 95)
+            Text("–").foregroundStyle(.secondary)
+            TextField("Maximum", value: upper, format: .number.precision(.fractionLength(0...digits))).frame(width: 95)
+            Spacer()
+        }.textFieldStyle(.roundedBorder)
+    }
+
+    func editBand(_ band: EQBand) {
+        guard var filters = generated?.filters, let index = filters.firstIndex(where: { $0.id == band.id }) else { return }
+        filters[index] = band
+        replaceFilters(filters)
+    }
+
+    func replaceFilters(_ filters: [EQBand]) {
+        generated?.filters = filters
     }
 
     func filterLabel(_ kind: EQBand.Kind) -> String {

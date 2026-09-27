@@ -12,6 +12,11 @@ package struct EQBand: Identifiable, Codable, Hashable, Sendable {
     }
 
     package let id: UUID
+    private var locked: Bool? = nil
+    package var isLocked: Bool {
+        get { locked ?? false }
+        set { locked = newValue ? true : nil }
+    }
     package var enabled: Bool
     package var kind: Kind
     package var frequency: Double

@@ -9,6 +9,15 @@ struct DeviceCorrectionTargetResolution: Hashable, Sendable {
 }
 
 struct DeviceCorrectionTargetCatalog {
+    func displayName(for preset: DeviceCorrectionTargetPreset, sources: [DeviceMeasurementReference], paths: [CorrectionPath]? = nil) -> String {
+        guard preset == .neutral,
+              let path = (paths ?? TargetCompatibilityEngine().validPaths(sources: sources)).first(where: { $0.target == preset }),
+              let definition = TargetCompatibilityEngine.definitions.first(where: {
+                  $0.target == preset && path.sources.allSatisfy($0.matches)
+              }) else { return preset.title }
+        return definition.displayName ?? preset.title
+    }
+
     func resolve(
         selection: DeviceCorrectionTargetSelection,
         sources: [DeviceMeasurementReference],
@@ -19,84 +28,114 @@ struct DeviceCorrectionTargetCatalog {
         let usesPresetFixture = selection.preset != .flat
             && selection.preset != .custom
             && selection.preset != .deviceMatch
-        var family = measuredFamily == .unknown && usesPresetFixture
-            ? DeviceCorrectionRigFamily.iec711
-            : measuredFamily
+        var family = measuredFamily
+        if usesPresetFixture {
+            guard TargetCompatibilityEngine().validPaths(sources: sources).contains(where: { $0.target == selection.preset }) else {
+                throw TargetError.incompatibleRig(target: selection.preset.title, required: "a validated measurement domain", actual: measuredFamily.title)
+            }
+        }
         let response: FrequencyResponse
         var confidence: MeasurementConfidenceCurve?
 
-        switch selection.preset {
-        case .flat:
-            response = .flat()
-        case .custom:
-            guard let customResponse else { throw TargetError.customTargetMissing }
-            guard let targetRig = selection.customTargetRigIdentity,
-                  targetRig.family != .unknown else {
-                throw TargetError.customTargetFixtureMissing
-            }
-            if measuredFamily != .unknown, measuredFamily != targetRig.family {
-                throw TargetError.incompatibleRig(
-                    target: selection.preset.title,
-                    required: targetRig.family.title,
-                    actual: measuredFamily.title
+        if let definition = TargetCompatibilityEngine.definitions.first(where: {
+            $0.target == selection.preset && $0.resource != nil && !sources.isEmpty && sources.allSatisfy($0.matches)
+        }), let resource = definition.resource {
+            response = try applying(
+                filters: [EQBand(kind: .lowShelf, frequency: 105, gain: definition.bassGain ?? 0, q: 0.7)],
+                to: load(resource, as: definition.displayName ?? selection.preset.title)
+            )
+        } else {
+            switch selection.preset {
+            case .autoEqInEar, .jm1Harman, .lmg5128, .optimumHiFi:
+                throw TargetError.incompatibleRig(target: selection.preset.title, required: "a published source target", actual: family.title)
+            case .neutral:
+                try require(.bk5128, actual: family, preset: selection.preset)
+                response = try jm1(family: family, tiltDBPerOctave: -1)
+            case .flat:
+                response = .flat()
+            case .custom:
+                guard let customResponse else { throw TargetError.customTargetMissing }
+                guard let targetRig = selection.customTargetRigIdentity,
+                      targetRig.family != .unknown else {
+                    throw TargetError.customTargetFixtureMissing
+                }
+                if sources.isEmpty || !sources.allSatisfy({ $0.resolvedRigIdentity == targetRig }) {
+                    throw TargetError.incompatibleRig(
+                        target: selection.preset.title,
+                        required: targetRig.family.title,
+                        actual: measuredFamily.title
+                    )
+                }
+                family = targetRig.family
+                response = customResponse
+            case .jm1PopAvgDFTilt:
+                response = try jm1(family: family, tiltDBPerOctave: selection.tiltDBPerOctave)
+            case .harmanOverEar2018:
+                response = try load("harman-over-ear-2018", as: "Harman Over-Ear 2018")
+            case .harmanInEar2019V2:
+                try require(.iec711, actual: family, preset: selection.preset)
+                response = try load(
+                    "harman-in-ear-2019-v2",
+                    as: "Harman In-Ear 2019 v2 (711)"
                 )
+            case .iefPreference2025:
+                response = try iefPreference2025(family: family)
+            case .iefNeutral2023:
+                try require(.iec711, actual: family, preset: selection.preset)
+                response = try load("ief-neutral-2023-711", as: "IEF Neutral 2023 (711)")
+            case .diffuseFieldReference:
+                switch family {
+                case .bk5128:
+                    response = try load("diffuse-field-5128", as: "Diffuse Field (B&K 5128)")
+                case .iec711, .unknown:
+                    response = try load("diffuse-field-kemar", as: "Diffuse Field (KEMAR / 711)")
+                }
+            case .etymotic:
+                try require(.iec711, actual: family, preset: selection.preset)
+                response = try load("etymotic-711", as: "Etymotic Target (711)")
+            case .deviceMatch:
+                guard let metadata = selection.deviceMatchTarget,
+                      let deviceMatchConsensus else {
+                    throw TargetError.deviceMatchTargetMissing
+                }
+                guard DeviceMatchPlanner.isCompatible(
+                    sourceReferences: sources,
+                    targetReferences: metadata.sources
+                ) else {
+                    throw TargetError.incompatibleDeviceMatchRig
+                }
+                let metadataSourceIDs = Set(metadata.sources.map(\.id))
+                let consensusSourceIDs = Set(deviceMatchConsensus.sources.map(\.id))
+                let consensusIdentities = deviceMatchConsensus.sources.compactMap(\.deviceIdentity)
+                guard metadataSourceIDs == consensusSourceIDs,
+                      metadata.measurementConfidence == deviceMatchConsensus.confidence,
+                      Set(metadata.measurementSnapshots) == Set(deviceMatchConsensus.snapshots),
+                      consensusIdentities.allSatisfy({ $0 == metadata.deviceIdentity }) else {
+                    throw TargetError.deviceMatchTargetMismatch
+                }
+                response = FrequencyResponse(
+                    name: "Device Match · \(metadata.deviceName)",
+                    points: deviceMatchConsensus.response.points
+                )
+                confidence = deviceMatchConsensus.confidence
             }
-            family = targetRig.family
-            response = customResponse
-        case .jm1PopAvgDFTilt:
-            response = try jm1(family: family, tiltDBPerOctave: selection.tiltDBPerOctave)
-        case .harmanInEar2019V2:
-            try require(.iec711, actual: family, preset: selection.preset)
-            response = try load(
-                "harman-in-ear-2019-v2",
-                as: "Harman In-Ear 2019 v2 (711)"
-            )
-        case .iefPreference2025:
-            response = try iefPreference2025(family: family)
-        case .iefNeutral2023:
-            try require(.iec711, actual: family, preset: selection.preset)
-            response = try load("ief-neutral-2023-711", as: "IEF Neutral 2023 (711)")
-        case .diffuseFieldReference:
-            switch family {
-            case .bk5128:
-                response = try load("diffuse-field-5128", as: "Diffuse Field (B&K 5128)")
-            case .iec711, .unknown:
-                response = try load("diffuse-field-kemar", as: "Diffuse Field (KEMAR / 711)")
-            }
-        case .etymotic:
-            try require(.iec711, actual: family, preset: selection.preset)
-            response = try load("etymotic-711", as: "Etymotic Target (711)")
-        case .deviceMatch:
-            guard let metadata = selection.deviceMatchTarget,
-                  let deviceMatchConsensus else {
-                throw TargetError.deviceMatchTargetMissing
-            }
-            guard DeviceMatchPlanner.isCompatible(
-                sourceReferences: sources,
-                targetReferences: metadata.sources
-            ) else {
-                throw TargetError.incompatibleDeviceMatchRig
-            }
-            let metadataSourceIDs = Set(metadata.sources.map(\.id))
-            let consensusSourceIDs = Set(deviceMatchConsensus.sources.map(\.id))
-            let consensusIdentities = deviceMatchConsensus.sources.compactMap(\.deviceIdentity)
-            guard metadataSourceIDs == consensusSourceIDs,
-                  metadata.measurementConfidence == deviceMatchConsensus.confidence,
-                  Set(metadata.measurementSnapshots) == Set(deviceMatchConsensus.snapshots),
-                  consensusIdentities.allSatisfy({ $0 == metadata.deviceIdentity }) else {
-                throw TargetError.deviceMatchTargetMismatch
-            }
-            response = FrequencyResponse(
-                name: "Device Match · \(metadata.deviceName)",
-                points: deviceMatchConsensus.response.points
-            )
-            confidence = deviceMatchConsensus.confidence
+
         }
 
+        let modified: FrequencyResponse
+        if let modifiers = selection.modifiers {
+            let shelves = try applying(filters: [
+                EQBand(kind: .lowShelf, frequency: 105, gain: min(12, max(-12, modifiers.bassGainDB)), q: 0.707),
+                EQBand(kind: .highShelf, frequency: 2_500, gain: min(12, max(-12, modifiers.trebleGainDB)), q: 0.707)
+            ], to: response)
+            modified = FrequencyResponse(name: response.name, points: shelves.points.map {
+                .init(frequency: $0.frequency, magnitudeDB: $0.magnitudeDB + min(2, max(-2, modifiers.tiltDBPerOctave)) * log2($0.frequency / 1_000))
+            })
+        } else { modified = response }
         return DeviceCorrectionTargetResolution(
-            response: response,
+            response: modified,
             rigFamily: family,
-            usedFallbackRig: measuredFamily == .unknown && usesPresetFixture,
+            usedFallbackRig: false,
             confidence: confidence
         )
     }
@@ -136,7 +175,7 @@ struct DeviceCorrectionTargetCatalog {
                 : "The two devices do not have compatible measurement fixtures and cannot be matched safely."
         }
         if family == .unknown, preset != .flat, preset != .custom {
-            return "The imported measurement does not identify its fixture. CamiTune will assume IEC 711; verify this before generating correction."
+            return "The imported measurement does not identify its fixture. Choose a measurement with a validated fixture before generating correction."
         }
         let only711: Set<DeviceCorrectionTargetPreset> = [
             .harmanInEar2019V2, .iefNeutral2023, .etymotic
@@ -291,6 +330,111 @@ struct DeviceCorrectionTargetCatalog {
             case let .incompatibleRig(target, required, actual):
                 return "\(target) requires \(required) data, but the selected measurements use \(actual)."
             }
+        }
+    }
+}
+
+struct CorrectionPath: Hashable, Sendable {
+    var target: DeviceCorrectionTargetPreset
+    var deviceVariantID: String
+    var isConverted: Bool
+    var bundleID: String
+    var sources: [DeviceMeasurementReference]
+    var confidence: Double
+}
+
+/// One compatibility authority for both catalog categories. No cross-domain conversion
+/// is implied by sharing a rig family; unknown calibrations are excluded.
+struct TargetCompatibilityEngine {
+    struct Definition: Decodable {
+        struct CatalogMatch: Decodable {
+            var source: String
+            var form: String
+            var rig: String?
+        }
+        var catalogMatches: [CatalogMatch]?
+        var displayName: String?
+        var resource: String?
+        var bassGain: Double?
+        var preferred: Bool?
+        var target: DeviceCorrectionTargetPreset
+        var forms: [DeviceForm]
+        var families: [DeviceCorrectionRigFamily]
+        var isConverted: Bool
+        var fixtures: [String]?
+        var author: String
+        var version: String
+        var source: String
+        var citation: String
+        var licenseStatus: String
+
+        func matches(_ reference: DeviceMeasurementReference) -> Bool {
+            if let catalogMatches {
+                // Provider metadata is authoritative only for its own catalog.
+                guard reference.resolvedRetrievalProviderID == "autoeq-measurements" else { return false }
+                return catalogMatches.contains {
+                    $0.source == reference.sourceName && $0.form == reference.form && $0.rig == reference.rig
+                }
+            }
+            let rig = reference.resolvedRigIdentity
+            guard let form = DeviceForm(catalogValue: reference.form) else { return false }
+            return forms.contains(form) && families.contains(rig.family)
+                && rig.calibrationVariant == nil && rig.pinnaModel != "miniDSP EARS"
+                && (fixtures == nil || fixtures!.contains(rig.fixtureModel ?? ""))
+        }
+    }
+
+    static let definitions: [Definition] = {
+#if SWIFT_PACKAGE
+        let bundle = Bundle.module
+#else
+        let bundle = Bundle.main
+#endif
+        guard let url = bundle.url(forResource: "index", withExtension: "json", subdirectory: "DeviceCorrectionTargets"),
+              let data = try? Data(contentsOf: url),
+              let definitions = try? JSONDecoder().decode([Definition].self, from: data) else { return [] }
+        return definitions
+    }()
+
+    func rankedPaths(measurements: [DeviceCorrectionMeasurement]) throws -> [CorrectionPath] {
+        try validPaths(sources: measurements.map(\.source)).map { path in
+            var ranked = path
+            let ids = Set(path.sources.map(\.id))
+            let consensus = try MeasurementConsensusBuilder().build(deviceName: path.deviceVariantID, measurements: measurements.filter { ids.contains($0.source.id) })
+            ranked.confidence = consensus.confidence.points.map(\.confidence).reduce(0, +) / Double(max(1, consensus.confidence.points.count))
+            return ranked
+        }.sorted {
+            if $0.isConverted != $1.isConverted { return !$0.isConverted }
+            if $0.confidence != $1.confidence { return $0.confidence > $1.confidence }
+            return $0.bundleID < $1.bundleID
+        }
+    }
+
+    func preferredTarget(sources: [DeviceMeasurementReference]) -> DeviceCorrectionTargetPreset? {
+        let paths = validPaths(sources: sources)
+        if paths.contains(where: { $0.target == .neutral }) { return .neutral }
+        return paths.first(where: { path in
+            Self.definitions.contains { definition in
+                definition.target == path.target && definition.preferred == true
+                    && path.sources.allSatisfy(definition.matches)
+            }
+        })?.target ?? paths.first?.target
+    }
+
+    func validPaths(sources: [DeviceMeasurementReference]) -> [CorrectionPath] {
+        Dictionary(grouping: sources, by: {
+            ($0.deviceIdentity ?? .inferred(from: $0.catalogName)).stableKey + "|" + $0.compatibilityKey
+        }).flatMap { key, references in
+            Self.definitions.compactMap { definition -> CorrectionPath? in
+                guard references.allSatisfy(definition.matches) else { return nil }
+                let evidence = Dictionary(grouping: references, by: \.laboratoryCorrelationKey)
+                let confidence = evidence.values.compactMap { $0.map(\.reliability).max() }.reduce(0, +)
+                return CorrectionPath(target: definition.target, deviceVariantID: (references[0].deviceIdentity ?? .inferred(from: references[0].catalogName)).stableKey, isConverted: definition.isConverted, bundleID: key, sources: references, confidence: confidence)
+            }
+        }.sorted {
+            if $0.isConverted != $1.isConverted { return !$0.isConverted }
+            if $0.confidence != $1.confidence { return $0.confidence > $1.confidence }
+            return $0.bundleID < $1.bundleID
         }
     }
 }
