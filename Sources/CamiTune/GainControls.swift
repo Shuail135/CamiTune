@@ -205,7 +205,7 @@ private struct MeteredGainSlider: View {
 
     private var levelColor: Color {
         if totalPeakDB >= -3 { return .orange }
-        return .green
+        return .blue
     }
 }
 

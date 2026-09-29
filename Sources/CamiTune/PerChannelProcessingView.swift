@@ -10,8 +10,19 @@ enum PerChannelSelectionScope: String, CaseIterable {
 struct PerChannelProcessingView: View {
     @ObservedObject var state: AppState
     @Binding var profile: DeviceProfile
+    var convolutionOnly = false
 
-    @State private var equalizerPresentation: EqualizerPresentation = .both
+    var equalizerPresentation: EqualizerPresentation {
+        state.profiles.effectiveLayout(for: profile).presentation[ProfileSection.perChannel.rawValue]?.equalizer ?? .both
+    }
+    private var presentationBinding: Binding<EqualizerPresentation> {
+        Binding(get: { equalizerPresentation }, set: { value in
+            var layout = state.profiles.effectiveLayout(for: profile)
+            layout.presentation[ProfileSection.perChannel.rawValue] = .init(equalizer: value)
+            profile.sectionLayout = layout
+            runtime.updateStatus(presentation: value)
+        })
+    }
     @State var selectedChannelIndex = 0
     @State var selectedGroupID: SpeakerGroupID?
     @State var selectionScope: PerChannelSelectionScope = .groups
@@ -48,97 +59,12 @@ struct PerChannelProcessingView: View {
     }
 
     var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 12) {
-                if bandReduction.isRunning { ProgressView("Fitting bands…").controlSize(.small) }
-                PerChannelHeader(
-                    status: runtime.status,
-                    isGroup: selectedGroup != nil,
-                    onReset: resetSelectedChannel,
-                    onSave: saveSelectedChannel
-                )
-
-                Text(selectedGroup == nil
-                    ? "Global processing runs first. These settings then affect only the selected physical channel."
-                    : "Group processing runs after global processing and before each speaker’s individual settings. Group limiters run last on their members.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                if editableChannels.isEmpty {
-                    Text("Configure enabled physical channels in Profile Settings.").foregroundStyle(.secondary)
-                } else if profile.usesGroupedProcessingPresentation {
-                    groupAndSpeakerSelector
-                } else {
-                    OverflowAwareHorizontalScrollView(contentWidth: channelSelectorWidth, height: 40) {
-                        JoinedSegmentedControl(
-                            options: editableChannels,
-                            selection: Binding(get: { selectedChannel }, set: { selectChannel($0.index) }),
-                            title: { $0.displayName }
-                        )
-                        .accessibilityLabel("Channel")
-                    }
-                }
-
-                PerChannelGainRow(
-                    gain: runtime.gain,
-                    limiter: runtime.limiter,
-                    meters: state.meters,
-                    profileID: profile.id,
-                    channelIndex: selectedChannelIndex,
-                    groupChannelIndices: selectedGroup?.members.map(\.channelIndex),
-                    visualEffectsEnabled: runtimeVisualsActive,
-                    onChanged: channelSettingsChanged,
-                    onEditingChanged: continuousEditingChanged
-                )
-
-                PerChannelDelayRow(
-                    delay: runtime.delay,
-                    onChanged: channelSettingsChanged,
-                    onEditingChanged: continuousEditingChanged
-                )
-
-                Text(selectedGroup == nil
-                    ? "Use delay to time-align this channel. Fractional-sample values are supported."
-                    : "This delay is added to each member’s individual delay. Fractional-sample values are supported.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                PerChannelResponseGraph(responses: runtime.responses)
-
-                Text("Equalizer").font(.headline)
-                JoinedSegmentedControl(
-                    options: EqualizerPresentation.allCases,
-                    selection: $equalizerPresentation,
-                    title: { $0.title }
-                )
-                .accessibilityLabel("Per-channel equalizer controls")
-                .frame(width: 260)
-
-                if equalizerPresentation != .simpleTone {
-                    PerChannelBandsSection(
-                        bands: runtime.bands,
-                        responses: runtime.responses,
-                        requestBandCount: requestBandCount,
-                        setKind: EQEditorSupport.setKind,
-                        onBandChanged: channelSettingsChanged,
-                        onGainEditingChanged: continuousEditingChanged
-                    )
-                }
-                if equalizerPresentation == .both { Divider() }
-                if equalizerPresentation != .bands {
-                    PerChannelSimpleEQControls(
-                        tone: runtime.simpleTone,
-                        onChanged: channelSettingsChanged,
-                        onEditingChanged: continuousEditingChanged
-                    )
-                }
-                Divider()
-                ConvolutionEditorView(state: state, profile: $profile, target: selectedTarget,
-                    targetName: selectedGroup?.name ?? selectedChannel.displayName)
-                    .id(selectedTarget)
+        Group {
+            if convolutionOnly {
+                editorContent
+            } else {
+                GroupBox { editorContent.padding(6) }
             }
-            .padding(6)
-            .disabled(editableChannels.isEmpty || bandReduction.isRunning)
         }
         .alert("Recalculate Equalizer Bands?", isPresented: $showBandReductionConfirmation) {
             Button("Cancel", role: .cancel) {
@@ -177,6 +103,105 @@ struct PerChannelProcessingView: View {
         }
     }
 
+    private var editorContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !convolutionOnly {
+                if bandReduction.isRunning { ProgressView("Fitting bands…").controlSize(.small) }
+                PerChannelHeader(
+                    status: runtime.status,
+                    presentation: equalizerPresentation,
+                    onReset: resetSelectedChannel
+                )
+            }
+
+            if !convolutionOnly { processingDescription }
+
+            if editableChannels.isEmpty {
+                Text("Configure enabled physical channels in Profile Settings.").foregroundStyle(.secondary)
+            } else if profile.usesGroupedProcessingPresentation {
+                groupAndSpeakerSelector
+            } else {
+                OverflowAwareHorizontalScrollView(contentWidth: channelSelectorWidth, height: 40) {
+                    JoinedSegmentedControl(
+                        options: editableChannels,
+                        selection: Binding(get: { selectedChannel }, set: { selectChannel($0.index) }),
+                        title: { $0.displayName }
+                    )
+                    .accessibilityLabel("Channel")
+                }
+            }
+
+            if !convolutionOnly {
+                PerChannelGainRow(
+                    gain: runtime.gain,
+                    limiter: runtime.limiter,
+                    meters: state.meters,
+                    profileID: profile.id,
+                    channelIndex: selectedChannelIndex,
+                    groupChannelIndices: selectedGroup?.members.map(\.channelIndex),
+                    visualEffectsEnabled: runtimeVisualsActive,
+                    onChanged: channelSettingsChanged,
+                    onEditingChanged: continuousEditingChanged
+                )
+
+                PerChannelDelayRow(
+                    delay: runtime.delay,
+                    onChanged: channelSettingsChanged,
+                    onEditingChanged: continuousEditingChanged
+                )
+
+                Text(selectedGroup == nil
+                    ? "Use delay to time-align this channel. Fractional-sample values are supported."
+                    : "This delay is added to each member’s individual delay. Fractional-sample values are supported.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                PerChannelResponseGraph(responses: runtime.responses)
+
+                Text("Equalizer").font(.headline)
+                JoinedSegmentedControl(
+                    options: EqualizerPresentation.allCases,
+                    selection: presentationBinding,
+                    title: { $0.title }
+                )
+                .accessibilityLabel("Per-channel equalizer controls")
+                .frame(width: 260)
+
+                if equalizerPresentation != .simpleTone {
+                    PerChannelBandsSection(
+                        bands: runtime.bands,
+                        responses: runtime.responses,
+                        requestBandCount: requestBandCount,
+                        setKind: EQEditorSupport.setKind,
+                        onBandChanged: channelSettingsChanged,
+                        onGainEditingChanged: continuousEditingChanged
+                    )
+                }
+                if equalizerPresentation == .both { Divider() }
+                if equalizerPresentation != .bands {
+                    PerChannelSimpleEQControls(
+                        tone: runtime.simpleTone,
+                        onChanged: channelSettingsChanged,
+                        onEditingChanged: continuousEditingChanged
+                    )
+                }
+            } else {
+                ConvolutionEditorView(state: state, profile: $profile, target: selectedTarget,
+                    targetName: selectedGroup?.name ?? selectedChannel.displayName, showsTitle: false)
+                    .id(selectedTarget)
+            }
+        }
+        .disabled(editableChannels.isEmpty || bandReduction.isRunning)
+    }
+
+    private var processingDescription: some View {
+        Text(selectedGroup == nil
+            ? "Global processing runs first. These settings then affect only the selected physical channel."
+            : "Group processing runs after global processing and before each speaker’s individual settings. Group limiters run last on their members.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
     private var groupAndSpeakerSelector: some View {
         VStack(alignment: .leading, spacing: 8) {
             JoinedSegmentedControl(options: PerChannelSelectionScope.allCases,
@@ -213,31 +238,17 @@ struct PerChannelProcessingView: View {
 
 private struct PerChannelHeader: View {
     @ObservedObject var status: PerChannelStatusState
-    let isGroup: Bool
+    let presentation: EqualizerPresentation
     let onReset: @MainActor () -> Void
-    let onSave: @MainActor () -> Void
 
     var body: some View {
         HStack {
             Text("Per-channel EQ, Gain & Delay").font(.title3.bold())
-            Text(status.isSaved ? "Saved" : "Not saved")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(status.isSaved ? Color.green : Color.secondary)
             Spacer()
-            Button(isGroup ? "Reset group" : "Reset channel") {
-                onReset()
-            }
-            .disabled(!status.canReset)
-            Button {
-                onSave()
-            } label: {
-                Text("Save")
-                    .foregroundStyle(Color.white)
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 5)
-                    .background(Color.blue, in: RoundedRectangle(cornerRadius: 6))
-            }
-            .buttonStyle(.plain)
+            Button("Reset") { onReset() }
+                .buttonStyle(.bordered)
+                .disabled(!status.canReset)
+                .help(presentation.resetTitle)
         }
     }
 }
@@ -425,7 +436,7 @@ private struct PerChannelResponseGraph: View {
                 xRange: 20...20_000,
                 yRange: -24...24,
                 zeroLine: true,
-                lineColor: .blue
+                lineColor: .green
             )
             .frame(height: 120)
         }
@@ -460,7 +471,7 @@ private struct PerChannelBandsSection: View {
                 HStack {
                     Text("No EQ bands. Simple, gain, and delay still apply.")
                         .foregroundStyle(.secondary)
-                    Button("Reset Bands") { requestBandCount(8) }
+                    Button("Add Bands") { requestBandCount(8) }
                 }
                 .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
             } else {

@@ -2,7 +2,13 @@ import CamiTuneDomain
 import SwiftUI
 
 struct CorrectionResponseGraph: View {
-    @State private var visible: Set<String> = ["Measurement", "Target", "Corrected", "EQ"]
+    @State private var localVisibleCurves: Set<CorrectionGraphCurve>
+    private let visibleCurves: Binding<Set<CorrectionGraphCurve>>?
+    @State private var localShowControlPoints = true
+    private let showControlPoints: Binding<Bool>?
+
+    private var visibility: Binding<Set<CorrectionGraphCurve>> { visibleCurves ?? $localVisibleCurves }
+    private var controlPointVisibility: Binding<Bool> { showControlPoints ?? $localShowControlPoints }
     @StateObject private var responseCache = CorrectionGraphResponseCache()
     @State private var editingBand: EQBand?
     @State private var dragOrigin: EQBand?
@@ -11,8 +17,10 @@ struct CorrectionResponseGraph: View {
     var onEdit: ((EQBand) -> Void)? = nil
     @Binding var selectedBandID: UUID?
 
-    init(profile: DeviceCorrectionProfile, sampleRate: Double, onEdit: ((EQBand) -> Void)? = nil, selectedBandID: Binding<UUID?> = .constant(nil)) {
-        self._visible = State(initialValue: profile.importedAPOText ? ["EQ"] : ["Measurement", "Target", "Corrected", "EQ"])
+    init(profile: DeviceCorrectionProfile, sampleRate: Double, onEdit: ((EQBand) -> Void)? = nil, selectedBandID: Binding<UUID?> = .constant(nil), visibleCurves: Binding<Set<CorrectionGraphCurve>>? = nil, showControlPoints: Binding<Bool>? = nil) {
+        self._localVisibleCurves = State(initialValue: profile.importedAPOText ? [.equalizer] : AutoEQPresentationPreferences().visibleCurves)
+        self.visibleCurves = visibleCurves
+        self.showControlPoints = showControlPoints
         self.profile = profile
         self.sampleRate = sampleRate
         self.onEdit = onEdit
@@ -44,30 +52,40 @@ struct CorrectionResponseGraph: View {
             let error = series.error
             let levelRange: ClosedRange<Double> = onEdit == nil ? levelRange(for: [measurement, target, corrected, equalizer, error]) : -24...24
             let levelTicks = ticks(for: levelRange)
+            let frequencyLabels = CorrectionGraphFrequencyAxis.labels(plotWidth: plot.width)
             ZStack {
                 Canvas { context, _ in
+                    let minorGrid = Path { path in
+                        for frequency in CorrectionGraphFrequencyAxis.gridFrequencies {
+                            let lineX = x(Double(frequency), plot: plot)
+                            path.move(to: CGPoint(x: lineX, y: plot.minY))
+                            path.addLine(to: CGPoint(x: lineX, y: plot.maxY))
+                        }
+                    }
+                    context.stroke(minorGrid, with: .color(.secondary.opacity(0.09)), lineWidth: 0.5)
                     let grid = Path { path in
                         for gain in levelTicks {
                             let lineY = y(gain, plot: plot, range: levelRange)
                             path.move(to: CGPoint(x: plot.minX, y: lineY))
                             path.addLine(to: CGPoint(x: plot.maxX, y: lineY))
                         }
-                        for frequency in [20.0, 100, 1_000, 10_000, 20_000] {
-                            let lineX = x(frequency, plot: plot)
+                        for frequency in frequencyLabels {
+                            let lineX = x(Double(frequency), plot: plot)
                             path.move(to: CGPoint(x: lineX, y: plot.minY))
                             path.addLine(to: CGPoint(x: lineX, y: plot.maxY))
                         }
                     }
                     context.stroke(grid, with: .color(.secondary.opacity(0.18)), lineWidth: 1)
-                    let curves: [(String, [(Double, Double)], Color, StrokeStyle)] = [
-                        ("Measurement", measurement, .secondary, responseStroke(lineWidth: 1.2)),
-                        ("Target", target, .blue, responseStroke(lineWidth: 1.4, dash: [5, 3])),
-                        ("Corrected", corrected, .green, responseStroke(lineWidth: 2)),
-                        ("EQ", equalizer, .orange, responseStroke(lineWidth: 1.4)),
-                        ("Residual", error, .red, responseStroke(lineWidth: 1.3, dash: [3, 3])),
-                        ("Desired", profile.curve.points.map { ($0.frequency, $0.gainDB) }, .purple, responseStroke(lineWidth: 1.3, dash: [4, 3]))
+                    context.clip(to: Path(plot))
+                    let curves: [(CorrectionGraphCurve, [(Double, Double)], Color, StrokeStyle)] = [
+                        (.target, target, .blue.opacity(0.35), responseStroke(lineWidth: 7.5)),
+                        (.measurement, measurement, .secondary, responseStroke(lineWidth: 1.2)),
+                        (.corrected, corrected, .green, responseStroke(lineWidth: 2)),
+                        (.equalizer, equalizer, .orange, responseStroke(lineWidth: 1.4)),
+                        (.residual, error, .red, responseStroke(lineWidth: 1.3, dash: [3, 3])),
+                        (.desired, profile.curve.points.map { ($0.frequency, $0.gainDB) }, .purple, responseStroke(lineWidth: 1.3, dash: [4, 3]))
                     ]
-                    for (name, points, color, stroke) in curves where visible.contains(name) {
+                    for (curve, points, color, stroke) in curves where visibility.wrappedValue.contains(curve) {
                         context.stroke(responsePath(points, plot: plot, range: levelRange), with: .color(color), style: stroke)
                     }
                 }
@@ -81,43 +99,45 @@ struct CorrectionResponseGraph: View {
                             y: y(gain, plot: plot, range: levelRange)
                         )
                 }
-                ForEach([20, 100, 1_000, 10_000, 20_000], id: \.self) { frequency in
-                    Text(frequencyLabel(frequency))
-                        .font(.system(size: 8).monospacedDigit())
+                ForEach(frequencyLabels, id: \.self) { frequency in
+                    Text(CorrectionGraphFrequencyAxis.label(frequency))
+                        .font(.system(size: 10).monospacedDigit())
                         .foregroundStyle(.secondary)
                         .position(x: x(Double(frequency), plot: plot), y: plot.maxY + 10)
                 }
-                if onEdit != nil {
+                if onEdit != nil && controlPointVisibility.wrappedValue {
                     ForEach(filters) { band in
-                        let center = CGPoint(x: x(band.frequency, plot: plot), y: y(band.gain ?? 0, plot: plot, range: levelRange))
-                        Circle().fill(band.enabled ? Color.accentColor : Color.secondary)
-                            .frame(width: selection == band.id ? 13 : 10, height: selection == band.id ? 13 : 10)
-                            .overlay(Circle().stroke(.background, lineWidth: 2))
-                            .position(center)
-                            .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("correctionPlot"))
-                                .onChanged { value in
-                                    updateDrag(band, translation: value.translation, plot: plot, range: levelRange)
+                        if let level = series.handleLevel(at: band.frequency, visibleCurves: visibility.wrappedValue) {
+                            let center = CGPoint(x: x(band.frequency, plot: plot), y: y(level, plot: plot, range: levelRange))
+                            Circle().fill(band.enabled ? Color.accentColor : Color.secondary)
+                                .frame(width: selection == band.id ? 13 : 10, height: selection == band.id ? 13 : 10)
+                                .overlay(Circle().stroke(.background, lineWidth: 2))
+                                .position(center)
+                                .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("correctionPlot"))
+                                    .onChanged { value in
+                                        updateDrag(band, translation: value.translation, plot: plot, range: levelRange)
+                                    }
+                                    .onEnded { value in
+                                        updateDrag(band, translation: value.translation, plot: plot, range: levelRange)
+                                        finishDrag()
+                                    })
+                                .accessibilityLabel("Band at \(Int(band.frequency)) Hz")
+                            if selection == band.id {
+                                let width = 2 * asinh(1 / (2 * (band.q ?? 0.707))) / log(2)
+                                ForEach([-1.0, 1.0], id: \.self) { side in
+                                    let frequency = min(20_000, max(20, band.frequency * pow(2, side * width / 2)))
+                                    Rectangle().fill(Color.accentColor).frame(width: 5, height: 20)
+                                        .position(x: x(frequency, plot: plot), y: center.y)
+                                        .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("correctionPlot"))
+                                            .onChanged { value in
+                                                updateDrag(band, translation: value.translation, plot: plot, range: levelRange, bandwidthSide: side)
+                                            }
+                                            .onEnded { value in
+                                                updateDrag(band, translation: value.translation, plot: plot, range: levelRange, bandwidthSide: side)
+                                                finishDrag()
+                                            })
+                                        .help("Bandwidth")
                                 }
-                                .onEnded { value in
-                                    updateDrag(band, translation: value.translation, plot: plot, range: levelRange)
-                                    finishDrag()
-                                })
-                            .accessibilityLabel("Band at \(Int(band.frequency)) Hz")
-                        if selection == band.id {
-                            let width = 2 * asinh(1 / (2 * (band.q ?? 0.707))) / log(2)
-                            ForEach([-1.0, 1.0], id: \.self) { side in
-                                let frequency = min(20_000, max(20, band.frequency * pow(2, side * width / 2)))
-                                Rectangle().fill(Color.accentColor).frame(width: 5, height: 20)
-                                    .position(x: x(frequency, plot: plot), y: center.y)
-                                    .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("correctionPlot"))
-                                        .onChanged { value in
-                                            updateDrag(band, translation: value.translation, plot: plot, range: levelRange, bandwidthSide: side)
-                                        }
-                                        .onEnded { value in
-                                            updateDrag(band, translation: value.translation, plot: plot, range: levelRange, bandwidthSide: side)
-                                            finishDrag()
-                                        })
-                                    .help("Bandwidth")
                             }
                         }
                     }
@@ -138,12 +158,22 @@ struct CorrectionResponseGraph: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         HStack(spacing: 14) {
-            overlayToggle("Measurement", color: .secondary)
-            overlayToggle("Target", color: .blue)
-            overlayToggle("Corrected", color: .green)
-            overlayToggle("EQ", color: .orange)
-            overlayToggle("Desired", color: .purple)
-            overlayToggle("Residual", color: .red)
+            overlayToggle(.measurement, color: .secondary)
+            overlayToggle(.target, color: .blue)
+            overlayToggle(.corrected, color: .green)
+            overlayToggle(.equalizer, color: .orange)
+            overlayToggle(.desired, color: .purple)
+            overlayToggle(.residual, color: .red)
+            if onEdit != nil {
+                Button {
+                    controlPointVisibility.wrappedValue.toggle()
+                } label: {
+                    Label("Control Points", systemImage: "circle.fill")
+                        .foregroundStyle(controlPointVisibility.wrappedValue ? Color.accentColor : Color.secondary.opacity(0.4))
+                }
+                .buttonStyle(.plain)
+                .accessibilityValue(controlPointVisibility.wrappedValue ? "Shown" : "Hidden")
+            }
         }.font(.caption)
         }
     }
@@ -169,12 +199,16 @@ struct CorrectionResponseGraph: View {
         dragOrigin = nil
     }
 
-    private func overlayToggle(_ name: String, color: Color) -> some View {
+    private func overlayToggle(_ curve: CorrectionGraphCurve, color: Color) -> some View {
         Button {
-            if visible.contains(name) { visible.remove(name) } else { visible.insert(name) }
+            if visibility.wrappedValue.contains(curve) {
+                visibility.wrappedValue.remove(curve)
+            } else {
+                visibility.wrappedValue.insert(curve)
+            }
         } label: {
-            Label(name, systemImage: "minus").foregroundStyle(visible.contains(name) ? color : Color.secondary.opacity(0.4))
-        }.buttonStyle(.plain).accessibilityValue(visible.contains(name) ? "Shown" : "Hidden")
+            Label(curve.rawValue, systemImage: "minus").foregroundStyle(visibility.wrappedValue.contains(curve) ? color : Color.secondary.opacity(0.4))
+        }.buttonStyle(.plain).accessibilityValue(visibility.wrappedValue.contains(curve) ? "Shown" : "Hidden")
     }
 
     private func responsePath(
@@ -263,13 +297,30 @@ struct CorrectionResponseGraph: View {
         return rounded > 0 ? "+\(rounded)" : "\(rounded)"
     }
 
-    private func frequencyLabel(_ frequency: Int) -> String {
-        switch frequency {
-        case 1_000: return "1k"
-        case 10_000: return "10k"
-        case 20_000: return "20k"
-        default: return "\(frequency)"
+}
+
+enum CorrectionGraphFrequencyAxis {
+    static let gridFrequencies: [Int] = [20, 30, 40, 50, 60, 70, 80, 90,
+        100, 200, 300, 400, 500, 600, 700, 800, 900,
+        1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000, 20_000]
+
+    static func label(_ frequency: Int) -> String {
+        frequency >= 1_000 ? "\(frequency / 1_000)k" : "\(frequency)"
+    }
+
+    static func labels(plotWidth: CGFloat) -> [Int] {
+        // Preserve the endpoints and decades, then fill available space without collisions.
+        let priority = [20, 20_000, 100, 1_000, 10_000, 50, 200, 500, 2_000, 5_000]
+        var selected: [Int] = []
+        for frequency in priority + gridFrequencies where !selected.contains(frequency) {
+            let fits = selected.allSatisfy { other in
+                let distance = abs(log(Double(frequency) / Double(other))) / log(1_000) * plotWidth
+                let minimumDistance = Double(label(frequency).count + label(other).count) * 3 + 8
+                return distance >= minimumDistance
+            }
+            if fits { selected.append(frequency) }
         }
+        return selected.sorted()
     }
 }
 
@@ -282,6 +333,28 @@ final class CorrectionGraphResponseCache: ObservableObject {
         var corrected: [(Double, Double)] = []
         var equalizer: [(Double, Double)] = []
         var error: [(Double, Double)] = []
+
+        func handleLevel(at frequency: Double, visibleCurves: Set<CorrectionGraphCurve>) -> Double? {
+            if visibleCurves.contains(.corrected), let level = level(at: frequency, in: corrected) {
+                return level
+            }
+            return visibleCurves.contains(.equalizer) ? level(at: frequency, in: equalizer) : nil
+        }
+
+        private func level(at frequency: Double, in points: [(Double, Double)]) -> Double? {
+            guard let first = points.first, let last = points.last,
+                  frequency >= first.0, frequency <= last.0 else { return nil }
+            var lower = 0
+            var upper = points.count - 1
+            while upper - lower > 1 {
+                let middle = (lower + upper) / 2
+                if points[middle].0 <= frequency { lower = middle } else { upper = middle }
+            }
+            guard lower != upper else { return first.1 }
+            let start = points[lower], end = points[upper]
+            let fraction = log(frequency / start.0) / log(end.0 / start.0)
+            return start.1 + fraction * (end.1 - start.1)
+        }
     }
     private var displayGrid: [Double] = []
     private var totalGains: [Double] = []

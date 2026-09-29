@@ -31,7 +31,6 @@ struct ReferenceCorrectionView: View {
                 Button("Device Correction…") { showingCorrection = true }
                     .help("Choose a device and compatible target.")
                 Button("Import .txt") { importing = true }.help("Import compatible filter values from a text file.")
-                Button("Paste APO Text") { importText(NSPasteboard.general.string(forType: .string) ?? "", name: "Pasted APO correction") }
                     .help("Paste Equalizer APO-compatible filter text.")
             }.buttonStyle(.bordered)
             if let correction = draft {
@@ -119,7 +118,7 @@ struct ReferenceCorrectionView: View {
                     candidate.setPersonalReferenceCorrection(correction ?? draft)
                     await state.apply(profile: candidate)
                 }, onCancel: { showingCorrection = false },
-                onLoad: { correction in showingCorrection = false; draft = correction })
+                onLoad: { correction in showingCorrection = false; draft = correction; return true })
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText]) { result in
             do {

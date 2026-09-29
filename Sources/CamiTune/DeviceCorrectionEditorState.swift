@@ -78,7 +78,12 @@ extension DeviceCorrectionEditorView {
 
     func updateDeviceMatchAvailability() {
         let keys = Set(targetSources.map(\.compatibilityKey))
-        hasCompatibleDeviceMatch = searchIndex.hasCompatibleDevice(keys: keys, excluding: sourceDeviceIdentityKey)
+        let savedMatchIsCompatible = targetSelection.deviceMatchTarget.map { target in
+            target.deviceIdentity.stableKey != sourceDeviceIdentityKey
+                && deviceMatchSources.contains { keys.contains($0.compatibilityKey) }
+        } ?? false
+        hasCompatibleDeviceMatch = savedMatchIsCompatible
+            || searchIndex.hasCompatibleDevice(keys: keys, excluding: sourceDeviceIdentityKey)
     }
 
     var compatibleTargetBinding: Binding<DeviceCorrectionTargetPreset?> {
@@ -129,6 +134,11 @@ extension DeviceCorrectionEditorView {
         generated?.targetSelection == targetSelection && generated?.policy == policy && generated?.autoEQSettings == autoEQSettings
     }
 
+    var correctionIsLoaded: Bool {
+        guard let generated, resultIsCurrent else { return false }
+        return equalizerState?.matchesAutoEQ(generated) == true
+    }
+
     var targetIsIncompatible: Bool {
         !targetChosen || !availableTargets.contains(targetSelection.preset)
     }
@@ -152,4 +162,31 @@ extension DeviceCorrectionEditorView {
         })
     }
 
+}
+
+extension GlobalEQHistoryState {
+    func matchesAutoEQ(_ correction: DeviceCorrectionProfile) -> Bool {
+        guard deviceCorrectionProvenance?.id == correction.id, preampDB == 0 else { return false }
+        let serializer = EqualizerAPOSerializer()
+        func filterValues(_ bands: [EQBand]) -> [String] {
+            bands.map { serializer.serialize(ParsedEQ(preampDB: 0, bands: [$0])) }.sorted()
+        }
+        return filterValues(bands) == filterValues(correction.filters)
+    }
+}
+
+@MainActor
+extension DeviceCorrectionEditorView {
+    var persistentDraft: AutoEQEditorDraft {
+        .init(sampleRate: sampleRate, reference: existing, deviceName: deviceName,
+            searchText: searchText, selectedCatalogID: selectedCatalogID,
+            sourceMeasurements: sourceMeasurements, measurement: measurement,
+            policy: policy, settings: autoEQSettings, targetChosen: targetChosen,
+            targetSelection: targetSelection, customTarget: customTarget,
+            deviceMatchSearchText: deviceMatchSearchText,
+            selectedDeviceMatchCatalogID: selectedDeviceMatchCatalogID,
+            deviceMatchConsensus: deviceMatchConsensus, generated: generated,
+            automaticHeadroomDB: generatedAutomaticHeadroomDB,
+            presentation: presentation)
+    }
 }

@@ -84,6 +84,9 @@ final class ProfileStore: ObservableObject {
     @Published private(set) var layoutDefaults: [String: ProfileSectionLayout] = [:] {
         didSet { save() }
     }
+    @Published var multichannelDrafts: [UUID: MultichannelHistoryState] = [:] {
+        didSet { if oldValue != multichannelDrafts { save() } }
+    }
     @Published var showProfileEnabledExplanation = true {
         didSet { save() }
     }
@@ -562,6 +565,7 @@ final class ProfileStore: ObservableObject {
 
     private func load() {
         if let stored = repository.loadedDocument {
+            multichannelDrafts = stored.multichannelDrafts.filter { id, _ in stored.profiles.contains { $0.id == id } }
             layoutDefaults = stored.layoutDefaults; showProfileEnabledExplanation = stored.showProfileEnabledExplanation
             rootOrder = stored.rootOrder; folders = stored.folders; profiles = stored.profiles
             physicalDeviceDefaults = stored.physicalDeviceDefaults
@@ -613,7 +617,7 @@ final class ProfileStore: ObservableObject {
     var document: ProfileDocument {
         ProfileDocument(profiles: profiles, physicalDeviceDefaults: physicalDeviceDefaults,
             folders: folders, rootOrder: effectiveRootOrder, layoutDefaults: layoutDefaults,
-            showProfileEnabledExplanation: showProfileEnabledExplanation)
+            showProfileEnabledExplanation: showProfileEnabledExplanation, multichannelDrafts: multichannelDrafts)
     }
     private func save() {
         guard !isLoading, !stopping else { return }
@@ -644,6 +648,7 @@ final class ProfileStore: ObservableObject {
         isLoading = true
         profiles = value.profiles; physicalDeviceDefaults = value.physicalDeviceDefaults
         folders = value.folders; rootOrder = value.rootOrder
+        multichannelDrafts = value.multichannelDrafts
         layoutDefaults = value.layoutDefaults; showProfileEnabledExplanation = value.showProfileEnabledExplanation
         isLoading = false
         libraryRevision = .init(rawValue: libraryRevision.rawValue + 1)

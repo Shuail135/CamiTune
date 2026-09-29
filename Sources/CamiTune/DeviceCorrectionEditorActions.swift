@@ -56,6 +56,7 @@ extension DeviceCorrectionEditorView {
 
     func generate() {
         guard let measurement, !isGenerating else { return }
+        presentation.resultsExpanded = true
 
         let capturedDeviceName = trimmedDeviceName
         let capturedMeasurement = measurement
@@ -135,6 +136,7 @@ extension DeviceCorrectionEditorView {
             }.value
 
             let inputsAreCurrent = trimmedDeviceName == capturedDeviceName
+                && sampleRate == capturedSampleRate
                 && self.measurement == capturedMeasurement
                 && sourceMeasurements == capturedMeasurements
                 && targetSelection == capturedTargetSelection
@@ -152,6 +154,7 @@ extension DeviceCorrectionEditorView {
             switch result {
             case .success(let correction):
                 generated = correction
+                onPersistDraft?(persistentDraft, false)
                 errorMessage = nil
             case .failure(let error):
                 errorMessage = error.localizedDescription
@@ -164,8 +167,10 @@ extension DeviceCorrectionEditorView {
         guard var generated else { return }
         generated.deviceName = trimmedDeviceName
         generated.isEnabled = true
+        guard onLoad(generated) else { return }
         accepted = true
-        onLoad(generated)
+        if embedded { presentation.resultsExpanded = false }
+        onPersistDraft?(persistentDraft, true)
     }
 
     func requestLoadIntoEqualizer() {
@@ -228,6 +233,14 @@ extension DeviceCorrectionEditorView {
             guard !Task.isCancelled else { return }
             catalogEntries = filtered
             searchIndex = index
+            // Resume a selection whose download was interrupted by closing the app.
+            if measurement == nil, let selectedCatalogID,
+               let entry = filtered.first(where: { $0.id == selectedCatalogID }) {
+                select(entry)
+            } else if deviceMatchConsensus == nil, let selectedDeviceMatchCatalogID,
+                      let entry = filtered.first(where: { $0.id == selectedDeviceMatchCatalogID }) {
+                selectDeviceMatch(entry)
+            }
         } catch {
             errorMessage = "Online device data is unavailable. You can still import a custom CSV."
         }

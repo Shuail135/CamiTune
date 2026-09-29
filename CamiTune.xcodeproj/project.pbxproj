@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		8C497FF8C5E1403A8789705D = {isa = PBXBuildFile; fileRef = 6895DDFBCFC74C5F8D415BA5; };
+		2743F93AE266464CB88C50B3 = {isa = PBXBuildFile; fileRef = 8D50B84C3C674602BE2BF1CC; };
+		D2778B54DB014C77902D9835 = {isa = PBXBuildFile; fileRef = 7563EA5E91374D90A7DE12F9; };
+		3BFD85E25C2540D1B58B9E22 = {isa = PBXBuildFile; fileRef = 8FBD4B716D1D4FABBDB0D4A9; };
+		AD9220CE9752485290B0DC8C = {isa = PBXBuildFile; fileRef = 512EBFCA1D0E4C939AD12893; };
+		3AC3AA9C99E14B33A7B09A6F = {isa = PBXBuildFile; fileRef = B42441380D8843A8ABD559F0; };
 		9FA59F5DF46B6C777EC6CDE1 = {isa = PBXBuildFile; fileRef = 10BE1869791AB8525F066CF8; };
 		76CBF04377A10800E20E45EB = {isa = PBXBuildFile; fileRef = 10BA267B12FA5F6E9B823074; };
 		28ADAAD15DE9DC040C463BAE = {isa = PBXBuildFile; fileRef = 433B0224BF9C80BDA49A2BBB; };
@@ -961,6 +967,12 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		6895DDFBCFC74C5F8D415BA5 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultichannelPersistence.swift; sourceTree = "<group>"; };
+		8D50B84C3C674602BE2BF1CC = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EqualizerPersistence.swift; sourceTree = "<group>"; };
+		7563EA5E91374D90A7DE12F9 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EqualizerReset.swift; sourceTree = "<group>"; };
+		8FBD4B716D1D4FABBDB0D4A9 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoEQDraftStore.swift; sourceTree = "<group>"; };
+		512EBFCA1D0E4C939AD12893 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoEQEditorDraft.swift; sourceTree = "<group>"; };
+		B42441380D8843A8ABD559F0 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoEQPresentationPreferences.swift; sourceTree = "<group>"; };
 		10BE1869791AB8525F066CF8 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FIR/ImpulseResponseAssignmentSheet.swift; sourceTree = "<group>"; };
 		10BA267B12FA5F6E9B823074 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FIR/ConvolutionControl.swift; sourceTree = "<group>"; };
 		433B0224BF9C80BDA49A2BBB = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FIR/ConvolutionImporter.swift; sourceTree = "<group>"; };
@@ -2757,6 +2769,12 @@
 				80D4FF6AAD48B1E2083F08E3,
 				A4D8458165009F363AFF39BF,
 				53896D09F2D384F33ABAAAB5,
+				B42441380D8843A8ABD559F0,
+				512EBFCA1D0E4C939AD12893,
+				8FBD4B716D1D4FABBDB0D4A9,
+				7563EA5E91374D90A7DE12F9,
+				8D50B84C3C674602BE2BF1CC,
+				6895DDFBCFC74C5F8D415BA5,
 				63C1D346E91955DC641FEA5A,
 				26EC81E72099207C97BC0CBC,
 				9C4CB97BDF353FAB8BDE566B,
@@ -3333,6 +3351,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8C497FF8C5E1403A8789705D,
+				2743F93AE266464CB88C50B3,
+				D2778B54DB014C77902D9835,
+				3BFD85E25C2540D1B58B9E22,
+				AD9220CE9752485290B0DC8C,
+				3AC3AA9C99E14B33A7B09A6F,
 				9FA59F5DF46B6C777EC6CDE1,
 				76CBF04377A10800E20E45EB,
 				28ADAAD15DE9DC040C463BAE,

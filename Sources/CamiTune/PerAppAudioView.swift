@@ -586,7 +586,7 @@ struct MeteredApplicationVolumeSlider: View {
                     .frame(width: track.width, height: track.height)
                     .position(x: track.midX, y: track.midY)
                 Capsule()
-                    .fill(.green)
+                    .fill(.blue)
                     .frame(width: track.width, height: track.height)
                     .scaleEffect(x: meterAmount, y: 1, anchor: .leading)
                     .position(x: track.midX, y: track.midY)

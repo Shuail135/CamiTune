@@ -1,7 +1,7 @@
 import Foundation
 
 package struct ProfileDocument: Codable, Sendable {
-    package static let currentSchemaVersion = 7
+    package static let currentSchemaVersion = 8
     package var schemaVersion: Int = currentSchemaVersion
     package var documentRevision = ProfileDocumentRevision(rawValue: 0)
     package var profiles: [DeviceProfile]
@@ -9,10 +9,11 @@ package struct ProfileDocument: Codable, Sendable {
     package var folders: [ProfileFolder]
     package var rootOrder: [ProfileRootItem]
     package var layoutDefaults: [String: ProfileSectionLayout]
+    package var multichannelDrafts: [UUID: MultichannelHistoryState]
     package var showProfileEnabledExplanation: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, documentRevision, profiles, physicalDeviceDefaults, folders, rootOrder, layoutDefaults, showProfileEnabledExplanation
+        case multichannelDrafts, schemaVersion, documentRevision, profiles, physicalDeviceDefaults, folders, rootOrder, layoutDefaults, showProfileEnabledExplanation
     }
 
     package init(
@@ -21,8 +22,10 @@ package struct ProfileDocument: Codable, Sendable {
         folders: [ProfileFolder],
         rootOrder: [ProfileRootItem],
         layoutDefaults: [String: ProfileSectionLayout],
-        showProfileEnabledExplanation: Bool
+        showProfileEnabledExplanation: Bool,
+        multichannelDrafts: [UUID: MultichannelHistoryState] = [:]
     ) {
+        self.multichannelDrafts = multichannelDrafts
         self.layoutDefaults = layoutDefaults
         self.showProfileEnabledExplanation = showProfileEnabledExplanation
         self.rootOrder = rootOrder
@@ -47,6 +50,7 @@ package struct ProfileDocument: Codable, Sendable {
         }
         let version = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         documentRevision = version >= 7 ? try values.decode(ProfileDocumentRevision.self, forKey: .documentRevision) : .init(rawValue: 0)
+        multichannelDrafts = try values.decodeIfPresent([UUID: MultichannelHistoryState].self, forKey: .multichannelDrafts) ?? [:]
         layoutDefaults = try values.decodeIfPresent([String: ProfileSectionLayout].self, forKey: .layoutDefaults) ?? [:]
         showProfileEnabledExplanation = try values.decodeIfPresent(Bool.self, forKey: .showProfileEnabledExplanation) ?? true
         rootOrder = try values.decodeIfPresent([ProfileRootItem].self, forKey: .rootOrder) ?? []

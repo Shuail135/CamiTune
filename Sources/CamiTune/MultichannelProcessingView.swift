@@ -11,10 +11,12 @@ struct MultichannelProcessingView: View {
     @State private var editorRevision = UUID()
     @State private var loadedID: UUID?
     @State private var message: String?
-    @State private var saving = false
     @State private var showingVerification = false
     @State private var routingExpanded = false
     @State private var crossoverExpanded = false
+
+    private var saving: Bool { state.isSavingProfileSettings }
+    private var editorSnapshot: MultichannelHistoryState { .init(settings: draft, topology: topologyDraft) }
 
     private var candidate: DeviceProfile {
         var value = profile; value.speakerTopology = topologyDraft; value.multichannel = draft; return value
@@ -32,10 +34,7 @@ struct MultichannelProcessingView: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     Text("Bass & Subwoofers").font(.title3.bold())
-                    Text(!changed ? "Saved" : "Not saved").font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Revert") { load(useDraft: false) }.disabled(!changed)
-                    Button("Save") { save() }.disabled(saving || !changed)
                 }
                 Toggle("Enable bass management", isOn: Binding(get: { draft.bass.enabled }, set: { enabled in
                     if enabled && draft.bass.groups.isEmpty && draft.bass.subwooferEndpointIDs.isEmpty { draft.bass = candidate.defaultBassManagement }
@@ -62,9 +61,9 @@ struct MultichannelProcessingView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if saving { ProgressView("Saving processing…").controlSize(.small) }
-                if let message { Text(message).font(.callout).foregroundStyle(.orange) }
+                if let message = message ?? state.multichannelAutosaveErrors[profile.id] { Text(message).font(.callout).foregroundStyle(.orange) }
                 if draft.isEnabled {
-                    Text("Uses Direct playback. Changes take effect when saved. Global processing runs before routing; group and speaker processing follow it.")
+                    Text("Uses Direct playback. Valid changes are saved and applied automatically. Global processing runs before routing; group and speaker processing follow it.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }.padding(6).disabled(saving).id(editorRevision)
@@ -75,14 +74,23 @@ struct MultichannelProcessingView: View {
             // only from a clean editor, so reload the committed topology on exit.
             if !showing { load(useDraft: false) }
         }
-        .onAppear { if loadedID != profile.id { load() } }
+        .onAppear {
+            if loadedID != profile.id { load() }
+            if changed { scheduleAutosave() }
+        }
+        .onChange(of: editorSnapshot) { _ in
+            if loadedID == profile.id, changed, !state.history.isReplaying { scheduleAutosave() }
+        }
+        .onChange(of: profile.multichannel) { _ in reloadAfterAutosave() }
+        .onChange(of: profile.speakerTopology) { _ in reloadAfterAutosave() }
         .onChange(of: profile.id) { _ in load() }
         .onDisappear {
-            if let loadedID, changed { state.multichannelEditSessions[loadedID] = .init(settings: draft, topology: topologyDraft) }
+            if changed, loadedID == profile.id { scheduleAutosave() }
         }
         .onChange(of: state.historyReplayRevision) { _ in
             if let current = state.profiles.profiles.first(where: { $0.id == profile.id }) { profile = current }
-            load(useDraft: false)
+            load()
+            if changed { scheduleAutosave() }
         }
     }
 
@@ -291,47 +299,12 @@ struct MultichannelProcessingView: View {
         // to be the saved crossover frequency or protection value.
         editorRevision = UUID()
     }
-    private func save() {
-        let value = draft, topology = topologyDraft, id = profile.id
-        saving = true; message = nil
-        Task {
-            defer { saving = false }
-            do {
-                let updated = try await state.saveMultichannelSettings(value, profileID: id, topology: topology, previewOnly: previewOnly)
-                guard profile.id == id else { return }
-                profile = updated; load(useDraft: false)
-            } catch { message = error.localizedDescription }
-        }
+    private func scheduleAutosave() {
+        state.scheduleMultichannelAutosave(editorSnapshot, for: profile.id, previewOnly: previewOnly)
     }
-}
 
-extension AppState {
-    @discardableResult
-    func saveMultichannelSettings(_ value: MultichannelProcessingSettings, profileID: UUID,
-                                  topology: SpeakerTopology? = nil, previewOnly: Bool = false, recordHistory: Bool = true) async throws -> DeviceProfile {
-        let original = try historyProfile(profileID)
-        var candidate = original; candidate.multichannel = value
-        if let topology { candidate.speakerTopology = topology }
-        if previewOnly {
-            let checked = candidate
-            guard let hardware = checked.speakerTopology else { throw SpeakerTopologyError.hardwareLayoutChanged }
-            _ = try await Task.detached(priority: .userInitiated) {
-                try AudioRuntimePlanPreparer.prepare(profile: checked, detectedHardware: hardware)
-            }.value
-            profiles.update(candidate)
-        } else {
-            var settings = ProfileSettingsDraft(profile: original, activation: profiles.activationMode(for: original))
-            settings.multichannel = value
-            if let topology { settings.speakerTopology = topology }
-            try await saveProfileSettings(settings)
-            candidate = try historyProfile(profileID)
-        }
-        multichannelEditSessions[profileID] = nil
-        if recordHistory {
-            history.record(actionName: "Change Multichannel Processing", contextName: original.name,
-                target: .profile(profileID), before: .multichannel(.init(settings: original.multichannel, topology: original.speakerTopology)),
-                after: .multichannel(.init(settings: value, topology: candidate.speakerTopology)))
-        }
-        return candidate
+    private func reloadAfterAutosave() {
+        if state.multichannelEditSessions[profile.id] == nil { load(useDraft: false) }
     }
+
 }

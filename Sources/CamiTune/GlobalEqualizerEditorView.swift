@@ -22,9 +22,7 @@ struct GlobalEqualizerEditorView: View {
     @State var pendingBandCount: Int?
     @State var showBandReductionConfirmation = false
     @State var showTextImporter = false
-    @State var showDeviceCorrectionEditor = false
     @State var simpleTone = SimpleToneSettings()
-    @State var eqIsSaved = true
     @StateObject var runtime = GlobalEQEditorRuntime()
     @StateObject var bandReduction = UIBackgroundOperation<[EQBand]>()
 
@@ -38,30 +36,12 @@ struct GlobalEqualizerEditorView: View {
                 HStack {
                     Text("Equalizer").font(.title3.bold())
                     if bandReduction.isRunning { ProgressView("Fitting bands…").controlSize(.small) }
-                    Text(eqIsSaved ? "Saved" : "Not saved")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(eqIsSaved ? Color.green : Color.secondary)
                     Spacer()
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 8) {
-                            Button("Device Correction…") { showDeviceCorrectionEditor = true }
-                            Button("Import .txt") { showTextImporter = true }
-                            Button("Paste APO Text") { importFromClipboard() }
-                        }
-                        Menu("Actions") {
-                            Button("Device Correction…") { showDeviceCorrectionEditor = true }
-                            Button("Import .txt") { showTextImporter = true }
-                            Button("Paste APO Text") { importFromClipboard() }
-                        }
-                    }
-                    Button { saveGraphicEQ() } label: {
-                        Text("Save")
-                            .foregroundStyle(Color.white)
-                            .padding(.horizontal, 13)
-                            .padding(.vertical, 5)
-                            .background(Color.blue, in: RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
+                    Button("Import .txt") { showTextImporter = true }
+                    Button("Reset") { resetEqualizer() }
+                        .buttonStyle(.bordered)
+                        .disabled(!canResetEqualizer)
+                        .help(presentation.resetTitle)
                 }
                 JoinedSegmentedControl(
                     options: EqualizerPresentation.allCases,
@@ -201,29 +181,118 @@ struct GlobalEqualizerEditorView: View {
         } message: {
             Text(bandReductionConfirmationMessage)
         }
-        .sheet(isPresented: $showDeviceCorrectionEditor) {
-            DeviceCorrectionEditorView(
-                existing: currentDeviceCorrectionProvenance,
-                sampleRate: Double(profile.sampleRate),
-                referenceEndpoint: profile.effectiveEndpointKind,
-                automaticHeadroom: automaticHeadroomForCorrection,
-                shouldConfirmReplacement: {
-                    (ParsedEQ(
-                        preampDB: preampDB,
-                        bands: graphicBands,
-                        warnings: []
-                    )).hasMeaningfulProcessing
-                },
-                onPreview: { correction in
-                    guard var candidate = try? state.applyingSessionEQDrafts(to: profile) else { return }
-                    if let correction {
-                        candidate.setGlobalEqualizer(preampDB: 0, bands: correction.filters)
-                    }
-                    await state.apply(profile: candidate)
-                },
-                onCancel: { showDeviceCorrectionEditor = false },
-                onLoad: loadDeviceCorrectionEQ
-            )
+    }
+
+}
+
+/// Device correction owns generation; the separate Equalizer owns the applied controls.
+@MainActor
+struct AutoEQCorrectionView: View {
+    @ObservedObject var state: AppState
+    @Binding var profile: DeviceProfile
+    @StateObject private var draftStore: AutoEQDraftStore
+    @State private var initialDraft: AutoEQEditorDraft?
+    @State private var draftLoaded = false
+    @State private var equalizerState: GlobalEQHistoryState?
+
+    init(state: AppState, profile: Binding<DeviceProfile>) {
+        self.state = state
+        _profile = profile
+        _draftStore = StateObject(wrappedValue: AutoEQDraftStore(url: AutoEQDraftStore.url(
+            profileID: profile.wrappedValue.id, endpoint: profile.wrappedValue.effectiveEndpointKind)))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            DeviceCorrectionSectionHeader(title: "Auto EQ",
+                hint: "Generate correction for all channels from device measurements and a target response. Load into Equalizer to apply it. Equalizer changes are saved automatically.")
+            if let correction = equalizerState?.deviceCorrectionProvenance {
+                Text(correction.deviceName).font(.headline)
+            }
+            if let message = draftStore.errorMessage {
+                Text(message).font(.caption).foregroundStyle(.orange)
+            }
+            if draftLoaded {
+                DeviceCorrectionEditorView(
+                    existing: state.deviceCorrectionProvenance(for: profile.id,
+                        persisted: profile.processing.globalEqualizerProvenance),
+                    embedded: true,
+                    initialDraft: initialDraft,
+                    equalizerState: equalizerState,
+                    onPersistDraft: { draft, flush in
+                        draftStore.save(draft)
+                        if flush { draftStore.flush() }
+                    },
+                    sampleRate: Double(profile.sampleRate),
+                    referenceEndpoint: profile.effectiveEndpointKind,
+                    automaticHeadroom: automaticHeadroomForCorrection,
+                    shouldConfirmReplacement: {
+                        guard let current = try? state.globalEQHistoryState(for: profile) else { return true }
+                        return ParsedEQ(preampDB: current.preampDB, bands: current.bands).hasMeaningfulProcessing
+                    },
+                    onCancel: {},
+                    onLoad: loadCorrection
+                )
+                .id(profile.id)
+            }
+        }
+        .disabled(state.isSavingProfileSettings || state.history.isReplaying)
+        .onAppear {
+            reload()
+            if !draftLoaded {
+                initialDraft = draftStore.load()
+                draftLoaded = true
+            }
+        }
+        .onChange(of: profile.id) { _ in reload() }
+        .onChange(of: profile.processing) { _ in reload() }
+        .onChange(of: state.historyReplayRevision) { _ in reload() }
+        .onReceive(state.eqDraftChanges.filter { $0 == profile.id }) { _ in reload() }
+    }
+
+    private func reload() {
+        equalizerState = try? state.globalEQHistoryState(for: profile)
+    }
+
+    private func loadCorrection(_ correction: DeviceCorrectionProfile) -> Bool {
+        do {
+            try state.loadAutoEQCorrectionDraft(correction, for: profile)
+            var layout = state.profiles.effectiveLayout(for: profile)
+            layout.hidden.remove(.equalizer)
+            if layout.equalizer == .simpleTone { layout.equalizer = .both }
+            profile.sectionLayout = layout
+            state.equalizerReplacementChanges.send(profile.id)
+            reload()
+            let profileID = profile.id
+            let generation = state.editGeneration
+            Task {
+                guard generation == state.editGeneration else { return }
+                do { try await state.applyHistoryProfileIfActive(profileID) }
+                catch { state.errorMessage = error.localizedDescription }
+            }
+            return true
+        } catch {
+            state.errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func automaticHeadroomForCorrection(_ filters: [EQBand]) async -> Double {
+        do {
+            var candidate = profile
+            candidate = try state.applyingSessionEQDrafts(to: candidate)
+            candidate.processing.setDeviceCorrection(nil)
+            candidate.setGlobalEqualizer(preampDB: 0, bands: filters)
+            let snapshot = candidate
+            return await Task.detached(priority: .utility) {
+                do {
+                    let assets = try PreparedRuntimeAssets.prepare(profile: snapshot, directory: CamiTunePaths.impulseResponsesDirectory)
+                    return try ProcessingGraphBuilder(channelCount: snapshot.processingChannelCount, preparedAssets: assets)
+                        .build(profile: snapshot).automaticHeadroomDB
+                } catch { return 0 }
+            }.value
+        } catch {
+            return 0
         }
     }
 

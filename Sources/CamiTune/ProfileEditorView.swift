@@ -168,20 +168,22 @@ struct ProfileEditorView: View {
             LiveSpectrumPanels(spectrum: state.spectrum, profileID: profile.id, graphModel: graphModel)
         case .mode:
             SpatialAudioEditorView(state: state, profile: $profile)
+        case .deviceCorrection:
+            DeviceCorrectionSectionView(state: state, profile: $profile)
         case .equalizer:
             GlobalEqualizerEditorView(state: state, profile: $profile, graphModel: graphModel,
                 presentation: layout.equalizer, needsResponseGraph: sections.contains(.spectrum) || layout.equalizer != .simpleTone,
                 onPresentationChanged: { presentation in
                     var local = layout; local.equalizer = presentation; profile.sectionLayout = local
                 })
-        case .convolution:
-            ConvolutionEditorView(state: state, profile: $profile)
         case .crossfeed:
             CrossfeedEditorView(state: state, profile: $profile)
         case .multichannel:
             if profile.hasPhysicalSpeakerRoute { MultichannelProcessingView(state: state, profile: $profile) }
         case .perChannel:
             PerChannelProcessingView(state: state, profile: $profile)
+        case .convolution:
+            EmptyView() // Legacy layout identifiers are consolidated before presentation.
         }
     }
 
@@ -255,6 +257,118 @@ struct ProfileEditorView: View {
         return false
     }
 
+}
+
+@MainActor
+private struct DeviceCorrectionSectionView: View {
+    enum Method: String, CaseIterable, Identifiable {
+        case autoEQ = "Auto EQ", convolution = "FIR / Convolution"
+        var id: Self { self }
+    }
+    enum Scope: String, CaseIterable {
+        case allChannels = "All Channels", perChannel = "Per Channel"
+    }
+
+    let state: AppState
+    @Binding var profile: DeviceProfile
+    @State private var method: Method = .autoEQ
+    @State private var scope: Scope = .allChannels
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Device Correction").font(.title3.bold())
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Method.allCases) { item in
+                            Button { method = item } label: {
+                                Text(item.rawValue)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 7)
+                                    .contentShape(Rectangle())
+                                    .background(method == item ? Color.accentColor.opacity(0.18) : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 6))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(method == item ? .isSelected : [])
+                        }
+                    }
+                    .frame(width: 160)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Correction method")
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        // Keep the form mounted so switching to FIR preserves unfinished work.
+                        AutoEQCorrectionView(state: state, profile: $profile)
+                            .id("\(profile.id)-\(profile.effectiveEndpointKind.rawValue)")
+                            .frame(height: method == .autoEQ ? nil : 0)
+                            .clipped()
+                            .opacity(method == .autoEQ ? 1 : 0)
+                            .allowsHitTesting(method == .autoEQ)
+                            .disabled(method != .autoEQ)
+                            .accessibilityHidden(method != .autoEQ)
+
+                        if method == .convolution {
+                            VStack(alignment: .leading, spacing: 12) {
+                                DeviceCorrectionSectionHeader(title: "FIR / Convolution",
+                                    hint: "Apply an impulse response to all channels. Use Per Channel for individual channel or group assignments.")
+                                JoinedSegmentedControl(options: Scope.allCases, selection: $scope, title: { $0.rawValue })
+                                    .frame(width: 240)
+                                    .accessibilityLabel("FIR correction channels")
+                                if scope == .perChannel {
+                                    PerChannelProcessingView(state: state, profile: $profile, convolutionOnly: true)
+                                } else {
+                                    ConvolutionEditorView(state: state, profile: $profile, targetName: "All Channels", showsTitle: false)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(6)
+        }
+        .groupBoxStyle(DeviceCorrectionCardStyle())
+        .onChange(of: profile.id) { _ in
+            method = .autoEQ
+            scope = .allChannels
+        }
+    }
+}
+
+struct DeviceCorrectionSectionHeader: View {
+    let title: String
+    let hint: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.title3.bold())
+            Text(hint)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// Use one native grey surface at every nesting level, in both appearances.
+struct DeviceCorrectionCardStyle: GroupBoxStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            configuration.label.font(.headline)
+            configuration.content.frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(8)
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 0.5)
+        }
+    }
 }
 
 /// A window reuses the same NSTextView for several fields. Compare its delegate

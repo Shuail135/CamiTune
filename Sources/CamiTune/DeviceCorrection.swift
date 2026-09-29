@@ -42,7 +42,7 @@ struct FrequencyResponseCSVImporter {
     }
 }
 
-struct MeasurementConsensus: Hashable, Sendable {
+struct MeasurementConsensus: Codable, Hashable, Sendable {
     var response: FrequencyResponse
     var confidence: MeasurementConfidenceCurve
     var sources: [DeviceMeasurementReference]

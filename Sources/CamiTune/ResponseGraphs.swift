@@ -133,7 +133,7 @@ struct SpectrumWithResponseGraph: View {
             drawLine(
                 points: spectrum,
                 yRange: spectrumRange,
-                color: .green,
+                color: .blue,
                 width: 1.7,
                 fillsArea: true,
                 context: &context,
@@ -142,7 +142,7 @@ struct SpectrumWithResponseGraph: View {
             drawLine(
                 points: response,
                 yRange: responseRange,
-                color: .blue,
+                color: .green,
                 width: 1.4,
                 fillsArea: false,
                 context: &context,
@@ -164,7 +164,7 @@ struct SpectrumWithResponseGraph: View {
         }
         .overlay(alignment: .trailing) {
             axisLabels(range: responseRange, signed: true)
-                .foregroundStyle(.blue)
+                .foregroundStyle(.green)
                 .padding(.trailing, 4)
         }
         .padding(.bottom, 16)
@@ -196,7 +196,7 @@ struct SpectrumWithResponseGraph: View {
             let yy = y(0, range: responseRange, height: size.height)
             zero.move(to: CGPoint(x: 0, y: yy))
             zero.addLine(to: CGPoint(x: size.width, y: yy))
-            context.stroke(zero, with: .color(Color.blue.opacity(0.3)), lineWidth: 1)
+            context.stroke(zero, with: .color(Color.green.opacity(0.3)), lineWidth: 1)
         }
     }
 

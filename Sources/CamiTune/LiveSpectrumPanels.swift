@@ -61,8 +61,8 @@ struct LiveSpectrumPanels: View {
             VStack(alignment: .leading) {
                 Text("Estimated Post-EQ Spectrum").font(.headline)
                 HStack(spacing: 12) {
-                    Text("post-EQ").foregroundStyle(.green)
-                    Text("EQ response").foregroundStyle(.blue)
+                    Text("post-EQ").foregroundStyle(.blue)
+                    Text("EQ response").foregroundStyle(.green)
                 }
                 .font(.caption)
                 LivePostEQSpectrumGraph(

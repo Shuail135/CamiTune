@@ -8,6 +8,7 @@ struct ConvolutionEditorView: View {
     @Binding var profile: DeviceProfile
     var target: HistoryTarget? = nil
     var targetName = "Global"
+    var showsTitle = true
     @State private var convolution: ConvolutionProcessor?
     @State private var isEnabled = false
 
@@ -18,15 +19,12 @@ struct ConvolutionEditorView: View {
     }
 
     var body: some View {
-        GroupBox {
-            ConvolutionControl(title: "FIR / Convolution", context: context,
-                convolution: $convolution, isEnabled: $isEnabled, onCommit: commit,
-                onAssign: { asset, assignments in
-                    try state.assignConvolution(asset, assignments: assignments, profileID: profile.id)
-                    load()
-                }, onError: { state.errorMessage = $0.localizedDescription })
-                .padding(6)
-        }
+        ConvolutionControl(title: showsTitle ? "FIR / Convolution" : nil, context: context,
+            convolution: $convolution, isEnabled: $isEnabled, onCommit: commit,
+            onAssign: { asset, assignments in
+                try state.assignConvolution(asset, assignments: assignments, profileID: profile.id)
+                load()
+            }, onError: { state.errorMessage = $0.localizedDescription })
         .onAppear { load() }
         .onChange(of: effectiveTarget) { _ in load() }
         .onChange(of: state.historyReplayRevision) { _ in load() }

@@ -26,14 +26,14 @@ struct VerticalEQSlider: View {
                     .frame(width: track.width, height: track.height)
                     .position(x: track.midX, y: track.midY)
                 Capsule()
-                    .fill(Color.green.opacity(0.18))
+                    .fill(Color.blue.opacity(0.18))
                     .frame(width: track.width, height: track.height)
                     .scaleEffect(x: 1, y: preEQAmount, anchor: .bottom)
                     .position(x: track.midX, y: track.midY)
                 Capsule()
                     .fill(
                         LinearGradient(
-                            colors: [.green.opacity(0.48), .green],
+                            colors: [.blue.opacity(0.48), .blue],
                             startPoint: .bottom,
                             endPoint: .top
                         )
@@ -43,7 +43,7 @@ struct VerticalEQSlider: View {
                     .position(x: track.midX, y: track.midY)
                 if changeHeight > 0.5 {
                     RoundedRectangle(cornerRadius: 3)
-                        .fill(responseDB >= 0 ? Color.blue.opacity(0.88) : Color.orange.opacity(0.88))
+                        .fill(responseDB >= 0 ? Color.green.opacity(0.88) : Color.orange.opacity(0.88))
                         .frame(width: track.width, height: max(2, changeHeight))
                         .position(
                             x: track.midX,

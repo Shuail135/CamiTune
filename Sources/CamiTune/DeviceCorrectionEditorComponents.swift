@@ -134,15 +134,18 @@ extension DeviceCorrectionEditorView {
                 Button { replaceFilters((generated?.filters ?? []) + [EQBand(kind: .peaking, frequency: 1_000, gain: 0, q: 0.707)]) } label: {
                     Image(systemName: "plus")
                 }.disabled((generated?.filters.count ?? 0) >= 20).help("Add band")
-                Text("Automatic headroom \(generatedAutomaticHeadroomDB, format: .number.precision(.fractionLength(2))) dB")
-                    .font(.caption.monospacedDigit().weight(.medium))
+            }
+            Text("Automatic headroom \(generatedAutomaticHeadroomDB, format: .number.precision(.fractionLength(2))) dB")
+                .font(.caption.monospacedDigit().weight(.medium))
+
+            if embedded {
+                ScrollView(.horizontal) { correctionFilterTable }
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                correctionFilterTable
             }
 
-            CorrectionFilterTable(filters: Binding(get: { generated?.filters ?? [] }, set: { filters in
-                replaceFilters(filters)
-            }), selectedBandID: $selectedBandID)
-
-            DisclosureGroup("Details") {
+            DisclosureGroup("Details", isExpanded: $presentation.detailsExpanded) {
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
                     GridRow {
                         Text("Target")
@@ -166,14 +169,30 @@ extension DeviceCorrectionEditorView {
         }
     }
 
+    private var correctionFilterTable: some View {
+        CorrectionFilterTable(filters: Binding(get: { generated?.filters ?? [] }, set: { filters in
+            replaceFilters(filters)
+        }), selectedBandID: $selectedBandID)
+    }
+
     func boundsRow(_ title: String, lower: Binding<Double>, upper: Binding<Double>, digits: Int = 2) -> some View {
-        HStack {
-            Text(title).frame(width: 120, alignment: .leading)
+        let fields = HStack {
             TextField("Minimum", value: lower, format: .number.precision(.fractionLength(0...digits))).frame(width: 95)
             Text("–").foregroundStyle(.secondary)
             TextField("Maximum", value: upper, format: .number.precision(.fractionLength(0...digits))).frame(width: 95)
             Spacer()
-        }.textFieldStyle(.roundedBorder)
+        }
+        return ViewThatFits(in: .horizontal) {
+            HStack {
+                Text(title).frame(width: 120, alignment: .leading)
+                fields
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                fields
+            }
+        }
+        .textFieldStyle(.roundedBorder)
     }
 
     func editBand(_ band: EQBand) {

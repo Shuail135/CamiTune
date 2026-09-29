@@ -11,7 +11,6 @@ final class PerChannelValueState<Value: Equatable>: ObservableObject {
 }
 
 final class PerChannelStatusState: ObservableObject {
-    @Published var isSaved = true
     @Published var canReset = false
 }
 
@@ -117,11 +116,8 @@ final class PerChannelEditorRuntime: ObservableObject {
         )
     }
 
-    func updateStatus(isSaved: Bool? = nil) {
-        if let isSaved, status.isSaved != isSaved {
-            status.isSaved = isSaved
-        }
-        let canReset = snapshot.canReset
+    func updateStatus(presentation: EqualizerPresentation = .both) {
+        let canReset = EqualizerReset.channel(snapshot, presentation: presentation) != snapshot
         if status.canReset != canReset {
             status.canReset = canReset
         }

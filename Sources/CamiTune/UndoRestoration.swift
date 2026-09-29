@@ -79,7 +79,7 @@ extension AppState: HistoryRestoring {
 
     private func persistHistoryChanges(for snapshot: HistoryState) async throws {
         switch snapshot {
-        case .crossfeed, .convolution, .convolutionBatch, .profileName, .profileOrganization, .deletion, .referenceTransfer:
+        case .globalEQ, .channel, .crossfeed, .convolution, .convolutionBatch, .profileName, .profileOrganization, .deletion, .referenceTransfer:
             try await profiles.persistHistoryChanges()
         case .perAppAudio, .perAppBatch: try perAppAudio.persistHistoryChanges()
         case .appAlias, .appPlacement: try perAppAudio.presentationStore.persistHistoryChanges()
@@ -148,11 +148,14 @@ extension AppState: HistoryRestoring {
         var applyID: UUID?
         switch (snapshot, target) {
         case let (.multichannel(value), .profile(id)):
+            multichannelEditSessions[id] = nil
+            multichannelAutosaveErrors[id] = nil
             try await saveMultichannelSettings(value.settings, profileID: id, topology: value.topology,
                 previewOnly: ProcessInfo.processInfo.arguments.contains("--speaker-setup-preview"), recordHistory: false)
         case let (.globalEQ(value), .profile(id)):
             _ = try historyProfile(id)
             setGlobalEQHistoryDraft(value, for: id)
+            try persistEqualizerEdits(for: id)
             applyID = id
         case let (.channel(value), .profileChannel(id, channel)):
             let profile = try historyProfile(id)
@@ -160,6 +163,7 @@ extension AppState: HistoryRestoring {
             setChannelProcessingDraft(eqText: EqualizerAPOSerializer().serialize(ParsedEQ(preampDB: value.gainDB, bands: value.bands)),
                 limiterEnabled: value.limiterEnabled, delayMilliseconds: value.delayMilliseconds,
                 simpleTone: value.simpleTone, for: id, channelIndex: channel)
+            try persistEqualizerEdits(for: id)
             applyID = id
         case let (.crossfeed(value), .profile(id)):
             try mutateSavedProcessing(profileID: id) { $0.setCrossfeed(value.processor, enabled: value.isEnabled) }
@@ -170,6 +174,7 @@ extension AppState: HistoryRestoring {
                 throw HistoryRestoreError.invalidStateForTarget
             }
             setGroupProcessingDraft(value, for: id, groupID: group)
+            try persistEqualizerEdits(for: id)
             applyID = id
         case (.convolution(let value), .profile), (.convolution(let value), .profileChannel), (.convolution(let value), .profileGroup):
             applyID = try storeConvolution(value, target: target)
@@ -233,6 +238,7 @@ extension AppState: HistoryRestoring {
             profiles.update(profile)
             referenceCorrectionSessions[id] = ReferenceCorrectionSession(draft: value.correction)
             setGlobalEQHistoryDraft(value.globalEQ, for: id)
+            try persistEqualizerEdits(for: id)
             applyID = id
         default: throw HistoryRestoreError.invalidStateForTarget
         }

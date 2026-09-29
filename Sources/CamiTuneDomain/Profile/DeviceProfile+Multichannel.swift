@@ -2,7 +2,7 @@ import Foundation
 
 /// Saved user intent. Intermediate bass/crossover buses are compiler-owned.
 
-package struct MultichannelHistoryState: Equatable, Sendable {
+package struct MultichannelHistoryState: Codable, Equatable, Sendable {
     package init(settings: MultichannelProcessingSettings, topology: SpeakerTopology? = nil) {
         self.settings = settings
         self.topology = topology

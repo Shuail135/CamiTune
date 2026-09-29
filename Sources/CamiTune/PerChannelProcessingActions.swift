@@ -89,11 +89,9 @@ extension PerChannelProcessingView {
 
         let processing = (try? profile.resolvedProcessing()) ?? profile.processing
         let settings: ChannelProcessingSettings
-        let hasDraft: Bool
         if let group = selectedGroup {
             let draft = state.groupProcessingDraft(for: profile.id, groupID: group.id)
             settings = draft?.processingSettings ?? processing.settings(forGroup: group.id) ?? .identity
-            hasDraft = draft != nil
         } else {
             var value = processing.settings(forChannel: selectedChannelIndex) ?? .identity
             let text = state.channelEQDraft(for: profile.id, channelIndex: selectedChannelIndex)
@@ -107,7 +105,6 @@ extension PerChannelProcessingView {
             value.delayMilliseconds = delay ?? value.delayMilliseconds
             value.simpleTone = tone ?? value.simpleTone
             settings = value
-            hasDraft = text != nil || limiter != nil || delay != nil || tone != nil
         }
         runtime.simpleTone.value = settings.simpleTone
         runtime.gain.value = settings.gainDB
@@ -118,7 +115,7 @@ extension PerChannelProcessingView {
         runtime.loadedProfileID = profile.id
         runtime.loadedChannelIndex = selectedChannelIndex
         runtime.loadedGroupID = selectedGroup?.id
-        runtime.updateStatus(isSaved: !hasDraft)
+        runtime.updateStatus(presentation: equalizerPresentation)
         updateResponses()
 
         runtime.historyBaseline = runtime.snapshot
@@ -130,7 +127,7 @@ extension PerChannelProcessingView {
     func channelSettingsChanged() {
         guard !runtime.suppressChanges else { return }
 
-        runtime.updateStatus(isSaved: false)
+        runtime.updateStatus(presentation: equalizerPresentation)
         runtime.liveApplyTask?.cancel()
 
         if runtime.continuousEditDepth > 0 {
@@ -175,12 +172,6 @@ extension PerChannelProcessingView {
         let channelIndex = selectedChannelIndex
         let target = selectedTarget
         let snapshot = runtime.snapshot
-        let parsed = ParsedEQ(
-            preampDB: snapshot.gainDB,
-            bands: snapshot.bands,
-            warnings: []
-        )
-
         runtime.liveApplyTask = Task {
             do {
                 try await Task.sleep(for: .milliseconds(milliseconds))
@@ -193,24 +184,6 @@ extension PerChannelProcessingView {
                   profile.id == profileID,
                   selectedChannelIndex == channelIndex, selectedTarget == target else { return }
 
-            // APO formatting is pure CPU work; keep it off MainActor.
-            let serialized = await Task.detached(priority: .utility) {
-                EqualizerAPOSerializer().serialize(parsed)
-            }.value
-            guard !Task.isCancelled,
-                  editGeneration == state.editGeneration,
-                  runtime.continuousEditDepth == 0,
-                  profile.id == profileID,
-                  selectedChannelIndex == channelIndex, selectedTarget == target else { return }
-
-            if let group = selectedGroup {
-                state.setGroupProcessingDraft(snapshot, for: profileID, groupID: group.id)
-            } else {
-                state.setChannelProcessingDraft(eqText: serialized, limiterEnabled: snapshot.limiterEnabled,
-                    delayMilliseconds: snapshot.delayMilliseconds, simpleTone: snapshot.simpleTone,
-                    for: profileID, channelIndex: channelIndex)
-            }
-
             // One response update and one live graph apply per settled edit.
             updateResponses(using: snapshot)
             guard profileIsActive else { return }
@@ -218,67 +191,45 @@ extension PerChannelProcessingView {
         }
     }
 
-    func saveSelectedChannel() {
-        recordChannelEdit()
-        runtime.liveApplyTask?.cancel()
-        runtime.commitPendingAfterContinuousEdit = false
-        let snapshot = runtime.snapshot
-
-        var updated = profile
-        do {
-            if let group = selectedGroup {
-                try updated.setGroupProcessing(id: group.id, settings: snapshot.processingSettings)
-            } else {
-                try updated.setChannelProcessing(index: selectedChannel.index, role: selectedChannel.role,
-                    gainDB: snapshot.gainDB, bands: snapshot.bands, delayMilliseconds: snapshot.delayMilliseconds,
-                    limiterEnabled: snapshot.limiterEnabled, simpleTone: snapshot.simpleTone)
-            }
-        } catch {
-            state.errorMessage = error.localizedDescription
-            return
-        }
-
-        profile = updated
-        if let group = selectedGroup {
-            state.clearGroupProcessingDraft(for: profile.id, groupID: group.id)
-        } else { state.clearChannelEQDraft(for: profile.id, channelIndex: selectedChannel.index) }
-        runtime.updateStatus(isSaved: true)
-        updateResponses(using: snapshot)
-        if profileIsActive { applySessionDraftsLive() }
-    }
-
     func resetSelectedChannel() {
-        runtime.historyActionName = selectedGroup == nil ? "Reset Channel" : "Reset Group"
+        let before = runtime.snapshot
+        let reset = EqualizerReset.channel(before, presentation: equalizerPresentation)
+        guard reset != before else { return }
+        bandReduction.cancel()
+        runtime.historyActionName = equalizerPresentation.resetTitle
         runtime.liveApplyTask?.cancel()
-        runtime.simpleTone.value = SimpleToneSettings()
-        runtime.gain.value = 0
-        runtime.delay.value = 0
-        runtime.bands.replace(with: [])
-        runtime.limiter.value = false
+        runtime.suppressChanges = true
+        runtime.simpleTone.value = reset.simpleTone
+        runtime.gain.value = reset.gainDB
+        runtime.delay.value = reset.delayMilliseconds
+        runtime.bands.replace(with: reset.bands)
+        runtime.limiter.value = reset.limiterEnabled
+        runtime.suppressChanges = false
         channelSettingsChanged()
     }
 
     func preserveSelectedDraft() {
-        guard !runtime.status.isSaved else { return }
         let snapshot = runtime.snapshot
         if let group = selectedGroup {
             state.setGroupProcessingDraft(snapshot, for: profile.id, groupID: group.id)
-            return
+        } else {
+            state.setChannelProcessingDraft(
+                eqText: EqualizerAPOSerializer().serialize(
+                    ParsedEQ(
+                        preampDB: snapshot.gainDB,
+                        bands: snapshot.bands,
+                        warnings: []
+                    )
+                ),
+                limiterEnabled: snapshot.limiterEnabled,
+                delayMilliseconds: snapshot.delayMilliseconds,
+                simpleTone: snapshot.simpleTone,
+                for: profile.id,
+                channelIndex: selectedChannelIndex
+            )
         }
-        state.setChannelProcessingDraft(
-            eqText: EqualizerAPOSerializer().serialize(
-                ParsedEQ(
-                    preampDB: snapshot.gainDB,
-                    bands: snapshot.bands,
-                    warnings: []
-                )
-            ),
-            limiterEnabled: snapshot.limiterEnabled,
-            delayMilliseconds: snapshot.delayMilliseconds,
-            simpleTone: snapshot.simpleTone,
-            for: profile.id,
-            channelIndex: selectedChannelIndex
-        )
+        do { try state.persistEqualizerEdits(for: profile.id) }
+        catch { state.errorMessage = error.localizedDescription }
     }
 
     func applySessionDraftsLive() {

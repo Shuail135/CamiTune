@@ -3,7 +3,7 @@ import SwiftUI
 
 @MainActor
 struct ConvolutionControl: View {
-    let title: String
+    let title: String?
     let context: ConvolutionEditingContext
     @Binding var convolution: ConvolutionProcessor?
     @Binding var isEnabled: Bool
@@ -16,16 +16,16 @@ struct ConvolutionControl: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(title).font(.title3.bold())
-                Spacer()
-                if convolution != nil {
-                    Toggle("Enable", isOn: Binding(get: { isEnabled }, set: { isEnabled = $0; onCommit() }))
-                        .toggleStyle(.switch)
+            if title != nil || convolution != nil {
+                HStack {
+                    if let title { Text(title).font(.title3.bold()) }
+                    Spacer()
+                    if convolution != nil {
+                        Toggle("Enable", isOn: Binding(get: { isEnabled }, set: { isEnabled = $0; onCommit() }))
+                            .toggleStyle(.switch)
+                    }
                 }
             }
-            Text("Apply a WAV impulse response after EQ and before delay and limiting. Imported files are stored in CamiTune and can be shared by multiple speakers.")
-                .font(.caption).foregroundStyle(.secondary)
             if let value = convolution {
                 assetDetails(value)
                 if value.asset.channelCount > 1 {

@@ -40,7 +40,10 @@ final class AppState: NSObject, ObservableObject {
     @Published private(set) var historyReplayRevision: UInt64 = 0
     private(set) var editGeneration: UInt64 = 0
     private(set) var pendingEditorApplies: Set<UUID> = []
-    func invalidateDeferredEdits() { editGeneration &+= 1 }
+    func invalidateDeferredEdits() {
+        editGeneration &+= 1
+        cancelMultichannelAutosaves()
+    }
     func publishHistoryReplay() { historyReplayRevision &+= 1 }
     func markPendingEditorApply(_ id: UUID) { pendingEditorApplies.insert(id) }
     func clearPendingEditorApply(_ id: UUID) { pendingEditorApplies.remove(id) }
@@ -300,7 +303,13 @@ final class AppState: NSObject, ObservableObject {
         }
     }
 
-    var multichannelEditSessions: [UUID: MultichannelHistoryState] = [:]
+    var multichannelEditSessions: [UUID: MultichannelHistoryState] {
+        get { profiles.multichannelDrafts }
+        set { profiles.multichannelDrafts = newValue }
+    }
+    var multichannelAutosaveTasks: [UUID: Task<Void, Never>] = [:]
+    var multichannelAutosaveRevisions: [UUID: UUID] = [:]
+    @Published var multichannelAutosaveErrors: [UUID: String] = [:]
 
     func prepareRuntimePlan(profile: DeviceProfile, reason: String = "validation", parentOperation: PerformanceOperationID? = nil) async throws -> AudioRuntimePlan {
         try await runtimeCoordinator.prepareRuntimePlan(profile: profile, reason: reason, parentOperation: parentOperation)
@@ -1241,6 +1250,7 @@ final class AppState: NSObject, ObservableObject {
     func shutdownSynchronously() {
         monitorTimer?.invalidate(); monitorTimer = nil
         startupConfigurationTask?.cancel(); startupConfigurationTask = nil
+        cancelMultichannelAutosaves()
         profiles.shutdownSynchronously()
         runtimeCoordinator.shutdownSynchronously()
         perAppAudio.flushPendingSaveSynchronously()
