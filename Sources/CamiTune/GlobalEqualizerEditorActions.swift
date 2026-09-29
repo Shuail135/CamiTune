@@ -171,17 +171,6 @@ extension GlobalEqualizerEditorView {
         }
     }
 
-    func editLegacyCorrection() {
-        guard let correction = profile.processing.deviceCorrection else { return }
-        runtime.historyActionName = "Load Legacy Correction into Equalizer"
-        runtime.suppressChanges = true
-        graphicBands = EQEditorSupport.organizedBands(correction.filters + graphicBands)
-        state.markEQDraftAsReplacingDeviceCorrection(for: profile.id)
-        if presentation == .simpleTone { onPresentationChanged(.both) }
-        runtime.suppressChanges = false
-        editorValuesChanged()
-    }
-
     func importAPOText(_ text: String) throws {
         let preservedUserPreampDB = preampDB
         if presentation == .simpleTone { onPresentationChanged(.both) }

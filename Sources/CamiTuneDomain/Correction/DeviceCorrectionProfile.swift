@@ -13,7 +13,7 @@ package enum DeviceCorrectionPolicyKind: String, Codable, Hashable, Sendable, Ca
 }
 
 package struct DeviceCorrectionProfile: Codable, Hashable, Sendable, Identifiable {
-    package static let currentSchemaVersion = 8
+    package static let currentSchemaVersion = 9
 
     package var targetRegistryVersion: Int = 3
     package var autoEQSettings: AutoEQSettings = .init()
@@ -34,6 +34,7 @@ package struct DeviceCorrectionProfile: Codable, Hashable, Sendable, Identifiabl
     package var filters: [EQBand]
     package var preampDB: Double
     package var createdAt: Date
+    package var speakerProvenance: SpeakerCorrectionProvenance?
     package var importedAPOText = false
 
     package init(
@@ -91,6 +92,7 @@ package struct DeviceCorrectionProfile: Codable, Hashable, Sendable, Identifiabl
         case filters
         case preampDB
         case createdAt
+        case speakerProvenance
         case importedAPOText
     }
 
@@ -143,6 +145,7 @@ package struct DeviceCorrectionProfile: Codable, Hashable, Sendable, Identifiabl
         _ = try values.decodeIfPresent(Double.self, forKey: .preampDB)
         preampDB = 0
         createdAt = try values.decode(Date.self, forKey: .createdAt)
+        speakerProvenance = try values.decodeIfPresent(SpeakerCorrectionProvenance.self, forKey: .speakerProvenance)
         importedAPOText = try values.decodeIfPresent(Bool.self, forKey: .importedAPOText) ?? false
 
         // Version-one profiles contained an already calculated response and remain valid.
@@ -171,6 +174,7 @@ package struct DeviceCorrectionProfile: Codable, Hashable, Sendable, Identifiabl
         try values.encode(filters, forKey: .filters)
         try values.encode(preampDB, forKey: .preampDB)
         try values.encode(createdAt, forKey: .createdAt)
+        try values.encodeIfPresent(speakerProvenance, forKey: .speakerProvenance)
         try values.encode(importedAPOText, forKey: .importedAPOText)
     }
 }

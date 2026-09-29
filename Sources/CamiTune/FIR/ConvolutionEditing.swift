@@ -28,6 +28,12 @@ extension AppState {
     func storeConvolution(_ value: ConvolutionHistoryState, target: HistoryTarget) throws -> UUID {
         // Validate the target again after asynchronous file imports or history replay.
         _ = try convolutionHistoryState(for: target)
+        if let processor = value.processor, processor.usesCorrespondingChannels, value.isEnabled {
+            guard case .profile(let id) = target else { throw HistoryRestoreError.invalidStateForTarget }
+            let profile = try historyProfile(id)
+            _ = try ImpulseResponseAssignmentPlanner().resolvedAssignments(for: processor,
+                channels: profile.configuredProcessingChannels, sampleRate: profile.sampleRate)
+        }
         switch target {
         case .profile(let id):
             try mutateSavedProcessing(profileID: id) { $0.setConvolution(value.processor, enabled: value.isEnabled) }

@@ -27,6 +27,14 @@ final class UndoCoordinator: ObservableObject {
                 before: HistoryState, after: HistoryState,
                 coalescingKey: HistoryCoalescingKey? = nil, now: Date = Date()) {
         guard isRecordingEnabled, before != after else { return }
+        var before = before, after = after
+        if case .globalEQ(var previous) = before, case .globalEQ(var next) = after,
+           previous.replacesDeviceCorrection != next.replacesDeviceCorrection {
+            // An explicit old-style transfer owns both slices. Ordinary User EQ
+            // events own only tonal controls, even if their snapshot saw correction.
+            previous.ownsLegacyCorrectionTransfer = true; next.ownsLegacyCorrectionTransfer = true
+            before = .globalEQ(previous); after = .globalEQ(next)
+        }
         if let key = coalescingKey, var last = undoStack.last,
            redoStack.isEmpty, last.coalescingKey == key, last.target == target,
            last.actionName == actionName, last.after == before,

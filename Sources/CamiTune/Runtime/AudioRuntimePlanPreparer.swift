@@ -14,6 +14,9 @@ extension PreparedRuntimeAssets {
         var prepared: [UUID: Asset] = [:]
         for stage in chains.flatMap(\.stages) where stage.isEnabled {
             guard case .convolution(let convolution) = stage.processor else { continue }
+            if convolution.usesCorrespondingChannels,
+               try ImpulseResponseAssignmentPlanner().resolvedAssignments(for: convolution,
+                   channels: profile.configuredProcessingChannels, sampleRate: profile.sampleRate).isEmpty { continue }
             let asset = convolution.asset
             guard asset.fileName == "\(asset.id.uuidString.lowercased()).wav" else {
                 throw ProcessingGraphError.invalidImpulseResponseReference(asset.fileName)

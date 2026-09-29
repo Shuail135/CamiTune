@@ -26,7 +26,7 @@ struct ReferenceCorrectionView: View {
     private var dirty: Bool { draft != snapshot?.personalReferenceCorrection }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if profile.processing.deviceCorrection != nil { Text("Your legacy correction still applies globally. Open Equalizer to edit it.").font(.caption).foregroundStyle(.secondary) }
+            if profile.processing.deviceCorrection != nil { Text("Your device correction applies globally. Manage it in Device Correction.").font(.caption).foregroundStyle(.secondary) }
             HStack {
                 Button("Device Correction…") { showingCorrection = true }
                     .help("Choose a device and compatible target.")

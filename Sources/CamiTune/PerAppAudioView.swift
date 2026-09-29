@@ -297,7 +297,7 @@ private struct PerApplicationIdentityHeader: View {
                         .textFieldStyle(.plain)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .focused($fieldFocused)
-                        .background(AppNameOutsideClickObserver { finish(save: true) })
+                        .background(OutsideClickObserver { finish(save: true) })
                         .onSubmit { finish(save: true) }
                         .onExitCommand { finish(save: false) }
                         .onChange(of: fieldFocused) { if !$0 { finish(save: true) } }
@@ -351,7 +351,7 @@ private struct PerApplicationIdentityHeader: View {
 
 /// Blank backgrounds do not take keyboard focus on macOS. Observe outside
 /// clicks without consuming them, so the clicked control still works normally.
-private struct AppNameOutsideClickObserver: NSViewRepresentable {
+struct OutsideClickObserver: NSViewRepresentable {
     var onOutsideClick: () -> Void
 
     func makeNSView(context: Context) -> ObserverView { ObserverView() }

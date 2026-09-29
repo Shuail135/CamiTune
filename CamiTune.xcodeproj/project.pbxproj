@@ -912,6 +912,14 @@
 			isa = PBXBuildFile;
 			fileRef = 37E4285ADC62D7C0E7AE757B;
 		};
+		6CE504C6CCC16767BF29D30C = {isa = PBXBuildFile; fileRef = 70B16ADCBD285E4858A56F7A; };
+		B8CC516DDFDD7549B1EAC084 = {isa = PBXBuildFile; fileRef = A29EDF673001152A42BB1F94; };
+		21F9CEA83574B7FA98FDAD6F = {isa = PBXBuildFile; fileRef = B2E49D602BFE6A7B855E8FCA; };
+		1908D37E96E99EE01CA9A45B = {isa = PBXBuildFile; fileRef = CD7528959CD97FA728EA99F7; };
+		1FE377E5AC7CDCDEC750D9E1 = {isa = PBXBuildFile; fileRef = EB7B15D1640A5DC5D30AD62B; };
+		972D0DE7EF5AD5A099461E93 = {isa = PBXBuildFile; fileRef = 954E204B0BB83D0568B8F50A; };
+		69BBBF1D53EB027385D0435A = {isa = PBXBuildFile; fileRef = A44A66FA983DE3C60025B096; };
+		4895351B76B026E70E0AE525 = {isa = PBXBuildFile; fileRef = 04EE1D712462CBC6F7B51B89; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -2555,6 +2563,14 @@
 			path = Tests/CamiTuneTests/HistoricalSpatialReference/SpatialPolicy.swift;
 			sourceTree = SOURCE_ROOT;
 		};
+		70B16ADCBD285E4858A56F7A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneDomain/Correction/SpeakerCorrectionSettings.swift"; sourceTree = SOURCE_ROOT; };
+		A29EDF673001152A42BB1F94 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/DeviceCorrectionSectionView.swift"; sourceTree = SOURCE_ROOT; };
+		B2E49D602BFE6A7B855E8FCA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/SpeakerCorrection/SpeakerAutoEQEditorView.swift"; sourceTree = SOURCE_ROOT; };
+		CD7528959CD97FA728EA99F7 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/SpeakerCorrection/SpinoramaSpeakerProvider.swift"; sourceTree = SOURCE_ROOT; };
+		EB7B15D1640A5DC5D30AD62B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/SpeakerCorrection/SpeakerCorrectionEngine.swift"; sourceTree = SOURCE_ROOT; };
+		954E204B0BB83D0568B8F50A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/SpeakerCorrection/SpeakerMeasurementCache.swift"; sourceTree = SOURCE_ROOT; };
+		A44A66FA983DE3C60025B096 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/SpeakerCorrection/SpeakerAutoEQBridge.swift"; sourceTree = SOURCE_ROOT; };
+		04EE1D712462CBC6F7B51B89 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/SpeakerCorrection/SpeakerCatalogModels.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -2724,6 +2740,13 @@
 			isa = PBXGroup;
 			name = CamiTune;
 			children = (
+				04EE1D712462CBC6F7B51B89,
+				A44A66FA983DE3C60025B096,
+				954E204B0BB83D0568B8F50A,
+				EB7B15D1640A5DC5D30AD62B,
+				CD7528959CD97FA728EA99F7,
+				B2E49D602BFE6A7B855E8FCA,
+				A29EDF673001152A42BB1F94,
 				10BE1869791AB8525F066CF8,
 				10BA267B12FA5F6E9B823074,
 				433B0224BF9C80BDA49A2BBB,
@@ -2956,6 +2979,7 @@
 			path = Sources/CamiTuneDomain;
 			isa = PBXGroup;
 			children = (
+				70B16ADCBD285E4858A56F7A,
 				65FEE5EAAC2F5910180CF6EC,
 				044EAAD76038F5B5E8D187AE,
 				578CD507F722E760C935881C,
@@ -3351,6 +3375,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4895351B76B026E70E0AE525,
+				69BBBF1D53EB027385D0435A,
+				972D0DE7EF5AD5A099461E93,
+				1FE377E5AC7CDCDEC750D9E1,
+				1908D37E96E99EE01CA9A45B,
+				21F9CEA83574B7FA98FDAD6F,
+				B8CC516DDFDD7549B1EAC084,
 				8C497FF8C5E1403A8789705D,
 				2743F93AE266464CB88C50B3,
 				D2778B54DB014C77902D9835,
@@ -3532,6 +3563,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6CE504C6CCC16767BF29D30C,
 				BC96A0D2359BECDAF0AAA48A,
 				4D049C05192C85016E5941D7,
 				6D07CAC5D178B9F21C862EF2,

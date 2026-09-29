@@ -1,6 +1,75 @@
 import CamiTuneDomain
 import Foundation
 
+struct SpeakerAutoEQEditorDraft: PersistedAutoEQWork {
+    var schemaVersion = 1
+    var sampleRate: Double
+    var searchText: String
+    var speakerID: String
+    var versionID: String
+    var versions: [SpeakerMeasurementVersion]
+    var mode: SpeakerListeningMode
+    var settings: SpeakerCorrectionSettings
+    var generated: DeviceCorrectionProfile?
+    var hasManualEdits: Bool
+    var automaticHeadroomDB: Double
+    var presentation: AutoEQPresentationPreferences
+
+    func migrated() throws -> Self {
+        guard schemaVersion == 1 else { throw CocoaError(.coderReadCorrupt) }
+        return self
+    }
+
+    func restored(for sampleRate: Double) -> Self {
+        var value = self
+        if value.sampleRate != sampleRate {
+            value.generated = nil
+            value.hasManualEdits = false
+            value.automaticHeadroomDB = 0
+            value.sampleRate = sampleRate
+        }
+        return value
+    }
+}
+
+extension SpeakerAutoEQEditorDraft {
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, sampleRate, searchText, speakerID, versionID, versions, mode, settings
+        case generated, hasManualEdits, automaticHeadroomDB, presentation
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        if !values.contains(.speakerID) {
+            // Older releases used the personal editor for speaker endpoints and
+            // saved its envelope at this same per-profile path.
+            let legacy = try AutoEQEditorDraft(from: decoder).migrated()
+            let correction = [legacy.generated, legacy.reference].compactMap { $0 }
+                .first { $0.speakerProvenance != nil }
+            let source = correction?.speakerProvenance
+            self.init(sampleRate: legacy.sampleRate, searchText: legacy.searchText,
+                speakerID: source?.speakerName ?? "", versionID: source?.measurementVersion ?? "",
+                versions: source.map { [.init(id: $0.measurementVersion, sourceDisplayName: $0.sourceDisplayName, measurements: ["CEA2034"])] } ?? [],
+                mode: source?.listeningMode ?? .nearField, settings: source?.settings ?? .init(),
+                generated: correction, hasManualEdits: false,
+                automaticHeadroomDB: correction == nil ? 0 : legacy.automaticHeadroomDB, presentation: legacy.presentation)
+            return
+        }
+        self.init(schemaVersion: try values.decode(Int.self, forKey: .schemaVersion),
+            sampleRate: try values.decode(Double.self, forKey: .sampleRate),
+            searchText: try values.decode(String.self, forKey: .searchText),
+            speakerID: try values.decode(String.self, forKey: .speakerID),
+            versionID: try values.decode(String.self, forKey: .versionID),
+            versions: try values.decodeIfPresent([SpeakerMeasurementVersion].self, forKey: .versions) ?? [],
+            mode: try values.decode(SpeakerListeningMode.self, forKey: .mode),
+            settings: try values.decode(SpeakerCorrectionSettings.self, forKey: .settings),
+            generated: try values.decodeIfPresent(DeviceCorrectionProfile.self, forKey: .generated),
+            hasManualEdits: try values.decodeIfPresent(Bool.self, forKey: .hasManualEdits) ?? false,
+            automaticHeadroomDB: try values.decodeIfPresent(Double.self, forKey: .automaticHeadroomDB) ?? 0,
+            presentation: try values.decodeIfPresent(AutoEQPresentationPreferences.self, forKey: .presentation) ?? .init())
+    }
+}
+
 struct AutoEQEditorDraft: Codable, Equatable, Sendable {
     var schemaVersion = 2
     var sampleRate: Double

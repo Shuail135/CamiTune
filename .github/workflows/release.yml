@@ -129,6 +129,7 @@ jobs:
           fi
 
           check_minos "$executable" "CamiTune"
+          check_minos "$app/Contents/Resources/Helpers/camitune-speaker-eq" "Speaker Auto EQ"
           check_minos "$camilladsp" "CamillaDSP"
           check_minos "$driver" "System Audio Bridge"
 
@@ -146,6 +147,8 @@ jobs:
           test -x "$executable" || { echo "::error::Missing app executable"; exit 1; }
           test -s "$resources/icon.png" || { echo "::error::Missing icon.png"; exit 1; }
           test -s "$resources/LICENSE" || { echo "::error::Missing LICENSE"; exit 1; }
+          test -x "$resources/Helpers/camitune-speaker-eq" || { echo "::error::Missing Speaker Auto EQ helper"; exit 1; }
+          test -s "$resources/Helpers/THIRD_PARTY_NOTICES.txt" || { echo "::error::Missing speaker helper notices"; exit 1; }
           test -s "$resources/THIRD_PARTY.md" || { echo "::error::Missing THIRD_PARTY.md"; exit 1; }
           test -d "$resources/DeviceCorrectionTargets" || { echo "::error::Missing DeviceCorrectionTargets"; exit 1; }
           test -d "$resources/Drivers/CamillaAudio.driver" || { echo "::error::Missing bundled audio driver"; exit 1; }
@@ -173,7 +176,9 @@ jobs:
           archive="CamiTune-v${version}-app.zip"
           ditto -c -k --sequesterRsrc --keepParent dist/CamiTune.app "$archive"
           test -s "$archive" || { echo "::error::Release ZIP was not created."; exit 1; }
-          shasum -a 256 "$archive" > SHA256SUMS
+          speaker_source="CamiTune-v${version}-speaker-eq-source.tar.gz"
+          python3 Scripts/package-speaker-eq-source.py "$speaker_source"
+          shasum -a 256 "$archive" "$speaker_source" > SHA256SUMS
 
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
@@ -188,6 +193,7 @@ jobs:
           name: CamiTune-${{ github.ref_name }}
           path: |
             CamiTune-v*-app.zip
+            CamiTune-v*-speaker-eq-source.tar.gz
             SHA256SUMS
           if-no-files-found: error
           retention-days: 14
@@ -227,6 +233,7 @@ jobs:
           set -euo pipefail
           gh release create "$GITHUB_REF_NAME" \
             "CamiTune-${GITHUB_REF_NAME}-app.zip" \
+            "CamiTune-${GITHUB_REF_NAME}-speaker-eq-source.tar.gz" \
             SHA256SUMS \
             --verify-tag \
             --generate-notes \

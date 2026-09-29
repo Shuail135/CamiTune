@@ -146,7 +146,6 @@ final class AppState: NSObject, ObservableObject {
     private var sessionToneDrafts: [UUID: SimpleToneSettings] = [:]
     private var sessionEQDrafts: [UUID: String] = [:]
     private var sessionEQDraftsReplaceDeviceCorrection: Set<UUID> = []
-    private var sessionLegacyCorrection: [UUID: ReferenceCorrectionSession] = [:]
     private var sessionDeviceCorrectionProvenance: [UUID: DeviceCorrectionProfile] = [:]
     private var sessionClearsDeviceCorrectionProvenance: Set<UUID> = []
     private var sessionLimiterDrafts: [UUID: Bool] = [:]
@@ -454,7 +453,6 @@ final class AppState: NSObject, ObservableObject {
             || sessionDeviceCorrectionProvenance[profileID] != nil
             || sessionClearsDeviceCorrectionProvenance.contains(profileID)
             || sessionLimiterDrafts[profileID] != nil
-        sessionLegacyCorrection.removeValue(forKey: profileID)
         sessionToneDrafts.removeValue(forKey: profileID)
         sessionEQDrafts.removeValue(forKey: profileID)
         sessionEQDraftsReplaceDeviceCorrection.remove(profileID)
@@ -584,7 +582,6 @@ final class AppState: NSObject, ObservableObject {
     }
 
     func setGlobalEQHistoryDraft(_ snapshot: GlobalEQHistoryState, for id: UUID) {
-        sessionLegacyCorrection[id] = ReferenceCorrectionSession(draft: snapshot.deviceCorrection)
         sessionEQDrafts[id] = EqualizerAPOSerializer().serialize(ParsedEQ(preampDB: snapshot.preampDB, bands: snapshot.bands))
         sessionLimiterDrafts[id] = snapshot.limiterEnabled
         sessionToneDrafts[id] = snapshot.simpleTone
@@ -609,7 +606,6 @@ final class AppState: NSObject, ObservableObject {
     /// revert an unsaved draft in another scope.
     func applyingSessionEQDrafts(to profile: DeviceProfile, replacingGlobalEqualizer: Bool = false) throws -> DeviceProfile {
         var updated = profile
-        if let legacy = sessionLegacyCorrection[profile.id] { updated.processing.setDeviceCorrection(legacy.draft) }
         if let tone = sessionToneDrafts[profile.id] { updated.processing.simpleTone = tone }
         if !replacingGlobalEqualizer, let text = sessionEQDrafts[profile.id] {
             let parsed = try EqualizerAPOParser().parse(text)

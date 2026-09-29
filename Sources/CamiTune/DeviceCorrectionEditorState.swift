@@ -168,10 +168,10 @@ extension GlobalEQHistoryState {
     func matchesAutoEQ(_ correction: DeviceCorrectionProfile) -> Bool {
         guard deviceCorrectionProvenance?.id == correction.id, preampDB == 0 else { return false }
         let serializer = EqualizerAPOSerializer()
-        func filterValues(_ bands: [EQBand]) -> [String] {
-            bands.map { serializer.serialize(ParsedEQ(preampDB: 0, bands: [$0])) }.sorted()
+        func values(_ filters: [EQBand]) -> [String] {
+            filters.map { serializer.serialize(.init(preampDB: 0, bands: [$0])) }.sorted()
         }
-        return filterValues(bands) == filterValues(correction.filters)
+        return values(bands) == values(correction.filters)
     }
 }
 

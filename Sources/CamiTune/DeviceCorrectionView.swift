@@ -168,19 +168,10 @@ struct DeviceCorrectionEditorView: View {
                 }
                 Spacer()
                 if !embedded { Button("Cancel") { onCancel() } }
-                VStack(alignment: .trailing, spacing: 2) {
-                    Button(embedded || referenceEndpoint == nil ? "Load into Equalizer" : "Load Correction") { requestLoadIntoEqualizer() }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.blue)
-                        .disabled(generated == nil || !resultIsCurrent || trimmedDeviceName.isEmpty || !ReferenceCorrection.validFilters(generated?.filters ?? [], sampleRate: sampleRate))
-                    if embedded {
-                        Text(correctionIsLoaded ? "Loaded" : "Not loaded")
-                            .font(.caption2)
-                            .foregroundStyle(correctionIsLoaded ? Color.green : Color.orange)
-                            .fixedSize()
-                            .frame(height: 12)
-                    }
-                }
+                AutoEQSaveTXTButton(correction: generated) { errorMessage = $0 }
+                    .disabled(generated == nil || !resultIsCurrent || !ReferenceCorrection.validFilters(generated?.filters ?? [], sampleRate: sampleRate))
+                AutoEQLoadButton(isLoaded: correctionIsLoaded, showsStatus: embedded, action: requestLoadIntoEqualizer)
+                    .disabled(generated == nil || !resultIsCurrent || trimmedDeviceName.isEmpty || !ReferenceCorrection.validFilters(generated?.filters ?? [], sampleRate: sampleRate))
             }
             .padding(.vertical, embedded ? 5 : 16)
             .padding(.horizontal, embedded ? 0 : 16)
@@ -263,7 +254,7 @@ struct DeviceCorrectionEditorView: View {
                 loadIntoEqualizer()
             }
         } message: {
-            Text("Loading this correction will replace the current global EQ bands and user preamp. The change is saved automatically and can be undone.")
+            Text("Loading Auto EQ replaces the current Equalizer bands. The change is saved automatically and can be undone.")
         }
         .fileImporter(
             isPresented: $showingMeasurementImporter,
@@ -290,13 +281,11 @@ struct DeviceCorrectionEditorView: View {
     }
 
     private var undoButton: some View {
-        Button { history.manager.undo() } label: { Image(systemName: "arrow.uturn.backward") }
-            .disabled(!history.manager.canUndo).help("Undo Auto EQ edit")
+        AutoEQUndoButton(history: history)
     }
 
     private var redoButton: some View {
-        Button { history.manager.redo() } label: { Image(systemName: "arrow.uturn.forward") }
-            .disabled(!history.manager.canRedo).help("Redo Auto EQ edit")
+        AutoEQUndoButton(history: history, isRedo: true)
     }
 
     private var editorContent: some View {
@@ -304,40 +293,14 @@ struct DeviceCorrectionEditorView: View {
         return VStack(alignment: .leading, spacing: 18) {
             GroupBox("Device and source data") {
                 VStack(alignment: .leading, spacing: 12) {
-                    TextField(catalogIsIEM ? "Search IEMs" : "Search headphones", text: $searchText)
-                        .textFieldStyle(.roundedBorder)
+                    AutoEQSearchField(placeholder: catalogIsIEM ? "Search IEMs" : "Search headphones",
+                        query: $searchText, results: sourceSearchResults, title: { $0.displayName }, onSelect: select)
 
                     if isLoadingCatalog {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
-                            Text("Loading device catalog…")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Text("Loading device catalog…").font(.caption).foregroundStyle(.secondary)
                         }
-                    } else if !DeviceNameNormalizer.key(for: searchText).isEmpty,
-                              selectedCatalogID == nil,
-                              !sourceSearchResults.isEmpty {
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 0) {
-                                ForEach(sourceSearchResults) { entry in
-                                    Button {
-                                        select(entry)
-                                    } label: {
-                                        Text(entry.displayName)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .contentShape(Rectangle())
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 6)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
-                        .frame(maxHeight: 170)
-                        .background(
-                            Color.secondary.opacity(0.06),
-                            in: RoundedRectangle(cornerRadius: 7)
-                        )
                     }
 
                     if isLoadingMeasurements {
@@ -461,15 +424,8 @@ struct DeviceCorrectionEditorView: View {
 
             HStack {
                 Spacer()
-                Button { generate() } label: {
-                    if isGenerating {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Text((generated?.filters.contains { $0.isLocked } ?? false) ? "Re-optimize Unlocked Bands" : "Auto EQ")
-                    }
-                }
-                    .buttonStyle(.borderedProminent)
+                AutoEQGenerateButton(isGenerating: isGenerating,
+                    title: (generated?.filters.contains { $0.isLocked } ?? false) ? "Re-optimize Unlocked Bands" : "Auto EQ", action: generate)
                     .disabled(
                         isGenerating
                             || !targetChosen || !autoEQSettings.isValid
@@ -488,23 +444,17 @@ struct DeviceCorrectionEditorView: View {
             }
 
             if let generated {
-                GroupBox {
-                    DisclosureGroup(isExpanded: $presentation.resultsExpanded) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            if ReferenceCorrection.validFilters(generated.filters, sampleRate: sampleRate) {
-                                CorrectionResponseGraph(profile: generated, sampleRate: sampleRate, onEdit: { band in editBand(band) }, selectedBandID: $selectedBandID, visibleCurves: $presentation.visibleCurves, showControlPoints: $presentation.showControlPoints)
-                                    .frame(height: 300)
-                            } else {
-                                Text("Enter a valid frequency below Nyquist, finite gain, and positive Q.").foregroundStyle(.orange)
-                            }
-                            Divider()
-                            generatedEqualizerValues(generated)
+                AutoEQResultCard(isExpanded: $presentation.resultsExpanded) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if ReferenceCorrection.validFilters(generated.filters, sampleRate: sampleRate) {
+                            CorrectionResponseGraph(profile: generated, sampleRate: sampleRate, onEdit: { band in editBand(band) }, selectedBandID: $selectedBandID, visibleCurves: $presentation.visibleCurves, showControlPoints: $presentation.showControlPoints)
+                                .frame(height: 300)
+                        } else {
+                            Text("Enter a valid frequency below Nyquist, finite gain, and positive Q.").foregroundStyle(.orange)
                         }
-                        .padding(.top, 8)
-                    } label: {
-                        Text("Graph & Equalizer Values").font(.headline)
+                        Divider()
+                        generatedEqualizerValues(generated)
                     }
-                    .padding(6)
                 }
             }
 

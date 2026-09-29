@@ -63,3 +63,5 @@ Front_Stage_Implementation.md
 
 # Local visual preview (not an application resource)
 Sources/CamiTune/tray-icon-preview.png
+
+**/target/

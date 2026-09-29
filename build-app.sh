@@ -36,6 +36,8 @@ xcodebuild \
     MARKETING_VERSION="$APP_VERSION" \
     CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
     CODE_SIGNING_ALLOWED=NO \
+    ARCHS="$(/usr/bin/uname -m)" \
+    ONLY_ACTIVE_ARCH=YES \
     archive
 
 BUILT_APP="$ARCHIVE/Products/Applications/CamiTune.app"
@@ -44,6 +46,10 @@ if [[ ! -d "$BUILT_APP" ]]; then
     exit 1
 fi
 
+if [[ ! -x "$BUILT_APP/Contents/Resources/Helpers/camitune-speaker-eq" ]]; then
+    echo "ERROR: Release archive is missing the speaker optimizer helper." >&2
+    exit 1
+fi
 /usr/bin/ditto "$BUILT_APP" "$APP"
 /usr/bin/codesign --force --deep --sign - "$APP"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"

@@ -91,10 +91,10 @@ final class ProfileStore: ObservableObject {
         didSet { save() }
     }
     func defaultLayout(for type: ProfileEndpointKind) -> ProfileSectionLayout {
-        layoutDefaults[type.rawValue] ?? ProfileSectionLayout()
+        layoutDefaults[type.rawValue] ?? ProfileSectionLayout(hidden: [.perChannel])
     }
     func effectiveLayout(for profile: DeviceProfile) -> ProfileSectionLayout {
-        profile.sectionLayout ?? defaultLayout(for: profile.endpointKind)
+        profile.sectionLayout ?? layoutDefaults[profile.endpointKind.rawValue] ?? profile.defaultSectionLayout
     }
     func setDefaultLayout(_ layout: ProfileSectionLayout, for type: ProfileEndpointKind) {
         layoutDefaults[type.rawValue] = layout

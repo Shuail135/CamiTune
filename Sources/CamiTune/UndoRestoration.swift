@@ -16,7 +16,8 @@ extension AppState: HistoryRestoring {
     }
 
     func globalEQHistoryState(for profile: DeviceProfile) throws -> GlobalEQHistoryState {
-        let effective = try applyingSessionEQDrafts(to: profile)
+        let current = profiles.profiles.first(where: { $0.id == profile.id }) ?? profile
+        let effective = try applyingSessionEQDrafts(to: current)
         let processing = try effective.resolvedProcessing()
         return GlobalEQHistoryState(preampDB: processing.globalEqualizer.preampDB,
             bands: processing.globalEqualizer.bands, limiterEnabled: processing.limiterEnabled,
@@ -79,7 +80,7 @@ extension AppState: HistoryRestoring {
 
     private func persistHistoryChanges(for snapshot: HistoryState) async throws {
         switch snapshot {
-        case .globalEQ, .channel, .crossfeed, .convolution, .convolutionBatch, .profileName, .profileOrganization, .deletion, .referenceTransfer:
+        case .deviceCorrection, .globalEQ, .channel, .crossfeed, .convolution, .convolutionBatch, .profileName, .profileOrganization, .deletion, .referenceTransfer:
             try await profiles.persistHistoryChanges()
         case .perAppAudio, .perAppBatch: try perAppAudio.persistHistoryChanges()
         case .appAlias, .appPlacement: try perAppAudio.presentationStore.persistHistoryChanges()
@@ -92,7 +93,11 @@ extension AppState: HistoryRestoring {
         case (.multichannel, .profile(let id)):
             let profile = try historyProfile(id)
             return .multichannel(.init(settings: profile.multichannel, topology: profile.speakerTopology))
-        case (.globalEQ, .profile(let id)): return .globalEQ(try globalEQHistoryState(for: historyProfile(id)))
+        case (.deviceCorrection, .profile(let id)): return .deviceCorrection(try historyProfile(id).processing.deviceCorrection)
+        case (.globalEQ(let snapshot), .profile(let id)):
+            var value = try globalEQHistoryState(for: historyProfile(id))
+            value.ownsLegacyCorrectionTransfer = snapshot.ownsLegacyCorrectionTransfer
+            return .globalEQ(value)
         case (.channel, .profileChannel(let id, let channel)):
             let profile = try applyingSessionEQDrafts(to: historyProfile(id))
             let value = try profile.resolvedProcessing().settings(forChannel: channel) ?? .identity
@@ -154,6 +159,9 @@ extension AppState: HistoryRestoring {
                 previewOnly: ProcessInfo.processInfo.arguments.contains("--speaker-setup-preview"), recordHistory: false)
         case let (.globalEQ(value), .profile(id)):
             _ = try historyProfile(id)
+            if value.ownsLegacyCorrectionTransfer {
+                try mutateSavedProcessing(profileID: id) { $0.setDeviceCorrection(value.deviceCorrection) }
+            }
             setGlobalEQHistoryDraft(value, for: id)
             try persistEqualizerEdits(for: id)
             applyID = id
@@ -178,6 +186,9 @@ extension AppState: HistoryRestoring {
             applyID = id
         case (.convolution(let value), .profile), (.convolution(let value), .profileChannel), (.convolution(let value), .profileGroup):
             applyID = try storeConvolution(value, target: target)
+        case let (.deviceCorrection(value), .profile(id)):
+            try mutateSavedProcessing(profileID: id) { $0.setDeviceCorrection(value) }
+            applyID = id
         case let (.convolutionBatch(values), .profile(id)):
             let profile = try historyProfile(id)
             guard Set(values.keys).isSubset(of: Set(profile.configuredProcessingChannels.map(\.index))) else {

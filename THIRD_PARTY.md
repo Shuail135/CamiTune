@@ -27,3 +27,9 @@ The unmodified license, attribution, modification notice and provenance manifest
 ship inside `SpatialAssets/`. The original SOFA data is converted at development
 time by `Scripts/prepare-spatial-hrtf.py`; Python, h5py, NumPy and SciPy are not
 runtime dependencies or redistributed as part of this asset.
+
+## Speaker Auto EQ
+
+The bundled `Helpers/camitune-speaker-eq` adapter uses [Pierre Aubert's AutoEQ](https://github.com/pierreaubert/autoeq/tree/06ec8f958f11e24bdf1f725e9346373fbdafceca), pinned to revision `06ec8f958f11e24bdf1f725e9346373fbdafceca` (`autoeq-optim` 0.5.62), Copyright (C) 2025–2026 Pierre Aubert, GPL-3.0-or-later, used under GPLv3. The CamiTune adapter is GPL-3.0-only. The app bundles the generated dependency notices alongside the helper and the GPLv3 text in `LICENSE`. Exact dependency revisions and the complete reproducible build path are in `Tools/CamiTuneSpeakerEQCore/Cargo.lock`, its README, and `Scripts/build-speaker-eq.sh`; retain these in source distributions. Tag releases additionally provide a speaker-helper source archive with the complete locked, vendored dependencies and offline build configuration.
+
+Speaker measurements are requested at runtime from the official [Spinorama API](https://www.spinorama.org/docs/09_api.html). Spinorama is the aggregation/API provider; original acoustic sources such as Erin's Audio Corner, Audio Science Review, Princeton/3D3A and vendors are displayed in the app and persisted with the selected measurement version, source hash and retrieval date. CamiTune does not bundle a measurement database. Test-only excerpts preserve source attribution and are excluded from application resources. Source-specific measurement attribution and redistribution terms must be checked when preparing a public release.

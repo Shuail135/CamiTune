@@ -16,6 +16,7 @@ struct GlobalEQHistoryState: Equatable, Sendable {
     var replacesDeviceCorrection: Bool
     var deviceCorrectionProvenance: DeviceCorrectionProfile?
     var deviceCorrection: DeviceCorrectionProfile? = nil
+    var ownsLegacyCorrectionTransfer = false
 }
 struct CrossfeedHistoryState: Equatable, Sendable {
     var processor: CrossfeedProcessor
@@ -51,6 +52,7 @@ struct ProfileDeletionSnapshot: Equatable, Sendable {
     var selectedProfileID: UUID?
 }
 enum HistoryState: Equatable, Sendable {
+    case deviceCorrection(DeviceCorrectionProfile?)
     case globalEQ(GlobalEQHistoryState), channel(PerChannelEditorSnapshot)
     case crossfeed(CrossfeedHistoryState), convolution(ConvolutionHistoryState)
     case convolutionBatch([Int: ConvolutionHistoryState])

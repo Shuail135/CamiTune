@@ -100,7 +100,7 @@ extension DeveloperSelfTests {
                 let result = try await f.repository.submit(document, source: .init(rawValue: 1), kind: .settingsTransaction).value().get()
                 guard case .committed(let receipt) = result else { throw DiagnosticFailure(message: "Durable write superseded") }
                 let loaded = ProfileRepository(url: f.box.directory.appendingPathComponent("repository.json"))
-                try diagnosticRequire(loaded.loadedDocument?.profiles == document.profiles && loaded.status.lastCommittedRevision == receipt.documentRevision && loaded.loadedDocument?.schemaVersion == 7, "Revision or profile changed on reload")
+                try diagnosticRequire(loaded.loadedDocument?.profiles == document.profiles && loaded.status.lastCommittedRevision == receipt.documentRevision && loaded.loadedDocument?.schemaVersion == ProfileDocument.currentSchemaVersion, "Revision or profile changed on reload")
             },
             test("PR02", "Legacy array and schema 6 migrate to revisioned schema") { f in
                 for legacy in [true, false] {
@@ -112,7 +112,7 @@ extension DeveloperSelfTests {
                     guard let loaded = repository.loadedDocument else { throw DiagnosticFailure(message: "Migration failed") }
                     _ = try await repository.submit(loaded, source: .init(rawValue: 1), kind: .settingsTransaction).value().get()
                     let saved = try JSONDecoder().decode(ProfileDocument.self, from: Data(contentsOf: url))
-                    try diagnosticRequire(saved.schemaVersion == 7 && saved.documentRevision.rawValue == 1 && saved.profiles == document.profiles, "Migration lost content/revision")
+                    try diagnosticRequire(saved.schemaVersion == ProfileDocument.currentSchemaVersion && saved.documentRevision.rawValue == 1 && saved.profiles == document.profiles, "Migration lost content/revision")
                 }
             },
             test("PR03", "Future storage rejects every write kind") { f in

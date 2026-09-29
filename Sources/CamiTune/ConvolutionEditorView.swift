@@ -17,14 +17,24 @@ struct ConvolutionEditorView: View {
         .init(target: effectiveTarget, sampleRate: profile.sampleRate, editGeneration: state.editGeneration,
             channels: profile.configuredProcessingChannels)
     }
+    private var applicationDescription: String {
+        switch effectiveTarget {
+        case .profile:
+            return profile.isPersonalListening
+                ? "The same selected impulse response applies to both Left and Right."
+                : "The same selected impulse response applies to all speakers."
+        case .profileGroup:
+            return "The same selected impulse response applies to every speaker in \(targetName)."
+        default:
+            return "The selected impulse response applies to \(targetName)."
+        }
+    }
 
     var body: some View {
         ConvolutionControl(title: showsTitle ? "FIR / Convolution" : nil, context: context,
+            applicationDescription: applicationDescription,
             convolution: $convolution, isEnabled: $isEnabled, onCommit: commit,
-            onAssign: { asset, assignments in
-                try state.assignConvolution(asset, assignments: assignments, profileID: profile.id)
-                load()
-            }, onError: { state.errorMessage = $0.localizedDescription })
+            onError: { state.errorMessage = $0.localizedDescription })
         .onAppear { load() }
         .onChange(of: effectiveTarget) { _ in load() }
         .onChange(of: state.historyReplayRevision) { _ in load() }

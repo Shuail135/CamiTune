@@ -74,6 +74,22 @@ package struct ProcessingGraphBuilder {
             if case .limiter = $0.processor { return false }
             return true
         })
+        // Canonical global semantics do not depend on which editor was used first.
+        func rank(_ stage: ProcessingStage) -> Int {
+            switch stage.processor {
+            case .deviceCorrection: return 0
+            case .gain: return 1
+            case .equalizer: return 2
+            case .convolution: return 3
+            case .delay: return 4
+            case .crossfeed: return 5
+            case .limiter: return 6
+            }
+        }
+        regularGlobal.stages = regularGlobal.stages.enumerated().sorted {
+            let lhs = rank($0.element), rhs = rank($1.element)
+            return lhs == rhs ? $0.offset < $1.offset : lhs < rhs
+        }.map(\.element)
         let tone = try SimpleToneFilterFactory.filters(for: processing.simpleTone, sampleRate: Double(profile.sampleRate))
         if !processing.simpleTone.isNeutral {
             let insertion = regularGlobal.stages.firstIndex {
@@ -88,6 +104,7 @@ package struct ProcessingGraphBuilder {
             pipelineScope: .global,
             channels: Array(0..<channelCount),
             sampleRate: profile.sampleRate,
+            correspondingChannels: profile.configuredProcessingChannels,
             usedStageIDs: &usedStageIDs,
             to: &graph
         )
@@ -247,6 +264,7 @@ package struct ProcessingGraphBuilder {
         pipelineScope: ProcessingGraph.PipelineStep.Scope,
         channels: [Int],
         sampleRate: Int,
+        correspondingChannels: [ConfiguredProcessingChannel]? = nil,
         usedStageIDs: inout Set<UUID>,
         to graph: inout ProcessingGraph
     ) throws {
@@ -298,6 +316,9 @@ package struct ProcessingGraphBuilder {
                         correction.schemaVersion
                     )
                 }
+                if let provenance = correction.speakerProvenance {
+                    try SpeakerCorrectionValidator().validate(correction.filters, settings: provenance.settings, sampleRate: Double(sampleRate))
+                }
                 var correctionProcessors: [ProcessingGraph.Processor] = []
                 try validateUniqueBandIDs(correction.filters)
                 // preampDB in legacy correction profiles was an automatic
@@ -319,6 +340,26 @@ package struct ProcessingGraphBuilder {
                 }
                 processors = correctionProcessors
             case .convolution(let convolution):
+                if convolution.usesCorrespondingChannels {
+                    guard case .global = pipelineScope, let correspondingChannels else {
+                        throw ProfileSettingsError.runtime("Corresponding WAV channels is available only for All Channels FIR correction.")
+                    }
+                    let assignments = try ImpulseResponseAssignmentPlanner().resolvedAssignments(
+                        for: convolution, channels: correspondingChannels, sampleRate: sampleRate)
+                    for assignment in assignments {
+                        let runtime = try validate(convolution: .init(asset: convolution.asset,
+                            impulseChannel: assignment.impulseChannel), sampleRate: sampleRate)
+                        let id = processorID(scope: identifierScope, stageID: stage.id,
+                            suffix: "convolution_\(assignment.outputChannel)")
+                        graph.processors.append(.init(id: id, sourceStageID: stage.id, implementation: .convolution(runtime)))
+                        // These IRs belong to physical outputs. Keep them after
+                        // source routing when the multichannel compiler splits buses.
+                        let role = correspondingChannels.first { $0.index == assignment.outputChannel }!.role
+                        graph.pipeline.append(.init(id: stage.id, scope: .channel(index: assignment.outputChannel, role: role),
+                            channels: [assignment.outputChannel], processorIDs: [id]))
+                    }
+                    continue
+                }
                 let runtime = try validate(
                     convolution: convolution,
                     sampleRate: sampleRate

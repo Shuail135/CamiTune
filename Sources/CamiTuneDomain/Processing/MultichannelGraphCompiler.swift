@@ -167,7 +167,7 @@ extension DeviceProfile {
             for route in value.routing.routes {
                 try require(routeIDs.insert(route.id).inserted && keys.insert("\(route.sourceChannel):\(route.destination.channelIndex)").inserted,
                     "Each source-to-speaker route must be unique.")
-                try require(ids.contains(route.destination) && (0..<count).contains(route.sourceChannel), "A route references an unavailable source or physical speaker. Review Advanced Routing.")
+                try require(ids.contains(route.destination) && (0..<count).contains(route.sourceChannel), "A route references an unavailable source or physical speaker. Review Custom Routing.")
                 try require(route.gainDB.isFinite && (-120...24).contains(route.gainDB), "Route gain must be between −120 and +24 dB.")
                 if value.bass.enabled {
                     try require(!value.bass.subwooferEndpointIDs.contains(route.destination), "Remove direct routes to bass-managed subwoofers; Bass & Subwoofers supplies their signal.")

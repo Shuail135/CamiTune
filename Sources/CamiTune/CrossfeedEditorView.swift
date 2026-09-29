@@ -24,10 +24,10 @@ struct CrossfeedEditorView: View {
     }
 
     var body: some View {
-        GroupBox {
+        Group {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("Headphone Crossfeed").font(.title3.bold())
+                    Text("Crossfeed").font(.title3.bold())
                     Spacer()
                     Toggle("Enable", isOn: Binding(
                         get: { isEnabled },
@@ -37,7 +37,7 @@ struct CrossfeedEditorView: View {
                         }
                     ))
                     .toggleStyle(.switch)
-                    .labelsHidden().accessibilityLabel("Headphone Crossfeed")
+                    .labelsHidden().accessibilityLabel("Crossfeed")
                 }
 
                 Text("Blend delayed, low-frequency sound from each stereo channel into the opposite ear to reduce hard left/right separation on headphones.")
@@ -97,7 +97,6 @@ struct CrossfeedEditorView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            .padding(6)
         }
         .onChange(of: state.historyReplayRevision) { _ in load() }
         .onAppear { loadIfNeeded() }

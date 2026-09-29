@@ -1,19 +1,62 @@
 import Foundation
 
-package struct ImpulseResponseAssignment: Identifiable, Hashable, Sendable {
+package struct ImpulseResponseAssignment: Identifiable, Codable, Hashable, Sendable {
     package var impulseChannel: Int
     package var outputChannel: Int
-    package var id: Int { impulseChannel }
+    package var isEnabled: Bool
+    package var id: Int { outputChannel }
 
-    package init(impulseChannel: Int, outputChannel: Int) {
+    package init(impulseChannel: Int, outputChannel: Int, isEnabled: Bool = true) {
         self.impulseChannel = impulseChannel
         self.outputChannel = outputChannel
+        self.isEnabled = isEnabled
     }
 }
 
 /// Assignments refer to configured physical outputs, never an assumed dense bus.
 package struct ImpulseResponseAssignmentPlanner {
     package init() {}
+
+    /// Explicit mappings remain attached to output identities as the topology changes.
+    /// Missing outputs are skipped; new outputs receive no IR until enabled by the user.
+    package func resolvedAssignments(for processor: ConvolutionProcessor,
+                                     channels: [ConfiguredProcessingChannel],
+                                     sampleRate: Int) throws -> [ImpulseResponseAssignment] {
+        guard let mappings = processor.channelAssignments else {
+            return try correspondingAssignments(asset: processor.asset, channels: channels, sampleRate: sampleRate)
+        }
+        guard Set(mappings.map(\.outputChannel)).count == mappings.count,
+              mappings.allSatisfy({ $0.outputChannel >= 0 }) else {
+            throw ProfileSettingsError.runtime("Each output can have only one impulse response assignment.")
+        }
+        let available = Set(channels.map(\.index))
+        let active = mappings.filter { $0.isEnabled && available.contains($0.outputChannel) }
+            .sorted { $0.outputChannel < $1.outputChannel }
+        guard !active.isEmpty else { return [] }
+        try validate(active, asset: processor.asset, channels: channels, sampleRate: sampleRate,
+                     allowsSharedSource: true)
+        return active
+    }
+
+    package func editableAssignments(for processor: ConvolutionProcessor,
+                                     channels: [ConfiguredProcessingChannel]) -> [ImpulseResponseAssignment] {
+        let saved = processor.channelAssignments ?? defaultAssignments(asset: processor.asset, channels: channels)
+        return channels.sorted { $0.physicalOutputID.channelIndex < $1.physicalOutputID.channelIndex }.map { channel in
+            saved.first { $0.outputChannel == channel.index }
+                ?? .init(impulseChannel: 0, outputChannel: channel.index, isEnabled: false)
+        }
+    }
+
+    package func correspondingAssignments(asset: ImpulseResponseAsset,
+                                          channels: [ConfiguredProcessingChannel],
+                                          sampleRate: Int) throws -> [ImpulseResponseAssignment] {
+        guard asset.channelCount == channels.count else {
+            throw ProfileSettingsError.runtime("Corresponding WAV channels requires one source channel per configured output (\(asset.channelCount) WAV channels, \(channels.count) outputs).")
+        }
+        let assignments = defaultAssignments(asset: asset, channels: channels)
+        try validate(assignments, asset: asset, channels: channels, sampleRate: sampleRate)
+        return assignments
+    }
 
     package func defaultAssignments(asset: ImpulseResponseAsset,
                                     channels: [ConfiguredProcessingChannel]) -> [ImpulseResponseAssignment] {
@@ -22,7 +65,8 @@ package struct ImpulseResponseAssignmentPlanner {
     }
 
     package func validate(_ assignments: [ImpulseResponseAssignment], asset: ImpulseResponseAsset,
-                          channels: [ConfiguredProcessingChannel], sampleRate: Int) throws {
+                          channels: [ConfiguredProcessingChannel], sampleRate: Int,
+                          allowsSharedSource: Bool = false) throws {
         guard asset.sampleRate == sampleRate else {
             throw ProcessingGraphError.impulseResponseSampleRateMismatch(asset.sampleRate, sampleRate)
         }
@@ -35,7 +79,7 @@ package struct ImpulseResponseAssignmentPlanner {
         guard Set(assignments.map(\.outputChannel)).count == assignments.count else {
             throw ProfileSettingsError.runtime("Each speaker can receive only one WAV channel in an assignment.")
         }
-        guard Set(assignments.map(\.impulseChannel)).count == assignments.count else {
+        guard allowsSharedSource || Set(assignments.map(\.impulseChannel)).count == assignments.count else {
             throw ProfileSettingsError.runtime("Each WAV channel can appear only once in an assignment.")
         }
         let available = Set(channels.map(\.index))

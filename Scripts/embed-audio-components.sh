@@ -46,6 +46,23 @@ copy_cached_components() {
     return $((1 - copied))
 }
 
+# Build a pinned offline optimizer for every Release. Fast Debug uses its cache.
+SPEAKER_HELPER="$ROOT/build/speaker-eq/release/camitune-speaker-eq"
+if [[ "$CONFIGURATION" != "Debug" || "${CAMITUNE_PREPARE_AUDIO_COMPONENTS:-0}" == "1" ]]; then
+    "$ROOT/Scripts/build-speaker-eq.sh" "$RESOURCE_DIR"
+elif [[ -x "$SPEAKER_HELPER" ]]; then
+    mkdir -p "$RESOURCE_DIR/Helpers"
+    cp "$SPEAKER_HELPER" "$RESOURCE_DIR/Helpers/camitune-speaker-eq"
+    chmod 755 "$RESOURCE_DIR/Helpers/camitune-speaker-eq"
+else
+    rm -f "$RESOURCE_DIR/Helpers/camitune-speaker-eq"
+    echo "CamiTune: run Scripts/build-speaker-eq.sh once to enable Speaker Auto EQ in Debug."
+fi
+
+if [[ -x "$RESOURCE_DIR/Helpers/camitune-speaker-eq" ]]; then
+    cp "$ROOT/Tools/CamiTuneSpeakerEQCore/THIRD_PARTY_NOTICES.txt" "$RESOURCE_DIR/Helpers/THIRD_PARTY_NOTICES.txt"
+fi
+
 # Fast local Xcode builds should not compile Rust or rebuild the HAL driver.
 # If Release components were built previously, Debug automatically embeds the
 # cache so the full app remains usable. Opt in to a full Debug preparation with

@@ -11,6 +11,22 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     package var speakerTopologyNeedsReview = false
     package var multichannel = MultichannelProcessingSettings()
     package var speakerVerification: SpeakerVerificationRecord?
+    package var availableDeviceCorrectionPages: [DeviceCorrectionPage] {
+        switch effectiveEndpointKind {
+        case .headphones, .iem:
+            return [.automaticEQ, .convolution] + (supportsCrossfeed ? [.crossfeed] : [])
+        case .speakers: return [.automaticEQ, .convolution]
+        case .audioInterface, .custom: return [.convolution]
+        }
+    }
+
+    package var defaultSectionLayout: ProfileSectionLayout {
+        var layout = ProfileSectionLayout()
+        let advanced = hasPhysicalSpeakerRoute || (endpointKind == .audioInterface && configuredPhysicalChannelCount > 2)
+        if !advanced { layout.hidden.insert(.perChannel) }
+        return layout
+    }
+
     package var personalReferenceCorrections: [String: DeviceCorrectionProfile] = [:]
     package var audioInterface: AudioInterfaceConfiguration?
     package var sectionLayout: ProfileSectionLayout?

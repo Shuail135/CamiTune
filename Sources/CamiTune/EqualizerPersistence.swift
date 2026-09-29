@@ -13,21 +13,36 @@ extension AppState {
     }
 
     func loadAutoEQCorrectionDraft(_ correction: DeviceCorrectionProfile, for profile: DeviceProfile) throws {
-        let before = try globalEQHistoryState(for: profile)
-        let bands = EQEditorSupport.organizedBands(correction.filters)
+        if let source = correction.speakerProvenance {
+            try SpeakerCorrectionValidator().validate(correction.filters, settings: source.settings, sampleRate: Double(profile.sampleRate), allowDisabledBands: true)
+        }
+        var before = try globalEQHistoryState(for: profile)
         var after = before
         after.preampDB = 0
-        after.bands = bands
+        after.bands = EQEditorSupport.organizedBands(correction.filters)
         after.deviceCorrectionProvenance = correction
-        setDeviceCorrectionProvenanceDraft(correction, for: profile.id)
-        setEQDraft(EqualizerAPOSerializer().serialize(ParsedEQ(preampDB: 0, bands: bands)), for: profile.id)
+        after.deviceCorrection = nil
+        after.replacesDeviceCorrection = true
+        before.ownsLegacyCorrectionTransfer = true
+        after.ownsLegacyCorrectionTransfer = true
+        setGlobalEQHistoryDraft(after, for: profile.id)
         do { try persistEqualizerEdits(for: profile.id) }
         catch {
             setGlobalEQHistoryDraft(before, for: profile.id)
             throw error
         }
-        history.record(actionName: "Load Device Correction into Equalizer", contextName: profile.name,
+        history.record(actionName: "Load Auto EQ into Equalizer", contextName: profile.name,
             target: .profile(profile.id), before: .globalEQ(before), after: .globalEQ(after))
         markPendingEditorApply(profile.id)
+    }
+
+    func commitDeviceCorrection(_ correction: DeviceCorrectionProfile?, profileID: UUID) throws {
+        guard profiles.settingsMutationsAllowed else { throw ProfileSettingsError.busy }
+        let profile = try historyProfile(profileID)
+        let before = profile.processing.deviceCorrection
+        try mutateSavedProcessing(profileID: profileID) { $0.setDeviceCorrection(correction) }
+        history.record(actionName: "Apply Device Correction", contextName: profile.name,
+            target: .profile(profileID), before: .deviceCorrection(before), after: .deviceCorrection(correction))
+        markPendingEditorApply(profileID)
     }
 }

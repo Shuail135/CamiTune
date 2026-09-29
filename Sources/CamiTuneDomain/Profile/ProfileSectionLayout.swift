@@ -5,11 +5,12 @@ package enum ProfileSection: String, Codable, CaseIterable, Identifiable, Sendab
     // Retain the old identifiers so saved layouts can migrate without losing settings.
     case convolution
     package static let allCases: [ProfileSection] = [
-        .deviceSetup, .meters, .spectrum, .mode, .equalizer, .perChannel, .deviceCorrection, .crossfeed, .multichannel
+        .deviceSetup, .meters, .spectrum, .mode, .deviceCorrection, .equalizer, .perChannel, .multichannel
     ]
+    package static let defaultLayoutSections = allCases
     package var consolidated: Self {
         switch self {
-        case .convolution: return .deviceCorrection
+        case .convolution, .crossfeed: return .deviceCorrection
         default: return self
         }
     }
@@ -23,8 +24,8 @@ package enum ProfileSection: String, Codable, CaseIterable, Identifiable, Sendab
         case .deviceCorrection: return "Device Correction"
         case .equalizer: return "Equalizer"
         case .convolution: return "FIR / Convolution"
-        case .crossfeed: return "Headphone Crossfeed"
-        case .perChannel: return "Per-channel EQ, Gain & Delay"
+        case .crossfeed: return "Crossfeed"
+        case .perChannel: return "Channel Processing"
         case .multichannel: return "Bass & Routing"
         }
     }
@@ -56,10 +57,17 @@ package struct ProfileSectionLayout: Codable, Hashable, Sendable {
     private enum CodingKeys: String, CodingKey { case order, hidden, presentation }
     package init(order: [ProfileSection] = ProfileSection.allCases, hidden: Set<ProfileSection> = [],
          presentation: [String: SectionPresentationPreference] = [:]) {
-        self.order = order.map(\.consolidated)
-        self.hidden = hidden.subtracting([.convolution])
-        if hidden.contains(.convolution) {
-            self.hidden.insert(.deviceCorrection)
+        var seen: Set<ProfileSection> = [.deviceSetup]
+        self.order = [.deviceSetup] + (order + ProfileSection.defaultLayoutSections)
+            .map(\.consolidated).filter { seen.insert($0).inserted }
+        self.hidden = hidden.subtracting([.convolution, .crossfeed])
+        if order.contains(.convolution) || order.contains(.crossfeed)
+            || hidden.contains(.convolution) || hidden.contains(.crossfeed) {
+            if hidden.contains(.convolution) && hidden.contains(.crossfeed) {
+                self.hidden.insert(.deviceCorrection)
+            } else {
+                self.hidden.remove(.deviceCorrection)
+            }
         }
         self.presentation = presentation
     }
@@ -71,6 +79,14 @@ package struct ProfileSectionLayout: Codable, Hashable, Sendable {
             presentation: try values.decodeIfPresent([String: SectionPresentationPreference].self, forKey: .presentation) ?? [:]
         )
     }
+    package func encode(to encoder: Encoder) throws {
+        let normalized = Self(order: order, hidden: hidden, presentation: presentation)
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(normalized.normalizedOrder, forKey: .order)
+        try values.encode(normalized.hidden, forKey: .hidden)
+        try values.encode(normalized.presentation, forKey: .presentation)
+    }
+
     package func visualDemand(for type: ProfileEndpointKind) -> (meters: Bool, spectrum: Bool) {
         let sections = visibleSections(for: type)
         return (sections.contains(.meters) || sections.contains(.equalizer) || sections.contains(.perChannel),

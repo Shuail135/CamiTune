@@ -27,6 +27,15 @@ var packageTargets: [Target] = [
     )
 ]
 
+// Device Correction tests remain local and follow the existing opt-in policy.
+if ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] == "1" {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    let path = "Tests/DeviceCorrectionRegression"
+    if FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path) {
+        packageTargets.append(.testTarget(name: "DeviceCorrectionRegression", dependencies: ["CamiTune", "CamiTuneDomain", "CamiTuneAudio"], path: path, exclude: ["Fixtures", "SpeakerEQCoreTests.rs"]))
+    }
+}
+
 // Test sources stay local. Clean GitHub checkouts build without the ignored
 // Tests directory; opt in to the suites available in this working copy.
 if ["1", "domain", "modules"].contains(ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] ?? "") {

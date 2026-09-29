@@ -50,12 +50,6 @@ struct GlobalEqualizerEditorView: View {
                 )
                 .accessibilityLabel("Equalizer controls")
                 .frame(width: 260)
-                if let legacy = profile.processing.deviceCorrection, !state.eqDraftReplacesDeviceCorrection(for: profile.id) {
-                    HStack {
-                        Text("Legacy global correction: \(legacy.deviceName)").font(.caption).foregroundStyle(.secondary)
-                        Button("Edit as User EQ") { editLegacyCorrection() }
-                    }
-                }
                 Text("Imports ON/OFF PK/PEQ, LS/LSC, HS/HSC, LP/LPQ, HP/HPQ, NO, and AP filters using Q, BW Oct, or 6/12 dB shelf slopes. APO Preamp is ignored; use User Preamp instead. Other valid APO commands are skipped.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -185,7 +179,7 @@ struct GlobalEqualizerEditorView: View {
 
 }
 
-/// Device correction owns generation; the separate Equalizer owns the applied controls.
+/// Auto EQ loads generated bands through the existing Equalizer workflow.
 @MainActor
 struct AutoEQCorrectionView: View {
     @ObservedObject var state: AppState
@@ -205,17 +199,13 @@ struct AutoEQCorrectionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             DeviceCorrectionSectionHeader(title: "Auto EQ",
-                hint: "Generate correction for all channels from device measurements and a target response. Load into Equalizer to apply it. Equalizer changes are saved automatically.")
+                hint: "Generate correction from device measurements and a target response. Load into Equalizer to apply it. Equalizer changes are saved automatically.")
             if let correction = equalizerState?.deviceCorrectionProvenance {
                 Text(correction.deviceName).font(.headline)
             }
-            if let message = draftStore.errorMessage {
-                Text(message).font(.caption).foregroundStyle(.orange)
-            }
             if draftLoaded {
                 DeviceCorrectionEditorView(
-                    existing: state.deviceCorrectionProvenance(for: profile.id,
-                        persisted: profile.processing.globalEqualizerProvenance),
+                    existing: personalCorrection,
                     embedded: true,
                     initialDraft: initialDraft,
                     equalizerState: equalizerState,
@@ -226,10 +216,7 @@ struct AutoEQCorrectionView: View {
                     sampleRate: Double(profile.sampleRate),
                     referenceEndpoint: profile.effectiveEndpointKind,
                     automaticHeadroom: automaticHeadroomForCorrection,
-                    shouldConfirmReplacement: {
-                        guard let current = try? state.globalEQHistoryState(for: profile) else { return true }
-                        return ParsedEQ(preampDB: current.preampDB, bands: current.bands).hasMeaningfulProcessing
-                    },
+                    shouldConfirmReplacement: { false },
                     onCancel: {},
                     onLoad: loadCorrection
                 )
@@ -250,6 +237,11 @@ struct AutoEQCorrectionView: View {
         .onReceive(state.eqDraftChanges.filter { $0 == profile.id }) { _ in reload() }
     }
 
+    private var personalCorrection: DeviceCorrectionProfile? {
+        let correction = equalizerState?.deviceCorrectionProvenance ?? profile.processing.deviceCorrection
+        return correction?.speakerProvenance == nil ? correction : nil
+    }
+
     private func reload() {
         equalizerState = try? state.globalEQHistoryState(for: profile)
     }
@@ -257,6 +249,7 @@ struct AutoEQCorrectionView: View {
     private func loadCorrection(_ correction: DeviceCorrectionProfile) -> Bool {
         do {
             try state.loadAutoEQCorrectionDraft(correction, for: profile)
+            if let latest = state.profiles.profiles.first(where: { $0.id == profile.id }) { profile = latest }
             var layout = state.profiles.effectiveLayout(for: profile)
             layout.hidden.remove(.equalizer)
             if layout.equalizer == .simpleTone { layout.equalizer = .both }

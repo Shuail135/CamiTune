@@ -2,14 +2,34 @@ import CamiTuneDomain
 import Foundation
 import Combine
 
+protocol PersistedAutoEQWork: Codable, Equatable, Sendable {
+    func migrated() throws -> Self
+}
+
+extension AutoEQEditorDraft: PersistedAutoEQWork {
+    func migrated() throws -> Self {
+        guard (1...2).contains(schemaVersion) else { throw CocoaError(.coderReadCorrupt) }
+        var value = self
+        value.schemaVersion = 2
+        return value
+    }
+}
+
 @MainActor
-final class AutoEQDraftStore: ObservableObject {
+final class AutoEQWorkStore<Draft: PersistedAutoEQWork>: ObservableObject {
     @Published private(set) var errorMessage: String?
     private let url: URL
     private let queue = DispatchQueue(label: "CamiTune.AutoEQDraft", qos: .utility)
-    private var latest: AutoEQEditorDraft?
+    private var latest: Draft?
     private var canSave = false
     private var saveSequence = 0
+    // Accessed only on the serial file queue, including across queued saves.
+    private final class RecoveryState: @unchecked Sendable {
+        var needsBackup = false
+        var backupURL: URL?
+    }
+    private let recovery = RecoveryState()
+    var recoveryBackupURL: URL? { queue.sync { recovery.backupURL } }
 
     init(url: URL) { self.url = url }
 
@@ -18,37 +38,38 @@ final class AutoEQDraftStore: ObservableObject {
             .appendingPathComponent("\(profileID.uuidString)-\(endpoint.rawValue).json")
     }
 
-    func load() -> AutoEQEditorDraft? {
+    func load() -> Draft? {
         do {
-            let draft: AutoEQEditorDraft? = try queue.sync {
+            let draft: Draft? = try queue.sync {
                 guard FileManager.default.fileExists(atPath: url.path) else { return nil }
                 let decoder = JSONDecoder()
                 decoder.nonConformingFloatDecodingStrategy = .convertFromString(
                     positiveInfinity: "Infinity", negativeInfinity: "-Infinity", nan: "NaN")
-                var decoded = try decoder.decode(AutoEQEditorDraft.self, from: Data(contentsOf: url))
-                guard (1...2).contains(decoded.schemaVersion) else {
-                    throw CocoaError(.coderReadCorrupt)
-                }
-                decoded.schemaVersion = 2
-                return decoded
+                return try decoder.decode(Draft.self, from: Data(contentsOf: url)).migrated()
             }
             latest = draft
             canSave = true
+            queue.sync { recovery.needsBackup = false }
             errorMessage = nil
             return draft
         } catch {
-            canSave = false // Preserve an unreadable or newer draft instead of overwriting it.
+            // Keep the original on disk until new work is saved, then back it
+            // up before replacing it. A stale file must not disable autosave.
+            canSave = true
+            latest = nil
+            queue.sync { recovery.needsBackup = true }
             errorMessage = "Could not restore Auto EQ work: \(error.localizedDescription)"
             return nil
         }
     }
 
-    func save(_ draft: AutoEQEditorDraft) {
+    func save(_ draft: Draft) {
         guard canSave, latest != draft else { return }
         latest = draft
         saveSequence += 1
         let sequence = saveSequence
         let url = url
+        let recovery = recovery
         queue.async { [weak self] in
             let message: String?
             do {
@@ -57,6 +78,14 @@ final class AutoEQDraftStore: ObservableObject {
                     positiveInfinity: "Infinity", negativeInfinity: "-Infinity", nan: "NaN")
                 let data = try encoder.encode(draft)
                 try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                if recovery.needsBackup {
+                    if FileManager.default.fileExists(atPath: url.path) {
+                        let backupURL = url.appendingPathExtension("recovery-\(UUID().uuidString).backup")
+                        try FileManager.default.copyItem(at: url, to: backupURL)
+                        recovery.backupURL = backupURL
+                    }
+                    recovery.needsBackup = false
+                }
                 try data.write(to: url, options: .atomic)
                 message = nil
             } catch {
@@ -72,3 +101,6 @@ final class AutoEQDraftStore: ObservableObject {
 
     func flush() { queue.sync {} }
 }
+
+typealias AutoEQDraftStore = AutoEQWorkStore<AutoEQEditorDraft>
+typealias SpeakerAutoEQDraftStore = AutoEQWorkStore<SpeakerAutoEQEditorDraft>

@@ -31,11 +31,11 @@ struct CorrectionEditorSnapshot: Equatable {
 }
 
 @MainActor
-final class CorrectionEditorHistory: ObservableObject {
+final class AutoEQEditorHistory<Snapshot: Equatable>: ObservableObject {
     let manager = UndoManager()
     @Published var revision = 0
-    var current: CorrectionEditorSnapshot?
-    var restore: ((CorrectionEditorSnapshot) -> Void)?
+    var current: Snapshot?
+    var restore: ((Snapshot) -> Void)?
     private var lastEdit = Date.distantPast
 
     func reset() {
@@ -45,7 +45,7 @@ final class CorrectionEditorHistory: ObservableObject {
         revision &+= 1
     }
 
-    func record(_ snapshot: CorrectionEditorSnapshot) {
+    func record(_ snapshot: Snapshot) {
         guard let previous = current else { current = snapshot; return }
         guard previous != snapshot else { return }
         current = snapshot
@@ -59,7 +59,7 @@ final class CorrectionEditorHistory: ObservableObject {
         revision &+= 1
     }
 
-    private func apply(_ snapshot: CorrectionEditorSnapshot) {
+    private func apply(_ snapshot: Snapshot) {
         if let inverse = current {
             manager.registerUndo(withTarget: self) { $0.apply(inverse) }
         }
@@ -69,3 +69,5 @@ final class CorrectionEditorHistory: ObservableObject {
         revision &+= 1
     }
 }
+
+typealias CorrectionEditorHistory = AutoEQEditorHistory<CorrectionEditorSnapshot>

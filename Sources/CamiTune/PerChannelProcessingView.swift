@@ -243,7 +243,7 @@ private struct PerChannelHeader: View {
 
     var body: some View {
         HStack {
-            Text("Per-channel EQ, Gain & Delay").font(.title3.bold())
+            Text("Channel Processing").font(.title3.bold())
             Spacer()
             Button("Reset") { onReset() }
                 .buttonStyle(.bordered)

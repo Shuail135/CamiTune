@@ -1,0 +1,16 @@
+[package]
+name = "camitune-speaker-eq"
+version = "1.0.0"
+edition = "2024"
+license = "GPL-3.0-only"
+
+[features]
+local-tests = []
+
+[dependencies]
+autoeq-optim = { git = "https://github.com/pierreaubert/autoeq", rev = "06ec8f958f11e24bdf1f725e9346373fbdafceca" }
+ndarray = "=0.17.2"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+base64 = "=0.22.1"
+sha2 = "=0.10.9"
