@@ -66,3 +66,7 @@ Front_Stage_Implementation.md
 Sources/CamiTune/tray-icon-preview.png
 
 **/target/
+
+# Local documentation retained outside the published repository
+/Contributions/CamillaDSP/README.md
+/Drivers/SystemAudioBridge/README.md

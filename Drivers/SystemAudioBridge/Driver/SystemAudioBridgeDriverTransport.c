@@ -822,7 +822,20 @@ static Boolean sabr_reserve_ring_space(
     for (;;) {
         const uint64_t read = atomic_load_explicit(readCursor, memory_order_acquire);
         const uint64_t used = candidate - read;
-        if (used > capacity || requested > capacity - used) { return false; }
+        if (used > capacity) {
+            /* Another producer and the consumer can both advance while this
+             * writer holds an old candidate. If read has passed that candidate,
+             * unsigned subtraction wraps; it does not mean the ring is full.
+             * Refresh the candidate before rejecting an inconsistent snapshot.
+             * Keep genuinely invalid cursor distances bounded as before. */
+            const uint64_t current = atomic_load_explicit(writeCursor, memory_order_relaxed);
+            if (current != candidate) {
+                candidate = current;
+                continue;
+            }
+            return false;
+        }
+        if (requested > capacity - used) { return false; }
         if (atomic_compare_exchange_weak_explicit(
                 writeCursor,
                 &candidate,

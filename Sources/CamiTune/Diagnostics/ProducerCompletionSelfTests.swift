@@ -56,10 +56,11 @@ extension DeveloperSelfTests {
         let origin = PerformanceTick(rawValue: 1_000_000_000)
         func record(_ sequence: UInt64, _ kind: ProducerRecordKind = .pcm, start: Int64 = 0,
                     frames: Int = 512, client: UInt32 = 1, epoch: UInt64 = 1,
-                    generation: UInt64 = 1, value: Float = 0.125, time: Double = 0) -> ProducerCompletionRecord {
+                    generation: UInt64 = 1, value: Float = 0.125, time: Double = 0,
+                    rate: Double = 48_000) -> ProducerCompletionRecord {
             .init(generation: generation, sequence: sequence, epoch: epoch, kind: kind, device: 100,
                 client: client, process: 0, cycle: 1, start: start, frames: frames,
-                channels: 2, layout: .stereo, rate: 48_000, received: origin.advanced(seconds: time),
+                channels: 2, layout: .stereo, rate: rate, received: origin.advanced(seconds: time),
                 samples: kind == .pcm ? Array(repeating: value, count: frames * 2) : [])
         }
         func expectFault(_ action: () throws -> Void) throws {
@@ -72,6 +73,62 @@ extension DeveloperSelfTests {
             }
         }
         return [
+            check("PC21", "Fast source validation still rejects NaN and infinite audio") {
+                for value in [Float.nan, .infinity, -.infinity] {
+                    let assembler = ProducerCompletionAssembler(generation: 1)
+                    try expectFault { _ = try assembler.ingest(record(0, value: value)) }
+                    try diagnosticRequire(assembler.statistics.closures == 0, "Invalid samples reached a completed mix")
+                }
+            },
+            check("PC19", "Eight clients retain exact samples across mixed block sizes and device rates") {
+                let sizes = [128, 256, 512, 1024, 2048, 4096, 256, 512]
+                for rate in [44_100.0, 48_000, 96_000, 192_000] {
+                    let box = try DiagnosticSandbox(); defer { box.cleanUp() }
+                    let assembler = ProducerCompletionAssembler(generation: 1)
+                    var sequence: UInt64 = 0
+                    var outputFrames = 0
+                    for start in stride(from: 0, to: 65_536, by: 128) {
+                        var events: [ProducerCompletionRecord] = []
+                        for (client, size) in sizes.enumerated() where start.isMultiple(of: size) {
+                            events.append(record(sequence, start: Int64(start), frames: size,
+                                client: UInt32(client + 1), value: Float(client + 1) / 64,
+                                time: Double(start) / rate, rate: rate))
+                            sequence += 1
+                        }
+                        events.append(record(sequence, .close, start: Int64(start), frames: 128,
+                            time: Double(start) / rate, rate: rate))
+                        sequence += 1
+                        if start.isMultiple(of: 3968) { events.reverse() }
+                        for event in events {
+                            for interval in try assembler.ingest(event) {
+                                let mixed = try box.perApp.ingestCompletedInterval(interval)
+                                try diagnosticRequire(mixed.interleaved == Array(repeating: Float(0.5625), count: 256),
+                                    "A client was lost or duplicated at \(rate) Hz, frame \(start)")
+                                outputFrames += mixed.frameCount
+                            }
+                        }
+                    }
+                    let end = try assembler.ingest(record(sequence, .end, frames: 0, rate: rate))
+                    try diagnosticRequire(outputFrames == 65_536 && assembler.pendingFrames == 0
+                        && assembler.statistics.faults == 0 && end.count == 1 && end[0].terminal,
+                        "Multi-client stream failed to drain")
+                }
+            },
+            check("PC20", "Joining-client zero pre-roll is trimmed without losing its unclosed audio") {
+                let assembler = ProducerCompletionAssembler(generation: 1)
+                _ = try assembler.ingest(record(0, .close, frames: 256))
+                var samples = Array(repeating: Float(0), count: 512)
+                samples += Array(repeating: Float(0.25), count: 512)
+                let joined = ProducerCompletionRecord(generation: 1, sequence: 1, epoch: 1, kind: .pcm,
+                    device: 100, client: 2, process: 0, cycle: 99, start: 0, frames: 512,
+                    channels: 2, layout: .stereo, rate: 48_000, received: origin, samples: samples)
+                _ = try assembler.ingest(joined)
+                let result = try assembler.ingest(record(2, .close, start: 256, frames: 256))
+                try diagnosticRequire(result[0].contributions[0].samples == Array(repeating: 0.25, count: 512)
+                    && assembler.statistics.closedRevisionFrames == 256 && assembler.pendingFrames == 0,
+                    "Join pre-roll replayed closed time or discarded live audio")
+                try expectFault { _ = try assembler.ingest(record(3, client: 3, value: 0.25)) }
+            },
             check("PC01", "Closure waits for every preceding reservation") {
                 let assembler = ProducerCompletionAssembler(generation: 1)
                 let early = try assembler.ingest(record(1, .close, time: 0.001))

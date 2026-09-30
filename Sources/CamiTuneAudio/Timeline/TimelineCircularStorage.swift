@@ -1,4 +1,5 @@
 import CamiTuneDomain
+import Accelerate
 import Foundation
 
 /// The reader's negotiated packet ceiling, not source queue occupancy, bounds
@@ -96,8 +97,17 @@ package final class TimelineCircularStorage {
         // Inout dictionary access keeps the mode array uniquely held.
         func accumulate(_ destination: inout [Float]) {
             let source = sourceFrameOffset * channels
-            for n in 0..<(tail * channels) { destination[first * channels + n] += samples[source + n] }
-            for n in 0..<((count - tail) * channels) { destination[n] += samples[source + tail * channels + n] }
+            destination.withUnsafeMutableBufferPointer { buffer in
+                if tail > 0 {
+                    let output = buffer.baseAddress! + first * channels
+                    vDSP_vadd(samples.baseAddress! + source, 1, output, 1, output, 1, vDSP_Length(tail * channels))
+                }
+                if count > tail {
+                    let output = buffer.baseAddress!
+                    vDSP_vadd(samples.baseAddress! + source + tail * channels, 1,
+                        output, 1, output, 1, vDSP_Length((count - tail) * channels))
+                }
+            }
         }
         accumulate(&combined)
         accumulate(&modeBuses[mode]!)
@@ -121,8 +131,10 @@ package final class TimelineCircularStorage {
         let tail = min(count, capacityFrames - first)
         let channels = channelCount
         func zero(_ bus: inout [Float]) {
-            for n in (first * channels)..<((first + tail) * channels) { bus[n] = 0 }
-            for n in 0..<((count - tail) * channels) { bus[n] = 0 }
+            bus.withUnsafeMutableBufferPointer { buffer in
+                if tail > 0 { vDSP_vclr(buffer.baseAddress! + first * channels, 1, vDSP_Length(tail * channels)) }
+                if count > tail { vDSP_vclr(buffer.baseAddress!, 1, vDSP_Length((count - tail) * channels)) }
+            }
         }
         zero(&combined)
         for mode in PlaybackMode.allCases where modeBuses[mode] != nil { zero(&modeBuses[mode]!) }

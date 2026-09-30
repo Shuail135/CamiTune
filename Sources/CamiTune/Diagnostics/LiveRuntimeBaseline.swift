@@ -207,6 +207,15 @@ enum LiveRuntimeBaseline {
         }
         let playbackSeconds = deliveryEvidence
             ? max(30, min(1_800, Int(environment["CAMITUNE_DELIVERY_SECONDS"] ?? "30") ?? 30)) : 30
+        // Explicit live qualification: each file runs in its own Core Audio
+        // client, so mixed source rates exercise the host's real conversion.
+        let additionalSources = try environment["CAMITUNE_DELIVERY_SOURCE_FILES"].map {
+            try JSONDecoder().decode([String].self, from: Data($0.utf8))
+        } ?? []
+        guard additionalSources.count <= 7,
+              additionalSources.allSatisfy({ $0.hasPrefix("/") && FileManager.default.fileExists(atPath: $0) }) else {
+            throw DiagnosticFailure(message: "Multi-client qualification requires up to seven absolute audio file paths")
+        }
         let stress = deliveryEvidence && environment["CAMITUNE_DELIVERY_STRESS"] == "1"
         guard !stress || playbackSeconds >= 60 else { throw DiagnosticFailure(message: "Stress comparison needs at least 60 seconds") }
         options.duration = Double(playbackSeconds + 30); options.warmUp = 0
@@ -215,6 +224,9 @@ enum LiveRuntimeBaseline {
         options.detailedAudioTracing = playbackSeconds <= 30
         let showsUI = deliveryEvidence && environment["CAMITUNE_DELIVERY_UI"] == "1"
         options.scenario.label = "Live lifecycle baseline; \(playbackSeconds) seconds silent PCM through real bridge, CamillaDSP, and physical output; explicit DSP telemetry \(deliveryEvidence); SwiftUI rendering \(showsUI)"
+        if !additionalSources.isEmpty {
+            options.scenario.label += "; \(additionalSources.count + 1) continuous source processes; extra files: \(additionalSources.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: ", "))"
+        }
         if deliveryEvidence { options.scenario.label += "; workload: \(workload) (isolated profile)" }
         let window: NSWindow?
         if showsUI {
@@ -249,12 +261,13 @@ enum LiveRuntimeBaseline {
         state.performanceRecorder.start(options: options, environment: { state.performanceEnvironment() })
         let player = Process()
         var extraPlayers: [Process] = [], cpuWorkers: [Process] = []
+        var continuousPlayers: [Process] = []
         func launch(_ executable: String, arguments: [String]) throws -> Process {
             let process = Process(); process.executableURL = URL(fileURLWithPath: executable); process.arguments = arguments
             process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
             try process.run(); return process
         }
-        func stopExtras() { for p in extraPlayers + cpuWorkers where p.isRunning { p.terminate() } }
+        func stopExtras() { for p in extraPlayers + continuousPlayers + cpuWorkers where p.isRunning { p.terminate() } }
         do {
             await state.activate(profile: profile)
             guard state.isActive else { throw DiagnosticFailure(message: state.errorMessage ?? "Live activation failed") }
@@ -274,6 +287,11 @@ enum LiveRuntimeBaseline {
                     "Candidate profile changed during lifecycle setup")
             }
             for elapsed in 0..<playbackSeconds {
+                if elapsed == 0 {
+                    for source in additionalSources {
+                        continuousPlayers.append(try launch("/usr/bin/afplay", arguments: [source]))
+                    }
+                }
                 if deliveryEvidence {
                     if elapsed == 5 {
                         window?.orderOut(nil)
@@ -308,6 +326,7 @@ enum LiveRuntimeBaseline {
                     NSLog("PCM delivery baseline: %d/%d seconds", elapsed + 1, playbackSeconds)
                 }
                 guard player.isRunning else { throw DiagnosticFailure(message: "Baseline source ended before the requested capture duration") }
+                try diagnosticRequire(continuousPlayers.allSatisfy(\.isRunning), "A multi-client source exited early")
                 if stress && (10..<40).contains(elapsed) {
                     try diagnosticRequire(extraPlayers.allSatisfy(\.isRunning), "Overlapping audio source exited early")
                 }

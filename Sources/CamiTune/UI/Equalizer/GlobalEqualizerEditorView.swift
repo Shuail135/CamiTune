@@ -14,7 +14,6 @@ struct GlobalEqualizerEditorView: View {
     var onPresentationChanged: (EqualizerPresentation) -> Void = { _ in }
 
     @State var parsedForGraph = ParsedEQ()
-    @State var filterResponsePoints: [EQResponsePoint] = []
     @State var preampDB = 0.0
     @State var limiterEnabled = false
     @State var automaticSystemHeadroomDB = 0.0
@@ -85,12 +84,11 @@ struct GlobalEqualizerEditorView: View {
                 if !graphicBands.isEmpty || presentation != .bands {
                     if presentation != .simpleTone {
                     EqualizerBandScrollView(bandCount: graphicBands.count) { columnWidth in
-                        GraphicEqualizerBands(
+                        GlobalEqualizerBandStrip(
                             bands: $graphicBands,
                             spectrum: state.spectrum,
                             profileID: profile.id,
-                            responsePoints: filterResponsePoints,
-                            setKind: EQEditorSupport.setKind,
+                            graphModel: graphModel,
                             columnWidth: columnWidth,
                             onGainEditingChanged: continuousEditingChanged
                         )
@@ -133,7 +131,6 @@ struct GlobalEqualizerEditorView: View {
         .onChange(of: profile.sampleRate) { _ in bandReduction.cancel(); updateGraphResponses() }
         .onChange(of: profile.processing) { _ in updateAutomaticSystemHeadroom() }
         .onReceive(state.equalizerReplacementChanges.filter { $0 == profile.id }) { _ in
-            if let latest = state.profiles.profiles.first(where: { $0.id == profile.id }) { profile = latest }
             loadGraphicEQ()
         }
         .disabled(state.isSavingProfileSettings || bandReduction.isRunning)

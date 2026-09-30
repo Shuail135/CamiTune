@@ -9,7 +9,6 @@ final class GlobalEQEditorRuntime: ObservableObject {
     var historyBaseline: GlobalEQHistoryState?
     var suppressChanges = false
     var liveApplyTask: Task<Void, Never>?
-    var filterResponseTask: Task<Void, Never>?
     var headroomCalculationTask: Task<Void, Never>?
     var loadedProfileID: UUID?
     var continuousEditDepth = 0
@@ -17,7 +16,6 @@ final class GlobalEQEditorRuntime: ObservableObject {
 
     deinit {
         liveApplyTask?.cancel()
-        filterResponseTask?.cancel()
         headroomCalculationTask?.cancel()
     }
 }

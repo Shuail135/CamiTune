@@ -65,13 +65,21 @@ package struct EffectiveLayoutDetector {
         let seconds = Double(frame.frameCount) / rate
         var rms = [Float](repeating: 0, count: frame.channelCount)
         var peaks = rms
-        for channel in 0..<frame.channelCount {
-            var energy: Double = 0
-            for i in 0..<frame.frameCount {
-                let x = frame.interleaved[i * frame.channelCount + channel]
-                if x.isFinite { energy += Double(x) * Double(x); peaks[channel] = max(peaks[channel], abs(x)) }
+        // Keep the per-sample scan independent of unoptimized Swift collection
+        // iteration. This runs for every client on the transport reader.
+        frame.interleaved.withUnsafeBufferPointer { samples in
+            for channel in 0..<frame.channelCount {
+                var energy: Double = 0
+                var peak: Float = 0
+                var index = channel
+                while index < samples.count {
+                    let x = samples[index]
+                    if x.isFinite { energy += Double(x) * Double(x); peak = max(peak, abs(x)) }
+                    index += frame.channelCount
+                }
+                peaks[channel] = peak
+                rms[channel] = Float(sqrt(energy / Double(frame.frameCount)))
             }
-            rms[channel] = Float(sqrt(energy / Double(frame.frameCount)))
         }
         let threshold = max(Float(0.00001), (rms.max() ?? 0) * 0.001)
         var active = Set<Int>()

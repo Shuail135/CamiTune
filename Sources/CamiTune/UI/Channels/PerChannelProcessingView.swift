@@ -115,8 +115,6 @@ struct PerChannelProcessingView: View {
                 )
             }
 
-            if !convolutionOnly { processingDescription }
-
             if editableChannels.isEmpty {
                 Text("Configure enabled physical channels in Profile Settings.").foregroundStyle(.secondary)
             } else if profile.usesGroupedProcessingPresentation {
@@ -193,15 +191,6 @@ struct PerChannelProcessingView: View {
             }
         }
         .disabled(editableChannels.isEmpty || bandReduction.isRunning)
-    }
-
-    private var processingDescription: some View {
-        Text(selectedGroup == nil
-            ? "Global processing runs first. These settings then affect only the selected physical channel."
-            : "Group processing runs after global processing and before each speaker’s individual settings. Group limiters run last on their members.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var groupAndSpeakerSelector: some View {

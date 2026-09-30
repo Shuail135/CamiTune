@@ -104,7 +104,7 @@ struct SetupView: View {
                     Divider()
                     VStack(alignment: .leading, spacing: 8) {
                         Text("First use").font(.title2.bold())
-                        Text("1. Select Install / Repair Everything, then approve the macOS administrator prompt.\n2. Restart the Mac only if Setup says the new audio device is not visible yet.\n3. Add your physical output as a profile from the sidebar.\n4. Adjust the visual equalizer, or import Equalizer APO text from a file or the clipboard.")
+                        Text("1. Select Install / Repair Everything, then approve the macOS administrator prompt.\n2. Restart the Mac only if Setup says the new audio device is not visible yet.\n3. Add your physical output as a profile from the sidebar.\n4. Adjust anything you want and activate it!")
                     }
                 }
             }

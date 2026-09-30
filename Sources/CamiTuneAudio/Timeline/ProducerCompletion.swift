@@ -126,18 +126,21 @@ package final class ProducerCompletionAssembler {
                 samples: Array(record.samples[lower..<upper]), performance: record.performance)
         }
     }
-    private struct Invocation: Equatable { let client: UInt32; let process: Int32; let cycle: UInt64; let start: Int64 }
-    private struct Epoch {
+    // One reader owns each epoch. Reference storage avoids copying its pending
+    // pieces on every lookup from the device dictionary.
+    private final class Epoch {
         let id: UInt64
         let channels: Int
         let layout: LPCMChannelLayout
         let rate: Double
         var pieces: [Piece] = []
-        var history: [Invocation] = []
         var closedEnd: Int64?
         var sealed = false
         var emitted = false
         var clockSampleTime: Int64?
+        init(id: UInt64, channels: Int, layout: LPCMChannelLayout, rate: Double) {
+            self.id = id; self.channels = channels; self.layout = layout; self.rate = rate
+        }
     }
     package let generation: UInt64
     private var nextSequence: UInt64 = 0
@@ -158,6 +161,15 @@ package final class ProducerCompletionAssembler {
 
     package var pendingFrames: Int { epochs.values.reduce(0) { $0 + $1.pieces.reduce(0) { $0 + $1.count } } }
     private var ownedSourceFrames: Int { epochs.values.reduce(0) { $0 + $1.pieces.reduce(0) { $0 + $1.record.frames } } }
+    /// Evaluated only for diagnostics; never retain or log source sample data.
+    package var diagnosticSummary: String {
+        let sequences = reordered.keys.sorted()
+        let devices = epochs.keys.sorted().map { device -> String in
+            let epoch = epochs[device]!
+            return "device=\(device) epoch=\(epoch.id) closed=\(epoch.closedEnd.map(String.init) ?? "none") pieces=\(epoch.pieces.count) span=\(epoch.pieces.map(\.start).min() ?? 0)..<\(epoch.pieces.map(\.end).max() ?? 0)"
+        }.joined(separator: "; ")
+        return "next=\(nextSequence) reordered=\(sequences.count) sequenceRange=\(sequences.first.map(String.init) ?? "none")...\(sequences.last.map(String.init) ?? "none") pendingFrames=\(pendingFrames) retainedFrames=\(ownedSourceFrames) closures=\(statistics.closures); \(devices)"
+    }
     private var idleDeadline: PerformanceTick? {
         guard pendingFrames > 0 || !reordered.isEmpty, let lastEvidenceReceived else { return nil }
         return lastEvidenceReceived.advanced(seconds:
@@ -246,19 +258,26 @@ package final class ProducerCompletionAssembler {
         var result: [ProducerCompletedInterval] = []
         switch record.kind {
         case .pcm:
-            guard record.samples.allSatisfy(\.isFinite) else { try fail("nonfinite source PCM") }
-            let invocation = Invocation(client: record.client, process: record.process, cycle: record.cycle, start: record.start)
-            let isRevision = epoch.history.contains(invocation)
+            let finite = record.samples.withUnsafeBufferPointer { samples in
+                var index = 0
+                while index < samples.count {
+                    if !samples[index].isFinite { return false }
+                    index += 1
+                }
+                return true
+            }
+            guard finite else { try fail("nonfinite source PCM") }
             let distance = (epoch.closedEnd ?? record.start).subtractingReportingOverflow(record.start)
             let closedPrefix = distance.overflow ? (epoch.closedEnd! > record.start ? record.frames : 0)
                 : min(record.frames, max(0, Int(distance.partialValue)))
             if closedPrefix > 0 {
-                // The new protocol owns closed time. Only observed stop-style
-                // revisions of an earlier invocation may touch it, and only if
-                // the complete closed portion is zero. Never replay that time
-                // through a stateful filter. Unexpected late audio is a fault.
-                guard isRevision, record.samples.prefix(closedPrefix * record.channels).allSatisfy({ $0 == 0 }) else {
-                    try fail("new or nonzero input revisits an already-closed interval")
+                // HAL can send zero pre-roll when another client joins, as well
+                // as zero revisions when one stops. Closed silence contributes
+                // nothing to the host's completed mix. Trim exactly that prefix
+                // before DSP; preserve all unclosed samples, including tails.
+                // Nonzero late input still contradicts the completion fence.
+                guard record.samples.prefix(closedPrefix * record.channels).allSatisfy({ $0 == 0 }) else {
+                    try fail("nonzero input revisits an already-closed interval")
                 }
                 statistics.closedRevisionFrames += UInt64(closedPrefix)
             }
@@ -274,10 +293,6 @@ package final class ProducerCompletionAssembler {
                     try fail("pending source PCM reached its bound")
                 }
                 epoch.pieces.append(piece)
-            }
-            if !isRevision {
-                epoch.history.append(invocation)
-                if epoch.history.count > maximumRecords { epoch.history.removeFirst(epoch.history.count - maximumRecords) }
             }
         case .close:
             if let closed = epoch.closedEnd, record.start != closed { try fail("host closure is discontinuous or revisits closed time") }
@@ -303,7 +318,6 @@ package final class ProducerCompletionAssembler {
                 result.append(extract(&epoch, device: record.device, start: end, end: end, terminal: true))
             }
             epoch.sealed = true
-            epoch.history.removeAll(keepingCapacity: false)
         case .fault: break // handled above
         }
         epochs[record.device] = epoch

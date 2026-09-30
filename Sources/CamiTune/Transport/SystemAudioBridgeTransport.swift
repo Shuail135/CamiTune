@@ -452,6 +452,12 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             }
             let tick = PerformanceClock.now()
             do {
+                // A missing record cannot be repaired by sequencing later PCM.
+                // Check even during continuous playback, before that gap fills
+                // the assembler and hides the transport's actual failure.
+                if sabr_client_transport_has_record_loss(transport) {
+                    try context.completion.fail("the completion transport lost or rejected a record")
+                }
                 var completed: [ProducerCompletedInterval] = []
                 if receivedRecord {
                     guard let kind = ProducerRecordKind(rawValue: packet.eventKind),
@@ -501,13 +507,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                         context.maximumPacketFrames = max(context.maximumPacketFrames, packet.frameCount)
                     }
                 } else {
-                    // A missing/unready reservation is never a fence. Detect
-                    // malformed/dropped records even when no valid event follows.
-                    var raw = SABRClientTransportStatistics()
-                    sabr_client_transport_get_statistics(transport, &raw)
-                    if raw.droppedPackets > 0 || raw.malformedPacketCount > 0 || raw.consumerOverrunCount > 0 {
-                        try context.completion.fail("the completion transport lost or rejected a record")
-                    }
+                    // A missing/unready reservation is never a fence.
                     try context.completion.checkDeadline(at: tick)
                 }
                 for interval in completed {
@@ -539,6 +539,12 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                 publishStatistics(context: context, owner: owner)
                 let message = failure.localizedDescription
                 NSLog("System Audio Bridge completion fault: %@", message)
+                var failureStatistics = SABRClientTransportStatistics()
+                sabr_client_transport_get_statistics(transport, &failureStatistics)
+                NSLog("System Audio Bridge completion details: %@; dropped=%llu malformed=%llu overruns=%llu incoming=%llu kind=%u frames=%u rate=%.0f",
+                    context.completion.diagnosticSummary, failureStatistics.droppedPackets,
+                    failureStatistics.malformedPacketCount, failureStatistics.consumerOverrunCount,
+                    packet.reservationSequence, packet.eventKind, packet.frameCount, packet.sampleRate)
                 Task { @MainActor [owner] in
                     guard let target = owner.value, target.isCurrentGeneration(context.generation) else { return }
                     target.status = "Paused: producer completion failed"

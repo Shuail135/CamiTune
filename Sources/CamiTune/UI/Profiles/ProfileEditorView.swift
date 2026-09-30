@@ -156,6 +156,11 @@ struct ProfileEditorView: View {
         .onChange(of: profile.sampleRate) { _ in
             seedGraphIfNeeded()
         }
+        .onChange(of: profile.processing) { _ in
+            // Auto EQ persists before its replacement event. Keep the spectrum
+            // current even while the equalizer section is hidden or preparing.
+            seedGraphIfNeeded()
+        }
         .onChange(of: profileNameFocused) { isFocused in
             if isRenamingProfile && !isFocused { commitProfileRename() }
         }

@@ -63,7 +63,7 @@ struct LiveSpectrumPanels: View {
     private func postEQPanel(response: [(Double, Double)]) -> some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Estimated Post-EQ Spectrum").font(.headline)
+                Text("Post-EQ Spectrum").font(.headline)
                 spectrumLegend
                 Spacer(minLength: 0)
                 LivePostEQSpectrumGraph(

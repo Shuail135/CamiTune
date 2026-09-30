@@ -2,6 +2,23 @@ import CamiTuneDomain
 import Combine
 import SwiftUI
 
+/// Response publications redraw only the band strip, not the surrounding editor.
+/// Share the spectrum's cached response so the animation includes user gain too.
+struct GlobalEqualizerBandStrip: View {
+    @Binding var bands: [EQBand]
+    let spectrum: SpectrumAnalyzer
+    let profileID: UUID
+    @ObservedObject var graphModel: ProfileEditorGraphModel
+    let columnWidth: CGFloat
+    var onGainEditingChanged: @MainActor (Bool) -> Void
+
+    var body: some View {
+        GraphicEqualizerBands(bands: $bands, spectrum: spectrum, profileID: profileID,
+            responsePoints: graphModel.responsePoints, setKind: EQEditorSupport.setKind,
+            columnWidth: columnWidth, onGainEditingChanged: onGainEditingChanged)
+    }
+}
+
 struct GraphicEqualizerBands: View {
     var metrics = EQControlMetrics()
     @Binding var bands: [EQBand]

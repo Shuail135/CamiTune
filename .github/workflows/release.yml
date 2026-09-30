@@ -91,11 +91,13 @@ jobs:
               exit 1
             }
 
+            # Consume all otool output: exiting awk early can break the pipe
+            # and fail this check under pipefail even for a valid binary.
             minos="$(otool -l "$binary" | awk '
               $1 == "cmd" && $2 == "LC_BUILD_VERSION" { build = 1; old = 0; next }
-              build && $1 == "minos" { print $2; exit }
+              build && $1 == "minos" && !found { print $2; found = 1 }
               $1 == "cmd" && $2 == "LC_VERSION_MIN_MACOSX" { old = 1; build = 0; next }
-              old && $1 == "version" { print $2; exit }
+              old && $1 == "version" && !found { print $2; found = 1 }
             ')"
 
             if [[ -z "$minos" ]]; then

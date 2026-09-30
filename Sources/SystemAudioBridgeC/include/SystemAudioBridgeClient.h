@@ -116,6 +116,9 @@ Boolean sabr_client_transport_read_event(
     SABRClientAudioPacketInfo* packetInfo
 );
 
+/* Constant-time loss check, including while later records keep arriving. */
+Boolean sabr_client_transport_has_record_loss(SABRClientTransportRef transport);
+
 uint32_t sabr_client_transport_copy_clients(
     SABRClientTransportRef transport,
     SABRClientIdentity* destination,

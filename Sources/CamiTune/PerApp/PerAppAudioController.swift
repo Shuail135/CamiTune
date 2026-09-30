@@ -1,5 +1,6 @@
 import CamiTuneAudio
 import CamiTuneDomain
+import Accelerate
 import AppKit
 import Combine
 import Darwin
@@ -629,7 +630,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         let settingsRevision = settingsStore.revision(for: applicationID)
         stateLock.unlock()
 
-        let rawPeak = processed.reduce(0.0) { max($0, Double(abs($1))) }
+        let rawPeak = Self.peakMagnitude(processed)
         let now = suppliedNow ?? Date()
         let policyTick = incomingPerformance.map { _ in PerformanceClock.now() }
         let eqHeadroom: Float
@@ -678,7 +679,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }
 
         let processingCompleted = performance.map { _ in PerformanceClock.now() }
-        let outputPeak = processed.reduce(0.0) { max($0, Double(abs($1))) }
+        let outputPeak = Self.peakMagnitude(processed)
         let elapsed = now.timeIntervalSince(
             lastMeterUpdateByApplication[applicationID] ?? now
         )
@@ -906,6 +907,15 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             levels: copy(presentationLevelsByApplication), knownAudioApplications: Set(knownAudioApplicationIDs.map { $0 }),
             observedAudioApplications: Set(observedAudioIDs.map { $0 }), observedAudioSources: Array(observedAudioSourcesByKey.values),
             exhaustedClientKeys: Set(clientRegistry.identityRetryExhaustedClientKeys.map { $0 }))
+    }
+
+    private static func peakMagnitude(_ samples: [Float]) -> Double {
+        samples.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress, !buffer.isEmpty else { return 0 }
+            var peak: Float = 0
+            vDSP_maxmgv(base, 1, &peak, vDSP_Length(buffer.count))
+            return Double(peak)
+        }
     }
 
     static func normalizedMeterLevel(forPeak peak: Double) -> Double {

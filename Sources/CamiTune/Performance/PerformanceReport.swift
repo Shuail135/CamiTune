@@ -207,7 +207,7 @@ extension PerformanceBaseline {
             func maximum<T: Comparable>(_ key: KeyPath<ProducerCompletionStatistics, T>) -> T {
                 completions.map { $0[keyPath: key] }.max()!
             }
-            lines.append("Producer completion (maximum observed session counters): \(maximum(\.closures)) host closures; \(maximum(\.terminalDrains)) terminal drains / \(maximum(\.terminalFrames)) frames; \(maximum(\.closedRevisionFrames)) closed zero-revision frames; \(maximum(\.faults)) faults")
+            lines.append("Producer completion (maximum observed session counters): \(maximum(\.closures)) host closures; \(maximum(\.terminalDrains)) terminal drains / \(maximum(\.terminalFrames)) frames; \(maximum(\.closedRevisionFrames)) closed silent frames trimmed; \(maximum(\.faults)) faults")
             lines.append("Completion storage peak: \(maximum(\.peakPendingFrames)) pending contribution frames; \(maximum(\.peakReorderedRecords)) reordered records; final events between observations may be absent")
         }
         if let final = observations.last?.environment.queue {

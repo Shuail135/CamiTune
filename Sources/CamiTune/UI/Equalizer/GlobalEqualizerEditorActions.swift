@@ -10,6 +10,9 @@ extension GlobalEqualizerEditorView {
     }
 
     func loadGraphicEQ() {
+        // Replacement notifications arrive before SwiftUI necessarily refreshes
+        // the binding. Auto EQ has already persisted and retired its draft.
+        let profile = state.profiles.profiles.first(where: { $0.id == self.profile.id }) ?? self.profile
         if let oldID = runtime.loadedProfileID {
             state.history.cancelGesture(key: GestureKey(target: .profile(oldID), control: "equalizer"))
         }
@@ -233,37 +236,19 @@ extension GlobalEqualizerEditorView {
     func updateGraphResponses() {
         guard needsResponseGraph else {
             graphModel.cancel()
-            runtime.filterResponseTask?.cancel()
             updateAutomaticSystemHeadroom()
             return
         }
-        let calculator = EQResponseCalculator()
         let sampleRate = Double(profile.sampleRate)
-        var combined = ParsedEQ(preampDB: parsedForGraph.preampDB,
-            bands: presentation == .simpleTone ? [] : parsedForGraph.bands)
-        if presentation != .bands {
-            combined.bands += (try? SimpleToneFilterFactory.filters(for: simpleTone, sampleRate: Double(profile.sampleRate))) ?? []
+        // Presentation selects controls, not processing. Spectrum and band
+        // meters must include the same active filters and user gain in every mode.
+        var combined = parsedForGraph
+        if !state.eqDraftReplacesDeviceCorrection(for: profile.id),
+           let correction = profile.processing.deviceCorrection, correction.isEnabled {
+            combined.bands.insert(contentsOf: correction.filters, at: 0)
         }
-        let profileID = profile.id
+        combined.bands += (try? SimpleToneFilterFactory.filters(for: simpleTone, sampleRate: sampleRate)) ?? []
         graphModel.calculate(parsed: combined, sampleRate: sampleRate)
-        runtime.filterResponseTask?.cancel()
-        guard presentation != .simpleTone else {
-            updateAutomaticSystemHeadroom()
-            return
-        }
-        let filterOnly = ParsedEQ(bands: parsedForGraph.bands)
-        runtime.filterResponseTask = Task {
-            do {
-                try await Task.sleep(for: .milliseconds(25))
-            } catch {
-                return
-            }
-            let response = await Task.detached(priority: .userInitiated) {
-                calculator.calculate(parsed: filterOnly, sampleRate: sampleRate)
-            }.value
-            guard !Task.isCancelled, profile.id == profileID else { return }
-            filterResponsePoints = response
-        }
         updateAutomaticSystemHeadroom()
     }
 

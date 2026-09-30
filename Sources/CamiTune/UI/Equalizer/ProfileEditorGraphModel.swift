@@ -9,6 +9,7 @@ import Foundation
 final class ProfileEditorGraphModel: ObservableObject {
     @Published private(set) var responsePoints: [EQResponsePoint] = []
     private var calculationTask: Task<Void, Never>?
+    private var requestedResponse: (parsed: ParsedEQ, sampleRate: Double)?
 
     func seed(profile: DeviceProfile, state: AppState) {
         let parsed: ParsedEQ
@@ -38,6 +39,15 @@ final class ProfileEditorGraphModel: ObservableObject {
     }
 
     func calculate(parsed: ParsedEQ, sampleRate: Double) {
+        // Persistence and editor notifications can describe the same response.
+        // Ignore band IDs: parsing a draft may regenerate them without changing sound.
+        if let previous = requestedResponse,
+           previous.sampleRate == sampleRate, previous.parsed.preampDB == parsed.preampDB,
+           previous.parsed.bands.elementsEqual(parsed.bands, by: { lhs, rhs in
+               lhs.enabled == rhs.enabled && lhs.kind == rhs.kind && lhs.frequency == rhs.frequency
+                   && lhs.gain == rhs.gain && lhs.q == rhs.q && lhs.bandwidth == rhs.bandwidth
+           }) { return }
+        requestedResponse = (parsed, sampleRate)
         calculationTask?.cancel()
         calculationTask = Task {
             do {
@@ -58,5 +68,6 @@ final class ProfileEditorGraphModel: ObservableObject {
 
     func cancel() {
         calculationTask?.cancel()
+        requestedResponse = nil
     }
 }

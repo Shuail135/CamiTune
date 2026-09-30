@@ -912,6 +912,13 @@ Boolean sabr_client_transport_read_event(
     return info != NULL && (frames != 0 || info->eventKind != SABR_EVENT_PCM);
 }
 
+Boolean sabr_client_transport_has_record_loss(SABRClientTransportRef transport) {
+    return transport != NULL &&
+        (atomic_load_explicit(&transport->header->droppedPackets, memory_order_acquire) != 0 ||
+         atomic_load_explicit(&transport->malformedPacketCount, memory_order_relaxed) != 0 ||
+         atomic_load_explicit(&transport->header->consumerOverrunCount, memory_order_relaxed) != 0);
+}
+
 uint32_t sabr_client_transport_copy_clients(
     SABRClientTransportRef transport,
     SABRClientIdentity* destination,

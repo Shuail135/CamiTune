@@ -102,9 +102,6 @@ private struct SimpleEQKnob: View {
 
             Text(isEnabled ? formattedValue : "—")
                 .font(.system(.body, design: .monospaced).weight(.medium))
-            Text(range.frequencyDescription)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
         .frame(width: columnWidth)
         .opacity(isEnabled ? 1 : 0.45)

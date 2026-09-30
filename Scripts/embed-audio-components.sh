@@ -63,20 +63,6 @@ if [[ -x "$RESOURCE_DIR/Helpers/camitune-speaker-eq" ]]; then
     cp "$ROOT/Tools/CamiTuneSpeakerEQCore/THIRD_PARTY_NOTICES.txt" "$RESOURCE_DIR/Helpers/THIRD_PARTY_NOTICES.txt"
 fi
 
-# Fast local Xcode builds should not compile Rust or rebuild the HAL driver.
-# If Release components were built previously, Debug automatically embeds the
-# cache so the full app remains usable. Opt in to a full Debug preparation with
-# CAMITUNE_PREPARE_AUDIO_COMPONENTS=1 in the scheme environment variables.
-if [[ "$CONFIGURATION" == "Debug" && "${CAMITUNE_PREPARE_AUDIO_COMPONENTS:-0}" != "1" ]]; then
-    if copy_cached_components; then
-        echo "CamiTune: embedded cached audio runtime components for Debug."
-    else
-        echo "CamiTune: fast Debug build; bundled driver/CamillaDSP were not prepared."
-        echo "CamiTune: use a Release build once, or set CAMITUNE_PREPARE_AUDIO_COMPONENTS=1 to prepare them."
-    fi
-    exit 0
-fi
-
 ARCH="$(/usr/bin/uname -m)"
 case "$ARCH" in
     arm64|x86_64) ;;
@@ -106,6 +92,19 @@ else
     echo "CamiTune: building System Audio Bridge driver…"
     SABR_CHANNELS=8 SABR_LAYOUT=7.1 SABR_MIN_MACOS="$MIN_MACOS" "$ROOT/Drivers/SystemAudioBridge/build-driver.sh"
     echo "$DRIVER_BUILD_KEY" > "$DRIVER_STAMP"
+fi
+
+# Debug may reuse the expensive engine/optimizer builds, but the HAL driver
+# must match its current sources. Validate/rebuild it above before copying the
+# cache; otherwise Install / Repair can silently reinstall an unfixed driver.
+if [[ "$CONFIGURATION" == "Debug" && "${CAMITUNE_PREPARE_AUDIO_COMPONENTS:-0}" != "1" ]]; then
+    if copy_cached_components; then
+        echo "CamiTune: embedded cached audio runtime components for Debug."
+    else
+        echo "CamiTune: fast Debug build; bundled driver/CamillaDSP were not prepared."
+        echo "CamiTune: use a Release build once, or set CAMITUNE_PREPARE_AUDIO_COMPONENTS=1 to prepare them."
+    fi
+    exit 0
 fi
 
 # CamillaDSP cache key. Release builds always require the patched binary.
