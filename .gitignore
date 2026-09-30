@@ -21,6 +21,7 @@ tmp/
 *.zip
 *.sha256
 /SHA256SUMS
+/CamiTune-v*-speaker-eq-source.tar.gz
 *.app/
 *.pkg
 *.dmg
