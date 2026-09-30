@@ -90,6 +90,24 @@ final class ProfileStore: ObservableObject {
     @Published var showProfileEnabledExplanation = true {
         didSet { save() }
     }
+    /// Seed a new library with the shipped global layouts; saved libraries retain their choices.
+    private static var firstLaunchLayoutDefaults: [String: ProfileSectionLayout] {
+        Dictionary(uniqueKeysWithValues: ProfileEndpointKind.allCases.map { type in
+            let order: [ProfileSection]
+            switch type {
+            case .speakers:
+                order = [.deviceSetup, .mode, .meters, .spectrum, .deviceCorrection, .equalizer, .perChannel, .multichannel]
+            case .iem:
+                order = [.deviceSetup, .meters, .mode, .deviceCorrection, .spectrum, .equalizer, .perChannel, .multichannel]
+            case .headphones, .audioInterface, .custom:
+                order = [.deviceSetup, .meters, .mode, .spectrum, .deviceCorrection, .equalizer, .perChannel, .multichannel]
+            }
+            var layout = ProfileSectionLayout(order: order, hidden: [.meters])
+            layout.equalizer = .simpleTone
+            return (type.rawValue, layout)
+        })
+    }
+
     func defaultLayout(for type: ProfileEndpointKind) -> ProfileSectionLayout {
         layoutDefaults[type.rawValue] ?? ProfileSectionLayout(hidden: [.perChannel])
     }
@@ -570,6 +588,8 @@ final class ProfileStore: ObservableObject {
             layoutDefaults = stored.layoutDefaults; showProfileEnabledExplanation = stored.showProfileEnabledExplanation
             rootOrder = stored.rootOrder; folders = stored.folders; profiles = stored.profiles
             physicalDeviceDefaults = stored.physicalDeviceDefaults
+        } else if !repository.status.protectedStorage {
+            layoutDefaults = Self.firstLaunchLayoutDefaults
         }
         if repository.status.protectedStorage {
             persistenceError = "CamiTune could not read the saved profiles. The original profiles.json is protected and cannot be overwritten."

@@ -9,6 +9,8 @@ struct DeviceCorrectionSectionView: View {
     @State private var selection: DeviceCorrectionPage = .automaticEQ
     @State private var perChannel = false
     private var pages: [DeviceCorrectionPage] { profile.availableDeviceCorrectionPages }
+    private var standardPages: [DeviceCorrectionPage] { pages.filter { $0 != .convolution } }
+    private var advancedPages: [DeviceCorrectionPage] { pages.filter { $0 == .convolution } }
     private var selected: DeviceCorrectionPage { pages.contains(selection) ? selection : .convolution }
     private func title(_ page: DeviceCorrectionPage) -> String {
         switch page {
@@ -21,6 +23,19 @@ struct DeviceCorrectionSectionView: View {
         guard selection != page else { return }
         NSApp.keyWindow?.makeFirstResponder(nil)
         selection = page
+    }
+
+    private func pageButton(_ page: DeviceCorrectionPage) -> some View {
+        Button { select(page) } label: {
+            Text(title(page)).frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 9).padding(.vertical, 7)
+                .background(selected == page ? Color.accentColor.opacity(0.18) : .clear,
+                            in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain)
+        .uiInteractionAnchor("correction-page-\(page.rawValue)")
+        .accessibilityIdentifier("correction-page-\(page.rawValue)")
+        .accessibilityAddTraits(selected == page ? .isSelected : [])
     }
 
     @ViewBuilder
@@ -40,22 +55,30 @@ struct DeviceCorrectionSectionView: View {
                 Text("Device Correction").font(.title3.bold())
                 AdaptiveEditorLayout {
                     VStack(alignment: .leading, spacing: 4) {
-                        ForEach(pages) { page in
-                            Button { select(page) } label: {
-                                Text(title(page)).frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, 9).padding(.vertical, 7)
-                                    .background(selected == page ? Color.accentColor.opacity(0.18) : .clear,
-                                                in: RoundedRectangle(cornerRadius: 6))
-                                    .contentShape(Rectangle())
-                            }.buttonStyle(.plain)
-                            .uiInteractionAnchor("correction-page-\(page.rawValue)")
-                            .accessibilityIdentifier("correction-page-\(page.rawValue)")
-                            .accessibilityAddTraits(selected == page ? .isSelected : [])
+                        ForEach(standardPages) { page in
+                            pageButton(page)
+                        }
+                        if !advancedPages.isEmpty {
+                            Text("Advanced")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 9)
+                                .padding(.top, standardPages.isEmpty ? 0 : 12)
+                                .padding(.bottom, 2)
+                                .accessibilityAddTraits(.isHeader)
+                            ForEach(advancedPages) { page in
+                                pageButton(page)
+                            }
                         }
                     }.accessibilityLabel("Correction method")
                 } compactSelector: {
                     Picker("Correction method", selection: Binding(get: { selected }, set: { select($0) })) {
-                        ForEach(pages) { page in Text(title(page)).tag(page) }
+                        ForEach(standardPages) { page in Text(title(page)).tag(page) }
+                        if !advancedPages.isEmpty {
+                            Section("Advanced") {
+                                ForEach(advancedPages) { page in Text(title(page)).tag(page) }
+                            }
+                        }
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()

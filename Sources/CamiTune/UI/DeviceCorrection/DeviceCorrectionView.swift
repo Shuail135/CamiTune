@@ -291,10 +291,22 @@ struct DeviceCorrectionEditorView: View {
     private var editorContent: some View {
         let sourceSearchResults = selectedCatalogID == nil ? searchResults : []
         return VStack(alignment: .leading, spacing: 18) {
-            GroupBox("Device and source data") {
+            GroupBox("Device") {
                 VStack(alignment: .leading, spacing: 12) {
-                    AutoEQSearchField(placeholder: catalogIsIEM ? "Search IEMs" : "Search headphones",
-                        query: $searchText, results: sourceSearchResults, title: { $0.displayName }, onSelect: select)
+                    HStack(alignment: .top, spacing: 8) {
+                        AutoEQSearchField(placeholder: catalogIsIEM ? "Search IEMs" : "Search headphones",
+                            query: $searchText, results: sourceSearchResults, title: { $0.displayName }, onSelect: select)
+                        if sourceMeasurements.isEmpty,
+                           let existing,
+                           existing.sources.contains(where: { $0.providerID != "local" }) {
+                            Button("Refresh") {
+                                refreshMeasurements(from: existing)
+                            }
+                            .fixedSize()
+                            .disabled(isLoadingMeasurements)
+                            .help("Download these saved measurement references again without searching for the device.")
+                        }
+                    }
 
                     if isLoadingCatalog {
                         HStack(spacing: 8) {
@@ -312,18 +324,7 @@ struct DeviceCorrectionEditorView: View {
                         }
                     }
 
-                    if sourceMeasurements.isEmpty,
-                       let existing,
-                       existing.sources.contains(where: { $0.providerID != "local" }) {
-                        Button("Refresh Measurements") {
-                            refreshMeasurements(from: existing)
-                        }
-                        .disabled(isLoadingMeasurements)
-                        .help("Download these saved measurement references again without searching for the device.")
-                    }
-
                     responseRow(
-                        title: "Measurement",
                         response: measurement,
                         emptyText: "Choose a search result or import your own CSV",
                         buttonTitle: "Import Measurement…"
@@ -336,14 +337,15 @@ struct DeviceCorrectionEditorView: View {
                             Text("B&K 5128").tag(DeviceCorrectionRigFamily?.some(.bk5128))
                         }
                     }
-                    Divider()
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Picker("Target", selection: compatibleTargetBinding) {
+                        Picker(selection: compatibleTargetBinding) {
                             Text("—").tag(DeviceCorrectionTargetPreset?.none)
                             ForEach(availableTargets, id: \.self) {
                                 Text(targetTitle($0)).tag(Optional($0))
                             }
+                        } label: {
+                            Text("Target").font(.headline)
                         }.pickerStyle(.menu).disabled(measurement == nil)
                         if measurement != nil && availableTargets.isEmpty {
                             Text("No compatible target is available for this measurement data.")
@@ -389,12 +391,11 @@ struct DeviceCorrectionEditorView: View {
                             .pickerStyle(.menu)
                         }
                     }
-                }
-                .padding(6)
-            }
 
-            GroupBox("Correction policy") {
-                VStack(alignment: .leading, spacing: 12) {
+                    Divider()
+
+                    Text("Correction policy").font(.headline)
+
                     JoinedSegmentedControl(
                         options: DeviceCorrectionPolicyKind.allCases,
                         selection: policyBinding,
@@ -418,29 +419,28 @@ struct DeviceCorrectionEditorView: View {
                         }.uiInteractionAnchor("correction-auto-advanced")
                     }
 
+                    HStack {
+                        Spacer()
+                        AutoEQGenerateButton(isGenerating: isGenerating,
+                            title: (generated?.filters.contains { $0.isLocked } ?? false) ? "Re-optimize Unlocked Bands" : "Auto EQ", action: generate)
+                            .disabled(
+                                isGenerating
+                                    || !targetChosen || !autoEQSettings.isValid
+                                    || measurement == nil
+                                    || trimmedDeviceName.isEmpty
+                                    || isLoadingMeasurements
+                                    || isLoadingDeviceMatch
+                                    || (targetSelection.preset == .custom
+                                        && (customTarget == nil
+                                            || targetSelection.customTargetRigIdentity == nil))
+                                    || (targetSelection.preset == .deviceMatch
+                                        && deviceMatchConsensus == nil)
+                                    || targetIsIncompatible
+                            )
+
+                    }
                 }
                 .padding(6)
-            }
-
-            HStack {
-                Spacer()
-                AutoEQGenerateButton(isGenerating: isGenerating,
-                    title: (generated?.filters.contains { $0.isLocked } ?? false) ? "Re-optimize Unlocked Bands" : "Auto EQ", action: generate)
-                    .disabled(
-                        isGenerating
-                            || !targetChosen || !autoEQSettings.isValid
-                            || measurement == nil
-                            || trimmedDeviceName.isEmpty
-                            || isLoadingMeasurements
-                            || isLoadingDeviceMatch
-                            || (targetSelection.preset == .custom
-                                && (customTarget == nil
-                                    || targetSelection.customTargetRigIdentity == nil))
-                            || (targetSelection.preset == .deviceMatch
-                                && deviceMatchConsensus == nil)
-                            || targetIsIncompatible
-                    )
-
             }
 
             if let generated {

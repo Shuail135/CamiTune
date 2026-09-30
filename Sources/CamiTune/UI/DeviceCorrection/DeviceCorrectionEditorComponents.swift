@@ -77,7 +77,7 @@ extension DeviceCorrectionEditorView {
 
     @ViewBuilder
     func responseRow(
-        title: String,
+        title: String? = nil,
         response: FrequencyResponse?,
         emptyText: String,
         buttonTitle: String,
@@ -85,7 +85,9 @@ extension DeviceCorrectionEditorView {
     ) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.headline)
+                if let title {
+                    Text(title).font(.headline)
+                }
                 if let response {
                     Text("\(response.name) · \(response.points.count) points")
                         .font(.caption)
@@ -187,7 +189,7 @@ struct AutoEQSearchField<Entry: Identifiable>: View {
     @Binding var query: String
     let results: [Entry]
     let title: (Entry) -> String
-    let onSelect: (Entry) -> Void
+    let onSelect: @MainActor (Entry) -> Void
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -243,12 +245,13 @@ struct AutoEQBoundsRow: View {
     }
 }
 
+@MainActor
 struct AutoEQGenerateButton: View {
     let isGenerating: Bool
     var title = "Auto EQ"
-    let action: () -> Void
+    let action: @MainActor () -> Void
     var body: some View {
-        Button(action: action) {
+        Button { action() } label: {
             Text(title)
                 .opacity(isGenerating ? 0 : 1)
                 .overlay {
@@ -301,14 +304,15 @@ struct AutoEQSaveTXTButton: View {
     }
 }
 
+@MainActor
 struct AutoEQLoadButton: View {
     let isLoaded: Bool
     var showsStatus = true
     var draftLabel = "Draft"
-    let action: () -> Void
+    let action: @MainActor () -> Void
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
-            Button("Load into Equalizer", action: action).buttonStyle(.borderedProminent).tint(.blue)
+            Button("Load into Equalizer") { action() }.buttonStyle(.borderedProminent).tint(.blue)
             if showsStatus {
                 Text(isLoaded ? "Loaded" : draftLabel).font(.caption2)
                     .foregroundStyle(isLoaded ? Color.green : Color.secondary)

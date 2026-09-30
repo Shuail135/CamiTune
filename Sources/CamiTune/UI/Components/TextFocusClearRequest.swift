@@ -25,7 +25,7 @@ final class TextFocusClearRequest {
 
     /// End editing while bindings still address the departing selection. Give
     /// SwiftUI's focus-change callbacks one run-loop turn to commit their drafts.
-    static func commitBeforeChangingSelection(_ action: @escaping @MainActor () -> Void) {
+    static func commitBeforeChangingSelection(_ action: @escaping @MainActor @Sendable () -> Void) {
         guard let window = NSApp.keyWindow,
               let request = TextFocusClearRequest(window: window) else {
             action()

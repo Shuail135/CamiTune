@@ -216,12 +216,17 @@ struct SpeakerAutoEQEditorView: View {
             DeviceCorrectionSectionHeader(title: "Auto EQ",
                 hint: "Generate correction from anechoic speaker measurements. Load into Equalizer to apply it. This corrects the speaker model; it does not measure your room.")
             VStack(alignment: .leading, spacing: 18) {
-                GroupBox("Device and source data") {
+                GroupBox("Device") {
                     VStack(alignment: .leading, spacing: 12) {
-                        AutoEQSearchField(placeholder: "Search speakers", query: $model.search,
-                            results: model.searchResults, title: { $0.name }) { speaker in
-                            model.speakerID = speaker.id; model.search = speaker.name
-                            model.selectSpeaker()
+                        HStack(alignment: .top, spacing: 8) {
+                            AutoEQSearchField(placeholder: "Search speakers", query: $model.search,
+                                results: model.searchResults, title: { $0.name }) { speaker in
+                                model.speakerID = speaker.id; model.search = speaker.name
+                                model.selectSpeaker()
+                            }
+                            Button("Refresh") { Task { await model.loadCatalog(refresh: true) } }
+                                .fixedSize()
+                                .disabled(model.isLoadingCatalog)
                         }
                         if model.isLoadingCatalog {
                             HStack(spacing: 8) {
@@ -229,19 +234,11 @@ struct SpeakerAutoEQEditorView: View {
                                 Text("Loading device catalog…").font(.caption).foregroundStyle(.secondary)
                             }
                         }
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Measurement").font(.headline)
-                                if let source = model.selectedVersion {
-                                    Text("\(model.speakerID) · \(source.sourceDisplayName) · via Spinorama")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                } else {
-                                    Text("Choose a search result").font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                            Spacer()
-                            Button("Refresh Catalog") { Task { await model.loadCatalog(refresh: true) } }
-                                .disabled(model.isLoadingCatalog)
+                        if let source = model.selectedVersion {
+                            Text("\(model.speakerID) · \(source.sourceDisplayName) · via Spinorama")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text("Choose a search result").font(.caption).foregroundStyle(.secondary)
                         }
                         if model.isLoading {
                             HStack(spacing: 8) {
@@ -252,10 +249,11 @@ struct SpeakerAutoEQEditorView: View {
                         if model.selectedVersion?.supportsCEA2034 == false {
                             Text("This version has no CEA2034 data. Choose another source.").font(.caption).foregroundStyle(.orange)
                         }
-                    }.padding(6)
-                }
-                GroupBox("Listening setup") {
-                    VStack(alignment: .leading, spacing: 12) {
+
+                        Divider()
+
+                        Text("Listening setup").font(.headline)
+
                         JoinedSegmentedControl(options: SpeakerListeningMode.allCases, selection: $model.mode, title: { $0.title })
                             .accessibilityLabel("Speaker listening setup")
                         Text(model.mode == .nearField ? "Prioritizes direct sound and listening-window behavior for desktop and near-field listening."
@@ -274,15 +272,16 @@ struct SpeakerAutoEQEditorView: View {
                                     .disabled(cannotGenerate)
                             }.padding(.top, 8)
                         }
+
+                        HStack {
+                            Spacer()
+                            if model.isGenerating { Button("Cancel") { model.cancel() } }
+                            AutoEQGenerateButton(isGenerating: model.isGenerating) {
+                                presentation.resultsExpanded = true
+                                model.generate(profile: profile, state: state)
+                            }.disabled(cannotGenerate)
+                        }
                     }.padding(6)
-                }
-                HStack {
-                    Spacer()
-                    if model.isGenerating { Button("Cancel") { model.cancel() } }
-                    AutoEQGenerateButton(isGenerating: model.isGenerating) {
-                        presentation.resultsExpanded = true
-                        model.generate(profile: profile, state: state)
-                    }.disabled(cannotGenerate)
                 }
                 if let displayed {
                     AutoEQResultCard(isExpanded: $presentation.resultsExpanded) {
