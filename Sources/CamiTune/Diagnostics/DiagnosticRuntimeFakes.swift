@@ -127,10 +127,14 @@ final class DiagnosticRuntimeFakes {
     private(set) var transportAttempts = 0
     var defaultUID: String? = "diagnostic.output"
     let stopped = DiagnosticManualGate()
-    let output = AudioDeviceInfo(id: "diagnostic.output", objectID: 100, name: "Simulated output")
+    let output: AudioDeviceInfo
     let bridge = AudioDeviceInfo(id: AudioDeviceInfo.systemAudioBridgeUID, objectID: 101, name: "Simulated bridge")
 
-    init(_ scenario: Scenario = Scenario()) { self.scenario = scenario }
+    init(_ scenario: Scenario = Scenario(),
+         output: AudioDeviceInfo = AudioDeviceInfo(id: "diagnostic.output", objectID: 100, name: "Simulated output")) {
+        self.scenario = scenario
+        self.output = output
+    }
     func record(_ event: String) { events.append(event) }
     func start(_ resource: String) { record("start \(resource)"); resources.insert(resource) }
     func stop(_ resource: String) { record("stop \(resource)"); resources.remove(resource) }

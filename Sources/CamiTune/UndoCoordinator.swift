@@ -64,7 +64,10 @@ final class UndoCoordinator: ObservableObject {
                before: gesture.before, after: after)
         objectWillChange.send()
     }
-    func cancelGesture(key: GestureKey) { gestures.removeValue(forKey: key); objectWillChange.send() }
+    func cancelGesture(key: GestureKey) {
+        guard gestures.removeValue(forKey: key) != nil else { return }
+        objectWillChange.send()
+    }
     func clear() {
         guard !isReplaying else { return }
         gestures.removeAll(); undoStack.removeAll(); redoStack.removeAll(); refresh()

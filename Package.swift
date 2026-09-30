@@ -19,6 +19,7 @@ var packageTargets: [Target] = [
         name: "CamiTune",
         dependencies: ["CamiTuneDomain", "CamiTuneAudio", "SystemAudioBridgeC"],
         path: "Sources/CamiTune",
+        exclude: ["UI/README.md"],
         resources: [
             .copy("icon.png"),
             .copy("DeviceCorrectionTargets"),

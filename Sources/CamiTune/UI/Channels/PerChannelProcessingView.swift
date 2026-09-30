@@ -1,0 +1,511 @@
+import CamiTuneDomain
+import AppKit
+import SwiftUI
+
+enum PerChannelSelectionScope: String, CaseIterable {
+    case groups = "Groups", speakers = "Speakers"
+}
+
+@MainActor
+struct PerChannelProcessingView: View {
+    @ObservedObject var state: AppState
+    @Binding var profile: DeviceProfile
+    var convolutionOnly = false
+    @ScaledMetric(relativeTo: .caption) private var selectorScale: CGFloat = 1
+
+    var equalizerPresentation: EqualizerPresentation {
+        state.profiles.effectiveLayout(for: profile).presentation[ProfileSection.perChannel.rawValue]?.equalizer ?? .both
+    }
+    private var presentationBinding: Binding<EqualizerPresentation> {
+        Binding(get: { equalizerPresentation }, set: { value in
+            var layout = state.profiles.effectiveLayout(for: profile)
+            layout.presentation[ProfileSection.perChannel.rawValue] = .init(equalizer: value)
+            profile.sectionLayout = layout
+            runtime.updateStatus(presentation: value)
+        })
+    }
+    @State var selectedChannelIndex = 0
+    @State var selectedGroupID: SpeakerGroupID?
+    @State var selectionScope: PerChannelSelectionScope = .groups
+    @State var pendingBandCount: Int?
+    @State var showBandReductionConfirmation = false
+    @StateObject var runtime = PerChannelEditorRuntime()
+    @StateObject var bandReduction = UIBackgroundOperation<[EQBand]>()
+    @State var runtimeVisualsActive = false
+
+    var profileIsActive: Bool {
+        state.isActive && state.activeProfileID == profile.id
+    }
+
+    var editableChannels: [ConfiguredProcessingChannel] { profile.configuredProcessingChannels }
+    var editableGroups: [SpeakerGroup] { profile.configuredSpeakerGroups }
+    var selectedGroup: SpeakerGroup? {
+        guard profile.usesGroupedProcessingPresentation, selectionScope == .groups else { return nil }
+        return editableGroups.first { $0.id == selectedGroupID } ?? editableGroups.first
+    }
+    var selectedTarget: HistoryTarget {
+        selectedGroup.map { .profileGroup(profile.id, $0.id) } ?? .profileChannel(profile.id, selectedChannelIndex)
+    }
+    private var channelSelectorWidth: CGFloat {
+        let labelWidth = editableChannels.map {
+            ($0.displayName as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11 * selectorScale)]).width
+        }.max() ?? 0
+        return CGFloat(editableChannels.count) * max(80 * selectorScale, ceil(labelWidth) + 24 * selectorScale)
+    }
+    var selectedChannel: ConfiguredProcessingChannel {
+        editableChannels.first(where: { $0.index == selectedChannelIndex })
+            ?? editableChannels.first
+            ?? ConfiguredProcessingChannel(index: 0, role: .unknown,
+                physicalOutputID: PhysicalOutputID(deviceUID: profile.outputDeviceUID, channelIndex: 0), displayName: "No configured channels")
+    }
+
+    var body: some View {
+        Group {
+            if convolutionOnly {
+                editorContent
+            } else {
+                GroupBox { editorContent.padding(6) }
+            }
+        }
+        .alert("Recalculate Equalizer Bands?", isPresented: $showBandReductionConfirmation) {
+            Button("Cancel", role: .cancel) {
+                pendingBandCount = nil
+            }
+            Button("Recalculate", role: .destructive) {
+                applyPendingBandReduction()
+            }
+        } message: {
+            Text(bandReductionConfirmationMessage)
+        }
+        .onChange(of: state.historyReplayRevision) { _ in loadSelectedChannel() }
+        .onAppear {
+            runtimeVisualsActive = true
+            loadSelectedChannelIfNeeded()
+        }
+        .onChange(of: profile.id) { _ in
+            selectionScope = .groups
+            selectedGroupID = nil
+            selectedChannelIndex = 0
+            loadSelectedChannel()
+        }
+        .onChange(of: editableChannels) { channels in
+            if !channels.contains(where: { $0.index == selectedChannelIndex }) { selectedChannelIndex = channels.first?.index ?? 0 }
+            loadSelectedChannel()
+        }
+        .onChange(of: editableGroups) { _ in loadSelectedChannel() }
+        .onChange(of: profile.sampleRate) { _ in bandReduction.cancel(); updateResponses() }
+        .onDisappear {
+            if runtime.continuousEditDepth > 0 {
+                runtime.continuousEditDepth = 1
+                continuousEditingChanged(false)
+            }
+            bandReduction.cancel()
+            runtimeVisualsActive = false
+        }
+    }
+
+    private var editorContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !convolutionOnly {
+                if bandReduction.isRunning { ProgressView("Fitting bands…").controlSize(.small) }
+                PerChannelHeader(
+                    status: runtime.status,
+                    presentation: equalizerPresentation,
+                    onReset: resetSelectedChannel
+                )
+            }
+
+            if !convolutionOnly { processingDescription }
+
+            if editableChannels.isEmpty {
+                Text("Configure enabled physical channels in Profile Settings.").foregroundStyle(.secondary)
+            } else if profile.usesGroupedProcessingPresentation {
+                groupAndSpeakerSelector
+            } else {
+                OverflowAwareHorizontalScrollView(contentWidth: channelSelectorWidth, height: 40 * selectorScale) {
+                    JoinedSegmentedControl(
+                        options: editableChannels,
+                        selection: Binding(get: { selectedChannel }, set: { selectChannel($0.index) }),
+                        title: { $0.displayName }
+                    )
+                    .accessibilityLabel("Channel")
+                }
+            }
+
+            if !convolutionOnly {
+                PerChannelGainRow(
+                    gain: runtime.gain,
+                    limiter: runtime.limiter,
+                    meters: state.meters,
+                    profileID: profile.id,
+                    channelIndex: selectedChannelIndex,
+                    groupChannelIndices: selectedGroup?.members.map(\.channelIndex),
+                    visualEffectsEnabled: runtimeVisualsActive,
+                    onChanged: channelSettingsChanged,
+                    onEditingChanged: continuousEditingChanged
+                )
+
+                PerChannelDelayRow(
+                    delay: runtime.delay,
+                    onChanged: channelSettingsChanged,
+                    onEditingChanged: continuousEditingChanged
+                )
+
+                Text(selectedGroup == nil
+                    ? "Use delay to time-align this channel. Fractional-sample values are supported."
+                    : "This delay is added to each member’s individual delay. Fractional-sample values are supported.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                PerChannelResponseGraph(responses: runtime.responses)
+
+                Text("Equalizer").font(.headline)
+                JoinedSegmentedControl(
+                    options: EqualizerPresentation.allCases,
+                    selection: presentationBinding,
+                    title: { $0.title }
+                )
+                .accessibilityLabel("Per-channel equalizer controls")
+                .frame(width: 260)
+
+                if equalizerPresentation != .simpleTone {
+                    PerChannelBandsSection(
+                        bands: runtime.bands,
+                        responses: runtime.responses,
+                        requestBandCount: requestBandCount,
+                        setKind: EQEditorSupport.setKind,
+                        onBandChanged: channelSettingsChanged,
+                        onGainEditingChanged: continuousEditingChanged
+                    )
+                }
+                if equalizerPresentation == .both { Divider() }
+                if equalizerPresentation != .bands {
+                    PerChannelSimpleEQControls(
+                        tone: runtime.simpleTone,
+                        onChanged: channelSettingsChanged,
+                        onEditingChanged: continuousEditingChanged
+                    )
+                }
+            } else {
+                ConvolutionEditorView(state: state, profile: $profile, target: selectedTarget,
+                    targetName: selectedGroup?.name ?? selectedChannel.displayName, showsTitle: false)
+                    .id(selectedTarget)
+            }
+        }
+        .disabled(editableChannels.isEmpty || bandReduction.isRunning)
+    }
+
+    private var processingDescription: some View {
+        Text(selectedGroup == nil
+            ? "Global processing runs first. These settings then affect only the selected physical channel."
+            : "Group processing runs after global processing and before each speaker’s individual settings. Group limiters run last on their members.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var groupAndSpeakerSelector: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            JoinedSegmentedControl(options: PerChannelSelectionScope.allCases,
+                selection: Binding(get: { selectionScope }, set: { value in changeSelection { selectionScope = value } }),
+                title: { $0.rawValue })
+                .frame(width: 220)
+                .accessibilityLabel("Processing target")
+            if let group = selectedGroup {
+                Picker("Group", selection: Binding(get: { group.id }, set: { selectGroup($0) })) {
+                    ForEach(editableGroups) { Text("\($0.name) (\($0.members.count))").tag($0.id) }
+                }.frame(maxWidth: 360)
+                HStack(alignment: .top) {
+                    Text(group.members.compactMap { id in editableChannels.first { $0.physicalOutputID == id }?.displayName }
+                        .joined(separator: ", "))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Menu("Edit a speaker") {
+                        ForEach(editableChannels.filter { group.members.contains($0.physicalOutputID) }) { channel in
+                            Button(channel.displayName) { selectChannel(channel.index) }
+                        }
+                    }.fixedSize()
+                }
+            } else {
+                Picker("Speaker", selection: Binding(get: { selectedChannel.index }, set: { selectChannel($0) })) {
+                    ForEach(editableChannels) { Text($0.displayName).tag($0.index) }
+                }.frame(maxWidth: 360)
+                let inherited = editableGroups.filter { $0.members.contains(selectedChannel.physicalOutputID) }.map(\.name)
+                Text("Groups: \(inherited.joined(separator: ", "))")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct PerChannelHeader: View {
+    @ObservedObject var status: PerChannelStatusState
+    let presentation: EqualizerPresentation
+    let onReset: @MainActor () -> Void
+
+    var body: some View {
+        HStack {
+            Text("Channel Processing").font(.title3.bold())
+            Spacer()
+            Button("Reset") { onReset() }
+                .buttonStyle(.bordered)
+                .disabled(!status.canReset)
+                .help(presentation.resetTitle)
+        }
+    }
+}
+
+private struct PerChannelGainRow: View {
+    @ObservedObject var gain: PerChannelValueState<Double>
+    @ObservedObject var limiter: PerChannelValueState<Bool>
+    let meters: AudioRuntimeMonitor
+    let profileID: UUID
+    let channelIndex: Int
+    var groupChannelIndices: [Int]?
+    let visualEffectsEnabled: Bool
+    let onChanged: @MainActor () -> Void
+    let onEditingChanged: @MainActor (Bool) -> Void
+
+    var body: some View {
+        PreampGainControl(
+            gainDB: Binding(
+                get: { gain.value },
+                set: { newValue in
+                    let clamped = min(12, max(-12, newValue))
+                    guard clamped != gain.value else { return }
+                    gain.value = clamped
+                    onChanged()
+                }
+            ),
+            limiterEnabled: Binding(
+                get: { limiter.value },
+                set: { newValue in
+                    guard newValue != limiter.value else { return }
+                    limiter.value = newValue
+                    onChanged()
+                }
+            ),
+            meters: meters,
+            profileID: profileID,
+            title: groupChannelIndices == nil ? "Channel gain" : "Group gain",
+            channelIndex: channelIndex,
+            channelIndices: groupChannelIndices,
+            visualEffectsEnabled: visualEffectsEnabled,
+            onEditingChanged: onEditingChanged
+        )
+    }
+}
+
+private struct PerChannelDelayRow: View {
+    @ObservedObject var delay: PerChannelValueState<Double>
+    let onChanged: @MainActor () -> Void
+    let onEditingChanged: @MainActor (Bool) -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("Channel delay")
+                .frame(width: 130, alignment: .leading)
+            ChannelDelaySlider(
+                value: Binding(
+                    get: { delay.value },
+                    set: { newValue in
+                        let clamped = min(100, max(0, newValue))
+                        guard clamped != delay.value else { return }
+                        delay.value = clamped
+                        onChanged()
+                    }
+                ),
+                onEditingChanged: onEditingChanged
+            )
+            .frame(minWidth: 80, maxWidth: .infinity)
+            Text(
+                delay.value.formatted(
+                    .number.precision(.fractionLength(2))
+                ) + " ms"
+            )
+            .monospacedDigit()
+            .frame(width: 76, alignment: .trailing)
+        }
+    }
+}
+
+/// Pure SwiftUI delay control. The native macOS Slider inherited system accent
+/// rendering (which can produce the black track seen in the screenshot) and its
+/// AppKit tracking could compete with the page ScrollView. This control owns its
+/// hit-testing and uses a high-priority horizontal drag instead.
+private struct ChannelDelaySlider: View {
+    @Binding var value: Double
+    let onEditingChanged: @MainActor (Bool) -> Void
+    @State private var isDragging = false
+
+    private let range = 0.0...100.0
+    private let step = 0.01
+    private let inset: CGFloat = 9
+
+    var body: some View {
+        GeometryReader { geometry in
+            let track = CGRect(
+                x: inset,
+                y: (geometry.size.height - 7) / 2,
+                width: max(1, geometry.size.width - 2 * inset),
+                height: 7
+            )
+            let amount = normalized(value)
+            let thumbX = track.minX + track.width * amount
+
+            ZStack {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.18))
+                    .frame(width: track.width, height: track.height)
+                    .position(x: track.midX, y: track.midY)
+
+                Capsule()
+                    .fill(Color.blue.opacity(0.9))
+                    .frame(width: track.width, height: track.height)
+                    .scaleEffect(x: amount, y: 1, anchor: .leading)
+                    .position(x: track.midX, y: track.midY)
+
+                Circle()
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                    .overlay(Circle().stroke(Color.primary.opacity(0.75), lineWidth: 1.5))
+                    .frame(width: 17, height: 17)
+                    .shadow(color: .black.opacity(0.2), radius: 1.5, y: 1)
+                    .position(x: thumbX, y: track.midY)
+            }
+            .contentShape(Rectangle())
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        if !isDragging {
+                            isDragging = true
+                            onEditingChanged(true)
+                        }
+                        setValue(forX: gesture.location.x, track: track)
+                    }
+                    .onEnded { _ in
+                        guard isDragging else { return }
+                        isDragging = false
+                        onEditingChanged(false)
+                    }
+            )
+        }
+        .frame(height: 24)
+        .accessibilityElement()
+        .accessibilityLabel("Channel delay")
+        .accessibilityValue("\(value.formatted(.number.precision(.fractionLength(2)))) milliseconds")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: value = quantized(min(range.upperBound, value + step))
+            case .decrement: value = quantized(max(range.lowerBound, value - step))
+            @unknown default: break
+            }
+        }
+    }
+
+    private func normalized(_ current: Double) -> Double {
+        let clamped = min(range.upperBound, max(range.lowerBound, current))
+        return (clamped - range.lowerBound) / (range.upperBound - range.lowerBound)
+    }
+
+    private func setValue(forX x: CGFloat, track: CGRect) {
+        let ratio = min(1, max(0, (x - track.minX) / track.width))
+        let raw = range.lowerBound + Double(ratio) * (range.upperBound - range.lowerBound)
+        let next = quantized(raw)
+        guard next != value else { return }
+        value = next
+    }
+
+    private func quantized(_ raw: Double) -> Double {
+        (raw / step).rounded() * step
+    }
+}
+
+private struct PerChannelResponseGraph: View {
+    @ObservedObject var responses: PerChannelResponseState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("Combined channel response")
+                    .font(.caption.weight(.medium))
+                Spacer()
+            }
+            LineGraph(
+                points: responses.totalResponse.map { ($0.frequency, $0.gainDB) },
+                xRange: 20...20_000,
+                yRange: -24...24,
+                zeroLine: true,
+                lineColor: .green
+            )
+            .frame(height: 120)
+        }
+    }
+}
+
+private struct PerChannelBandsSection: View {
+    @ObservedObject var bands: PerChannelBandsState
+    let responses: PerChannelResponseState
+    let requestBandCount: @MainActor (Int) -> Void
+    let setKind: (EQBand.Kind, inout EQBand) -> Void
+    let onBandChanged: @MainActor () -> Void
+    let onGainEditingChanged: @MainActor (Bool) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text("EQ bands")
+                Picker("EQ bands", selection: Binding(
+                    get: { bands.count },
+                    set: { requestBandCount($0) }
+                )) {
+                    ForEach(0...20, id: \.self) { count in
+                        Text("\(count)").tag(count)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 64)
+            }
+
+            if bands.isEmpty {
+                HStack {
+                    Text("No EQ bands. Simple, gain, and delay still apply.")
+                        .foregroundStyle(.secondary)
+                    Button("Add Bands") { requestBandCount(8) }
+                }
+                .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
+            } else {
+                EqualizerBandScrollView(bandCount: bands.count) { columnWidth in
+                    PerChannelGraphicEqualizerBands(
+                        bands: bands,
+                        responses: responses,
+                        setKind: setKind,
+                        columnWidth: columnWidth,
+                        onBandChanged: onBandChanged,
+                        onGainEditingChanged: onGainEditingChanged
+                    )
+                }
+            }
+        }
+    }
+}
+
+/// Observes only tone values so knob edits do not rebuild the channel's band strip.
+private struct PerChannelSimpleEQControls: View {
+    @ObservedObject var tone: PerChannelValueState<SimpleToneSettings>
+    let onChanged: @MainActor () -> Void
+    let onEditingChanged: @MainActor (Bool) -> Void
+
+    var body: some View {
+        SimpleEQControlsView(
+            settings: Binding(
+                get: { tone.value },
+                set: { value in
+                    guard value != tone.value else { return }
+                    tone.value = value
+                    onChanged()
+                }
+            ),
+            onEditingChanged: onEditingChanged
+        )
+    }
+}

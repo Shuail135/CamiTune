@@ -8,6 +8,16 @@ final class SpectrumAnalyzer: ObservableObject, @unchecked Sendable {
 
     var activeProfileID: UUID? { activeSession?.profileID }
 
+#if DEBUG
+    /// Whole-window diagnostics drive the real presentation at its normal
+    /// cadence without opening an audio device or running an FFT source.
+    @MainActor
+    func setPreviewPoints(_ points: [SpectrumPoint], profileID: UUID) {
+        if activeSession?.profileID != profileID { activeSession = AudioRuntimeSession(profileID: profileID) }
+        self.points = points
+    }
+#endif
+
     private var fftSetup: FFTSetup?
     private let fftSize = 4096
     private let fftHopSize = 2048

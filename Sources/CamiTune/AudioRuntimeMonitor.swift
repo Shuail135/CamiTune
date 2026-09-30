@@ -386,9 +386,9 @@ final class AudioRuntimeMonitor: ObservableObject {
 #if DEBUG
     /// Silent setup preview only: no polling tasks or audio device lifecycle.
     func setPreviewLevels(_ levels: SignalLevels, profileID: UUID) {
-        activeSession = AudioRuntimeSession(profileID: profileID)
+        if activeSession?.profileID != profileID { activeSession = AudioRuntimeSession(profileID: profileID) }
         self.levels = levels
-        captureUsesDSPBus = true
+        if !captureUsesDSPBus { captureUsesDSPBus = true }
     }
 #endif
 

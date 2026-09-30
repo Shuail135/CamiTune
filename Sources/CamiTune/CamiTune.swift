@@ -103,6 +103,38 @@ enum CamiTuneLauncher {
             return
         }
 #if DEBUG
+        if let index = CommandLine.arguments.firstIndex(of: "--ui-app-self-test"), CommandLine.arguments.count > index + 1 {
+            NSApplication.shared.setActivationPolicy(.accessory)
+            let artifacts = URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)
+            Task { @MainActor in
+                do {
+                    try await UIInteractionSelfTests.runWholeWindow(artifacts: artifacts)
+                    print("Whole-window interaction checks passed")
+                    Darwin.exit(0)
+                } catch {
+                    print("Whole-window interaction checks failed: \(error.localizedDescription)")
+                    Darwin.exit(1)
+                }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--ui-self-test"), CommandLine.arguments.count > index + 1 {
+            NSApplication.shared.setActivationPolicy(.accessory)
+            let artifacts = URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)
+            Task { @MainActor in
+                do {
+                    try await UIInteractionSelfTests.run(artifacts: artifacts)
+                    print("UI interaction checks passed")
+                    Darwin.exit(0)
+                } catch {
+                    print("UI interaction checks failed: \(error.localizedDescription)")
+                    Darwin.exit(1)
+                }
+            }
+            NSApplication.shared.run()
+            return
+        }
         if isSpeakerSetupPreview { SpeakerSetupPreviewApp.main(); return }
 #endif
         CamiTuneMain.main()
@@ -323,6 +355,10 @@ final class CamiTunePresentationCoordinator {
             let rootView = ContentView(state: state, commands: commands)
                 .task { self.state.startAfterPresentation() }
             let controller = NSHostingController(rootView: rootView)
+            // This window has an explicit minimum size. Asking SwiftUI to
+            // derive it from every offscreen editor repeats the entire page's
+            // intrinsic layout whenever a meter or field changes.
+            controller.sizingOptions = []
             let created = CamiTuneMainWindow(contentViewController: controller)
             created.title = "CamiTune"
             created.styleMask = [

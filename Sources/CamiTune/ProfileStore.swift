@@ -559,6 +559,7 @@ final class ProfileStore: ObservableObject {
 
     func update(_ profile: DeviceProfile) {
         guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
+        guard profiles[index] != profile else { return }
         guard ProfileNamePolicy.isAvailable(profile.name, in: profiles, excluding: profile.id) else { return }
         profiles[index] = profile
     }

@@ -5,7 +5,7 @@ import Foundation
 @MainActor
 enum DeveloperSelfTests {
     static func cases() -> [DiagnosticCase] {
-        profileCases() + planningCases() + pcmCases() + lifecycleCases() + healthCases() + performanceCases() + presentationCases() + runtimePlanCases() + runtimePlanDifferCases() + runtimeCoordinatorCases() + coreAudioHandoffCases() + profileRepositoryCases() + profilePersistenceCases() + timelineStorageCases() + timelineMixerCases() + timelineIntegrationCases() + timelineBenchmarkCases() + reorderPolicyCases() + reorderMatrixCases() + pcmDeliveryCases() + producerCompletionCases() + pcmSinkCases() + audioClockCases() + architectureOwnerCases()
+        profileCases() + planningCases() + pcmCases() + lifecycleCases() + healthCases() + performanceCases() + presentationCases() + runtimePlanCases() + runtimePlanDifferCases() + runtimeCoordinatorCases() + coreAudioHandoffCases() + profileRepositoryCases() + profilePersistenceCases() + timelineStorageCases() + timelineMixerCases() + timelineIntegrationCases() + timelineBenchmarkCases() + reorderPolicyCases() + reorderMatrixCases() + pcmDeliveryCases() + producerCompletionCases() + pcmSinkCases() + audioClockCases() + architectureOwnerCases() + uiStateCases()
     }
 
     private static func test(_ id: String, _ suite: String, _ name: String,
