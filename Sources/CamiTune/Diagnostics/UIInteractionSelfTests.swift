@@ -72,6 +72,8 @@ private struct UIWorkFixture: PersistedAutoEQWork {
 enum UIInteractionSelfTests {
     static func run(artifacts: URL) async throws {
         try FileManager.default.createDirectory(at: artifacts, withIntermediateDirectories: true)
+        try await autoEQSearchSelection()
+        if ProcessInfo.processInfo.environment["CAMITUNE_UI_SEARCH_ONLY"] == "1" { return }
         if ProcessInfo.processInfo.environment["CAMITUNE_UI_CORRECTION_ONLY"] == "1" {
             try await spectrumPresentation(artifacts: artifacts)
             try await correctionInteractions(artifacts: artifacts)
@@ -316,6 +318,69 @@ enum UIInteractionSelfTests {
             && field.stringValue == "Unfinished correction" && field.currentEditor() != nil,
             "Navigation resize replaced the editor, lost its draft, or dropped focus")
         print("UI11: Compact navigation preserves editor identity, unfinished text, and keyboard focus across resizing")
+    }
+
+    private static func autoEQSearchSelection() async throws {
+        for placeholder in ["Search IEMs", "Search headphones", "Search speakers"] {
+            let state = SearchSelectionState()
+            let fixture = WindowFixture(SearchSelectionFixture(state: state, placeholder: placeholder),
+                size: .init(width: 500, height: 350))
+            defer { fixture.close() }
+            await fixture.settle()
+            guard let field = fixture.textFields.first(where: { $0.placeholderString == placeholder }) else {
+                throw DiagnosticFailure(message: "Missing \(placeholder) field")
+            }
+            try await fixture.edit(field, text: "Fixture")
+            let resultID = "autoeq-search-result-fixture"
+            try diagnosticRequire(fixture.views.contains { $0.identifier?.rawValue == resultID },
+                "Searching did not display a result for \(placeholder)")
+
+            // The profile editor clears text focus after mouse-down, before a
+            // result button receives mouse-up. Reproduce that focus transition.
+            fixture.window.makeFirstResponder(nil)
+            await fixture.settle()
+            guard let result = fixture.views.first(where: { $0.identifier?.rawValue == resultID }) else {
+                throw DiagnosticFailure(message: "\(placeholder) removed its result before selection when text focus cleared")
+            }
+            fixture.click(in: result, at: .init(x: result.bounds.midX, y: result.bounds.midY))
+            await fixture.settle()
+            try diagnosticRequire(state.selections == 1, "\(placeholder) did not select its result exactly once")
+            try diagnosticRequire(!fixture.views.contains { $0.identifier?.rawValue == resultID },
+                "\(placeholder) did not dismiss results after selection")
+
+            try await fixture.edit(field, text: "Fixture")
+            try diagnosticRequire(fixture.views.contains { $0.identifier?.rawValue == resultID },
+                "\(placeholder) did not reopen results when editing again")
+            fixture.window.sendEvent(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: fixture.window.windowNumber,
+                context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!)
+            await fixture.settle()
+            try diagnosticRequire(!fixture.views.contains { $0.identifier?.rawValue == resultID },
+                "\(placeholder) did not dismiss results on Escape")
+        }
+        print("UI17: IEM, headphone, and speaker search results survive focus clearing, select once, reopen, and dismiss on Escape")
+    }
+
+    private final class SearchSelectionState: ObservableObject {
+        @Published var query = ""
+        var selections = 0
+    }
+    private struct SearchSelectionEntry: Identifiable {
+        let id = "fixture"
+    }
+    private struct SearchSelectionFixture: View {
+        @ObservedObject var state: SearchSelectionState
+        let placeholder: String
+        var body: some View {
+            VStack {
+                AutoEQSearchField(placeholder: placeholder, query: $state.query,
+                    results: [SearchSelectionEntry()], title: { _ in "Fixture device" }) { _ in
+                        state.selections += 1
+                        state.query = "Fixture device"
+                    }
+                Spacer()
+            }.padding(20)
+        }
     }
 
     private static func correctionInteractions(artifacts: URL) async throws {

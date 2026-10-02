@@ -191,34 +191,46 @@ struct AutoEQSearchField<Entry: Identifiable>: View {
     let title: (Entry) -> String
     let onSelect: @MainActor (Entry) -> Void
     @FocusState private var isFocused: Bool
+    @State private var showsResults = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             TextField(placeholder, text: $query)
                 .textFieldStyle(.roundedBorder)
                 .focused($isFocused)
-                .onExitCommand { isFocused = false }
-            if isFocused, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !results.isEmpty {
+                .onExitCommand { dismissResults() }
+            // A result click can clear text focus on mouse-down. Keep the rows
+            // alive until the button's mouse-up action selects and dismisses them.
+            if showsResults, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !results.isEmpty {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(results) { entry in
                             Button {
                                 onSelect(entry)
-                                isFocused = false
+                                dismissResults()
                             } label: {
                                 Text(title(entry))
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .contentShape(Rectangle())
                                     .padding(.horizontal, 8).padding(.vertical, 6)
                             }.buttonStyle(.plain)
+                                .uiInteractionAnchor("autoeq-search-result-\(entry.id)")
                         }
                     }
                 }.frame(maxHeight: 170)
                     .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
             }
         }
-        .background(OutsideClickObserver { isFocused = false })
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in isFocused = false }
+        .onChange(of: isFocused) { focused in
+            if focused { showsResults = true }
+        }
+        .background(OutsideClickObserver { dismissResults() })
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in dismissResults() }
+    }
+
+    private func dismissResults() {
+        showsResults = false
+        isFocused = false
     }
 }
 

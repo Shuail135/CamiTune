@@ -9,14 +9,63 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: camitune-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
+  prepare:
+    name: Find an existing build
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+      run_id: ${{ steps.existing.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Resolve source commit and validate tag
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tags must use vMAJOR.MINOR.PATCH, for example v0.3.1."
+            exit 1
+          fi
+      - name: Find a successful main build for this commit
+        id: existing
+        if: github.ref_type == 'tag'
+        uses: actions/github-script@v8
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        with:
+          script: |
+            const sha = process.env.SOURCE_SHA;
+            const name = `CamiTune-app-${sha}`;
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              ...context.repo, workflow_id: 'release.yml', event: 'push',
+              branch: 'main', head_sha: sha, status: 'success', per_page: 100
+            });
+            for (const run of runs) {
+              if (run.head_sha !== sha || run.head_branch !== 'main' ||
+                  run.event !== 'push' || run.conclusion !== 'success') continue;
+              const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                ...context.repo, run_id: run.id, per_page: 100
+              });
+              if (artifacts.some(artifact => artifact.name === name && !artifact.expired)) {
+                core.setOutput('run_id', String(run.id));
+                core.info(`Reusing ${name} from successful run ${run.id}.`);
+                return;
+              }
+            }
+            core.info('No retained successful main build for this commit; building it now.');
+
   build:
     name: Build application
+    needs: prepare
+    if: needs.prepare.outputs.run_id == ''
 
     # GitHub-hosted macOS 13 runners were retired in December 2025.
     # Build on a supported Apple-silicon runner and explicitly target Ventura.
@@ -53,16 +102,6 @@ jobs:
           # Include the Ventura deployment target/Xcode version so binaries
           # previously built on a newer macOS runner can never be reused.
           key: audio-components-${{ runner.os }}-${{ runner.arch }}-macos13-xcode15.2-${{ hashFiles('Contributions/CamillaDSP/*.patch', 'Drivers/SystemAudioBridge/Driver/**', 'Drivers/SystemAudioBridge/Shared/**', 'Sources/SystemAudioBridgeC/include/**', 'Drivers/SystemAudioBridge/build-driver.sh', 'Scripts/embed-audio-components.sh') }}
-
-      - name: Validate release tag
-        if: github.ref_type == 'tag'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Release tags must use vMAJOR.MINOR.PATCH, for example v0.3.1."
-            exit 1
-          fi
 
       - name: Build application
         shell: bash
@@ -136,7 +175,6 @@ jobs:
           check_minos "$driver" "System Audio Bridge"
 
       - name: Verify Release bundle
-        if: github.ref_type == 'tag'
         shell: bash
         run: |
           set -euo pipefail
@@ -157,7 +195,7 @@ jobs:
           test -x "$resources/CamillaDSP/camilladsp" || { echo "::error::Missing bundled CamillaDSP"; exit 1; }
 
           bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
-          if [[ "$bundle_version" != "$expected_version" ]]; then
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$bundle_version" != "$expected_version" ]]; then
             echo "::error::Bundle version $bundle_version does not match tag $GITHUB_REF_NAME."
             exit 1
           fi
@@ -169,61 +207,87 @@ jobs:
           echo "=== Signature ==="
           codesign --display --verbose=4 "$app"
 
-      - name: Package Release
-        if: github.ref_type == 'tag'
+      - name: Save reusable application build
         shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          archive="CamiTune-v${version}-app.zip"
-          ditto -c -k --sequesterRsrc --keepParent dist/CamiTune.app "$archive"
-          test -s "$archive" || { echo "::error::Release ZIP was not created."; exit 1; }
-          speaker_source="CamiTune-v${version}-speaker-eq-source.tar.gz"
-          python3 Scripts/package-speaker-eq-source.py "$speaker_source"
-          shasum -a 256 "$archive" "$speaker_source" > SHA256SUMS
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          mkdir -p build-artifact
+          ditto -c -k --sequesterRsrc --keepParent dist/CamiTune.app build-artifact/CamiTune-app.zip
+          printf '%s\n' "$SOURCE_SHA" > build-artifact/SOURCE_COMMIT
+          cd build-artifact
+          shasum -a 256 CamiTune-app.zip SOURCE_COMMIT > SHA256SUMS
 
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
-          ditto -x -k "$archive" "$tmp"
+          ditto -x -k CamiTune-app.zip "$tmp"
           codesign --verify --deep --strict --verbose=4 "$tmp/CamiTune.app"
           shasum -a 256 -c SHA256SUMS
 
-      - name: Upload Release files
-        if: github.ref_type == 'tag'
+      - name: Upload application build
         uses: actions/upload-artifact@v7
         with:
-          name: CamiTune-${{ github.ref_name }}
-          path: |
-            CamiTune-v*-app.zip
-            CamiTune-v*-speaker-eq-source.tar.gz
-            SHA256SUMS
+          name: CamiTune-app-${{ needs.prepare.outputs.source_sha }}
+          path: build-artifact/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90
 
   release:
     name: Publish GitHub Release
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: build
-    runs-on: ubuntu-latest
+    if: >-
+      always() && github.event_name == 'push' && github.ref_type == 'tag' &&
+      needs.prepare.result == 'success' &&
+      (needs.build.result == 'success' ||
+       (needs.build.result == 'skipped' && needs.prepare.outputs.run_id != ''))
+    needs: [prepare, build]
+    # Reusing an app needs no compiler, but stamping the version and signing its
+    # bundle still require macOS. The original compiled executables are retained.
+    runs-on: macos-14
     permissions:
       actions: read
       contents: write
 
     steps:
-      - name: Download Release files
+      - name: Download application build
         uses: actions/download-artifact@v8
         with:
-          name: CamiTune-${{ github.ref_name }}
-          path: release-files
+          name: CamiTune-app-${{ needs.prepare.outputs.source_sha }}
+          path: build-artifact
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.prepare.outputs.run_id || github.run_id }}
 
-      - name: Verify downloaded files
-        working-directory: release-files
+      - name: Prepare tagged application
         shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
         run: |
           set -euo pipefail
-          sha256sum -c SHA256SUMS
-          expected="CamiTune-${GITHUB_REF_NAME}-app.zip"
-          test -s "$expected" || { echo "::error::Expected $expected"; exit 1; }
+          cd build-artifact
+          shasum -a 256 -c SHA256SUMS
+          test "$(cat SOURCE_COMMIT)" = "$SOURCE_SHA" || {
+            echo "::error::Downloaded application was built from a different commit."
+            exit 1
+          }
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          ditto -x -k CamiTune-app.zip "$tmp"
+          app="$tmp/CamiTune.app"
+          codesign --verify --deep --strict --verbose=4 "$app"
+
+          version="${GITHUB_REF_NAME#v}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Contents/Info.plist"
+          codesign --force --sign - "$app"
+          codesign --verify --deep --strict --verbose=4 "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$version"
+
+          mkdir -p ../release-files
+          archive="CamiTune-${GITHUB_REF_NAME}-app.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "../release-files/$archive"
+          cd ../release-files
+          shasum -a 256 "$archive" > SHA256SUMS
+          shasum -a 256 -c SHA256SUMS
 
       - name: Publish GitHub Release
         working-directory: release-files
@@ -235,7 +299,6 @@ jobs:
           set -euo pipefail
           gh release create "$GITHUB_REF_NAME" \
             "CamiTune-${GITHUB_REF_NAME}-app.zip" \
-            "CamiTune-${GITHUB_REF_NAME}-speaker-eq-source.tar.gz" \
             SHA256SUMS \
             --verify-tag \
             --generate-notes \
