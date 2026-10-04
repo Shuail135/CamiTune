@@ -80,7 +80,7 @@ extension AppState: HistoryRestoring {
 
     private func persistHistoryChanges(for snapshot: HistoryState) async throws {
         switch snapshot {
-        case .deviceCorrection, .globalEQ, .channel, .crossfeed, .convolution, .convolutionBatch, .profileName, .profileOrganization, .deletion, .referenceTransfer:
+        case .deviceCorrection, .globalEQ, .channel, .crossfeed, .convolution, .convolutionBatch, .roomCorrectionImport, .profileName, .profileOrganization, .deletion, .referenceTransfer:
             try await profiles.persistHistoryChanges()
         case .perAppAudio, .perAppBatch: try perAppAudio.persistHistoryChanges()
         case .appAlias, .appPlacement: try perAppAudio.presentationStore.persistHistoryChanges()
@@ -90,6 +90,8 @@ extension AppState: HistoryRestoring {
 
     private func currentHistoryState(matching snapshot: HistoryState, target: HistoryTarget) throws -> HistoryState {
         switch (snapshot, target) {
+        case (.roomCorrectionImport, .profile(let id)):
+            return .roomCorrectionImport(try roomCorrectionImportSnapshot(profile: applyingSessionEQDrafts(to: historyProfile(id))))
         case (.multichannel, .profile(let id)):
             let profile = try historyProfile(id)
             return .multichannel(.init(settings: profile.multichannel, topology: profile.speakerTopology))
@@ -129,7 +131,7 @@ extension AppState: HistoryRestoring {
             return .referenceCorrection(referenceCorrectionSessions[id]?.draft ?? (referenceCorrectionSessions[id] == nil ? profile.personalReferenceCorrection : nil))
         case (.speakerSystem, .speakerSystem(let id)):
             let profile = try historyProfile(id)
-            return .speakerSystem(speakerEditSessions[id] ?? SpeakerSystemHistoryState(topology: profile.speakerTopology, seat: profile.effectiveSpatialSettings.seating))
+            return .speakerSystem(speakerEditSessions[id] ?? SpeakerSystemHistoryState(topology: profile.speakerTopology, seat: profile.effectiveSpatialSettings.seating, bass: profile.multichannel.bass))
         case (.referenceTransfer, .profile(let id)):
             let profile = try historyProfile(id)
             return .referenceTransfer(ReferenceTransferHistoryState(correction: profile.personalReferenceCorrection,
@@ -152,6 +154,9 @@ extension AppState: HistoryRestoring {
     private func restoreHistoryValue(_ snapshot: HistoryState, target: HistoryTarget) async throws {
         var applyID: UUID?
         switch (snapshot, target) {
+        case let (.roomCorrectionImport(value), .profile(id)):
+            try storeRoomCorrectionImport(value, profileID: id)
+            applyID = id
         case let (.multichannel(value), .profile(id)):
             multichannelEditSessions[id] = nil
             multichannelAutosaveErrors[id] = nil

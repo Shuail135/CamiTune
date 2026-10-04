@@ -344,7 +344,13 @@ struct AddOutputProfileSheet: View {
             }
             if draft.needsSpeakers {
                 if draft.profile.speakerTopology != nil {
-                    SpeakerSystemView(state: state, profile: $draft.profile, draftOnly: true, embedded: true)
+                    SpeakerSystemView(state: state, profile: Binding(
+                        get: { (try? draft.candidate()) ?? draft.profile },
+                        set: { value in
+                            draft.profile.speakerTopology = value.speakerTopology
+                            draft.profile.spatialSettings = value.spatialSettings
+                            draft.profile.multichannel = value.multichannel
+                        }), draftOnly: true, embedded: true)
                 } else if !busy {
                     Text("Channels could not be discovered. Check the connection and try again.").foregroundStyle(.secondary)
                     Button("Discover Channels") { discover() }

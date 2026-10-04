@@ -108,6 +108,13 @@ final class SectionLayoutTableView: NSTableView, NSTableViewDataSource, NSTableV
             else { self.sectionLayout.hidden.insert(section) }
             self.onChange(self.sectionLayout)
         }
+        if section == .subwooferControl {
+            cell.configureAutomaticVisibility(sectionLayout.subwooferVisibility) { [weak self] mode in
+                guard let self else { return }
+                self.sectionLayout.subwooferVisibility = mode
+                self.onChange(self.sectionLayout)
+            }
+        }
         return cell
     }
 
@@ -166,6 +173,8 @@ final class SectionLayoutCellView: NSTableCellView {
     let handle = NSImageView()
     let label = NSTextField(labelWithString: "")
     let visibility = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let automaticVisibility = NSPopUpButton()
+    private var onAutomaticVisibilityChange: (SectionVisibility) -> Void = { _ in }
     private var onVisibilityChange: (Bool) -> Void = { _ in }
 
     override init(frame frameRect: NSRect) {
@@ -176,7 +185,11 @@ final class SectionLayoutCellView: NSTableCellView {
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         visibility.target = self
         visibility.action = #selector(toggleVisibility)
-        for view in [handle, label, visibility] {
+        automaticVisibility.addItems(withTitles: SectionVisibility.allCases.map(\.title))
+        automaticVisibility.controlSize = .small
+        automaticVisibility.target = self
+        automaticVisibility.action = #selector(changeAutomaticVisibility)
+        for view in [handle, label, visibility, automaticVisibility] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
             view.centerYAnchor.constraint(equalTo: centerYAnchor).isActive = true
@@ -187,7 +200,9 @@ final class SectionLayoutCellView: NSTableCellView {
             handle.heightAnchor.constraint(equalToConstant: 24),
             label.leadingAnchor.constraint(equalTo: handle.trailingAnchor, constant: 10),
             label.trailingAnchor.constraint(lessThanOrEqualTo: visibility.leadingAnchor, constant: -10),
-            visibility.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8)
+            visibility.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            automaticVisibility.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: automaticVisibility.leadingAnchor, constant: -10)
         ])
         imageView = handle
         textField = label
@@ -196,6 +211,7 @@ final class SectionLayoutCellView: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func configure(section: ProfileSection, shown: Bool, onChange: @escaping (Bool) -> Void) {
+        automaticVisibility.isHidden = true
         let locked = section == .deviceSetup
         label.stringValue = section.title
         handle.image = NSImage(systemSymbolName: locked ? "lock.fill" : "line.3.horizontal",
@@ -211,6 +227,21 @@ final class SectionLayoutCellView: NSTableCellView {
     }
 
     @objc private func toggleVisibility() { onVisibilityChange(visibility.state == .on) }
+
+    func configureAutomaticVisibility(_ mode: SectionVisibility, onChange: @escaping (SectionVisibility) -> Void) {
+        visibility.isHidden = true
+        automaticVisibility.isHidden = false
+        automaticVisibility.selectItem(at: SectionVisibility.allCases.firstIndex(of: mode) ?? 0)
+        automaticVisibility.setAccessibilityLabel("Subwoofer Control visibility")
+        automaticVisibility.toolTip = "Automatic shows this section when speakers and a subwoofer are configured."
+        onAutomaticVisibilityChange = onChange
+    }
+
+    @objc private func changeAutomaticVisibility() {
+        let index = automaticVisibility.indexOfSelectedItem
+        guard SectionVisibility.allCases.indices.contains(index) else { return }
+        onAutomaticVisibilityChange(SectionVisibility.allCases[index])
+    }
 
     override var draggingImageComponents: [NSDraggingImageComponent] {
         // The native drag carries the complete row, including its visibility control.

@@ -5,7 +5,142 @@ import Foundation
 @MainActor
 enum DeveloperSelfTests {
     static func cases() -> [DiagnosticCase] {
-        profileCases() + planningCases() + pcmCases() + lifecycleCases() + healthCases() + performanceCases() + presentationCases() + runtimePlanCases() + runtimePlanDifferCases() + runtimeCoordinatorCases() + coreAudioHandoffCases() + profileRepositoryCases() + profilePersistenceCases() + timelineStorageCases() + timelineMixerCases() + timelineIntegrationCases() + timelineBenchmarkCases() + reorderPolicyCases() + reorderMatrixCases() + pcmDeliveryCases() + producerCompletionCases() + pcmSinkCases() + audioClockCases() + architectureOwnerCases() + uiStateCases()
+        profileCases() + planningCases() + pcmCases() + lifecycleCases() + healthCases() + performanceCases() + presentationCases() + runtimePlanCases() + runtimePlanDifferCases() + runtimeCoordinatorCases() + coreAudioHandoffCases() + profileRepositoryCases() + profilePersistenceCases() + timelineStorageCases() + timelineMixerCases() + timelineIntegrationCases() + timelineBenchmarkCases() + reorderPolicyCases() + reorderMatrixCases() + pcmDeliveryCases() + producerCompletionCases() + pcmSinkCases() + audioClockCases() + architectureOwnerCases() + uiStateCases() + roomRecordingCases()
+    }
+
+    static func roomRecordingCases() -> [DiagnosticCase] {
+        [
+            test("RC01", "Room recordings", "Acoustic compatibility ignores editor-only changes") { _ in
+                let topology = try DiagnosticHardware().topology(for: "fixture", sampleRate: 48000).speakerTopology
+                let stageID = UUID()
+                let band = EQBand(kind: .peaking, frequency: 120, gain: -3, q: 2)
+                let original = RoomMeasurementContext(topology: topology, listener: .init(x: 0, y: 0, z: 0),
+                    processing: .init(global: .init(stages: [.init(id: stageID, processor: .equalizer(.init(bands: [band])))])))
+                var equivalent = original
+                var replacement = EQBand(kind: band.kind, frequency: band.frequency, gain: band.gain, q: band.q)
+                replacement.isLocked = true
+                equivalent.processing.global.stages[0].processor = .equalizer(.init(bands: [replacement]))
+                equivalent.processing.global.stages.append(.init(isEnabled: false, processor: .limiter(.standard)))
+                try diagnosticRequire(original.canReprocess(to: equivalent) && Set([original, equivalent]).count == 1,
+                    "Recreated band identities and a disabled limiter must not invalidate the recording")
+                var changed = equivalent
+                replacement.gain = -6
+                changed.processing.global.stages[0].processor = .equalizer(.init(bands: [replacement]))
+                try diagnosticRequire(!original.canReprocess(to: changed), "An audible EQ change must still invalidate the recording")
+                changed = equivalent; changed.processing.global.stages[1].isEnabled = true
+                try diagnosticRequire(!original.canReprocess(to: changed), "Enabling processing must still invalidate the recording")
+                changed = equivalent; changed.listener.x += 1
+                try diagnosticRequire(!original.canReprocess(to: changed), "A moved listening position must still invalidate the recording")
+                return .init(summary: "Non-audible changes remain compatible; actual EQ, processing and geometry changes are detected")
+            },
+            test("RC02", "Room recordings", "Quit cleanup deletes detached copies and preserves live files") { box in
+                let store = RoomMeasurementStore(directory: box.directory.appendingPathComponent("RoomMeasurements"))
+                let topology = try DiagnosticHardware().topology(for: "fixture", sampleRate: 48000).speakerTopology
+                let point = SpatialVector3(x: 0, y: 0, z: 0)
+                var session = RoomMeasurementSession(context: .init(topology: topology, listener: point, processing: .init()),
+                    source: .init(), positions: [.init(coordinate: point, isMain: true)])
+                let original = box.directory.appendingPathComponent("Original.wav")
+                try Data("original file".utf8).write(to: original)
+                let removed = try store.retain(original, sessionID: session.id, blocks: [], format: "wav", isLossy: false)
+                let kept = try store.retain(original, sessionID: session.id, blocks: [], format: "wav", isLossy: false)
+                session.recordings = [removed, kept]; try store.save(session)
+                session.recordings = [kept]; try store.save(session)
+                let pending = try store.retain(original, sessionID: session.id, blocks: [], format: "wav", isLossy: false)
+                let oldOrphan = store.folder(session.id).appendingPathComponent("\(UUID()).wav")
+                try Data().write(to: oldOrphan)
+                let unknown = store.folder(session.id).appendingPathComponent("notes.wav")
+                try Data().write(to: unknown)
+                let link = store.folder(session.id).appendingPathComponent("\(UUID()).wav")
+                try FileManager.default.createSymbolicLink(at: link, withDestinationURL: original)
+                let unreadableFolder = store.folder(UUID())
+                try FileManager.default.createDirectory(at: unreadableFolder, withIntermediateDirectories: true)
+                try Data("invalid manifest".utf8).write(to: unreadableFolder.appendingPathComponent("session.plist"))
+                let protected = unreadableFolder.appendingPathComponent("\(UUID()).wav")
+                try Data().write(to: protected)
+                let deleted = try store.removeUnreferencedRecordings()
+                let removedURL = try store.recordingURL(removed, sessionID: session.id)
+                try diagnosticRequire(deleted == 2 && !FileManager.default.fileExists(atPath: removedURL.path)
+                    && !FileManager.default.fileExists(atPath: oldOrphan.path), "Detached copies must be deleted at cleanup")
+                for url in [original, try store.recordingURL(kept, sessionID: session.id),
+                            try store.recordingURL(pending, sessionID: session.id), unknown, link, protected] {
+                    try diagnosticRequire(FileManager.default.fileExists(atPath: url.path), "Cleanup removed a protected file")
+                }
+                session.recordings.append(pending); try store.save(session)
+                session.recordings.removeAll { $0 == pending }; try store.save(session)
+                let nextCleanup = try store.removeUnreferencedRecordings()
+                try diagnosticRequire(nextCleanup == 1, "A completed import can be removed at the next cleanup")
+                let repeatedCleanup = try store.removeUnreferencedRecordings()
+                try diagnosticRequire(repeatedCleanup == 0, "Cleanup must be repeatable")
+                return .init(summary: "Removed copies are deleted; referenced, pending, original and unknown files survive")
+            },
+            test("RC03", "Room correction", "Imports map filter types and preserve other processing") { box in
+                var profile = DiagnosticSandbox.profile()
+                profile.endpointKind = .speakers
+                profile.speakerTopology = SpeakerTopology(deviceUID: profile.outputDeviceUID,
+                    sampleRate: Double(profile.sampleRate), declaredChannelCount: 2,
+                    endpoints: (0..<2).map { .init(id: .init(deviceUID: profile.outputDeviceUID, channelIndex: $0),
+                        role: $0 == 0 ? .left : .right, displayName: "Channel \($0 + 1)", connectionState: .confirmedByUser) })
+                profile.spatialSettings.seating = .init(outputDeviceUID: profile.outputDeviceUID)
+                let oldBand = EQBand(kind: .peaking, frequency: 90, gain: -1, q: 2)
+                for channel in 0..<2 {
+                    try profile.setChannelProcessing(index: channel, role: channel == 0 ? .left : .right,
+                        gainDB: -2, bands: [oldBand], delayMilliseconds: 3, limiterEnabled: false)
+                }
+                let wav = box.directory.appendingPathComponent("test-response.wav")
+                let store = ImpulseResponseStore()
+                try RoomMeasurementStore.writeWAV(samples: [1] + Array(repeating: 0, count: 511),
+                    sampleRate: Double(profile.sampleRate), to: wav)
+                let oldFIR = ConvolutionProcessor(asset: try store.importWAV(at: wav, expectedSampleRate: profile.sampleRate))
+                defer { try? FileManager.default.removeItem(at: store.url(for: oldFIR.asset)) }
+                try RoomMeasurementStore.writeWAV(samples: [0.8] + Array(repeating: 0, count: 1023),
+                    sampleRate: Double(profile.sampleRate), to: wav)
+                let newFIR = ConvolutionProcessor(asset: try store.importWAV(at: wav, expectedSampleRate: profile.sampleRate))
+                defer { try? FileManager.default.removeItem(at: store.url(for: newFIR.asset)) }
+                box.profiles.profiles = [profile]
+                let app = AppState(profiles: box.profiles, perAppAudio: box.perApp, runtimeServices: DiagnosticRuntimeFakes().services())
+                try app.mutateSavedProcessing(profileID: profile.id) { $0.setConvolution(oldFIR, forChannel: 0) }
+                profile = box.profiles.profiles[0]
+                let original = try profile.resolvedProcessing()
+                let shared = EQBand(kind: .peaking, frequency: 120, gain: -3, q: 2)
+                let individual = EQBand(kind: .peaking, frequency: 220, gain: -2, q: 3)
+                for method in RoomCorrectionMethod.allCases {
+                    var result = RoomCorrectionResult(sessionID: UUID(), context: try profile.roomMeasurementContext(),
+                        method: method, settings: .init(), lowHz: 25, highHz: 800, positionCount: 5)
+                    if method != .fir { result.sharedBands = [shared]; result.channelBands = [0: [individual]] }
+                    if method == .fir || method == .hybrid { result.channelFIR = [0: newFIR] }
+                    let plan = try RoomCorrectionImportPlan(result: result, profile: profile)
+                    let message = try plan.replacementMessage(profile: profile)
+                    try diagnosticRequire(message?.contains("per-channel EQ") == (method != .fir)
+                        && message?.contains("FIR") == (method == .fir || method == .hybrid),
+                        "Replacement prompt must name only the overwritten filter types")
+                    let candidate = try plan.applying(to: profile)
+                    _ = try AudioRuntimePlanPreparer.prepareForStorage(profile: candidate,
+                        revision: .init(profileID: candidate.id, generation: 0))
+                    let processing = try candidate.resolvedProcessing()
+                    let left = processing.settings(forChannel: 0)!, right = processing.settings(forChannel: 1)!
+                    try diagnosticRequire(left.bands == (method == .fir ? [oldBand] : [shared, individual])
+                        && right.bands == (method == .fir ? [oldBand] : [shared]), "Shared IIR must reach all channel editors")
+                    try diagnosticRequire(processing.convolution(forChannel: 0)?.processor == (method == .fir || method == .hybrid ? newFIR : oldFIR),
+                        "IIR must preserve FIR; FIR and Hybrid must install the calculated impulse")
+                    try diagnosticRequire(left.gainDB == -2 && left.delayMilliseconds == 3
+                        && right.gainDB == -2 && processing.global == original.global,
+                        "Import must preserve gain, delay and global processing")
+                    try diagnosticRequire(plan.matches(profile: candidate), "Imported filters must remain compatible with their original measurement")
+                    var changed = candidate
+                    try changed.setChannelProcessing(index: 0, role: .left, gainDB: -8, bands: left.bands)
+                    try diagnosticRequire(!plan.matches(profile: changed), "An unrelated processing edit must still invalidate measurements")
+                    let before = try app.roomCorrectionImportSnapshot(profile: profile)
+                    let after = try app.roomCorrectionImportSnapshot(profile: candidate)
+                    try app.storeRoomCorrectionImport(after, profileID: profile.id)
+                    let stored = try box.profiles.profiles[0].resolvedProcessing()
+                    try diagnosticRequire(stored == processing, "Imported chains must survive physical-channel storage")
+                    try app.storeRoomCorrectionImport(before, profileID: profile.id)
+                    let restored = try box.profiles.profiles[0].resolvedProcessing()
+                    try diagnosticRequire(restored == original, "Undo must restore the exact previous chains")
+                }
+                return .init(summary: "Auto/IIR, FIR and Hybrid map correctly; replacement prompts, physical storage and undo preserve unrelated settings")
+            }
+        ]
     }
 
     private static func test(_ id: String, _ suite: String, _ name: String,
@@ -149,6 +284,35 @@ enum DeveloperSelfTests {
 
     private static func pcmCases() -> [DiagnosticCase] {
         [
+            test("A09", "Speaker Identification", "Physical tests silence unselected outputs") { _ in
+                for channels in [1, 2, 8, 32] {
+                    let topology = try SpeakerTopologyResolver().resolve(deviceUID: "test:audition",
+                        sampleRate: 8_000, channelCount: channels, channels: [])
+                    for selected in Set([0, channels - 1]) {
+                        let id = PhysicalOutputID(deviceUID: topology.deviceUID, channelIndex: selected)
+                        guard let clip = SpatialCalibrationClip(physicalOutput: id, topology: topology) else {
+                            throw DiagnosticFailure(message: "Could not prepare the physical test")
+                        }
+                        // Stand in for the driver-protection stage: its output
+                        // must survive packing without restoring the raw clip.
+                        let mono = SpeakerOutputAudition.monoSamples(clip, output: selected).map { $0 * 0.5 }
+                        let output = try SpeakerOutputAudition.interleavedSamples(mono,
+                            output: selected, channelCount: channels)
+                        try diagnosticRequire(output.count == clip.samples.count && mono.contains { $0 != 0 },
+                            "Identification lost its signal or frame count")
+                        for channel in 0..<channels {
+                            let values = stride(from: channel, to: output.count, by: channels).map { output[$0] }
+                            try diagnosticRequire(channel == selected ? values == mono : values.allSatisfy { $0 == 0 },
+                                "Identification leaked into output \(channel + 1) or changed the protected signal")
+                        }
+                    }
+                }
+                do {
+                    _ = try SpeakerOutputAudition.interleavedSamples([0.01], output: 2, channelCount: 2)
+                    throw DiagnosticFailure(message: "An unavailable output was accepted")
+                } catch SpeakerTopologyError.invalidChannelIndex { }
+                return .init(summary: "Left/right and multichannel tests preserve the selected signal and send exact zeros to every other output")
+            },
             test("A01", "PCM / Timeline", "One client") { _ in
                 let mixer = TimelineMixerFixture()
                 _ = mixer.ingest(packet(), now: instant)

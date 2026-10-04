@@ -1,11 +1,11 @@
 import Foundation
 
 package enum ProfileSection: String, Codable, CaseIterable, Identifiable, Sendable {
-    case deviceSetup, meters, spectrum, mode, equalizer, perChannel, deviceCorrection, crossfeed, multichannel
+    case deviceSetup, meters, spectrum, mode, equalizer, perChannel, deviceCorrection, crossfeed, multichannel, subwooferControl
     // Retain the old identifiers so saved layouts can migrate without losing settings.
     case convolution
     package static let allCases: [ProfileSection] = [
-        .deviceSetup, .meters, .spectrum, .mode, .deviceCorrection, .equalizer, .perChannel, .multichannel
+        .deviceSetup, .meters, .spectrum, .mode, .deviceCorrection, .equalizer, .subwooferControl, .perChannel, .multichannel
     ]
     package static let defaultLayoutSections = allCases
     package var consolidated: Self {
@@ -26,12 +26,26 @@ package enum ProfileSection: String, Codable, CaseIterable, Identifiable, Sendab
         case .convolution: return "FIR / Convolution"
         case .crossfeed: return "Crossfeed"
         case .perChannel: return "Channel Processing"
-        case .multichannel: return "Bass & Routing"
+        case .multichannel: return "Routing & Crossovers"
+        case .subwooferControl: return "Subwoofer Control"
         }
     }
     package func applies(to type: ProfileEndpointKind) -> Bool {
+        if self == .subwooferControl { return type == .speakers || type == .audioInterface }
         if self == .multichannel { return type == .speakers }
         return self != .crossfeed || type == .headphones || type == .iem
+    }
+}
+
+package enum SectionVisibility: String, Codable, CaseIterable, Identifiable {
+    case automatic, shown, hidden
+    package var id: Self { self }
+    package var title: String {
+        switch self {
+        case .automatic: return "Automatic"
+        case .shown: return "Show"
+        case .hidden: return "Hide"
+        }
     }
 }
 
@@ -52,11 +66,13 @@ package struct SectionPresentationPreference: Codable, Hashable, Sendable {
 package struct ProfileSectionLayout: Codable, Hashable, Sendable {
     package var order: [ProfileSection] = ProfileSection.allCases
     package var hidden: Set<ProfileSection> = []
+    package var explicitlyShown: Set<ProfileSection> = []
     package var presentation: [String: SectionPresentationPreference] = [:]
 
-    private enum CodingKeys: String, CodingKey { case order, hidden, presentation }
+    private enum CodingKeys: String, CodingKey { case order, hidden, explicitlyShown, presentation }
     package init(order: [ProfileSection] = ProfileSection.allCases, hidden: Set<ProfileSection> = [],
-         presentation: [String: SectionPresentationPreference] = [:]) {
+         presentation: [String: SectionPresentationPreference] = [:], explicitlyShown: Set<ProfileSection> = []) {
+        self.explicitlyShown = explicitlyShown
         var seen: Set<ProfileSection> = [.deviceSetup]
         self.order = [.deviceSetup] + (order + ProfileSection.defaultLayoutSections)
             .map(\.consolidated).filter { seen.insert($0).inserted }
@@ -76,14 +92,16 @@ package struct ProfileSectionLayout: Codable, Hashable, Sendable {
         self.init(
             order: try values.decodeIfPresent([ProfileSection].self, forKey: .order) ?? ProfileSection.allCases,
             hidden: try values.decodeIfPresent(Set<ProfileSection>.self, forKey: .hidden) ?? [],
-            presentation: try values.decodeIfPresent([String: SectionPresentationPreference].self, forKey: .presentation) ?? [:]
+            presentation: try values.decodeIfPresent([String: SectionPresentationPreference].self, forKey: .presentation) ?? [:],
+            explicitlyShown: try values.decodeIfPresent(Set<ProfileSection>.self, forKey: .explicitlyShown) ?? []
         )
     }
     package func encode(to encoder: Encoder) throws {
-        let normalized = Self(order: order, hidden: hidden, presentation: presentation)
+        let normalized = Self(order: order, hidden: hidden, presentation: presentation, explicitlyShown: explicitlyShown)
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(normalized.normalizedOrder, forKey: .order)
         try values.encode(normalized.hidden, forKey: .hidden)
+        try values.encode(normalized.explicitlyShown, forKey: .explicitlyShown)
         try values.encode(normalized.presentation, forKey: .presentation)
     }
 
@@ -103,6 +121,19 @@ package struct ProfileSectionLayout: Codable, Hashable, Sendable {
     }
     package func visibleSections(for type: ProfileEndpointKind) -> [ProfileSection] {
         normalizedOrder.filter { $0.applies(to: type) && ($0 == .deviceSetup || !hidden.contains($0)) }
+    }
+    package var subwooferVisibility: SectionVisibility {
+        get { hidden.contains(.subwooferControl) ? .hidden : explicitlyShown.contains(.subwooferControl) ? .shown : .automatic }
+        set {
+            hidden.remove(.subwooferControl); explicitlyShown.remove(.subwooferControl)
+            if newValue == .hidden { hidden.insert(.subwooferControl) }
+            if newValue == .shown { explicitlyShown.insert(.subwooferControl) }
+        }
+    }
+    package func visibleSections(for profile: DeviceProfile) -> [ProfileSection] {
+        visibleSections(for: profile.effectiveEndpointKind).filter {
+            $0 != .subwooferControl || subwooferVisibility == .shown || profile.hasSpeakersAndSubwoofer
+        }
     }
     package mutating func move(_ section: ProfileSection, before destination: ProfileSection?) {
         let section = section.consolidated

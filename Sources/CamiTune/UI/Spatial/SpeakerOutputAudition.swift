@@ -15,7 +15,8 @@ final class SpeakerOutputAudition: ObservableObject {
     private var task: Task<Void, Never>?
     private var request = UUID()
 
-    func toggle(_ output: PhysicalOutputID, topology: SpeakerTopology, audio: CoreAudioService, profile: DeviceProfile? = nil) {
+    func toggle(_ output: PhysicalOutputID, topology: SpeakerTopology, audio: CoreAudioService,
+                profile: DeviceProfile? = nil, subwooferTestGainDB: Double = 0) {
         if self.output == output { stop(); return }
         stop()
         let token = UUID(); request = token
@@ -36,7 +37,8 @@ final class SpeakerOutputAudition: ObservableObject {
                         throw SpeakerTopologyError.invalidDeviceUID
                     }
                     testTopology.endpoints[index].connectionState = .confirmedByUser
-                    guard let clip = SpatialCalibrationClip(physicalOutput: output, topology: testTopology) else {
+                    guard let clip = SpatialCalibrationClip(physicalOutput: output, topology: testTopology,
+                        subwooferTestGainDB: subwooferTestGainDB) else {
                         throw ProfileSettingsError.runtime("This output could not prepare an identification signal.")
                     }
                     var samples = Self.monoSamples(clip, output: output.channelIndex)
@@ -46,7 +48,9 @@ final class SpeakerOutputAudition: ObservableObject {
                         try candidate.validateMultichannelHardware(hardware)
                         samples = try SpeakerAuditionProtection.samples(samples, output: output, profile: candidate)
                     }
-                    return (clip, samples)
+                    let interleaved = try Self.interleavedSamples(samples, output: output.channelIndex,
+                        channelCount: clip.channelCount)
+                    return (clip, interleaved)
                 }.value
                 guard request == token, !Task.isCancelled else { return }
                 try start(clip: prepared.0, samples: prepared.1, output: output)
@@ -80,10 +84,12 @@ final class SpeakerOutputAudition: ObservableObject {
     }
 
     private func start(clip: SpatialCalibrationClip, samples: [Float], output: PhysicalOutputID) throws {
+        let channels = UInt32(clip.channelCount)
+        let frameBytes = channels * UInt32(MemoryLayout<Float>.size)
         var format = AudioStreamBasicDescription(mSampleRate: clip.sampleRate,
             mFormatID: kAudioFormatLinearPCM, mFormatFlags: kAudioFormatFlagsNativeFloatPacked,
-            mBytesPerPacket: 4, mFramesPerPacket: 1, mBytesPerFrame: 4,
-            mChannelsPerFrame: 1, mBitsPerChannel: 32, mReserved: 0)
+            mBytesPerPacket: frameBytes, mFramesPerPacket: 1, mBytesPerFrame: frameBytes,
+            mChannelsPerFrame: channels, mBitsPerChannel: 32, mReserved: 0)
         var created: AudioQueueRef?
         try check(AudioQueueNewOutput(&format, speakerAuditionBufferCompleted, nil, nil, nil, 0, &created))
         guard let created else { throw ProfileSettingsError.runtime("The test audio queue could not be created.") }
@@ -93,9 +99,19 @@ final class SpeakerOutputAudition: ObservableObject {
             var reference = Unmanaged.passUnretained(uid)
             try check(AudioQueueSetProperty(created, kAudioQueueProperty_CurrentDevice, &reference,
                                             UInt32(MemoryLayout<Unmanaged<CFString>>.size)))
-            var assignment = AudioQueueChannelAssignment(mDeviceUID: reference, mChannelNumber: UInt32(output.channelIndex + 1))
-            try check(AudioQueueSetProperty(created, kAudioQueueProperty_ChannelAssignments, &assignment,
-                                            UInt32(MemoryLayout<AudioQueueChannelAssignment>.size)))
+            // Supply every physical channel, including explicit silence, instead
+            // of relying on a one-channel stream's mapping to a wider device.
+            var layout = AudioChannelLayout()
+            layout.mChannelLayoutTag = kAudioChannelLayoutTag_DiscreteInOrder | channels
+            try check(AudioQueueSetProperty(created, kAudioQueueProperty_ChannelLayout, &layout,
+                                            UInt32(MemoryLayout<AudioChannelLayout>.size)))
+            let assignments = (1...channels).map {
+                AudioQueueChannelAssignment(mDeviceUID: reference, mChannelNumber: $0)
+            }
+            try assignments.withUnsafeBufferPointer { buffer in
+                try check(AudioQueueSetProperty(created, kAudioQueueProperty_ChannelAssignments, buffer.baseAddress!,
+                                                UInt32(buffer.count * MemoryLayout<AudioQueueChannelAssignment>.stride)))
+            }
         }
         var buffer: AudioQueueBufferRef?
         try check(AudioQueueAllocateBuffer(created, UInt32(samples.count * MemoryLayout<Float>.size), &buffer))
@@ -112,6 +128,18 @@ final class SpeakerOutputAudition: ObservableObject {
     nonisolated static func monoSamples(_ clip: SpatialCalibrationClip, output: Int) -> [Float] {
         guard (0..<clip.channelCount).contains(output) else { return [] }
         return stride(from: output, to: clip.samples.count, by: clip.channelCount).map { clip.samples[$0] }
+    }
+
+    /// Preserve the already protected mono signal and explicitly silence every
+    /// other hardware output. This is the buffer passed directly to AudioQueue.
+    nonisolated static func interleavedSamples(_ mono: [Float], output: Int, channelCount: Int) throws -> [Float] {
+        guard (1...SpeakerTopology.maximumOutputChannels).contains(channelCount),
+              (0..<channelCount).contains(output), !mono.isEmpty else {
+            throw SpeakerTopologyError.invalidChannelIndex(output)
+        }
+        var result = [Float](repeating: 0, count: mono.count * channelCount)
+        for frame in mono.indices { result[frame * channelCount + output] = mono[frame] }
+        return result
     }
 
     func stop() {

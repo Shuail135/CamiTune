@@ -14,7 +14,7 @@ package struct MultichannelGraphCompiler {
         let processors = Dictionary(uniqueKeysWithValues: graph.processors.map { ($0.id, $0) })
         func isSourceContent(_ step: ProcessingGraph.PipelineStep) -> Bool {
             guard step.kind == .filter, step.scope == .global,
-                  step.id != ProcessingProfile.spatialRoomCorrectionStageID else { return false }
+                  !ProcessingProfile.isRoomStage(step.id) else { return false }
             return !step.processorIDs.contains { id in
                 if case .limiter = processors[id]?.implementation { return true }; return false
             }
@@ -25,7 +25,7 @@ package struct MultichannelGraphCompiler {
         }
         graph.inputFormat = inputFormat
         let routes = settings.routing.enabled ? settings.routing.routes : profile.defaultSpeakerRoutes(source: inputFormat)
-        let bass = settings.bass
+        let bass = settings.effectiveBass
         let subs = Set(bass.subwooferEndpointIDs)
         var mappings: [ProcessingGraph.Mixer.Mapping] = profile.configuredSpeakerEndpoints.compactMap { endpoint in
             if bass.enabled && subs.contains(endpoint.id) { return nil }
@@ -155,6 +155,9 @@ extension DeviceProfile {
         let endpoints = configuredSpeakerEndpoints
         let ids = Set(endpoints.map(\.id))
         let activeDrivers = endpoints.filter { [.woofer, .midrange, .tweeter].contains($0.function) }
+        try require(value.subwooferControl.reductionDB.isFinite
+            && SubwooferControlSettings.reductionRangeDB.contains(value.subwooferControl.reductionDB),
+            "Subwoofer reduction must be between 0 and 24 dB.")
         try require(activeDrivers.isEmpty || value.crossover.enabled, "Configure active crossovers and driver protection before activating these drivers.")
         guard value.isEnabled else { return }
         try require(hasPhysicalSpeakerRoute, "Configure physical speakers before enabling multichannel processing.")
@@ -169,18 +172,18 @@ extension DeviceProfile {
                     "Each source-to-speaker route must be unique.")
                 try require(ids.contains(route.destination) && (0..<count).contains(route.sourceChannel), "A route references an unavailable source or physical speaker. Review Custom Routing.")
                 try require(route.gainDB.isFinite && (-120...24).contains(route.gainDB), "Route gain must be between −120 and +24 dB.")
-                if value.bass.enabled {
-                    try require(!value.bass.subwooferEndpointIDs.contains(route.destination), "Remove direct routes to bass-managed subwoofers; Bass & Subwoofers supplies their signal.")
+                if value.effectiveBass.enabled {
+                    try require(!value.bass.subwooferEndpointIDs.contains(route.destination), "Remove direct routes to bass-managed subwoofers; Bass management supplies their signal.")
                 }
             }
         }
-        if value.bass.enabled {
+        if value.effectiveBass.enabled {
             let bass = value.bass
             try require(!bass.subwooferEndpointIDs.isEmpty && Set(bass.subwooferEndpointIDs).count == bass.subwooferEndpointIDs.count,
                 "Choose at least one distinct subwoofer for bass management.")
             try require(bass.lfeGainDB.isFinite && (-120...24).contains(bass.lfeGainDB), "LFE trim must be between −120 and +24 dB.")
             for id in bass.subwooferEndpointIDs {
-                try require(endpoints.contains { $0.id == id && $0.function == .subwoofer }, "A bass-management output is unavailable or is no longer a subwoofer. Review Bass & Subwoofers.")
+                try require(endpoints.contains { $0.id == id && $0.function == .subwoofer }, "A bass-management output is unavailable or is no longer a subwoofer. Review Bass management.")
                 let sub = bass.subwooferSettings[id] ?? .init()
                 try require(sub.gainDB.isFinite && (-120...24).contains(sub.gainDB) && sub.delayMilliseconds.isFinite && (0...100).contains(sub.delayMilliseconds), "Subwoofer trim or delay is outside the supported range.")
             }
@@ -188,7 +191,7 @@ extension DeviceProfile {
             for group in bass.groups {
                 try require(groups.insert(group.groupID).inserted && frequency(group.crossoverHz), "Bass crossover groups must be unique and their frequencies must be below Nyquist.")
                 guard let configured = configuredSpeakerGroups.first(where: { $0.id == group.groupID }) else {
-                    throw ProfileSettingsError.runtime("A bass-managed speaker group is unavailable. Review Bass & Subwoofers.")
+                    throw ProfileSettingsError.runtime("A bass-managed speaker group is unavailable. Review Bass management.")
                 }
                 for id in configured.members {
                     try require(!bass.subwooferEndpointIDs.contains(id) && members.insert(id).inserted,

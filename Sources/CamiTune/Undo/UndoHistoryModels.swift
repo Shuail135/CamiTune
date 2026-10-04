@@ -26,6 +26,10 @@ struct ConvolutionHistoryState: Equatable, Sendable {
     var processor: ConvolutionProcessor?
     var isEnabled: Bool
 }
+struct RoomCorrectionImportHistoryState: Equatable, Sendable {
+    var channels: [Int: ProcessingChain]
+    var seat: SpatialSeatingCalibration?
+}
 struct AppPlacementHistoryState: Equatable, Sendable {
     var orderedApplicationIDs: [String]
     var hiddenByApplicationID: [String: Bool]
@@ -38,6 +42,7 @@ struct ProfileOrganizationHistoryState: Equatable, Sendable {
 struct SpeakerSystemHistoryState: Equatable, Sendable {
     var topology: SpeakerTopology?
     var seat: SpatialSeatingCalibration?
+    var bass = BassManagementSettings()
 }
 struct ReferenceTransferHistoryState: Equatable, Sendable {
     var correction: DeviceCorrectionProfile?
@@ -56,6 +61,7 @@ enum HistoryState: Equatable, Sendable {
     case globalEQ(GlobalEQHistoryState), channel(PerChannelEditorSnapshot)
     case crossfeed(CrossfeedHistoryState), convolution(ConvolutionHistoryState)
     case convolutionBatch([Int: ConvolutionHistoryState])
+    case roomCorrectionImport(RoomCorrectionImportHistoryState)
     case perAppAudio(PerAppAudioSettings), perAppBatch([String: PerAppAudioSettings])
     case appAlias(String?), appPlacement(AppPlacementHistoryState)
     case deletion(ProfileDeletionSnapshot, deleted: Bool)

@@ -623,7 +623,7 @@ private extension Array where Element == ProcessingStage {
     }
 
     var firstEqualizerStage: (isEnabled: Bool, bands: [EQBand])? {
-        for stage in self where stage.id != ProcessingProfile.spatialRoomCorrectionStageID {
+        for stage in self where !ProcessingProfile.isRoomStage(stage.id) {
             if case .equalizer(let equalizer) = stage.processor {
                 return (stage.isEnabled, equalizer.bands)
             }
@@ -641,7 +641,7 @@ private extension Array where Element == ProcessingStage {
     }
 
     var firstConvolutionStage: (isEnabled: Bool, processor: ConvolutionProcessor)? {
-        for stage in self {
+        for stage in self where !ProcessingProfile.isRoomStage(stage.id) {
             if case .convolution(let convolution) = stage.processor {
                 return (stage.isEnabled, convolution)
             }
@@ -717,7 +717,7 @@ private extension Array where Element == ProcessingStage {
 
     mutating func upsertEqualizer(bands: [EQBand], stageID: UUID? = nil) {
         if let index = firstIndex(where: {
-            guard $0.id != ProcessingProfile.spatialRoomCorrectionStageID else { return false }
+            guard !ProcessingProfile.isRoomStage($0.id) else { return false }
             if case .equalizer = $0.processor { return true }
             return false
         }) {
@@ -773,12 +773,18 @@ private extension Array where Element == ProcessingStage {
         enabled: Bool,
         stageID: UUID
     ) {
-        let index = firstIndex(where: {
+        let index = firstIndex(where: { $0.id == stageID }) ?? firstIndex(where: {
+            guard !ProcessingProfile.isRoomStage($0.id), !ProcessingProfile.isRoomStage(stageID) else { return false }
             if case .convolution = $0.processor { return true }
             return false
         })
         guard let convolution else {
             if let index { remove(at: index) }
+            return
+        }
+        if let index, !self[..<index].contains(where: { if case .limiter = $0.processor { return true }; return false }) {
+            self[index].processor = .convolution(convolution)
+            self[index].isEnabled = enabled
             return
         }
         // Preserve an existing identity while repairing legacy insertion order.

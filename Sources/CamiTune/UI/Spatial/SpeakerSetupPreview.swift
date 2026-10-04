@@ -41,7 +41,7 @@ struct SpeakerSetupPreview: View {
                 }
                 Text("Preview only. Edits stay in this window and speaker tests highlight the selected output without playing audio.")
                     .font(.caption).foregroundStyle(.secondary)
-                JoinedSegmentedControl(options: ["Setup", "Processing", "Bass & Routing", "Meters"], selection: $section, title: { $0 })
+                JoinedSegmentedControl(options: ["Setup", "Processing", "Routing & Crossovers", "Meters"], selection: $section, title: { $0 })
                     .frame(width: 510)
                 if section == "Setup" {
                     SpeakerSystemView(state: state, profile: $profile, draftOnly: true, embedded: true,
@@ -50,7 +50,7 @@ struct SpeakerSetupPreview: View {
                 } else if section == "Processing" {
                     PreviewHistoryButtons(history: state.history)
                     PerChannelProcessingView(state: state, profile: $profile).id(editorID)
-                } else if section == "Bass & Routing" {
+                } else if section == "Routing & Crossovers" {
                     PreviewHistoryButtons(history: state.history)
                     MultichannelProcessingView(state: state, profile: $profile, previewOnly: true).id(editorID)
                 } else {

@@ -222,14 +222,21 @@ final class PCMRouter: @unchecked Sendable {
     }
 
     func playSpatialCalibration(
-        id: UUID, clip: SpatialCalibrationClip,
+        id: UUID, clip: SpatialCalibrationClip, levelCheckGain: Float = 1,
+        started: (@Sendable (TimeInterval) -> Void)? = nil,
         completion: @escaping @Sendable () -> Void
     ) -> Bool {
         state.lock()
         defer { state.unlock() }
         return camillaBranch?.playSpatialCalibration(
-            id: id, clip: clip, completion: completion
+            id: id, clip: clip, levelCheckGain: levelCheckGain, started: started, completion: completion
         ) ?? false
+    }
+
+    func setLevelCheckGain(id: UUID, gain: Float) {
+        state.lock()
+        defer { state.unlock() }
+        camillaBranch?.setLevelCheckGain(id: id, gain: gain)
     }
 
     func stopSpatialCalibrationSample(id: UUID) {

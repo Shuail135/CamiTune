@@ -1,3 +1,4 @@
+import UniformTypeIdentifiers
 import AppKit
 import CamiTuneAudio
 import CamiTuneDomain
@@ -72,6 +73,32 @@ private struct UIWorkFixture: PersistedAutoEQWork {
 enum UIInteractionSelfTests {
     static func run(artifacts: URL) async throws {
         try FileManager.default.createDirectory(at: artifacts, withIntermediateDirectories: true)
+        if ProcessInfo.processInfo.environment["CAMITUNE_UI_ROOM_RESULT_ONLY"] == "1" {
+            try await roomCorrectionResultInteractions(artifacts: artifacts)
+            return
+        }
+        if ProcessInfo.processInfo.environment["CAMITUNE_UI_ROOM_RECORDER_ONLY"] == "1"
+            || ProcessInfo.processInfo.environment["CAMITUNE_UI_ROOM_IMPORT_ONLY"] == "1" {
+            for test in DeveloperSelfTests.roomRecordingCases() {
+                let result = try await test.execute()
+                print("\(test.id): \(result.summary)")
+            }
+            try await roomRecorderInteractions(artifacts: artifacts)
+            return
+        }
+        if ProcessInfo.processInfo.environment["CAMITUNE_UI_ROOM_ONLY"] == "1" {
+            try await roomCorrectionResultInteractions(artifacts: artifacts)
+            try await roomCorrectionInteractions(artifacts: artifacts)
+            try await roomRecorderInteractions(artifacts: artifacts)
+            return
+        }
+        if ProcessInfo.processInfo.environment["CAMITUNE_UI_SEARCH_ONLY"] != "1",
+           ProcessInfo.processInfo.environment["CAMITUNE_UI_CORRECTION_ONLY"] != "1" {
+            try await roomCorrectionResultInteractions(artifacts: artifacts)
+            try await roomMenuTracking()
+            try await roomCorrectionInteractions(artifacts: artifacts)
+            try await roomRecorderInteractions(artifacts: artifacts)
+        }
         try await autoEQSearchSelection()
         if ProcessInfo.processInfo.environment["CAMITUNE_UI_SEARCH_ONLY"] == "1" { return }
         if ProcessInfo.processInfo.environment["CAMITUNE_UI_CORRECTION_ONLY"] == "1" {
@@ -384,6 +411,8 @@ enum UIInteractionSelfTests {
     }
 
     private static func correctionInteractions(artifacts: URL) async throws {
+        // Catalog completion removes a loading row; finish it before comparing disclosure heights.
+        _ = try? await AutoEQCatalogPresentationCache.shared.load(endpoint: .headphones)
         let box = try DiagnosticSandbox(); defer { box.cleanUp() }
         var profile = DiagnosticSandbox.profile()
         profile.endpointKind = .headphones
@@ -449,12 +478,772 @@ enum UIInteractionSelfTests {
                     try fixture.snapshot(to: artifacts.appendingPathComponent("correction-\(page.rawValue)-expanded.png"))
                     try await press(identifier: "correction-auto-advanced", disclosure: true)
                     await fixture.settle()
-                    try diagnosticRequire(abs(fixture.scrollViews[0].documentView!.frame.height - initial) < 1,
-                        "Correction disclosure left stale height after collapse")
+                    let collapsed = fixture.scrollViews[0].documentView!.frame.height
+                    if abs(collapsed - initial) >= 1 {
+                        try fixture.snapshot(to: artifacts.appendingPathComponent("correction-collapse-failure.png"))
+                    }
+                    try diagnosticRequire(abs(collapsed - initial) < 1,
+                        "Correction disclosure left stale height after collapse: \(initial) -> \(collapsed)")
                 }
             }
         }
         print("UI12: Device Correction navigation and repeated disclosures update their hosted height")
+    }
+
+    private final class RoomMenuState: NSObject, ObservableObject {
+        @Published var selection: Int? = nil
+        @Published var update = 0
+        var trackedMenu: NSMenu?
+        var closed = false
+        var remainedOpen = false
+        var timedOut = false
+        var dismiss: (@MainActor () -> Void)?
+        @MainActor @objc func dismissMenu() { dismiss?() }
+    }
+    private struct RoomMenuFixture: View {
+        @ObservedObject var state: RoomMenuState
+        var body: some View {
+            VStack(alignment: .leading, spacing: 20) {
+                RoomCorrectionMenu(label: "Test selection", selection: $state.selection, options: [nil, 1, 2],
+                    title: { $0.map { "Option \($0)" } ?? "Auto" }).frame(width: 260)
+                Text("Background update \(state.update)")
+                Spacer()
+            }.padding(20)
+        }
+    }
+    private static func roomMenuTracking() async throws {
+        let state = RoomMenuState()
+        let fixture = WindowFixture(RoomMenuFixture(state: state), size: .init(width: 400, height: 240))
+        defer { state.dismiss = nil; fixture.close() }
+        await fixture.settle()
+        let center = NotificationCenter.default
+        let opened = center.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { note in
+            state.trackedMenu = note.object as? NSMenu
+        }
+        let closed = center.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { note in
+            if note.object as? NSMenu === state.trackedMenu { state.closed = true }
+        }
+        defer { center.removeObserver(opened); center.removeObserver(closed) }
+        for dismissal in ["outside", "selection"] {
+            state.trackedMenu = nil; state.closed = false; state.remainedOpen = false; state.timedOut = false
+            guard let marker = fixture.views.first(where: { $0.identifier?.rawValue == "room-menu-Test selection" }) else {
+                throw DiagnosticFailure(message: "Missing room menu")
+            }
+            // Timers also run in AppKit's nested menu-tracking run loop.
+            let updates = Timer(timeInterval: 0.05, repeats: true) { _ in
+                state.update += 1
+            }
+            state.dismiss = {
+                state.remainedOpen = state.trackedMenu != nil && !state.closed && state.selection == nil
+                if dismissal == "outside" {
+                    let location = fixture.host.convert(NSPoint(x: 350, y: 200), to: nil)
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        NSApp.postEvent(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: fixture.window.windowNumber,
+                            context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!, atStart: false)
+                    }
+                } else {
+                    if let menu = state.trackedMenu, let index = menu.items.firstIndex(where: { $0.title == "Option 2" }) {
+                        menu.performActionForItem(at: index)
+                    }
+                    state.trackedMenu?.cancelTracking()
+                }
+            }
+            let dismiss = Timer(timeInterval: 0.8, target: state, selector: #selector(RoomMenuState.dismissMenu), userInfo: nil, repeats: false)
+            let watchdog = Timer(timeInterval: 2, repeats: false) { _ in
+                if !state.closed { state.timedOut = true; state.trackedMenu?.cancelTracking() }
+            }
+            for timer in [updates, dismiss, watchdog] { RunLoop.main.add(timer, forMode: .common) }
+            fixture.click(in: marker, at: .init(x: marker.bounds.midX, y: marker.bounds.midY))
+            try await Task.sleep(for: .milliseconds(1100))
+            for timer in [updates, dismiss, watchdog] { timer.invalidate() }
+            try diagnosticRequire(state.remainedOpen, "Room menu closed or selected an item during unrelated UI updates (\(dismissal))")
+            try diagnosticRequire(state.closed && !state.timedOut, "Room menu did not dismiss on \(dismissal)")
+            try diagnosticRequire(dismissal == "selection" ? state.selection == 2 : state.selection == nil,
+                "Room menu did not preserve/commit the expected selection on \(dismissal)")
+        }
+        print("Room Correction menus: stay open during updates; outside click preserves selection; explicit menu actions commit selection")
+    }
+
+    private static func roomRecorderInteractions(artifacts: URL) async throws {
+        let box = try DiagnosticSandbox(); defer { box.cleanUp() }
+        var profile = DiagnosticSandbox.profile()
+        profile.endpointKind = .speakers
+        profile.speakerTopology = SpeakerTopology(deviceUID: profile.outputDeviceUID,
+            sampleRate: Double(profile.sampleRate), declaredChannelCount: 2,
+            endpoints: (0..<2).map { .init(id: .init(deviceUID: profile.outputDeviceUID, channelIndex: $0),
+                role: $0 == 0 ? .left : .right, displayName: "Speaker \($0 + 1)", connectionState: .confirmedByUser) })
+        let context = try profile.roomMeasurementContext()
+        let editor = RoomCorrectionEditorState()
+        box.profiles.profiles = [profile]
+        let state = AppState(profiles: box.profiles, perAppAudio: box.perApp, runtimeServices: DiagnosticRuntimeFakes().services())
+        let binding = Binding(get: { box.profiles.profiles[0] }, set: { box.profiles.update($0) })
+        let fixture = WindowFixture(ScrollView { RoomCorrectionView(state: state, profile: binding, editor: editor).padding(16) },
+            size: .init(width: 600, height: 800))
+        defer { fixture.close() }
+        await fixture.settle(); try await Task.sleep(for: .milliseconds(600))
+        func marker(_ id: String) throws -> NSView {
+            guard let view = fixture.views.first(where: { $0.identifier?.rawValue == id }) else {
+                throw DiagnosticFailure(message: "Missing recorder action \(id)")
+            }
+            return view
+        }
+        func press(_ id: String, fraction: CGFloat = 0.5, verticalFraction: CGFloat = 0.5) async throws {
+            if id.hasPrefix("room-position-"), let row = try? marker("room-position-navigation") {
+                row.scrollToVisible(row.bounds); await fixture.settle()
+            }
+            let view = try marker(id)
+            view.scrollToVisible(view.bounds); await fixture.settle()
+            fixture.click(in: view, at: .init(x: view.bounds.width * fraction, y: view.bounds.height * verticalFraction))
+            await fixture.settle()
+        }
+        func requirePositions(_ count: Int) throws {
+            for index in 0..<count { _ = try marker("room-position-\(index)") }
+            try diagnosticRequire((try? marker("room-position-\(count)")) == nil, "Recorder created extra positions")
+            try diagnosticRequire((try? marker("room-position-editing")) == nil,
+                "Phone recording must not expose Adjust, Skip, Remove, or Add Position")
+        }
+        if ProcessInfo.processInfo.environment["CAMITUNE_UI_ROOM_IMPORT_ONLY"] == "1" {
+            // Isolate import lifecycle checks from the separate microphone,
+            // position-navigation and native-slider interaction checks.
+            editor.setSourceKind(.recorder, profile: profile)
+            editor.beginSession(profile: profile)
+            for index in 0..<(editor.session?.positions.count ?? 0) {
+                editor.selectPosition(index)
+                let blocks = editor.plannedBlocks(selectedChannel: nil)
+                guard let initial = editor.session else { throw DiagnosticFailure(message: "Missing import fixture session") }
+                editor.session = try editor.completedRecorderPosition(blocks, in: initial)
+                editor.advanceAfterPlayback()
+            }
+            await fixture.settle()
+        } else {
+            _ = try marker("room-test-volume")
+            guard let slider = fixture.views.compactMap({ $0 as? NSSlider }).first else {
+                throw DiagnosticFailure(message: "Missing native test-volume slider")
+            }
+            try diagnosticRequire(slider.accessibilityPerformIncrement(), "Test volume must accept native slider adjustments")
+            await fixture.settle()
+            try diagnosticRequire(editor.testVolumeDB == 1, "Test-volume adjustment did not reach the measurement state")
+            try await press("room-correction-start")
+            try diagnosticRequire(editor.session?.source.kind == .microphone && !editor.busy && editor.error == nil
+                && editor.session?.blocks.isEmpty == true, "Start Measurement must prepare the Mac microphone without starting capture/playback")
+            _ = try marker("room-measurement-channels")
+            try fixture.snapshot(to: artifacts.appendingPathComponent("room-recording-type.png"))
+            try await press("room-recording-type", fraction: 0.35, verticalFraction: 0.25)
+            try diagnosticRequire(editor.source.kind == .recorder, "Recording type must remain switchable after Start Measurement")
+            try requirePositions(5)
+            try diagnosticRequire((try? marker("room-new-session")) == nil, "New Session must not be exposed")
+            try diagnosticRequire((try? marker("room-measurement-channels")) == nil, "Phone recording must play all speakers without a channel chooser")
+            for count in [5, 9] {
+                try await press("room-recorder-position-count", fraction: count == 5 ? 0.25 : 0.75)
+                try requirePositions(count)
+                try await press("room-position-\(count - 1)")
+                guard let map = fixture.views.compactMap({ $0 as? SpeakerRoomNSView }).first else {
+                    throw DiagnosticFailure(message: "Missing phone measurement map")
+                }
+                let expected = RoomMeasurementGeometry.recorderPositions(center: context.listener, radius: 0.2,
+                    count: count == 5 ? .five : .nine)
+                try diagnosticRequire(map.configuration?.measurementPoint == expected.last && map.configuration?.measurementRadius == 0,
+                    "Phone measurement marker must show the exact fixed point")
+                map.scrollToVisible(map.bounds); await fixture.settle()
+                try fixture.snapshot(to: artifacts.appendingPathComponent("room-recorder-\(count).png"))
+            }
+            editor.selectPosition(0)
+            for index in 0..<9 {
+                try diagnosticRequire(editor.positionIndex == index, "Phone guide must advance the graph after each completed position")
+                let blocks = editor.plannedBlocks(selectedChannel: 0)
+                guard let initial = editor.session else { throw DiagnosticFailure(message: "Missing prepared phone session") }
+                editor.session = try editor.completedRecorderPosition(blocks, in: initial)
+                editor.advanceAfterPlayback()
+                await fixture.settle()
+                _ = try marker("room-recorder-next")
+                try diagnosticRequire(editor.recorderActionTitle == (index == 8 ? "Import Recording…" : "Next"),
+                    "Phone footer must guide every position before offering a single import")
+            }
+            try fixture.snapshot(to: artifacts.appendingPathComponent("room-recorder-import.png"))
+            try await press("room-recorder-next")
+            for _ in 0..<100 where !NSApp.windows.contains(where: { $0 is NSOpenPanel && $0.isVisible }) {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            guard let panel = NSApp.windows.compactMap({ $0 as? NSOpenPanel }).first(where: \.isVisible) else {
+                throw DiagnosticFailure(message: "Import Recording did not open its file picker")
+            }
+            try diagnosticRequire(panel.allowedContentTypes == [.audio] && !panel.canChooseDirectories && !panel.allowsMultipleSelection,
+                "Recording import must choose a single audio file")
+            panel.cancel(nil)
+            await fixture.settle()
+            try diagnosticRequire(editor.error == nil, "Cancelling the picker must not report an import failure")
+        }
+
+        guard var imported = editor.session else { throw DiagnosticFailure(message: "Missing recorder session") }
+        var recording = RoomRecordingReference(fileName: "fixture.m4a", sourceFormat: "AAC", isLossy: true,
+            blockIDs: imported.blocks.map(\.id))
+        let legacyData = try PropertyListEncoder().encode(recording)
+        let legacyRecording = try PropertyListDecoder().decode(RoomRecordingReference.self, from: legacyData)
+        try diagnosticRequire(legacyRecording.originalFileName == nil && legacyRecording.fileName == recording.fileName,
+            "Saved recordings without display metadata must remain readable")
+        recording.originalFileName = "Living room recording.m4a"
+        imported.recordings = [recording]
+        imported.positions[0].observations = [.init(channel: 0, bins: (1...12).map {
+            .init(frequency: Double($0) * 100, magnitudeDB: 0)
+        })]
+        try RoomMeasurementStore().save(imported)
+        let recordingURL = try RoomMeasurementStore().recordingURL(recording, sessionID: imported.id)
+        try Data("retained recording fixture".utf8).write(to: recordingURL)
+        let restored = try RoomMeasurementStore().load(imported.id)
+        try diagnosticRequire(restored.recordings.first?.originalFileName == recording.originalFileName,
+            "The imported filename must survive reopening the session")
+        editor.session = imported
+        editor.persistSession()
+        for _ in 0..<500 where editor.busy { try await Task.sleep(for: .milliseconds(20)) }
+        editor.tab = .analysis
+        await fixture.settle()
+        func requireHiddenRecordingControls() throws {
+            try diagnosticRequire((try? marker("room-imported-recording")) == nil
+                && (try? marker("room-recording-remove")) == nil,
+                "Recording file controls must only appear on Measure")
+        }
+        func requireCorrectionCreation() async throws {
+            let previousDate = editor.calculatedResult?.generatedAt
+            let profileBeforeCalculation = box.profiles.profiles[0]
+            try await press("room-correction-create")
+            for _ in 0..<500 where editor.busy { try await Task.sleep(for: .milliseconds(20)) }
+            await fixture.settle()
+            let result = editor.calculatedResult
+            try diagnosticRequire(box.profiles.profiles[0] == profileBeforeCalculation, "Calculating must leave saved processing unchanged")
+            _ = try marker("room-correction-details")
+            try diagnosticRequire(editor.error == nil && result?.sessionID == imported.id
+                && result?.generatedAt != previousDate && result?.positionCount == imported.usablePositionCount
+                && editor.tab == .correction && editor.session?.blocks == imported.blocks,
+                "Recalculate must rebuild imported analysis: error=\(editor.error ?? "none"), result=\(String(describing: result?.sessionID)), expected=\(imported.id), positions=\(String(describing: result?.positionCount)), tab=\(editor.tab), busy=\(editor.busy), blocksMatch=\(editor.session?.blocks == imported.blocks), changed=\(result?.generatedAt != previousDate)")
+            try requireHiddenRecordingControls()
+        }
+        try requireHiddenRecordingControls()
+        try diagnosticRequire((try? marker("room-correction-remeasure")) == nil
+            && (try? marker("room-correction-recalculate")) == nil,
+            "Imported analysis must use the Next workflow without a recalculation action")
+        try await press("room-correction-next")
+        try await requireCorrectionCreation()
+        try diagnosticRequire((try? marker("room-correction-remeasure")) == nil
+            && (try? marker("room-correction-recalculate")) == nil,
+            "Imported analysis must not expose Re-measure or a separate WAV recalculation action")
+        try diagnosticRequire((try? marker("room-recording-reanalyze")) == nil,
+            "The recording footer must not expose Reanalyze")
+        try await press("room-correction-tab-measure")
+        try diagnosticRequire((try? marker("room-recorder-next")) == nil,
+            "An imported recording must replace the import action")
+        _ = try marker("room-correction-next")
+        for width: CGFloat in [500, 950] {
+            fixture.resize(width: width, height: 800); await fixture.settle()
+            let filename = try marker("room-imported-recording")
+            let remove = try marker("room-recording-remove")
+            let next = try marker("room-correction-next")
+            let filenameFrame = filename.convert(filename.bounds, to: fixture.host)
+            let removeFrame = remove.convert(remove.bounds, to: fixture.host)
+            let nextFrame = next.convert(next.bounds, to: fixture.host)
+            try diagnosticRequire(abs(filenameFrame.midY - nextFrame.midY) < 2
+                && abs(removeFrame.midY - nextFrame.midY) < 2
+                && filenameFrame.width > 40 && filenameFrame.maxX <= removeFrame.minX
+                && removeFrame.maxX <= nextFrame.minX && nextFrame.maxX <= fixture.host.bounds.maxX,
+                "The filename and remove control must share the Next row and fit the window")
+        }
+        fixture.resize(width: 600, height: 800); await fixture.settle()
+        try fixture.snapshot(to: artifacts.appendingPathComponent("room-recorder-attached.png"))
+        try await press("room-recording-remove")
+        for _ in 0..<100 where editor.busy { try await Task.sleep(for: .milliseconds(20)) }
+        await fixture.settle()
+        let detached = try RoomMeasurementStore().load(imported.id)
+        try diagnosticRequire(editor.error == nil && detached.recordings.isEmpty
+            && detached.positions.allSatisfy { $0.observations.isEmpty }
+            && detached.blocks == imported.blocks && FileManager.default.fileExists(atPath: recordingURL.path),
+            "Removing an import must detach its measurements, preserve playback and retain the file")
+        _ = try marker("room-recorder-next")
+        try diagnosticRequire(editor.recorderPlaybackComplete && editor.recorderActionTitle == "Import Recording…",
+            "Removing a recording must restore Import without requiring another measurement sequence")
+        try await press("room-recorder-next")
+        for _ in 0..<100 where !NSApp.windows.contains(where: { $0 is NSOpenPanel && $0.isVisible }) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard let replacementPanel = NSApp.windows.compactMap({ $0 as? NSOpenPanel }).first(where: \.isVisible) else {
+            throw DiagnosticFailure(message: "Removing the file must allow importing another recording")
+        }
+        replacementPanel.cancel(nil); await fixture.settle()
+
+        // A replacement import automatically analyzes the file. Next leads to
+        // the existing correction settings and Create/Update action.
+        editor.session = imported
+        editor.persistSession()
+        for _ in 0..<500 where editor.busy { try await Task.sleep(for: .milliseconds(20)) }
+        editor.tab = .analysis
+        await fixture.settle()
+        try requireHiddenRecordingControls()
+        try diagnosticRequire((try? marker("room-correction-recalculate")) == nil,
+            "Reimport must not bring back the recalculation action")
+        try await press("room-correction-next")
+        try await requireCorrectionCreation()
+        try await press("room-correction-tab-measure")
+        _ = try marker("room-imported-recording")
+
+        func answerReset(_ title: String) async throws {
+            func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+            guard let content = fixture.window.attachedSheet?.contentView,
+                  let button = descendants(content).compactMap({ $0 as? NSButton }).first(where: { $0.title == title }) else {
+                throw DiagnosticFailure(message: "Missing reset confirmation button \(title)")
+            }
+            button.performClick(nil)
+            await fixture.settle()
+            for _ in 0..<100 where editor.busy { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        let sessionBeforeReset = editor.session?.id
+        try await press("room-correction-reset")
+        try diagnosticRequire(editor.session?.id == sessionBeforeReset, "Opening Reset must preserve the session")
+        try await answerReset("Cancel")
+        try diagnosticRequire(editor.session?.id == sessionBeforeReset, "Cancelling Reset must preserve the session")
+        try await press("room-correction-reset")
+        try await answerReset("Reset")
+        try diagnosticRequire(editor.session == nil && editor.comparison == nil && editor.source.kind == .microphone
+            && editor.testVolumeDB == 0 && editor.recorderPositionCount == .five && editor.error == nil,
+            "Reset must restore a fresh Room Correction workflow")
+        _ = try marker("room-correction-start")
+        try diagnosticRequire((try? marker("room-imported-recording")) == nil && (try? marker("room-recorder-next")) == nil,
+            "Reset must clear the imported file and require a new measurement setup")
+        try await press("room-calibration-import")
+        for _ in 0..<100 where !NSApp.windows.contains(where: { $0 is NSOpenPanel && $0.isVisible }) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard let calibration = NSApp.windows.compactMap({ $0 as? NSOpenPanel }).first(where: \.isVisible) else {
+            throw DiagnosticFailure(message: "Calibration picker must still open after recording import and reset")
+        }
+        try diagnosticRequire(calibration.allowedContentTypes == [.plainText, .data], "Calibration must use its own file types")
+        calibration.cancel(nil); await fixture.settle()
+        print("Room recorder: silent preparation, recording type/count switching, all-speaker sequence, and final single-file import")
+    }
+
+    private static func systemMapPan(_ map: SpeakerRoomNSView, window: NSWindow, label: String) async throws {
+        guard ProcessInfo.processInfo.environment["CAMITUNE_UI_SYSTEM_MOUSE"] == "1" else { return }
+        try diagnosticRequire(CGPreflightPostEventAccess(), "System mouse test requires event-posting access")
+        let originalFrame = window.frame
+        let originalPointer = CGEvent(source: nil)?.location
+        window.setFrameOrigin(.init(x: 100, y: 150))
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        try await Task.sleep(for: .milliseconds(300))
+        let origin = CGPoint(x: map.graph.minX + 10, y: map.graph.minY + 10)
+        let screenTop = NSScreen.screens[0].frame.maxY
+        var buttonDown = false
+        func send(_ type: CGEventType, _ offset: CGPoint) {
+            let local = CGPoint(x: origin.x + offset.x, y: origin.y + offset.y)
+            let screen = window.convertPoint(toScreen: map.convert(local, to: nil))
+            let event = CGEvent(mouseEventSource: nil, mouseType: type,
+                mouseCursorPosition: .init(x: screen.x, y: screenTop - screen.y), mouseButton: .left)!
+            event.setIntegerValueField(.mouseEventClickState, value: 1)
+            event.post(tap: .cghidEventTap)
+        }
+        defer {
+            if buttonDown { send(.leftMouseUp, .init(x: 1, y: 1)) }
+            window.setFrame(originalFrame, display: true)
+            if let originalPointer {
+                CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: originalPointer,
+                    mouseButton: .left)?.post(tap: .cghidEventTap)
+            }
+            map.resetViewport()
+        }
+        let clickStart = ProcessInfo.processInfo.systemUptime
+        buttonDown = true
+        send(.leftMouseDown, .zero)
+        while map.lastMouseDownTime < clickStart && ProcessInfo.processInfo.systemUptime - clickStart < 0.5 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let clickMS = (map.lastMouseDownTime - clickStart) * 1000
+        try diagnosticRequire(map.lastMouseDownTime >= clickStart && clickMS < 50,
+            "\(label) system mouse-down was not delivered promptly: \(clickMS) ms")
+        let dragStart = ProcessInfo.processInfo.systemUptime
+        send(.leftMouseDragged, .init(x: 1, y: 1))
+        while map.lastDrawTime < dragStart && ProcessInfo.processInfo.systemUptime - dragStart < 0.5 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let frameMS = (map.lastDrawTime - dragStart) * 1000
+        try diagnosticRequire(map.pan == CGPoint(x: 1, y: 1) && map.lastDrawTime >= dragStart && frameMS < 50,
+            "\(label) system drag did not paint its first one-point movement promptly: \(frameMS) ms, pan \(map.pan)")
+        send(.leftMouseUp, .init(x: 1, y: 1))
+        buttonDown = false
+        try await Task.sleep(for: .milliseconds(30))
+        print("\(label) system mouse: click \(String(format: "%.2f", clickMS)) ms, first frame \(String(format: "%.2f", frameMS)) ms")
+        fflush(stdout)
+    }
+
+    private static func roomCorrectionResultInteractions(artifacts: URL) async throws {
+        let box = try DiagnosticSandbox(); defer { box.cleanUp() }
+        var profile = DiagnosticSandbox.profile()
+        profile.endpointKind = .speakers
+        profile.speakerTopology = SpeakerTopology(deviceUID: profile.outputDeviceUID,
+            sampleRate: Double(profile.sampleRate), declaredChannelCount: 2,
+            endpoints: (0..<2).map { .init(id: .init(deviceUID: profile.outputDeviceUID, channelIndex: $0),
+                role: $0 == 0 ? .left : .right, displayName: $0 == 0 ? "Left" : "Right", connectionState: .confirmedByUser) })
+        let context = try profile.roomMeasurementContext()
+        var position = RoomMeasurementPosition(coordinate: context.listener, isMain: true)
+        position.observations = [.init(channel: 0, bins: (1...20).map { .init(frequency: Double($0) * 40, magnitudeDB: 0) })]
+        let session = RoomMeasurementSession(context: context, source: .init(), positions: [position])
+        try RoomMeasurementStore().save(session)
+        var result = RoomCorrectionResult(sessionID: session.id, context: context,
+            method: .iir, settings: .init(), lowHz: 25, highHz: 800, positionCount: 5)
+        result.channelBands = [0: (0..<8).map { EQBand(kind: .peaking, frequency: Double(60 + $0 * 80), gain: -3, q: 2) },
+                               1: [EQBand(kind: .peaking, frequency: 120, gain: -4.5, q: 3)]]
+        var seat = SpatialSeatingCalibration(outputDeviceUID: profile.outputDeviceUID)
+        seat.roomCorrectionSessionID = session.id; seat.roomCorrectionResult = result; seat.roomCorrectionEnabled = true
+        profile.spatialSettings.seating = seat
+        box.profiles.profiles = [profile]
+        let editor = RoomCorrectionEditorState()
+        let state = AppState(profiles: box.profiles, perAppAudio: box.perApp, runtimeServices: DiagnosticRuntimeFakes().services())
+        let binding = Binding(get: { box.profiles.profiles[0] }, set: { box.profiles.update($0) })
+        let fixture = WindowFixture(ScrollView { RoomCorrectionView(state: state, profile: binding, editor: editor).padding(16) },
+            size: .init(width: 600, height: 850))
+        defer { fixture.close() }
+        await fixture.settle()
+        for _ in 0..<100 where editor.busy { try await Task.sleep(for: .milliseconds(20)) }
+        await fixture.settle()
+        var gaps: [Double] = []
+        func marker(_ id: String) throws -> NSView {
+            guard let view = fixture.views.first(where: { $0.identifier?.rawValue == id }) else {
+                throw DiagnosticFailure(message: "Missing correction result control \(id)")
+            }
+            return view
+        }
+        func press(_ id: String, measure: Bool = false) async throws {
+            let view = try marker(id)
+            view.scrollToVisible(view.bounds); await fixture.settle()
+            let started = ProcessInfo.processInfo.systemUptime
+            fixture.click(in: view, at: .init(x: view.bounds.midX, y: view.bounds.midY))
+            if measure {
+                var previous = started
+                for _ in 0..<20 {
+                    try await Task.sleep(for: .milliseconds(16))
+                    let now = ProcessInfo.processInfo.systemUptime
+                    gaps.append((now - previous) * 1000); previous = now
+                }
+            }
+            await fixture.settle()
+            for _ in 0..<100 where editor.busy { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        try diagnosticRequire((try? marker("room-correction-enabled")) == nil, "Room Correction must only calculate and import")
+        _ = try marker("room-correction-import")
+        try diagnosticRequire((try? marker("room-correction-back")) == nil && (try? marker("room-correction-compare")) == nil,
+            "Correction must not expose Back or Compare")
+        try await press("room-correction-remeasure")
+        try diagnosticRequire(editor.tab == .measure, "Re-measure must return directly to Measure")
+        try await press("room-correction-tab-correction", measure: true)
+        try diagnosticRequire(editor.tab == .correction, "The Correction tab must open")
+        for width: CGFloat in [600, 950] {
+            fixture.resize(width: width, height: 850); await fixture.settle()
+            editor.settings.method = .fir
+            await fixture.settle()
+            try diagnosticRequire((try? marker("room-correction-details")) == nil, "Calculation must start collapsed")
+            for _ in 0..<3 {
+                try await press("room-correction-calculation", measure: true)
+                _ = try marker("room-correction-details")
+                try diagnosticRequire(box.profiles.profiles[0].effectiveSpatialSettings.seating?.roomCorrectionResult == result,
+                    "Showing details and editing draft settings must preserve the saved result")
+                try fixture.snapshot(to: artifacts.appendingPathComponent("room-correction-details-\(Int(width)).png"))
+                try await press("room-correction-tab-analysis", measure: true)
+                try diagnosticRequire(editor.tab == .analysis, "Analysis navigation must respond")
+                try await press("room-correction-tab-correction", measure: true)
+                _ = try marker("room-correction-details")
+                try await press("room-correction-calculation", measure: true)
+                try diagnosticRequire((try? marker("room-correction-details")) == nil, "Calculation must collapse")
+            }
+        }
+        let sorted = gaps.sorted()
+        let p95 = sorted[Int(Double(sorted.count - 1) * 0.95)]
+        print("Room correction results: max main-loop gap \(String(format: "%.2f", sorted.last ?? 0)) ms, p95 \(String(format: "%.2f", p95)) ms")
+        try diagnosticRequire(p95 < 45 && (sorted.last ?? 0) < 150, "Correction disclosure and navigation exceeded their responsiveness budget")
+        editor.settings = result.settings
+        await fixture.settle()
+        try await press("room-correction-calculation")
+        let beforeImport = box.profiles.profiles[0]
+        try await press("room-correction-import")
+        try diagnosticRequire(editor.error == nil && editor.importRevision == 1,
+            "Import must install calculated IIR: \(editor.error ?? "none")")
+        try diagnosticRequire((try? marker("room-correction-details")) == nil, "Successful import must close Calculation")
+        let imported = box.profiles.profiles[0]
+        let processing = try imported.resolvedProcessing()
+        try diagnosticRequire(processing.settings(forChannel: 0)?.bands.count == 8
+            && processing.settings(forChannel: 1)?.bands.count == 1
+            && imported.effectiveSpatialSettings.seating?.roomCorrectionEnabled == false,
+            "Import must populate ordinary per-channel EQ and retire managed room stages")
+        try await press("room-correction-calculation")
+        try await press("room-correction-import")
+        try diagnosticRequire(fixture.window.attachedSheet != nil && box.profiles.profiles[0] == imported,
+            "Replacing existing channel EQ must ask first and leave processing untouched")
+        func answerReplacement(_ title: String) async throws {
+            func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+            guard let content = fixture.window.attachedSheet?.contentView,
+                  let button = descendants(content).compactMap({ $0 as? NSButton }).first(where: { $0.title == title }) else {
+                throw DiagnosticFailure(message: "Missing replacement confirmation button \(title)")
+            }
+            button.performClick(nil); await fixture.settle()
+            for _ in 0..<300 where editor.busy { try await Task.sleep(for: .milliseconds(20)) }
+            await fixture.settle()
+        }
+        try await answerReplacement("Cancel")
+        _ = try marker("room-correction-details")
+        try diagnosticRequire(box.profiles.profiles[0] == imported && editor.importRevision == 1, "Cancel must preserve filters and the open calculation")
+        try await press("room-correction-import")
+        try await answerReplacement("Replace and Import")
+        try diagnosticRequire(editor.error == nil && editor.importRevision == 2
+            && (try? marker("room-correction-details")) == nil, "Confirmed replacement must import and collapse Calculation")
+        await state.history.undo()
+        await state.history.undo()
+        let restored = box.profiles.profiles[0]
+        let restoredProcessing = try restored.resolvedProcessing()
+        let previousProcessing = try beforeImport.resolvedProcessing()
+        try diagnosticRequire(restoredProcessing == previousProcessing, "Undo must restore the previous room correction and channel filters")
+        await state.history.redo()
+        let redoneProcessing = try box.profiles.profiles[0].resolvedProcessing()
+        try diagnosticRequire(redoneProcessing == processing, "Redo must restore the imported filters")
+        let beforeRecalculation = box.profiles.profiles[0]
+        try await press("room-correction-create")
+        try diagnosticRequire(editor.error == nil && editor.calculationRevision == 1
+            && box.profiles.profiles[0] == beforeRecalculation,
+            "Recalculating after import must preserve audio and accept its original measurements")
+        _ = try marker("room-correction-details")
+        try diagnosticRequire(!editor.canImport, "A calculation with no usable filters must not import")
+        print("Room correction results: calculate/import controls, replacement confirmation, filter details, disclosure state and resizing passed")
+    }
+
+    private static func roomCorrectionInteractions(artifacts: URL) async throws {
+        let box = try DiagnosticSandbox(); defer { box.cleanUp() }
+        var profile = DiagnosticSandbox.profile()
+        profile.endpointKind = .speakers
+        profile.speakerTopology = SpeakerTopology(deviceUID: profile.outputDeviceUID,
+            sampleRate: Double(profile.sampleRate), declaredChannelCount: 2,
+            endpoints: (0..<2).map { .init(id: .init(deviceUID: profile.outputDeviceUID, channelIndex: $0),
+                role: $0 == 0 ? .left : .right, displayName: $0 == 0 ? "Left" : "Right", connectionState: .confirmedByUser) })
+        let context = try profile.roomMeasurementContext()
+        var position = RoomMeasurementPosition(coordinate: context.listener, isMain: true)
+        position.observations = [.init(channel: 0, bins: (0..<80).map {
+            .init(frequency: 25 * pow(2, Double($0) / 12), magnitudeDB: sin(Double($0) * 0.2) * 4)
+        })]
+        let analysisFixture = ProcessInfo.processInfo.environment["CAMITUNE_UI_ROOM_ANALYSIS_SESSION"]
+        if let path = analysisFixture {
+            let imported = try JSONDecoder().decode(RoomMeasurementSession.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+            position.observations = imported.positions.first(where: \.isMain)?.observations ?? []
+        }
+        let extraPositions = (1..<5).map { index in
+            RoomMeasurementPosition(coordinate: .init(x: Float(index) * 0.1, y: -Float(index) * 0.05, z: 0))
+        }
+        var session = RoomMeasurementSession(context: context, source: .init(), positions: [position] + extraPositions)
+        if analysisFixture != nil { session.measurementAnalysisVersion = 2 }
+        try RoomMeasurementStore().save(session)
+        var seat = SpatialSeatingCalibration(outputDeviceUID: profile.outputDeviceUID)
+        seat.roomCorrectionSessionID = session.id; profile.spatialSettings.seating = seat
+        box.profiles.profiles = [profile]
+        let state = AppState(profiles: box.profiles, perAppAudio: box.perApp, runtimeServices: DiagnosticRuntimeFakes().services())
+        let binding = Binding(get: { box.profiles.profiles[0] }, set: { box.profiles.update($0) })
+        let setupFixture = WindowFixture(ScrollView {
+            SpeakerSystemView(state: state, profile: binding, draftOnly: true, embedded: true,
+                auditionOverride: { _ in }).padding(16)
+        }, size: .init(width: 950, height: 1000))
+        defer { setupFixture.close() }
+        await setupFixture.settle()
+        if let setupMap = setupFixture.views.compactMap({ $0 as? SpeakerRoomNSView }).first {
+            try diagnosticRequire(setupMap.acceptsFirstResponder, "Editable speaker setup must retain keyboard editing")
+            try await systemMapPan(setupMap, window: setupFixture.window, label: "Speaker setup")
+        } else { throw DiagnosticFailure(message: "Missing speaker setup reference map") }
+        setupFixture.window.orderOut(nil)
+        let fixture = WindowFixture(ProfileEditorView(state: state, coreAudio: state.coreAudio, profile: binding)
+            .environmentObject(MainWindowCommandCoordinator()),
+            size: .init(width: 950, height: 1000))
+        defer { fixture.close() }
+        await fixture.settle(); try await Task.sleep(for: .milliseconds(600))
+        var tabSwitchGaps: [Double] = []
+        func press(_ id: String) async throws {
+            // Reveal the whole navigation row in the outer vertical page before
+            // scrolling a number inside its independent horizontal scroller.
+            if id.hasPrefix("room-position-"),
+               let row = fixture.views.first(where: { $0.identifier?.rawValue == "room-position-navigation" }) {
+                row.scrollToVisible(row.bounds); await fixture.settle()
+            }
+            guard let marker = fixture.views.first(where: { $0.identifier?.rawValue == id }) else { throw DiagnosticFailure(message: "Missing room correction action \(id)") }
+            marker.scrollToVisible(marker.bounds); await fixture.settle()
+            let started = ProcessInfo.processInfo.systemUptime
+            fixture.click(in: marker, at: .init(x: marker.bounds.midX, y: marker.bounds.midY))
+            if id.hasPrefix("room-correction-tab-") {
+                var previous = started
+                for _ in 0..<20 {
+                    try await Task.sleep(for: .milliseconds(16))
+                    let now = ProcessInfo.processInfo.systemUptime
+                    tabSwitchGaps.append((now - previous) * 1000)
+                    previous = now
+                }
+            }
+            await fixture.settle()
+        }
+        try await press("correction-page-roomCorrection")
+        // AppKit can consume the first click to activate this offscreen test
+        // window. Verify the outer page before interacting with retained tabs.
+        if !fixture.views.contains(where: { $0.identifier?.rawValue == "correction-content-roomCorrection" }) {
+            try await press("correction-page-roomCorrection")
+        }
+        try diagnosticRequire(fixture.views.contains { $0.identifier?.rawValue == "correction-content-roomCorrection" },
+            "Room Correction must be visible before advancing its workflow")
+        guard let map = fixture.views.compactMap({ $0 as? SpeakerRoomNSView }).first,
+              var mapConfiguration = map.configuration else { throw DiagnosticFailure(message: "Missing measurement map") }
+        try diagnosticRequire(!fixture.views.contains { $0.identifier?.rawValue == "room-menu-Position" },
+            "Measurement positions must use numbered navigation instead of a dropdown")
+        try await press("room-position-4")
+        try fixture.snapshot(to: artifacts.appendingPathComponent("room-positions.png"))
+        try diagnosticRequire(map.configuration?.measurementPoint == session.positions[4].coordinate,
+            "Numbered position navigation did not move the measurement marker: \(String(describing: map.configuration?.measurementPoint))")
+        try await press("room-position-0")
+        try diagnosticRequire(map.configuration?.measurementPoint == position.coordinate,
+            "Numbered position navigation did not restore the main measurement position")
+        func requireFitted(_ view: SpeakerRoomNSView) throws {
+            guard let config = view.configuration else { throw DiagnosticFailure(message: "Missing map configuration") }
+            for (index, speaker) in config.topology.endpoints.enumerated() {
+                try diagnosticRequire(view.graph.contains(view.nodeRect(view.nodePoint(speaker, index: index))),
+                    "Fit All clipped a speaker")
+            }
+            for point in [config.listener] + config.viewportPoints {
+                try diagnosticRequire(view.graph.contains(view.nodeRect(view.point(point))), "Fit All clipped a listening or measurement position")
+            }
+        }
+        try diagnosticRequire(map.bounds.height == 300 && mapConfiguration.fitsAllContent && !mapConfiguration.allowsScrollPanning,
+            "Measurement map must be taller, fitted, and independent of trackpad scrolling")
+        try requireFitted(map)
+        map.panScroll(x: 90, y: -70, precise: true, momentum: [])
+        try diagnosticRequire(map.pan == .zero, "Trackpad scrolling panned the measurement map")
+        map.scrollToVisible(map.bounds)
+        await fixture.settle()
+        // Keep a native field editor active to exercise the profile's actual
+        // outside-click monitor, not just the canvas's pointer methods.
+        let focusProbe = NSTextField(string: "Uncommitted field edit")
+        focusProbe.frame = .init(x: 8, y: 8, width: 180, height: 24)
+        fixture.host.addSubview(focusProbe)
+        defer { focusProbe.removeFromSuperview() }
+        try diagnosticRequire(fixture.window.makeFirstResponder(focusProbe), "Focus probe refused editing")
+        guard let fieldEditor = focusProbe.currentEditor() else { throw DiagnosticFailure(message: "Missing field editor before panning") }
+        try diagnosticRequire(!map.acceptsFirstResponder, "Measurement navigation must not request keyboard editing focus")
+        try await systemMapPan(map, window: fixture.window, label: "Room Correction")
+        let origin = NSPoint(x: map.graph.midX, y: map.graph.midY)
+        try diagnosticRequire(map.wantsLayer && map.isOpaque && !map.mouseDownCanMoveWindow,
+            "Map dragging must redraw independently and must not initiate window dragging")
+        var firstDragMilliseconds: Double = 0
+        var clickMilliseconds: Double = 0
+        for (type, point) in [(NSEvent.EventType.leftMouseDown, origin),
+                              (.leftMouseDragged, NSPoint(x: origin.x + 1, y: origin.y + 1)),
+                              (.leftMouseDragged, NSPoint(x: origin.x - 1, y: origin.y - 1)),
+                              (.leftMouseDragged, NSPoint(x: origin.x + 35, y: origin.y + 20)),
+                              (.leftMouseUp, NSPoint(x: origin.x + 35, y: origin.y + 20))] {
+            let event = NSEvent.mouseEvent(with: type, location: map.convert(point, to: nil), modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: fixture.window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            let deliveryStart = ProcessInfo.processInfo.systemUptime
+            NSApp.sendEvent(event)
+            if type == .leftMouseDown {
+                clickMilliseconds = (ProcessInfo.processInfo.systemUptime - deliveryStart) * 1000
+                try diagnosticRequire(clickMilliseconds < 50, "Map click exceeded 50 ms: \(clickMilliseconds) ms")
+                // Let deferred focus-clearing requests run before movement.
+                try await Task.sleep(for: .milliseconds(16))
+                try diagnosticRequire(fixture.window.firstResponder === fieldEditor,
+                    "Panning committed an unrelated field before the first mouse movement")
+            }
+            if type == .leftMouseDragged, point.x == origin.x + 1 {
+                firstDragMilliseconds = (ProcessInfo.processInfo.systemUptime - deliveryStart) * 1000
+                try diagnosticRequire(map.lastDrawTime >= deliveryStart,
+                    "The first pan movement must be drawn during event delivery, not just update coordinates")
+                try diagnosticRequire(firstDragMilliseconds < 50,
+                    "First pan frame exceeded 50 ms: \(firstDragMilliseconds) ms")
+            }
+            if type == .leftMouseDragged {
+                try diagnosticRequire(map.pan == CGPoint(x: point.x - origin.x, y: point.y - origin.y),
+                    "Map panning must follow the first one-point movement and direction changes without a dead zone")
+            }
+        }
+        print("Room map: click \(String(format: "%.2f", clickMilliseconds)) ms, first pan frame \(String(format: "%.2f", firstDragMilliseconds)) ms; active text edit preserved")
+        fflush(stdout)
+        fixture.window.makeFirstResponder(nil)
+        focusProbe.removeFromSuperview()
+        try diagnosticRequire(map.pan == CGPoint(x: 35, y: 20), "Click and drag must pan the measurement map without editing geometry")
+        try await press("room-map-zoom-in")
+        try diagnosticRequire(map.zoom > 1, "Zoom In did not magnify the map")
+        try await press("room-map-zoom-out")
+        try diagnosticRequire(abs(map.zoom - 1) < 0.001, "Zoom Out did not restore the scale")
+        try await press("room-map-fit")
+        try diagnosticRequire(map.pan == .zero && map.zoom == 1, "Fit All must reset a dragged map even when the zoom is already 100 percent")
+        try requireFitted(map)
+        // A separate native view exercises asymmetric rooms and viewport resizing.
+        let geometryProbe = SpeakerRoomNSView(frame: .init(x: 0, y: 0, width: 360, height: 300))
+        for index in mapConfiguration.topology.endpoints.indices {
+            mapConfiguration.topology.endpoints[index].position = SpeakerLayoutGeometry.position(x: index == 0 ? -12 : 8, y: index == 0 ? 7 : -9, height: 0)
+        }
+        mapConfiguration.listener = .init(x: 5, y: -6, z: 0)
+        mapConfiguration.measurementPoint = mapConfiguration.listener
+        mapConfiguration.viewportPoints = [mapConfiguration.listener, .init(x: -14, y: -11, z: 0)]
+        geometryProbe.configuration = mapConfiguration
+        try requireFitted(geometryProbe)
+        geometryProbe.setFrameSize(.init(width: 700, height: 300))
+        try requireFitted(geometryProbe)
+        try diagnosticRequire(!fixture.views.contains { $0.identifier?.rawValue == "room-correction-create" },
+            "Measure must show Next instead of creating correction early")
+        try fixture.snapshot(to: artifacts.appendingPathComponent("room-measure.png"))
+        try await press("room-correction-next")
+        try diagnosticRequire(!fixture.views.contains { $0.identifier?.rawValue == "room-correction-create" },
+            "Analysis must show Next instead of creating correction early")
+        try fixture.snapshot(to: artifacts.appendingPathComponent("room-analysis.png"))
+        if analysisFixture != nil {
+            guard let mode = fixture.views.first(where: { $0.identifier?.rawValue == "room-analysis-mode" }) else {
+                throw DiagnosticFailure(message: "Missing analysis mode controls")
+            }
+            for (index, name) in [(2, "impulse"), (3, "phase"), (4, "group-delay"), (0, "frequency")] {
+                mode.scrollToVisible(mode.bounds); await fixture.settle()
+                fixture.click(in: mode, at: .init(x: mode.bounds.width * (CGFloat(index) + 0.5) / 5, y: mode.bounds.midY))
+                await fixture.settle()
+                try fixture.snapshot(to: artifacts.appendingPathComponent("room-phone-\(name).png"))
+            }
+        }
+        try await press("room-correction-next")
+        try diagnosticRequire(fixture.views.contains { $0.identifier?.rawValue == "room-correction-create" },
+            "The last workflow step must offer Create Room Correction")
+        try await press("room-correction-remeasure")
+        for _ in 0..<3 {
+            for tab in ["analysis", "correction", "measure"] { try await press("room-correction-tab-\(tab)") }
+            try await press("correction-page-convolution")
+            try await press("correction-page-roomCorrection")
+        }
+        for width: CGFloat in [600, 950] {
+            fixture.resize(width: width, height: 850); await fixture.settle()
+            try await press("room-correction-tab-measure")
+            try await press("room-map-fit")
+            try requireFitted(map)
+            try fixture.snapshot(to: artifacts.appendingPathComponent("room-map-\(Int(width)).png"))
+            for tab in ["analysis", "measure", "correction"] { try await press("room-correction-tab-\(tab)") }
+            guard let method = fixture.views.first(where: { $0.identifier?.rawValue == "room-correction-method" }),
+                  let create = fixture.views.first(where: { $0.identifier?.rawValue == "room-correction-create" }),
+                  let back = fixture.views.first(where: { $0.identifier?.rawValue == "room-correction-remeasure" }) else {
+                throw DiagnosticFailure(message: "Missing Room Correction workflow controls")
+            }
+            try diagnosticRequire(abs(method.bounds.width - 260) < 1, "Room method control must match the Equalizer control width")
+            let createFrame = create.convert(create.bounds, to: fixture.host)
+            let backFrame = back.convert(back.bounds, to: fixture.host)
+            try diagnosticRequire(createFrame.minX > backFrame.maxX && createFrame.maxX <= fixture.host.bounds.maxX,
+                "Create Room Correction must stay on the right and inside the window")
+            method.scrollToVisible(method.bounds); await fixture.settle()
+            fixture.click(in: method, at: .init(x: method.bounds.width * 0.625, y: method.bounds.midY))
+            await fixture.settle()
+            guard let phase = fixture.views.first(where: { $0.identifier?.rawValue == "room-correction-phase" }) else {
+                throw DiagnosticFailure(message: "The FIR method must expose its phase controls")
+            }
+            try diagnosticRequire(phase.bounds.width <= 121, "Room correction dropdowns must remain compact")
+            try fixture.snapshot(to: artifacts.appendingPathComponent("room-correction-\(Int(width)).png"))
+        }
+        let sortedGaps = tabSwitchGaps.sorted()
+        let p95 = sortedGaps.isEmpty ? 0 : sortedGaps[Int(Double(sortedGaps.count - 1) * 0.95)]
+        print("Room tabs: main-loop max gap \(String(format: "%.2f", sortedGaps.last ?? 0)) ms, p95 \(String(format: "%.2f", p95)) ms")
+        // Includes click delivery and the following 320 ms of main-loop work
+        // in the complete profile editor, at both narrow and wide widths.
+        try diagnosticRequire(!sortedGaps.isEmpty && p95 < 45 && (sortedGaps.last ?? 0) < 150,
+            "Room Correction tab switching exceeded its responsiveness budget")
+        print("Room Correction: fitted measurement map, mouse-only pan, zoom/reset controls, Next/Re-measure workflow, compact controls and resize")
     }
 
     private static func spectrumPresentation(artifacts: URL) async throws {
@@ -634,6 +1423,9 @@ enum UIInteractionSelfTests {
             await settle()
         }
         func click(in view: NSView, at point: NSPoint) {
+            // Offscreen windows need a display pass to refresh SwiftUI hit regions after scrolling.
+            host.layoutSubtreeIfNeeded()
+            host.displayIfNeeded()
             let location = view.convert(point, to: nil)
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)

@@ -15,6 +15,7 @@ struct DeviceCorrectionSectionView: View {
     private func title(_ page: DeviceCorrectionPage) -> String {
         switch page {
         case .automaticEQ: return "Auto EQ"
+        case .roomCorrection: return "Room Correction"
         case .convolution: return "FIR / Convolution"
         case .crossfeed: return "Crossfeed"
         }
@@ -84,7 +85,7 @@ struct DeviceCorrectionSectionView: View {
                     .labelsHidden()
                     .fixedSize()
                 } content: {
-                    SelectedEditorPageLayout(selection: selected == .automaticEQ ? 0 : 1) {
+                    SelectedEditorPageLayout(selection: selected == .automaticEQ ? 0 : (selected == .roomCorrection ? 2 : 1)) {
                         // Keep the expensive Auto EQ editor and its unfinished
                         // draft mounted when visiting FIR or Crossfeed.
                         VStack {
@@ -95,7 +96,7 @@ struct DeviceCorrectionSectionView: View {
                             .accessibilityHidden(selected != .automaticEQ)
                         VStack(alignment: .leading, spacing: 12) {
                             switch selected {
-                            case .automaticEQ: EmptyView()
+                            case .automaticEQ, .roomCorrection: EmptyView()
                             case .convolution:
                                 DeviceCorrectionSectionHeader(title: "FIR / Convolution",
                                     hint: "Apply an imported impulse response, including externally measured room correction.")
@@ -113,6 +114,12 @@ struct DeviceCorrectionSectionView: View {
                             case .crossfeed: CrossfeedEditorView(state: state, profile: $profile)
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading)
+                        VStack {
+                            if pages.contains(.roomCorrection) { RoomCorrectionView(state: state, profile: $profile, isVisible: selected == .roomCorrection).id(profile.id) }
+                        }
+                        .opacity(selected == .roomCorrection ? 1 : 0)
+                        .allowsHitTesting(selected == .roomCorrection)
+                        .accessibilityHidden(selected != .roomCorrection)
                     }
                     .clipped()
                     .uiInteractionAnchor("correction-content-\(selected.rawValue)")

@@ -124,6 +124,9 @@ extension UIInteractionSelfTests {
         }
         func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
         func click(_ view: NSView, x: CGFloat, y: CGFloat) {
+            // Offscreen windows need a display pass to refresh SwiftUI hit regions after scrolling.
+            controller.view.layoutSubtreeIfNeeded()
+            controller.view.displayIfNeeded()
             let location = view.convert(.init(x: x, y: y), to: nil)
             func event(_ type: NSEvent.EventType) -> NSEvent {
                 NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
@@ -145,6 +148,67 @@ extension UIInteractionSelfTests {
         }
         fflush(stdout)
         if ProcessInfo.processInfo.environment["CAMITUNE_UI_CORRECTION_ONLY"] != "1", !editOnly {
+        if profiles.count >= 2 {
+            let displayed = commands.selection
+            let profileRows = IndexSet(integersIn: 2..<table.numberOfRows)
+            func contextMenu(at point: NSPoint) throws -> NSMenu {
+                let event = NSEvent.mouseEvent(with: .rightMouseDown,
+                    location: table.convert(point, to: nil), modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                guard let menu = table.menu(for: event) else {
+                    throw DiagnosticFailure(message: "Sidebar context menu was missing")
+                }
+                return menu
+            }
+            func emptyPoint() -> NSPoint {
+                .init(x: table.bounds.midX, y: table.rect(ofRow: table.numberOfRows - 1).maxY + 12)
+            }
+            table.selectRowIndexes(profileRows, byExtendingSelection: false)
+            let profileMenu = try contextMenu(at: .init(x: 50, y: table.rect(ofRow: 2).midY))
+            let titles = profileMenu.items.map { $0.isSeparatorItem ? "separator" : $0.title }
+            try diagnosticRequire(titles == [profiles[0].isEnabled ? "Disable Profile" : "Enable Profile",
+                "separator", "Rename", "New Folder with Selection", "Delete"],
+                "Profile menu has unexpected actions or grouping: \(titles)")
+            let blankMenu = try contextMenu(at: emptyPoint())
+            try diagnosticRequire(blankMenu.items.map(\.title) == ["New Folder"],
+                "Blank-space menu grouped the highlighted profiles")
+            click(table, x: emptyPoint().x, y: emptyPoint().y)
+            await idle("Sidebar background selection", milliseconds: 200)
+            try diagnosticRequire(table.selectedRowIndexes == IndexSet(integer: 2) && commands.selection == displayed,
+                "Blank-space click did not retain only the displayed profile")
+            window.makeFirstResponder(table)
+            let selectAll = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0)!
+            window.sendEvent(selectAll)
+            table.selectAll(nil)
+            try diagnosticRequire(table.selectedRowIndexes == IndexSet(integer: 2),
+                "Command-A still selected all sidebar profiles")
+            // Cancel navigation queued by a row click before the next run-loop turn.
+            table.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false)
+            click(table, x: emptyPoint().x, y: emptyPoint().y)
+            await idle("Sidebar cancelled navigation", milliseconds: 200)
+            try diagnosticRequire(table.selectedRowIndexes == IndexSet(integer: 2) && commands.selection == displayed,
+                "Blank-space click allowed pending navigation to replace the displayed profile")
+            table.selectRowIndexes(profileRows, byExtendingSelection: false)
+            let createMenu = try contextMenu(at: emptyPoint())
+            let create = createMenu.items[0]
+            guard let action = create.action else { throw DiagnosticFailure(message: "New Folder has no action") }
+            NSApp.sendAction(action, to: create.target, from: create)
+            await idle("Sidebar empty folder creation", milliseconds: 300)
+            try diagnosticRequire(box.profiles.folders.count == 1 && box.profiles.folders[0].profileIDs.isEmpty,
+                "New Folder moved highlighted profiles into the folder")
+            if let editor = window.firstResponder as? NSTextView {
+                editor.selectAll(nil)
+                try diagnosticRequire(editor.selectedRange().length == editor.string.utf16.count,
+                    "Disabling profile Select All also disabled Select All in the rename field")
+            } else { throw DiagnosticFailure(message: "New folder did not enter inline rename") }
+            click(table, x: emptyPoint().x, y: emptyPoint().y)
+            box.profiles.deleteFolder(id: box.profiles.folders[0].id)
+            await idle("Sidebar folder cleanup", milliseconds: 200)
+            print("Sidebar menus, blank-space selection, and Select All checks passed")
+        }
         for row in 0..<table.numberOfRows where table.delegate?.tableView?(table, shouldSelectRow: row) != false {
             let before = ProcessInfo.processInfo.systemUptime
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)

@@ -937,6 +937,17 @@
 		6F60AB5C00713B28158C547C = {isa = PBXBuildFile; fileRef = D4E47A1E1D4C636FE50F5461; };
 		B9B3D1C12F7BF4AA0CD224B3 = {isa = PBXBuildFile; fileRef = 5A90EA5A85B08643A7BC97FD; };
 		B8C89EBAC2EB17FF136A4502 = {isa = PBXBuildFile; fileRef = D9C1C1FC35D88EF7CE5A044B; };
+		1E4F5FCE549C557F9FE28568 = {isa = PBXBuildFile; fileRef = 359D6A152BF3FAF2E6F85723; };
+		2E6966E8EBD8EB3CC232EEFD = {isa = PBXBuildFile; fileRef = 7A28E2A5BA911723F1969E58; };
+		78D82B7215AFF2BF4D35563D = {isa = PBXBuildFile; fileRef = 7F9E7480CFA9A03D77B50390; };
+		CC96CDFA9A2A46D3EEDC9A4F = {isa = PBXBuildFile; fileRef = F786AE31B2B0B6EBB7313810; };
+		121A6EC6F757FB20952E2D3F = {isa = PBXBuildFile; fileRef = 3F5988A0B94424D4376E8410; };
+		FFBFC6F22E0882B84A1E1CC4 = {isa = PBXBuildFile; fileRef = 82195249BD51EF3C17D0E80D; };
+		9A9F7FF31B6E0B9065762F98 = {isa = PBXBuildFile; fileRef = F08EEA1059C5D8AB406BE3FA; };
+		6561B9B91F4B0301499741C4 = {isa = PBXBuildFile; fileRef = 57C82CAE3281389468530F00; };
+		2E7931AC4098653E0C6D9F0F = {isa = PBXBuildFile; fileRef = 8CEDBC1C117E29108F03B713; };
+		941F43BBDACF1C76218283F3 = {isa = PBXBuildFile; fileRef = D7EC8E01743F046AA4A38207; };
+		CA6F00000000000000000101 = {isa = PBXBuildFile; fileRef = CA6F00000000000000000201; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -2605,6 +2616,17 @@
 		D4E47A1E1D4C636FE50F5461 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResponsiveStackLayout.swift; sourceTree = "<group>"; };
 		5A90EA5A85B08643A7BC97FD = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIAppInteractionSelfTests.swift; sourceTree = "<group>"; };
 		D9C1C1FC35D88EF7CE5A044B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteppedValueSlider.swift; sourceTree = "<group>"; };
+		359D6A152BF3FAF2E6F85723 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/RoomCorrection/RoomMeasurementStore.swift"; sourceTree = SOURCE_ROOT; };
+		7A28E2A5BA911723F1969E58 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/UI/DeviceCorrection/RoomCorrectionAnalysisView.swift"; sourceTree = SOURCE_ROOT; };
+		7F9E7480CFA9A03D77B50390 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/UI/DeviceCorrection/RoomCorrectionEditorState.swift"; sourceTree = SOURCE_ROOT; };
+		F786AE31B2B0B6EBB7313810 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/UI/DeviceCorrection/RoomCorrectionView.swift"; sourceTree = SOURCE_ROOT; };
+		3F5988A0B94424D4376E8410 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneDomain/RoomCorrection/RoomCorrectionStages.swift"; sourceTree = SOURCE_ROOT; };
+		82195249BD51EF3C17D0E80D = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneDomain/RoomCorrection/RoomCorrection.swift"; sourceTree = SOURCE_ROOT; };
+		F08EEA1059C5D8AB406BE3FA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/RoomMeasurementAnalyzer.swift"; sourceTree = SOURCE_ROOT; };
+		57C82CAE3281389468530F00 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/RoomMeasurementSignal.swift"; sourceTree = SOURCE_ROOT; };
+		8CEDBC1C117E29108F03B713 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/AcousticFFT.swift"; sourceTree = SOURCE_ROOT; };
+		D7EC8E01743F046AA4A38207 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/RoomCorrectionDesigner.swift"; sourceTree = SOURCE_ROOT; };
+		CA6F00000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImpulseResponseWAV.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -2756,6 +2778,10 @@
 			isa = PBXGroup;
 			name = CamiTune;
 			children = (
+				F786AE31B2B0B6EBB7313810,
+				7F9E7480CFA9A03D77B50390,
+				7A28E2A5BA911723F1969E58,
+				359D6A152BF3FAF2E6F85723,
 				379F0F8394920582649E3E1E,
 				D6FADE3AEF2EE54C932FC609,
 				9B36D47170F23C10F91D0ADF,
@@ -2825,6 +2851,12 @@
 		EEFE21A1443933CA4DE017DA = {
 			isa = PBXGroup;
 			children = (
+				D7EC8E01743F046AA4A38207,
+				8CEDBC1C117E29108F03B713,
+				57C82CAE3281389468530F00,
+				F08EEA1059C5D8AB406BE3FA,
+				82195249BD51EF3C17D0E80D,
+				3F5988A0B94424D4376E8410,
 			    CA3900000000000000000400,
 			    CA3900000000000000000401,
 			    CA3200000000000000000301,
@@ -3181,6 +3213,7 @@
 				4650A69AEC4E3699F2F5EB60,
 				433B0224BF9C80BDA49A2BBB,
 				1AAEC3AC65BA7141C64CD233,
+				CA6F00000000000000000201,
 			);
 			path = FIR;
 			sourceTree = "<group>";
@@ -3858,6 +3891,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CC96CDFA9A2A46D3EEDC9A4F,
+				78D82B7215AFF2BF4D35563D,
+				2E6966E8EBD8EB3CC232EEFD,
+				1E4F5FCE549C557F9FE28568,
 				B9B3D1C12F7BF4AA0CD224B3,
 				6F60AB5C00713B28158C547C,
 				2811C49AA36DF9F433D3315E,
@@ -4030,6 +4067,7 @@
 				B73D2599DA238497F52A627D,
 				A8B057B777F722E23A7DD33D,
 				E49D4408F63428EA93D8F3BE,
+				CA6F00000000000000000101,
 				AB49C3006C72FA2E780F819D,
 				70E5A104D3F176241A45054E,
 				4BCB7311E13892A01B41B223,
@@ -4063,6 +4101,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FFBFC6F22E0882B84A1E1CC4,
+				121A6EC6F757FB20952E2D3F,
 				6CE504C6CCC16767BF29D30C,
 				BC96A0D2359BECDAF0AAA48A,
 				4D049C05192C85016E5941D7,
@@ -4152,6 +4192,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				941F43BBDACF1C76218283F3,
+				2E7931AC4098653E0C6D9F0F,
+				6561B9B91F4B0301499741C4,
+				9A9F7FF31B6E0B9065762F98,
 				CA4500000000000000000101,
 				CA5D00000000000000000100,
 				1BFC088B02438D1138C4E6C0,
@@ -4254,6 +4298,7 @@
 			    SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Sources/SystemAudioBridgeC/include";
 			    HEADER_SEARCH_PATHS = (
 			        "$(inherited)",
+			        "$(SRCROOT)/Sources/CamiTuneAtomics/include",
 			        "$(SRCROOT)/Sources/SystemAudioBridgeC/include",
 			        "$(SRCROOT)/Drivers/SystemAudioBridge/Shared",
 			    );
@@ -4422,6 +4467,7 @@
 			    SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Sources/SystemAudioBridgeC/include";
 			    HEADER_SEARCH_PATHS = (
 			        "$(inherited)",
+			        "$(SRCROOT)/Sources/CamiTuneAtomics/include",
 			        "$(SRCROOT)/Sources/SystemAudioBridgeC/include",
 			        "$(SRCROOT)/Drivers/SystemAudioBridge/Shared",
 			    );

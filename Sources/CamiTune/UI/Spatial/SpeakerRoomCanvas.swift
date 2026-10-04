@@ -16,6 +16,13 @@ struct SpeakerRoomCanvas: NSViewRepresentable {
     var moveSpeaker: (PhysicalOutputID, SpatialVector3) -> Void
     var moveListener: (SpatialVector3) -> Void
     var assignRole: (PhysicalOutputID, ChannelRole?) -> Void
+    var measurementPoint: SpatialVector3? = nil
+    var measurementRadius: Float = 0.1
+    var allowsPanning = true
+    var allowsScrollPanning = true
+    var fitsAllContent = false
+    var viewportPoints: [SpatialVector3] = []
+    var viewportResetRevision = 0
     var zoom: CGFloat = 1.25
     var zoomChanged: (CGFloat) -> Void = { _ in }
     var editingChanged: (Bool) -> Void = { _ in }
@@ -33,8 +40,11 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
     var configuration: SpeakerRoomCanvas? {
         didSet {
             guard let configuration else { return }
+            updateFittedBounds(configuration)
+            if !configuration.allowsPanning { pan = .zero }
             if oldValue != nil {
-                if oldValue?.zoom != configuration.zoom { setZoom(configuration.zoom) }
+                if oldValue?.viewportResetRevision != configuration.viewportResetRevision { resetViewport() }
+                else if oldValue?.zoom != configuration.zoom { setZoom(configuration.zoom) }
                 return
             }
             zoom = configuration.zoom
@@ -48,6 +58,8 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
     private var initialFront = SpeakerLayoutGeometry.screenY
     private var initialBack: Float = 0
     private var initialHalfWidth: Float = 0
+    private var fittedBounds: CGRect?
+    private var fittedSpeakerPositions: [PhysicalOutputID: SpatialVector3] = [:]
     private(set) var pan = CGPoint.zero
     private(set) var zoom: CGFloat = 1.25
     private var pointerStart = CGPoint.zero
@@ -62,10 +74,57 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
     private var tooltipText: [NSView.ToolTipTag: String] = [:]
     private enum Target { case speaker(PhysicalOutputID), listener, pan }
     override var isFlipped: Bool { true }
-    override var acceptsFirstResponder: Bool { true }
+    // The canvas fills its bounds. Keep its redraws local rather than asking
+    // the surrounding SwiftUI editor to repaint behind each drag.
+    override var isOpaque: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+    // A locked measurement preview only navigates the viewport. Asking AppKit
+    // to move keyboard focus here needlessly traverses the full profile editor.
+    override var acceptsFirstResponder: Bool { configuration?.locked != true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+    }
+
+    #if DEBUG
+    private(set) var lastDrawTime: TimeInterval = 0
+    private(set) var lastMouseDownTime: TimeInterval = 0
+    #endif
 
     var graph: CGRect { CGRect(x: 48, y: 30, width: max(1, bounds.width - 48), height: max(1, bounds.height - 30)) }
+    private func updateFittedBounds(_ config: SpeakerRoomCanvas) {
+        guard config.fitsAllContent else { fittedBounds = nil; fittedSpeakerPositions = [:]; return }
+        let roles = SpeakerLayoutGeometry.layoutRoles(config.topology)
+        fittedSpeakerPositions = Dictionary(uniqueKeysWithValues: config.topology.endpoints.enumerated().map { index, endpoint in
+            // Unplaced speakers use the existing layout's display estimates only.
+            (endpoint.id, SpeakerLayoutGeometry.vector(endpoint.position ?? SpeakerLayoutGeometry.suggestedPosition(for: roles[index])))
+        })
+        var points = Array(fittedSpeakerPositions.values) + config.viewportPoints
+            + [config.listener, SpatialVector3(x: 0, y: SpeakerLayoutGeometry.screenY, z: 0)]
+        if let point = config.measurementPoint {
+            let radius = max(0, config.measurementRadius)
+            points += [SpatialVector3(x: point.x - radius, y: point.y - radius, z: 0),
+                       SpatialVector3(x: point.x + radius, y: point.y + radius, z: 0)]
+        }
+        let xs = points.map { CGFloat($0.x) }.filter(\.isFinite)
+        let ys = points.map { CGFloat($0.y) }.filter(\.isFinite)
+        let minX = xs.min() ?? 0, maxX = xs.max() ?? 0, minY = ys.min() ?? 0, maxY = ys.max() ?? 0
+        fittedBounds = CGRect(x: (minX + maxX) / 2 - max(0.5, maxX - minX) / 2,
+                              y: (minY + maxY) / 2 - max(0.5, maxY - minY) / 2,
+                              width: max(0.5, maxX - minX), height: max(0.5, maxY - minY))
+    }
     var scale: CGFloat {
+        if let fittedBounds {
+            // Pixel margins include whole icons and the measurement callout.
+            return zoom * max(0.001, min(max(1, graph.width - 112) / fittedBounds.width,
+                                         max(1, graph.height - 128) / fittedBounds.height))
+        }
         let extent = CGFloat(configuration?.extent ?? 1)
         // Reserve room for complete speaker blocks at the default 125% zoom.
         // Snapshot extents once so dragging never causes the canvas to rescale.
@@ -76,7 +135,13 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         return zoom * max(0.001, base)
     }
 
-    var screen: CGPoint { CGPoint(x: graph.midX + pan.x, y: graph.minY + 59 + CGFloat(initialFront - SpeakerLayoutGeometry.screenY) * scale + pan.y) }
+    var screen: CGPoint {
+        if let fittedBounds {
+            return CGPoint(x: graph.midX - fittedBounds.midX * scale + pan.x,
+                           y: graph.midY + (fittedBounds.midY - CGFloat(SpeakerLayoutGeometry.screenY)) * scale + pan.y)
+        }
+        return CGPoint(x: graph.midX + pan.x, y: graph.minY + 59 + CGFloat(initialFront - SpeakerLayoutGeometry.screenY) * scale + pan.y)
+    }
     func point(_ world: SpatialVector3) -> CGPoint {
         CGPoint(x: screen.x + CGFloat(world.x) * scale,
                 y: screen.y + CGFloat(SpeakerLayoutGeometry.screenY - world.y) * scale)
@@ -85,7 +150,24 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         SpatialVector3(x: Float((point.x - screen.x) / scale),
                        y: SpeakerLayoutGeometry.screenY - Float((point.y - screen.y) / scale), z: 0)
     }
+    // Measurement offsets, grid dots, and rulers share the listener as zero.
+    var rulerOrigin: CGPoint {
+        guard let config = configuration, config.measurementPoint != nil else { return screen }
+        return point(config.listener)
+    }
+    var gridSpacing: CGFloat {
+        configuration?.measurementPoint == nil ? max(12, scale * 0.1) : rulerStep * scale / 5
+    }
+    var measurementDistanceCM: Double? {
+        guard let config = configuration, let measurement = config.measurementPoint else { return nil }
+        return hypot(Double(measurement.x) - Double(config.listener.x),
+                     Double(measurement.y) - Double(config.listener.y)) * 100
+    }
+    private var measurementDistanceLabel: String? {
+        measurementDistanceCM.map { String(format: "%g cm", ($0 * 10).rounded() / 10) }
+    }
     func nodePoint(_ endpoint: SpeakerEndpoint, index: Int) -> CGPoint {
+        if let position = fittedSpeakerPositions[endpoint.id] { return point(position) }
         if endpoint.position != nil { return point(SpeakerLayoutGeometry.vector(endpoint.position)) }
         return CGPoint(x: graph.minX + 42 + CGFloat(index % 5) * 64 + pan.x,
                        y: graph.maxY - 28 - CGFloat(index / 5) * 44 + pan.y)
@@ -130,7 +212,9 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         }
         updateAccessibilityElements()
         setAccessibilityLabel("Speaker and listening position map")
-        setAccessibilityHelp("Drag speakers or the listener to move them. Drag empty space or scroll to pan. Click a speaker to test it. Use the arrow to assign its role. With keyboard focus, use brackets to select a speaker, L for the listener, arrow keys to move, Space to test, and R for roles.")
+        setAccessibilityHelp(config.measurementPoint != nil && !config.allowsScrollPanning
+            ? "Place the microphone at the blue Measure here marker. The grey line shows its distance from the listening position in centimeters. Click and drag to pan. Use the zoom buttons or Fit All to adjust the view. Scrolling moves the page."
+            : "Drag speakers or the listener to move them. Drag empty space or scroll to pan. Click a speaker to test it. Use the arrow to assign its role. With keyboard focus, use brackets to select a speaker, L for the listener, arrow keys to move, Space to test, and R for roles.")
     }
     func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
         tooltipText[tag] ?? ""
@@ -196,6 +280,15 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
             }
             node.setAccessibilityCustomActions(actions)
             children.append(node)
+        }
+        if let measurement = config.measurementPoint {
+            let marker = element("measurement", label: "Measure here",
+                value: String(format: "Microphone position: %.2f meters right, %.2f meters forward", measurement.x, measurement.y)
+                    + ". \(measurementDistanceLabel ?? "0 cm") from the listening position.",
+                rect: nodeRect(point(measurement)))
+            marker.setAccessibilityRole(.staticText)
+            marker.setAccessibilityEnabled(true)
+            children.append(marker)
         }
         accessibilityNodes = accessibilityNodes.filter { keys.contains($0.key) }
         setAccessibilityChildren(children)
@@ -270,22 +363,26 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
     }
 
     override func resetCursorRects() {
-        addCursorRect(graph, cursor: .openHand)
+        addCursorRect(graph, cursor: configuration?.allowsPanning == false ? .arrow : .openHand)
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        #if DEBUG
+        defer { lastDrawTime = ProcessInfo.processInfo.systemUptime }
+        #endif
         guard let config = configuration else { return }
         NSColor.controlBackgroundColor.setFill(); bounds.fill()
         NSGraphicsContext.saveGraphicsState()
         graph.clip()
         NSColor.controlBackgroundColor.setFill(); graph.fill()
         let step = rulerStep
-        let xRange = ticks(origin: screen.x, lower: graph.minX, upper: graph.maxX, step: step)
-        let yRange = ticks(origin: screen.y, lower: graph.minY, upper: graph.maxY, step: step)
-        let spacing = max(12, scale * 0.1)
+        let origin = rulerOrigin
+        let xRange = ticks(origin: origin.x, lower: graph.minX, upper: graph.maxX, step: step)
+        let yRange = ticks(origin: origin.y, lower: graph.minY, upper: graph.maxY, step: step)
+        let spacing = gridSpacing
         let grid = NSBezierPath()
-        for x in stride(from: screen.x + floor((graph.minX - screen.x) / spacing) * spacing, through: graph.maxX, by: spacing) {
-            for y in stride(from: screen.y + floor((graph.minY - screen.y) / spacing) * spacing, through: graph.maxY, by: spacing) {
+        for x in stride(from: origin.x + floor((graph.minX - origin.x) / spacing) * spacing, through: graph.maxX, by: spacing) {
+            for y in stride(from: origin.y + floor((graph.minY - origin.y) / spacing) * spacing, through: graph.maxY, by: spacing) {
                 grid.appendOval(in: CGRect(x: x - 0.6, y: y - 0.6, width: 1.2, height: 1.2))
             }
         }
@@ -298,6 +395,17 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         screenBaseline.move(to: CGPoint(x: graph.minX, y: screen.y))
         screenBaseline.line(to: CGPoint(x: graph.maxX, y: screen.y))
         NSColor.gray.setStroke(); screenBaseline.lineWidth = 1; screenBaseline.stroke()
+        if let measurement = config.measurementPoint {
+            let p = point(measurement), radius = CGFloat(config.measurementRadius) * scale
+            if radius > 0 {
+                let region = NSBezierPath(ovalIn: CGRect(x: p.x - radius, y: p.y - radius, width: radius * 2, height: radius * 2))
+                NSColor.systemBlue.withAlphaComponent(0.12).setFill(); region.fill()
+                NSColor.systemBlue.withAlphaComponent(0.6).setStroke(); region.stroke()
+            }
+            let distanceLine = NSBezierPath()
+            distanceLine.move(to: point(config.listener)); distanceLine.line(to: p)
+            NSColor.secondaryLabelColor.setStroke(); distanceLine.lineWidth = 1; distanceLine.stroke()
+        }
         symbol("tv.fill", rect: nodeContentRect(screen, x: -46, y: -54, width: 92, height: 54), color: .black)
         for (index, endpoint) in config.topology.endpoints.enumerated() {
             drawSpeaker(endpoint, index: index)
@@ -306,21 +414,87 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         NSColor.windowBackgroundColor.setFill()
         NSBezierPath(ovalIn: nodeContentRect(listener, x: -19, y: -19, width: 38, height: 38)).fill()
         symbol("person.fill", rect: nodeContentRect(listener, x: -11, y: -13, width: 22, height: 26), color: .controlAccentColor)
+        // The measurement location must remain visible even on top of a listener or speaker.
+        if let measurement = config.measurementPoint {
+            let target = point(measurement), text = measurementDistanceLabel ?? "0 cm"
+            let labels = measurementLabelLayout(from: listener, to: target, distanceText: text)
+            if let rect = labels.distance { drawMeasurementDistanceLabel(text, in: rect) }
+            drawMeasurementMarker(at: target, labelRect: labels.measurement)
+        }
         NSGraphicsContext.restoreGraphicsState()
         NSColor.separatorColor.withAlphaComponent(0.65).setStroke()
         let frame = NSBezierPath(roundedRect: graph.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
         frame.lineWidth = 1; frame.stroke()
         // Metre rulers sit outside the graph frame.
         for tick in xRange {
-            let x = screen.x + tick * scale
+            let x = origin.x + tick * scale
             label(rulerLabel(tick),
                   rect: CGRect(x: x - 38, y: 5, width: 76, height: 18), alignment: .center)
         }
         for tick in yRange {
-            let y = screen.y + tick * scale
-            label(rulerLabel(tick),
+            let y = origin.y + tick * scale
+            label(rulerLabel(config.measurementPoint == nil ? tick : -tick),
                   rect: CGRect(x: 0, y: y - 8, width: 40, height: 18), alignment: .right)
         }
+    }
+
+    func measurementLabelLayout(from start: CGPoint, to end: CGPoint, distanceText: String) -> (measurement: CGRect, distance: CGRect?) {
+        let available = graph.insetBy(dx: 4, dy: 4)
+        func clamped(_ rect: CGRect) -> CGRect {
+            let width = min(rect.width, max(1, available.width)), height = min(rect.height, max(1, available.height))
+            return CGRect(x: min(max(available.minX, rect.minX), available.maxX - width),
+                          y: min(max(available.minY, rect.minY), available.maxY - height), width: width, height: height)
+        }
+        let labelY = end.y + 46 < graph.maxY ? end.y + 26 : end.y - 46
+        let measurement = clamped(CGRect(x: end.x - 44, y: labelY, width: 88, height: 20))
+        let textWidth = (distanceText as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width
+        let width = ceil(textWidth) + 10, height: CGFloat = 20, gap: CGFloat = 6
+        let dx = end.x - start.x, dy = end.y - start.y, length = hypot(dx, dy)
+        var normal = length > 0.001 ? CGPoint(x: -dy / length, y: dx / length) : CGPoint(x: 0, y: -1)
+        if normal.y > 0 { normal.x = -normal.x; normal.y = -normal.y }
+        let offset = abs(normal.x) * (width / 2 + 10) + abs(normal.y) * (height / 2 + 18)
+        let middle = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+        // Lay out both labels together. Check collisions after clamping, since
+        // otherwise graph edges can push independently placed labels together.
+        let centers = [
+            CGPoint(x: middle.x + normal.x * offset, y: middle.y + normal.y * offset),
+            CGPoint(x: middle.x - normal.x * offset, y: middle.y - normal.y * offset),
+            CGPoint(x: measurement.midX, y: measurement.minY - gap - height / 2),
+            CGPoint(x: measurement.midX, y: measurement.maxY + gap + height / 2),
+            CGPoint(x: measurement.minX - gap - width / 2, y: measurement.midY),
+            CGPoint(x: measurement.maxX + gap + width / 2, y: measurement.midY),
+            CGPoint(x: available.minX + width / 2, y: available.minY + height / 2),
+            CGPoint(x: available.maxX - width / 2, y: available.minY + height / 2),
+            CGPoint(x: available.minX + width / 2, y: available.maxY - height / 2),
+            CGPoint(x: available.maxX - width / 2, y: available.maxY - height / 2)
+        ]
+        let candidates = centers.map { clamped(CGRect(x: $0.x - width / 2, y: $0.y - height / 2, width: width, height: height)) }
+            .filter { !$0.intersects(measurement.insetBy(dx: -gap, dy: -gap)) }
+        let listenerRadius = 19 * nodeScale + 4
+        let listener = CGRect(x: start.x - listenerRadius, y: start.y - listenerRadius, width: listenerRadius * 2, height: listenerRadius * 2)
+        let target = CGRect(x: end.x - 12, y: end.y - 12, width: 24, height: 24)
+        let distance = candidates.first { !$0.intersects(listener) && !$0.intersects(target) } ?? candidates.first
+        return (measurement, distance)
+    }
+
+    private func drawMeasurementDistanceLabel(_ text: String, in rect: CGRect) {
+        NSColor.controlBackgroundColor.withAlphaComponent(0.95).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
+        label(text, rect: rect.insetBy(dx: 3, dy: 3), alignment: .center, fontSize: 11, color: .secondaryLabelColor)
+    }
+
+    private func drawMeasurementMarker(at point: CGPoint, labelRect rect: CGRect) {
+        NSColor.white.setFill()
+        NSBezierPath(ovalIn: CGRect(x: point.x - 8, y: point.y - 8, width: 16, height: 16)).fill()
+        NSColor.systemBlue.setFill()
+        NSBezierPath(ovalIn: CGRect(x: point.x - 5, y: point.y - 5, width: 10, height: 10)).fill()
+        let leader = NSBezierPath()
+        leader.move(to: CGPoint(x: point.x, y: point.y + (rect.midY > point.y ? 8 : -8)))
+        leader.line(to: CGPoint(x: rect.midX, y: rect.midY > point.y ? rect.minY : rect.maxY))
+        NSColor.systemBlue.setStroke(); leader.lineWidth = 1; leader.stroke()
+        NSColor.controlBackgroundColor.withAlphaComponent(0.95).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
+        label("Measure here", rect: rect.insetBy(dx: 2, dy: 3), alignment: .center, fontSize: 11, color: .systemBlue)
     }
 
     private func drawSpeaker(_ endpoint: SpeakerEndpoint, index: Int) {
@@ -354,10 +528,10 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         Array(stride(from: ceil((lower + 18 - origin) / (scale * step)) * step,
                      through: (upper - 18 - origin) / scale, by: step))
     }
-    private func label(_ text: String, rect: CGRect, alignment: NSTextAlignment, fontSize: CGFloat = 10) {
+    private func label(_ text: String, rect: CGRect, alignment: NSTextAlignment, fontSize: CGFloat = 10, color: NSColor = .secondaryLabelColor) {
         let style = NSMutableParagraphStyle(); style.alignment = alignment
         (text as NSString).draw(in: rect, withAttributes: [.font: NSFont.systemFont(ofSize: fontSize),
-            .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: style])
+            .foregroundColor: color, .paragraphStyle: style])
     }
     private func symbol(_ name: String, rect: CGRect, color: NSColor) {
         let configuration = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
@@ -379,15 +553,18 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
     }
 
     override func mouseDown(with event: NSEvent) {
-        guard let config = configuration, !config.locked else { return }
+        #if DEBUG
+        lastMouseDownTime = ProcessInfo.processInfo.systemUptime
+        #endif
+        guard let config = configuration else { return }
         let p = convert(event.locationInWindow, from: nil)
         guard graph.contains(p) else { return }
-        window?.makeFirstResponder(self)
+        if acceptsFirstResponder { window?.makeFirstResponder(self) }
         pointerStart = p; panStart = pan; didDrag = false; pressedArrow = false; snapX = nil; snapY = nil
-        if nodeRect(point(config.listener)).contains(p) {
+        if !config.locked, nodeRect(point(config.listener)).contains(p) {
             keyboardListenerSelected = true; target = .listener; worldStart = config.listener; return
         }
-        for (index, endpoint) in config.topology.endpoints.enumerated().reversed() {
+        for (index, endpoint) in config.topology.endpoints.enumerated().reversed() where !config.locked {
             let center = nodePoint(endpoint, index: index)
             guard nodeRect(center).contains(p) else { continue }
             keyboardListenerSelected = false
@@ -397,13 +574,25 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
             worldStart = endpoint.position == nil ? world(center) : SpeakerLayoutGeometry.vector(endpoint.position)
             return
         }
-        guard graph.contains(p) else { return }
+        guard graph.contains(p), config.allowsPanning else { return }
         target = .pan; NSCursor.closedHand.push()
     }
     override func mouseDragged(with event: NSEvent) {
-        guard let config = configuration, !config.locked, let target else { return }
+        guard let config = configuration, let target else { return }
         let p = convert(event.locationInWindow, from: nil)
         let dx = p.x - pointerStart.x, dy = p.y - pointerStart.y
+        // Panning has no click action to disambiguate: follow the very first
+        // movement. Keep the click/drag threshold for speaker and listener edits.
+        if case .pan = target {
+            let beginsDrag = !didDrag
+            if beginsDrag { UIRenderPerformance.beginSpeakerDrag(); didDrag = true }
+            pan = CGPoint(x: panStart.x + dx, y: panStart.y + dy)
+            needsDisplay = true
+            // Present the initial movement now; subsequent events can coalesce
+            // normally at the display rate while the pointer keeps moving.
+            if beginsDrag { displayIfNeeded() }
+            return
+        }
         guard didDrag || hypot(dx, dy) >= 3 else { return }
         if !didDrag {
             UIRenderPerformance.beginSpeakerDrag()
@@ -414,9 +603,7 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
             }
         }
         didDrag = true
-        if case .pan = target {
-            pan = CGPoint(x: panStart.x + dx, y: panStart.y + dy); needsDisplay = true; return
-        }
+        guard !config.locked else { return }
         if case .speaker = target, config.listeningOnly { return }
         var moved = SpeakerLayoutGeometry.dragged(worldStart, x: Float(dx), y: Float(dy), pointsPerMeter: Float(scale))
         var anchors = [SpatialVector3(x: 0, y: SpeakerLayoutGeometry.screenY, z: 0)]
@@ -471,29 +658,40 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         if zoom != previous { configuration?.zoomChanged(zoom) }
     }
     override func scrollWheel(with event: NSEvent) {
-        guard graph.contains(convert(event.locationInWindow, from: nil)) else { super.scrollWheel(with: event); return }
+        guard configuration?.allowsPanning != false, configuration?.allowsScrollPanning != false,
+              graph.contains(convert(event.locationInWindow, from: nil)) else { super.scrollWheel(with: event); return }
         panScroll(x: event.scrollingDeltaX, y: event.scrollingDeltaY,
                   precise: event.hasPreciseScrollingDeltas, momentum: event.momentumPhase)
     }
     func panScroll(x: CGFloat, y: CGFloat, precise: Bool, momentum: NSEvent.Phase) {
         // Stop when fingers lift; swallow momentum rather than forwarding it to the parent scroll view.
-        guard momentum.isEmpty, target == nil, x.isFinite, y.isFinite else { return }
+        guard configuration?.allowsPanning != false, configuration?.allowsScrollPanning != false,
+              momentum.isEmpty, target == nil, x.isFinite, y.isFinite else { return }
         let multiplier: CGFloat = precise ? 1 : 12
         pan.x += x * multiplier; pan.y += y * multiplier
         needsDisplay = true; updateHelp()
     }
     var rulerStep: CGFloat {
-        [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100].first { $0 * scale >= 44 } ?? 100
+        if let step = [CGFloat(0.05), 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100].first(where: { $0 * scale >= 44 }) {
+            return step
+        }
+        // Retain metric spacing without producing millions of grid dots for
+        // imported rooms with very large coordinates.
+        return pow(10, ceil(log10(44 / scale)))
     }
     func rulerLabel(_ metres: CGFloat) -> String {
         // Use one unit consistently across both rulers at a given zoom level.
-        if rulerStep < 1 { return String(format: "%g cm", abs(metres * 100)) }
-        return String(format: "%g m", abs(metres))
+        let value = abs(metres) < 0.000001 ? 0 : (configuration?.measurementPoint == nil ? abs(metres) : metres)
+        if rulerStep < 1 { return String(format: "%g cm", value * 100) }
+        return String(format: "%g m", value)
     }
     func setZoom(_ value: CGFloat, at location: CGPoint? = nil) {
         guard value.isFinite, target == nil else { return }
         let next = min(4, max(0.25, value))
         guard next != zoom else { return }
+        if configuration?.allowsPanning == false {
+            zoom = next; pan = .zero; needsDisplay = true; updateHelp(); return
+        }
         let anchor = location ?? CGPoint(x: graph.midX, y: graph.midY)
         let roomAnchor = world(anchor)
         zoom = next

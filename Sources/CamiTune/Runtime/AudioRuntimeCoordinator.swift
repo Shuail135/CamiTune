@@ -77,6 +77,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
     var acknowledgedPlanRevision: RuntimeIntentRevision? { ownedSession?.acknowledgedPlan?.revision }
     var runtimePlanSummary: String { ownedSession?.acknowledgedPlan?.summary ?? "No runtime plan has been acknowledged." }
     private var activeRuntimePlan: AudioRuntimePlan? { ownedSession?.appliedPlan }
+    var appliedProcessingGraph: ProcessingGraph? { activeRuntimePlan?.processingGraph }
     var appliedProfile: DeviceProfile? { activeRuntimePlan?.intent }
     var activeDeliveryConfiguration: PCMDeliveryConfiguration? { activeRuntimePlan?.deliveryConfiguration }
     var activeSampleRate: Int? { ownedSession?.appliedPlan.sourceFormat.sampleRate }

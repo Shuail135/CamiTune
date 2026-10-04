@@ -20,10 +20,17 @@ package struct SpatialSeatingCalibration: Codable, Hashable, Sendable, Identifia
     package var roomCorrectionBands: [EQBand] = []
     package var roomCorrectionTopology: SpeakerTopology?
 
+    package var roomCorrectionEnabled = true
+    package var roomCorrectionSessionID: UUID?
+    package var roomCorrectionSettings = RoomCorrectionSettings()
+    package var roomCorrectionResult: RoomCorrectionResult?
+    package var roomCorrectionRevision = 0
+
     private enum CodingKeys: String, CodingKey {
         case id, outputDeviceUID, name, leftDistanceMeters, rightDistanceMeters, roomX, roomY, enabled, balanceDB
         case measuredArrivalDifferenceMS, measuredLevelDifferenceDB, useMeasuredAlignment
         case measuredAt, microphoneName, measurementConfidence, roomCorrectionBands, roomCorrectionTopology
+        case roomCorrectionEnabled, roomCorrectionSessionID, roomCorrectionSettings, roomCorrectionResult, roomCorrectionRevision
     }
     package init(outputDeviceUID: String, name: String = "Default",
          leftDistanceMeters: Float = 1, rightDistanceMeters: Float = 1) {
@@ -48,6 +55,11 @@ package struct SpatialSeatingCalibration: Codable, Hashable, Sendable, Identifia
         measuredAt = try c.decodeIfPresent(Date.self, forKey: .measuredAt)
         microphoneName = try c.decodeIfPresent(String.self, forKey: .microphoneName)
         measurementConfidence = try c.decodeIfPresent(AcousticMeasurementConfidence.self, forKey: .measurementConfidence)
+        roomCorrectionEnabled = try c.decodeIfPresent(Bool.self, forKey: .roomCorrectionEnabled) ?? true
+        roomCorrectionSessionID = try c.decodeIfPresent(UUID.self, forKey: .roomCorrectionSessionID)
+        roomCorrectionSettings = try c.decodeIfPresent(RoomCorrectionSettings.self, forKey: .roomCorrectionSettings) ?? .init()
+        roomCorrectionResult = try c.decodeIfPresent(RoomCorrectionResult.self, forKey: .roomCorrectionResult)
+        roomCorrectionRevision = try c.decodeIfPresent(Int.self, forKey: .roomCorrectionRevision) ?? 0
         roomCorrectionTopology = try c.decodeIfPresent(SpeakerTopology.self, forKey: .roomCorrectionTopology)
         roomCorrectionBands = try c.decodeIfPresent([EQBand].self, forKey: .roomCorrectionBands) ?? []
     }

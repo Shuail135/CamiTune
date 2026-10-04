@@ -171,7 +171,7 @@ struct CamiTuneCommands: Commands {
                         Label(mode.compactDisplayName, systemImage: mode.systemImageName)
                     }
                     .disabled(!coordinator.context.canSelectMode(mode))
-                    .help(coordinator.context.readiness[mode]?.reason ?? mode.compactDisplayName)
+                    .help(coordinator.context.readiness[mode]?.reason ?? "")
                 }
             }
         }

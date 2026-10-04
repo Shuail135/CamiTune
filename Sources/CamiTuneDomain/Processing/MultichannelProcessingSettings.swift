@@ -6,19 +6,58 @@ package struct MultichannelProcessingSettings: Codable, Hashable, Sendable {
         schemaVersion: Int = 1,
         bass: BassManagementSettings = BassManagementSettings(),
         routing: AdvancedRoutingSettings = AdvancedRoutingSettings(),
-        crossover: ActiveCrossoverSettings = ActiveCrossoverSettings()
+        crossover: ActiveCrossoverSettings = ActiveCrossoverSettings(),
+        subwooferControl: SubwooferControlSettings = .init()
     ) {
         self.schemaVersion = schemaVersion
         self.bass = bass
         self.routing = routing
         self.crossover = crossover
+        self.subwooferControl = subwooferControl
     }
 
     package var schemaVersion = 1
     package var bass = BassManagementSettings()
     package var routing = AdvancedRoutingSettings()
     package var crossover = ActiveCrossoverSettings()
-    package var isEnabled: Bool { bass.enabled || routing.enabled || crossover.enabled }
+    package var subwooferControl = SubwooferControlSettings()
+    package var effectiveBass: BassManagementSettings {
+        var value = bass
+        if subwooferControl.mode == .mute { value.enabled = false }
+        return value
+    }
+    package var isEnabled: Bool { effectiveBass.enabled || routing.enabled || crossover.enabled }
+
+    private enum CodingKeys: String, CodingKey { case schemaVersion, bass, routing, crossover, subwooferControl }
+    package init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        bass = try values.decodeIfPresent(BassManagementSettings.self, forKey: .bass) ?? .init()
+        routing = try values.decodeIfPresent(AdvancedRoutingSettings.self, forKey: .routing) ?? .init()
+        crossover = try values.decodeIfPresent(ActiveCrossoverSettings.self, forKey: .crossover) ?? .init()
+        subwooferControl = try values.decodeIfPresent(SubwooferControlSettings.self, forKey: .subwooferControl) ?? .init()
+    }
+}
+
+package enum SubwooferControlMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case standard, reduce, mute
+    package var id: Self { self }
+    package var title: String {
+        switch self {
+        case .standard: return "Default"
+        case .reduce: return "Reduce"
+        case .mute: return "Mute"
+        }
+    }
+}
+
+package struct SubwooferControlSettings: Codable, Hashable, Sendable {
+    package static let reductionRangeDB: ClosedRange<Double> = 0...24
+    package var mode: SubwooferControlMode = .standard
+    package var reductionDB: Double = 6
+    package init(mode: SubwooferControlMode = .standard, reductionDB: Double = 6) {
+        self.mode = mode; self.reductionDB = reductionDB
+    }
 }
 
 package enum CrossoverSlope: Int, Codable, Hashable, Sendable, CaseIterable {

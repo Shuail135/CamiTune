@@ -241,7 +241,6 @@ struct SidebarView: View {
                 }
             }
         case .moveItem(let item, let offset): profileStore.moveSidebarItem(item, by: offset)
-        case .moveToFolder(let ids, let folder): profileStore.assignProfiles(ids: ids, toFolder: folder)
         }
     }
 }
@@ -272,8 +271,8 @@ private struct FolderDeletionAlert: NSViewRepresentable {
             let alert = NSAlert()
             alert.messageText = "Delete “\(request.name)”?"
             alert.informativeText = request.profiles.isEmpty
-                ? "This folder will be deleted. Use Edit → Undo to restore it."
-                : "This folder and all \(request.profiles.count) profiles inside it will be deleted. Use Edit → Undo to restore it."
+                ? "This folder will be deleted."
+                : "This folder and all \(request.profiles.count) profiles inside it will be deleted."
             let cancel = alert.addButton(withTitle: "Cancel")
             cancel.keyEquivalent = "\r"
             let delete = alert.addButton(withTitle: "Delete")
@@ -307,7 +306,7 @@ private struct SidebarInlineEditRequest {
 
 private enum SidebarAction {
     case addOutput, toggleFolder(UUID), newFolder(Set<UUID>), renameFolder(UUID), removeFolder(UUID)
-    case renameProfile(UUID), toggleProfile(UUID), deleteProfile(UUID), moveToFolder(Set<UUID>, UUID?)
+    case renameProfile(UUID), toggleProfile(UUID), deleteProfile(UUID)
     case moveItem(ProfileRootItem, Int)
 }
 
@@ -404,6 +403,15 @@ private struct NativeProfileSidebar: NSViewRepresentable {
                 guard displayedRows.indices.contains(index), case .profile(let id) = displayedRows[index].kind else { return nil }
                 return id
             })
+        }
+
+        func retainDisplayedSelection() {
+            selectionScheduler.cancel()
+            guard let table else { return }
+            let indexes = IndexSet(displayedRows.indices.filter { displayedRows[$0].selectionID == parent.selection })
+            suppressSelection = true
+            table.selectRowIndexes(indexes, byExtendingSelection: false)
+            suppressSelection = false
         }
 
         func update(_ parent: NativeProfileSidebar) {
@@ -660,39 +668,28 @@ private struct NativeProfileSidebar: NSViewRepresentable {
                 menuActions.append(action)
                 menu.addItem(item)
             }
-            var ids = selectedIDs()
-            if displayedRows.indices.contains(row), case .profile(let id) = displayedRows[row].kind, !ids.contains(id) { ids = [id] }
-            add(ids.isEmpty ? "New Folder" : "New Folder with Selection", .newFolder(ids))
-            guard displayedRows.indices.contains(row) else { return menu }
-            if let item = rootItem(at: row) {
-                add("Move Up", .moveItem(item, -1))
-                add("Move Down", .moveItem(item, 1))
+            guard displayedRows.indices.contains(row) else {
+                add("New Folder", .newFolder([]))
+                return menu
             }
             switch displayedRows[row].kind {
             case .folder(let id):
+                let ids = selectedIDs()
+                add(ids.isEmpty ? "New Folder" : "New Folder with Selection", .newFolder(ids))
+                add("Move Up", .moveItem(.folder(id), -1))
+                add("Move Down", .moveItem(.folder(id), 1))
                 add("Rename Folder", .renameFolder(id))
                 add("Delete Folder…", .removeFolder(id))
             case .profile(let id):
-                menu.addItem(.separator())
+                var ids = selectedIDs()
+                if !ids.contains(id) { ids = [id] }
                 add(displayedRows[row].enabled ? "Disable Profile" : "Enable Profile", .toggleProfile(id))
-                let destinations = NSMenu()
-                for folderRow in displayedRows {
-                    guard case .folder(let folderID) = folderRow.kind else { continue }
-                    let item = NSMenuItem(title: folderRow.title, action: #selector(menuAction(_:)), keyEquivalent: "")
-                    item.target = self
-                    item.tag = menuActions.count
-                    menuActions.append(.moveToFolder(ids, folderID))
-                    destinations.addItem(item)
-                }
-                if !destinations.items.isEmpty {
-                    let item = NSMenuItem(title: "Move to Folder", action: nil, keyEquivalent: "")
-                    item.submenu = destinations
-                    menu.addItem(item)
-                }
-                add("Move Out of Folder", .moveToFolder(ids, nil))
+                menu.addItem(.separator())
                 add("Rename", .renameProfile(id))
+                add("New Folder with Selection", .newFolder(ids))
                 add("Delete", .deleteProfile(id))
-            default: break
+            default:
+                add("New Folder", .newFolder([]))
             }
             return menu
         }
@@ -711,6 +708,18 @@ private struct NativeProfileSidebar: NSViewRepresentable {
 @MainActor
 private final class SidebarTable: NSTableView {
     weak var sidebarCoordinator: NativeProfileSidebar.Coordinator?
+    override func mouseDown(with event: NSEvent) {
+        if row(at: convert(event.locationInWindow, from: nil)) == -1 {
+            sidebarCoordinator?.finishEditing(save: true)
+            sidebarCoordinator?.retainDisplayedSelection()
+            window?.makeFirstResponder(self)
+            return
+        }
+        super.mouseDown(with: event)
+    }
+    // The shared field editor still owns Select All while renaming a profile.
+    override func selectAll(_ sender: Any?) {}
+
     override func menu(for event: NSEvent) -> NSMenu? {
         sidebarCoordinator?.menu(for: row(at: convert(event.locationInWindow, from: nil)))
     }
@@ -820,7 +829,7 @@ private final class SidebarCell: NSTableCellView {
         title.stringValue = row.title
         title.font = .systemFont(ofSize: NSFont.systemFontSize)
         title.textColor = .labelColor
-        toolTip = row.title
+        toolTip = nil
         leading.constant = row.folderID == nil ? 2 : 12
         dot.isHidden = true
         icon.contentTintColor = .secondaryLabelColor

@@ -180,7 +180,8 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
 
 
     package func playSpatialCalibration(
-        id: UUID, clip: SpatialCalibrationClip,
+        id: UUID, clip: SpatialCalibrationClip, levelCheckGain: Float = 1,
+        started: (@Sendable (TimeInterval) -> Void)? = nil,
         completion: @escaping @Sendable () -> Void
     ) -> Bool {
         let performance = performanceSource.snapshot()
@@ -188,12 +189,19 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
         defer { condition.unlock() }
         guard calibrationID == id, !stopping, !workerFinished else { return false }
         guard routeRenderer.acceptsCalibrationClip(clip) else { return false }
-        calibrationPlayback = SpatialCalibrationPlayback(clip: clip, completion: completion)
+        calibrationPlayback = SpatialCalibrationPlayback(clip: clip, levelCheckGain: levelCheckGain, started: started, completion: completion)
         nextCalibrationFrameDate = Date()
         resetQueue(reason: .explicitCalibrationReset, performance: performance)
         needsPCMDiscontinuityReset = true
         condition.signal()
         return true
+    }
+
+    package func setLevelCheckGain(id: UUID, gain: Float) {
+        condition.lock()
+        defer { condition.unlock() }
+        guard calibrationID == id, !stopping else { return }
+        calibrationPlayback?.setLevelCheckGain(gain)
     }
 
     package func stopSpatialCalibrationSample(id: UUID) {

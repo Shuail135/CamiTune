@@ -4,6 +4,7 @@ import Foundation
 /// CamillaDSP YAML concerns and is therefore suitable for alternate backends.
 
 package struct ProcessingGraphBuilder {
+    package static let subwooferControlStageID = UUID(uuidString: "B065FEED-0000-4000-8000-000000000001")!
     package let channelCount: Int
     package let preparedAssets: PreparedRuntimeAssets
 
@@ -31,7 +32,7 @@ package struct ProcessingGraphBuilder {
         guard channelCount > 0 else { throw ProcessingGraphError.invalidChannelCount }
 
         var processing = try profile.resolvedProcessing()
-        if profile.hasPhysicalSpeakerRoute {
+        if profile.hasPhysicalSpeakerRoute && profile.effectiveSpatialSettings.seating?.roomCorrectionResult == nil {
             // Legacy L/R room measurements have no physical topology identity.
             // Preserve them in the profile but never apply them to a new map.
             processing.global.stages.removeAll { $0.id == ProcessingProfile.spatialRoomCorrectionStageID }
@@ -56,6 +57,7 @@ package struct ProcessingGraphBuilder {
         var usedStageIDs = Set<UUID>()
         if profile.hasPhysicalSpeakerRoute,
            let seat = profile.effectiveSpatialSettings.seating,
+           seat.roomCorrectionEnabled, seat.roomCorrectionResult == nil,
            let measuredTopology = seat.roomCorrectionTopology,
            measuredTopology == profile.speakerTopology,
            !seat.roomCorrectionBands.isEmpty {
@@ -213,6 +215,23 @@ package struct ProcessingGraphBuilder {
             usedStageIDs: &usedStageIDs,
             to: &graph
         )
+
+        if profile.hasPhysicalSpeakerRoute {
+            let subs = Set(profile.configuredSpeakerEndpoints.filter { $0.function == .subwoofer }.map { $0.id.channelIndex })
+            if !subs.isEmpty {
+                let control = profile.multichannel.subwooferControl
+                let mixerID = "subwoofer_output_control"
+                graph.mixers.append(.init(id: mixerID, sourceStageID: Self.subwooferControlStageID,
+                    inputChannelCount: channelCount, outputChannelCount: channelCount,
+                    mappings: (0..<channelCount).map { channel in
+                        .init(destination: channel, sources: [.init(channel: channel,
+                            gainDB: subs.contains(channel) && control.mode == .reduce ? -control.reductionDB : 0,
+                            muted: subs.contains(channel) && control.mode == .mute)])
+                    }))
+                graph.pipeline.append(.init(id: Self.subwooferControlStageID, kind: .mixer(id: mixerID),
+                    scope: .global, channels: [], processorIDs: []))
+            }
+        }
 
         // User preamp has a reserved semantic identity. It is an intentional
         // volume control, so automatic headroom must not cancel it. Other
@@ -676,7 +695,11 @@ package struct ProcessingGraphHeadroomCalculator {
         pointCount: Int = 1_200,
         excludingGainStageIDs: Set<UUID> = []
     ) -> Double {
-        guard let outputs = peakOutputMagnitudes(for: graph, pointCount: pointCount,
+        // A listening-level reduction must not release automatic headroom and
+        // raise the other speakers. Keep actual attenuation for protection checks.
+        var reference = graph
+        reference.pipeline.removeAll { $0.id == ProcessingGraphBuilder.subwooferControlStageID }
+        guard let outputs = peakOutputMagnitudes(for: reference, pointCount: pointCount,
                 excludingGainStageIDs: excludingGainStageIDs) else { return .nan }
         return -20 * log10(max(1, outputs.max() ?? 1))
     }
@@ -685,6 +708,22 @@ package struct ProcessingGraphHeadroomCalculator {
     /// protection. The ordinary headroom result above never adds positive gain.
     package func peakOutputMagnitudes(for graph: ProcessingGraph, pointCount: Int = 1_200,
                               excludingGainStageIDs: Set<UUID> = [], includingAutomaticHeadroom: Bool = false) -> [Double]? {
+        peakMagnitudes(for: graph, pointCount: pointCount, excludingGainStageIDs: excludingGainStageIDs,
+            includingAutomaticHeadroom: includingAutomaticHeadroom, protectingIntermediateStages: false)
+    }
+
+    /// Conservative input ceiling that stays linear at every stage, including
+    /// before limiters followed by attenuation. Callers should reserve further margin.
+    package func maximumLinearInputPeak(for graph: ProcessingGraph) -> Double? {
+        guard let peaks = peakMagnitudes(for: graph, pointCount: 1200, excludingGainStageIDs: [],
+            includingAutomaticHeadroom: true, protectingIntermediateStages: true),
+            let peak = peaks.max(), peak.isFinite else { return nil }
+        return 1 / max(1, peak)
+    }
+
+    private func peakMagnitudes(for graph: ProcessingGraph, pointCount: Int,
+                               excludingGainStageIDs: Set<UUID>, includingAutomaticHeadroom: Bool,
+                               protectingIntermediateStages: Bool) -> [Double]? {
         guard graph.channelCount > 0, pointCount > 0 else { return nil }
         let response = EQResponseCalculator()
         let frequencies = response.calculate(parsed: ParsedEQ(preampDB: 0), sampleRate: Double(graph.sampleRate), count: pointCount).map(\.frequency)
@@ -706,13 +745,23 @@ package struct ProcessingGraphHeadroomCalculator {
         }
         let mixers = Dictionary(graph.mixers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var peaks = [Double](repeating: 0, count: graph.outputFormat.channelCount)
+        let processors = Dictionary(graph.processors.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var protectedPeak = 1.0
         for frequency in frequencies.indices {
             var envelope = [Double](repeating: 1, count: graph.inputFormat.channelCount)
             for step in graph.pipeline {
                 switch step.kind {
                 case .filter:
                     for channel in step.channels where envelope.indices.contains(channel) {
-                        for id in step.processorIDs { envelope[channel] *= magnitudes[id]?[frequency] ?? 1 }
+                        for id in step.processorIDs {
+                            if protectingIntermediateStages, case .limiter(let limiter) = processors[id]?.implementation {
+                                let threshold = pow(10, limiter.clipLimitDB / 20)
+                                guard threshold.isFinite, threshold > 0 else { return nil }
+                                protectedPeak = max(protectedPeak, envelope[channel] / threshold)
+                            }
+                            envelope[channel] *= magnitudes[id]?[frequency] ?? 1
+                            if protectingIntermediateStages { protectedPeak = max(protectedPeak, envelope[channel]) }
+                        }
                     }
                 case .mixer(let id):
                     guard let mixer = mixers[id], mixer.inputChannelCount == envelope.count, mixer.outputChannelCount > 0 else { return nil }
@@ -728,12 +777,14 @@ package struct ProcessingGraphHeadroomCalculator {
                         }
                     }
                     envelope = mixed
+                    if protectingIntermediateStages { protectedPeak = max(protectedPeak, mixed.max() ?? 0) }
                 }
             }
             guard envelope.allSatisfy(\.isFinite) else { return nil }
             guard envelope.count == peaks.count else { return nil }
             for channel in peaks.indices { peaks[channel] = max(peaks[channel], envelope[channel]) }
         }
-        return peaks
+        guard protectedPeak.isFinite else { return nil }
+        return protectingIntermediateStages ? peaks.map { max($0, protectedPeak) } : peaks
     }
 }

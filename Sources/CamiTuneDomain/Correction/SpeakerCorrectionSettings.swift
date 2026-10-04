@@ -1,7 +1,7 @@
 import Foundation
 
 package enum DeviceCorrectionPage: String, Hashable, Sendable, Identifiable {
-    case automaticEQ, convolution, crossfeed
+    case automaticEQ, roomCorrection, convolution, crossfeed
     package var id: Self { self }
 }
 

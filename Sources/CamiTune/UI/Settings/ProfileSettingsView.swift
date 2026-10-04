@@ -101,6 +101,7 @@ struct ProfileSettingsView: View {
                                 set: { value in
                                     draft.speakerTopology = value.speakerTopology
                                     draft.spatialSettings = value.spatialSettings
+                                    draft.multichannel = value.multichannel
                                 }), draftOnly: true, embedded: true, compact: true)
                         }
                     default: EmptyView()

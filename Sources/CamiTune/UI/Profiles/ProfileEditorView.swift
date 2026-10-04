@@ -33,7 +33,7 @@ struct ProfileEditorView: View {
     }
 
     private var layout: ProfileSectionLayout { store.effectiveLayout(for: profile) }
-    private var sections: [ProfileSection] { layout.visibleSections(for: profile.effectiveEndpointKind) }
+    private var sections: [ProfileSection] { layout.visibleSections(for: profile) }
     private func updateVisuals() {
         // EQ bands and per-channel controls also display spectrum/level data.
         let demand = layout.visualDemand(for: profile.effectiveEndpointKind)
@@ -207,6 +207,8 @@ struct ProfileEditorView: View {
             EmptyView()
         case .multichannel:
             if profile.hasPhysicalSpeakerRoute { MultichannelProcessingView(state: state, profile: $profile) }
+        case .subwooferControl:
+            SubwooferControlView(state: state, store: state.profiles, profile: profile)
         case .perChannel:
             PerChannelProcessingView(state: state, profile: $profile)
         case .convolution:
@@ -248,17 +250,23 @@ struct ProfileEditorView: View {
         focusClearingMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
             guard let keyWindow = NSApp.keyWindow,
                   event.window === keyWindow,
+                  let request = TextFocusClearRequest(window: keyWindow),
                   let contentView = keyWindow.contentView else { return event }
 
+            // Most clicks have no text editing to finish. In particular, map
+            // pans must not walk the entire retained editor tree before AppKit
+            // can deliver mouseDown.
             let location = contentView.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
             let clickedView = contentView.hitTest(location)
+            // Navigating a read-only map is like scrolling: preserve the field
+            // editor rather than committing an unrelated edit before panning.
+            if let map = clickedView as? SpeakerRoomNSView, !map.acceptsFirstResponder { return event }
 
             // Do not mutate first-responder/layout state inside the mouse-down
             // monitor itself. Native controls and SwiftUI gestures must receive
             // the click first; otherwise a focused EQ field can commit/reorder
             // the editor during the same event that starts a slider drag.
-            guard !Self.isTextInput(clickedView),
-                  let request = TextFocusClearRequest(window: keyWindow) else { return event }
+            guard !Self.isTextInput(clickedView) else { return event }
 
             DispatchQueue.main.async {
                 guard focusClearingID == monitorID else { return }

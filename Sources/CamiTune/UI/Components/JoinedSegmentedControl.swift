@@ -32,7 +32,7 @@ struct JoinedSegmentedControl<Value: Hashable>: View {
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(selection == option ? .isSelected : [])
                 .disabled(unavailableReason(option) != nil)
-                .help(unavailableReason(option) ?? title(option))
+                .help(unavailableReason(option) ?? "")
 
                 if option != options.last {
                     Rectangle()

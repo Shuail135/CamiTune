@@ -711,21 +711,21 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             case .couldNotCreateSharedRegion:
                 return "CamiTune could not create the private driver audio transport."
             case .incompatibleDriver:
-                return "The live System Audio Bridge driver does not support this SABR transport v6 completion ABI. Use Setup → Install / Repair Everything to install driver 0.9.0, then ensure coreaudiod reloads."
+                return "The live System Audio Bridge driver does not support this SABR transport v6 completion ABI. Use Settings → Setup → Install to install latest driver."
             case .disconnect(let status):
                 return "System Audio Bridge did not acknowledge transport disconnect after three attempts (Core Audio \(Self.describe(status))). The worker released its local mapping safely; repair or reload the driver before starting another route."
             case .shutdownTimedOut:
                 return "System Audio Bridge shutdown exceeded 2 seconds. Its worker still owns the mapped region and will release it when the in-flight audio operation returns."
             case .coreAudio(let status):
                 if status == SABR_TRANSPORT_PRODUCER_ACTIVE_ERROR {
-                    return "System Audio Bridge is still processing an earlier audio session. Pause applications using the bridge, then restart CamiTune audio. The connection was refused because earlier contributions could be missing."
+                    return "System Audio Bridge is still processing an earlier audio session. Pause(Quit) applications using the bridge, then reactivate profile. The connection was refused because earlier contributions could be missing."
                 }
                 if status == kAudioHardwareUnknownPropertyError ||
                     status == kAudioHardwareBadPropertySizeError {
-                    return "The live System Audio Bridge driver is incompatible with this SABR transport v6 completion ABI (Core Audio \(Self.describe(status))). Use Setup → Install / Repair Everything to install driver 0.9.0 and reload coreaudiod."
+                    return "The live System Audio Bridge driver is incompatible with this SABR transport v6 completion ABI (Core Audio \(Self.describe(status))). Use Settings → Setup → Install to install latest driver, then ensure coreaudiod reloads."
                 }
                 if status == kAudioHardwareIllegalOperationError {
-                    return "System Audio Bridge rejected transport authorization or shared-region validation (Core Audio \(Self.describe(status))). Install driver 0.9.0 with Setup → Install / Repair Everything and reload coreaudiod."
+                    return "System Audio Bridge rejected transport authorization or shared-region validation (Core Audio \(Self.describe(status))). Use Settings → Setup → Install to install latest driver, then ensure coreaudiod reloads."
                 }
                 return "System Audio Bridge rejected the transport connection (Core Audio \(Self.describe(status)))."
             }

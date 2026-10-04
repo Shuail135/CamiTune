@@ -1,3 +1,4 @@
+import CamiTuneAudio
 import CamiTuneDomain
 import SwiftUI
 
@@ -12,7 +13,6 @@ struct MultichannelProcessingView: View {
     @State private var editorRevision = UUID()
     @State private var loadedID: UUID?
     @State private var message: String?
-    @State private var showingVerification = false
     @State private var routingExpanded = false
     @State private var crossoverExpanded = false
 
@@ -24,27 +24,9 @@ struct MultichannelProcessingView: View {
     }
     private var changed: Bool { draft != profile.multichannel || topologyDraft != profile.speakerTopology }
     private var endpoints: [SpeakerEndpoint] { candidate.configuredSpeakerEndpoints }
-    private var subs: [SpeakerEndpoint] { endpoints.filter { $0.function == .subwoofer } }
     private var drivers: [SpeakerEndpoint] { endpoints.filter { [.woofer, .midrange, .tweeter].contains($0.function) } }
     private var routingEndpoints: [SpeakerEndpoint] {
-        endpoints.filter { !draft.bass.enabled || !draft.bass.subwooferEndpointIDs.contains($0.id) }
-    }
-    private var availableBassGroups: [SpeakerGroup] {
-        let used = Set(candidate.configuredSpeakerGroups.filter { group in
-            draft.bass.groups.contains { $0.groupID == group.id }
-        }.flatMap(\.members))
-        let subIDs = Set(subs.map(\.id))
-        return candidate.configuredSpeakerGroups.filter {
-            !$0.members.isEmpty && Set($0.members).isDisjoint(with: used.union(subIDs))
-        }
-    }
-    private var bassEnabled: Binding<Bool> {
-        Binding(get: { draft.bass.enabled }, set: { enabled in
-            if enabled && draft.bass.groups.isEmpty && draft.bass.subwooferEndpointIDs.isEmpty {
-                draft.bass = candidate.defaultBassManagement
-            }
-            draft.bass.enabled = enabled
-        })
+        endpoints.filter { !draft.effectiveBass.enabled || !draft.bass.subwooferEndpointIDs.contains($0.id) }
     }
     private var routingEnabled: Binding<Bool> {
         Binding(get: { draft.routing.enabled }, set: { enabled in
@@ -61,22 +43,7 @@ struct MultichannelProcessingView: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Text("Bass & Subwoofers").font(.title3.bold())
-                    Spacer()
-                    Toggle("Enable bass management", isOn: bassEnabled)
-                        .toggleStyle(.switch).labelsHidden()
-                        .disabled(subs.isEmpty && !draft.bass.enabled)
-                }
-                if draft.bass.enabled {
-                    bassControls
-                } else {
-                    Text(subs.isEmpty
-                        ? "To get started, assign the Subwoofer function to an output in Speaker Setup."
-                        : "Switch on bass management to choose subwoofers and adjust crossover frequencies.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Divider()
+                Text("Routing & Crossovers").font(.title3.bold())
                 processingDisclosure("Custom Routing", expanded: $routingExpanded, enabled: routingEnabled) {
                     routingControls
                 }
@@ -85,14 +52,9 @@ struct MultichannelProcessingView: View {
                 }
                 Divider()
                 HStack {
-                    Button("Verify Speakers") { showingVerification = true }.disabled(changed)
                     Button("Export runtime plan…") {
                         Task { do { try await state.exportRuntimePlan(profile: profile, previewOnly: previewOnly) } catch { message = error.localizedDescription } }
                     }.disabled(changed)
-                }
-                if let record = profile.speakerVerification, let topology = profile.speakerTopology, record.matches(topology) {
-                    Text(record.simulated ? "Speaker verification completed in simulation." : "Speaker verification completed.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if saving { ProgressView("Saving processing…").controlSize(.small) }
                 if let message = state.multichannelAutosaveErrors[profile.id] ?? message { Text(message).font(.callout).foregroundStyle(.orange) }
@@ -102,18 +64,17 @@ struct MultichannelProcessingView: View {
                 }
             }.padding(6).disabled(saving).id(editorRevision)
         }
-        .sheet(isPresented: $showingVerification) { SpeakerVerificationView(state: state, profile: $profile, previewOnly: previewOnly) }
-        .onChange(of: showingVerification) { showing in
-            // Verification can commit corrected physical assignments. It opens
-            // only from a clean editor, so reload the committed topology on exit.
-            if !showing { load(useDraft: false) }
-        }
         .onAppear {
             if loadedID != profile.id { load() }
             if changed { scheduleAutosave() }
         }
         .onChange(of: editorSnapshot) { _ in
-            if loadedID == profile.id, changed, !state.history.isReplaying { scheduleAutosave() }
+            if loadedID == profile.id, changed, !state.history.isReplaying,
+               state.multichannelEditSessions[profile.id] != editorSnapshot { scheduleAutosave() }
+        }
+        .onReceive(state.profiles.$multichannelDrafts) { sessions in
+            guard loadedID == profile.id, let session = sessions[profile.id], session != editorSnapshot else { return }
+            draft = session.settings; topologyDraft = session.topology
         }
         .onChange(of: profile.multichannel) { _ in reloadAfterAutosave() }
         .onChange(of: profile.speakerTopology) { _ in reloadAfterAutosave() }
@@ -156,79 +117,6 @@ struct MultichannelProcessingView: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var bassControls: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Subwoofer outputs").font(.headline)
-            if subs.isEmpty {
-                Text("Assign the Subwoofer function to an output in Speaker Setup.").foregroundStyle(.secondary)
-            }
-            ForEach(subs) { sub in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(sub.displayName)
-                        Spacer()
-                        Toggle("Use \(sub.displayName)", isOn: Binding(get: { draft.bass.subwooferEndpointIDs.contains(sub.id) }, set: { enabled in
-                            draft.bass.subwooferEndpointIDs.removeAll { $0 == sub.id }
-                            if enabled { draft.bass.subwooferEndpointIDs.append(sub.id) }
-                        })).toggleStyle(.switch).labelsHidden()
-                            .disabled(draft.bass.subwooferEndpointIDs == [sub.id])
-                            .help("Keep at least one subwoofer selected while bass management is on.")
-                    }
-                    if draft.bass.subwooferEndpointIDs.contains(sub.id) {
-                        HStack(spacing: 12) {
-                            Text("Trim")
-                            numeric("\(sub.displayName) trim dB", value: subBinding(sub.id, \.gainDB))
-                            Text("dB").foregroundStyle(.secondary)
-                            Text("Delay")
-                            numeric("\(sub.displayName) delay ms", value: subBinding(sub.id, \.delayMilliseconds))
-                            Text("ms").foregroundStyle(.secondary)
-                            Toggle("Invert polarity", isOn: subBinding(sub.id, \.inverted))
-                        }
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-            }
-            Divider()
-            Text("Redirect bass from speakers").font(.headline)
-            Text("Frequencies below each crossover go to the selected subwoofers; higher frequencies stay with the speakers.")
-                .font(.caption).foregroundStyle(.secondary)
-            ForEach($draft.bass.groups) { $group in
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(candidate.configuredSpeakerGroups.first { $0.id == group.groupID }?.name ?? "Unavailable group")
-                        Spacer()
-                        Button { draft.bass.groups.removeAll { $0.id == group.id } } label: { Image(systemName: "minus.circle") }
-                            .buttonStyle(.borderless).help("Stop redirecting bass from this group")
-                    }
-                    HStack(spacing: 12) {
-                        Text("Crossover")
-                        numeric("Crossover Hz", value: $group.crossoverHz)
-                        Text("Hz").foregroundStyle(.secondary)
-                        Picker("Slope", selection: $group.slope) {
-                            ForEach(CrossoverSlope.allCases, id: \.self) { Text($0.title).tag($0) }
-                        }.frame(maxWidth: 300)
-                    }
-                }
-            }
-            Menu("Add speaker group") {
-                ForEach(availableBassGroups) { group in
-                    Button(group.name) { draft.bass.groups.append(.init(groupID: group.id)) }
-                }
-            }.fixedSize().disabled(availableBassGroups.isEmpty)
-            if draft.bass.groups.isEmpty {
-                Text("No speaker bass is redirected. Subwoofers receive only the source's LFE channel, when present.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Divider()
-            HStack(spacing: 12) {
-                Text("LFE trim")
-                numeric("LFE trim dB", value: $draft.bass.lfeGainDB)
-                Text("dB").foregroundStyle(.secondary)
-            }
-            Text("Adjusts the dedicated .1 channel in surround audio. It does not change bass redirected from speakers.")
-                .font(.caption).foregroundStyle(.secondary)
-        }.frame(maxWidth: .infinity, alignment: .leading)
-    }
-
     private var routingControls: some View {
         VStack(alignment: .leading, spacing: 10) {
             if draft.routing.enabled {
@@ -239,12 +127,6 @@ struct MultichannelProcessingView: View {
                     if draft.routing.sourceLayout == .discrete {
                         Stepper("\(draft.routing.discreteChannelCount) channels", value: $draft.routing.discreteChannelCount, in: 1...32)
                     }
-                }
-                Text("Each row connects a source to a physical speaker. Unrouted outputs are silent; several sources may feed one output.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if draft.bass.enabled {
-                    Text("Selected subwoofers receive their signal from bass management and are excluded from routing destinations.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if draft.routing.routes.isEmpty {
                     Text("No routes yet. Add a connection or start from speaker assignments.")
@@ -287,9 +169,6 @@ struct MultichannelProcessingView: View {
                         }
                     }
                 }
-            } else {
-                Text("Speaker assignments are used automatically. Switch on Custom Routing to choose your own source-to-output connections.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -375,11 +254,6 @@ struct MultichannelProcessingView: View {
         TextField(title, value: value, format: .number.precision(.fractionLength(0...2)))
             .textFieldStyle(.roundedBorder).frame(width: 78).accessibilityLabel(title)
     }
-    private func subBinding<T>(_ id: PhysicalOutputID, _ key: WritableKeyPath<SubwooferSettings, T>) -> Binding<T> {
-        Binding(get: { (draft.bass.subwooferSettings[id] ?? .init())[keyPath: key] }, set: {
-            var sub = draft.bass.subwooferSettings[id] ?? .init(); sub[keyPath: key] = $0; draft.bass.subwooferSettings[id] = sub
-        })
-    }
     private func protectionBinding<T>(_ id: PhysicalOutputID, _ key: WritableKeyPath<EndpointProtection, T>) -> Binding<T> {
         Binding(get: { (draft.crossover.protection[id] ?? .init())[keyPath: key] }, set: {
             var protection = draft.crossover.protection[id] ?? .init(); protection[keyPath: key] = $0; draft.crossover.protection[id] = protection
@@ -414,6 +288,199 @@ struct MultichannelProcessingView: View {
         if state.multichannelEditSessions[profile.id] == nil { load(useDraft: false) }
     }
 
+}
+
+/// Edits the configuration draft; the containing setup owns saving or cancelling.
+@MainActor
+struct BassManagementControlsView: View {
+    let profile: DeviceProfile
+    let selectedSubwoofer: PhysicalOutputID
+    @Binding var bass: BassManagementSettings
+    @Binding var testGainDB: Double
+    private var muted: Bool { profile.multichannel.subwooferControl.mode == .mute }
+
+    private var subs: [SpeakerEndpoint] {
+        profile.configuredSpeakerEndpoints.filter { $0.function == .subwoofer }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Bass management").font(.headline)
+                Spacer()
+                Toggle("Enable bass management", isOn: bassEnabled)
+                    .toggleStyle(.switch).labelsHidden()
+                    .disabled(muted)
+            }
+            HStack(spacing: 12) {
+                Text("Test volume").font(.callout)
+                SteppedValueSlider(value: $testGainDB, in: SpatialCalibrationClip.subwooferTestGainRangeDB, step: 1)
+                    .accessibilityLabel("Subwoofer test volume")
+                Text(String(format: "%+.0f dB", testGainDB))
+                    .font(.callout.monospacedDigit()).frame(width: 60, alignment: .trailing)
+                Button("Reset") { testGainDB = 0 }
+                    .controlSize(.small).disabled(testGainDB == 0)
+                    .accessibilityLabel("Reset subwoofer test volume")
+            }
+            .help("Adjusts this subwoofer’s next test sound. 0 dB uses the standard test level.")
+            if bass.enabled {
+                Divider()
+                bassControls.disabled(muted)
+            }
+        }
+    }
+
+    private var availableBassGroups: [SpeakerGroup] {
+        let used = Set(profile.configuredSpeakerGroups.filter { group in
+            bass.groups.contains { $0.groupID == group.id }
+        }.flatMap(\.members))
+        let subIDs = Set(subs.map(\.id))
+        return profile.configuredSpeakerGroups.filter {
+            !$0.members.isEmpty && Set($0.members).isDisjoint(with: used.union(subIDs))
+        }
+    }
+    private var bassEnabled: Binding<Bool> {
+        Binding(get: { bass.enabled && !muted }, set: { enabled in
+            if enabled && bass.groups.isEmpty && bass.subwooferEndpointIDs.isEmpty {
+                bass = profile.defaultBassManagement
+            }
+            bass.enabled = enabled
+        })
+    }
+    private var bassControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(subs.filter { $0.id == selectedSubwoofer }) { sub in
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text(sub.displayName)
+                        Spacer()
+                        Toggle("Use \(sub.displayName)", isOn: Binding(get: { bass.subwooferEndpointIDs.contains(sub.id) }, set: { enabled in
+                            bass.subwooferEndpointIDs.removeAll { $0 == sub.id }
+                            if enabled { bass.subwooferEndpointIDs.append(sub.id) }
+                        })).toggleStyle(.switch).labelsHidden()
+                            .disabled(bass.subwooferEndpointIDs == [sub.id])
+                            .help("Keep at least one subwoofer selected while bass management is on.")
+                    }
+                    if bass.subwooferEndpointIDs.contains(sub.id) {
+                        HStack(spacing: 12) {
+                            Text("Trim")
+                            numeric("\(sub.displayName) trim dB", value: subBinding(sub.id, \.gainDB))
+                            Text("dB").foregroundStyle(.secondary)
+                            Text("Delay")
+                            numeric("\(sub.displayName) delay ms", value: subBinding(sub.id, \.delayMilliseconds))
+                            Text("ms").foregroundStyle(.secondary)
+                            Toggle("Invert polarity", isOn: subBinding(sub.id, \.inverted))
+                        }
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            Text("Redirect bass from speakers").font(.headline)
+            ForEach($bass.groups) { $group in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(profile.configuredSpeakerGroups.first { $0.id == group.groupID }?.name ?? "Unavailable group")
+                        Spacer()
+                        Button { bass.groups.removeAll { $0.id == group.id } } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless).help("Stop redirecting bass from this group")
+                    }
+                    HStack(spacing: 12) {
+                        Text("Crossover")
+                        numeric("Crossover Hz", value: $group.crossoverHz)
+                        Text("Hz").foregroundStyle(.secondary)
+                        Picker("Slope", selection: $group.slope) {
+                            ForEach(CrossoverSlope.allCases, id: \.self) { Text($0.title).tag($0) }
+                        }.frame(maxWidth: 300)
+                    }
+                }
+            }
+            Menu("Add speaker group") {
+                ForEach(availableBassGroups) { group in
+                    Button(group.name) { bass.groups.append(.init(groupID: group.id)) }
+                }
+            }.fixedSize().disabled(availableBassGroups.isEmpty)
+            if bass.groups.isEmpty {
+                Text("No speaker bass is redirected. Subwoofers receive only the source's LFE channel, when present.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Divider()
+            HStack(spacing: 12) {
+                Text("LFE trim")
+                numeric("LFE trim dB", value: $bass.lfeGainDB)
+                Text("dB").foregroundStyle(.secondary)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func numeric(_ title: String, value: Binding<Double>) -> some View {
+        TextField(title, value: value, format: .number.precision(.fractionLength(0...2)))
+            .textFieldStyle(.roundedBorder).frame(width: 78).accessibilityLabel(title)
+    }
+    private func subBinding<T>(_ id: PhysicalOutputID, _ key: WritableKeyPath<SubwooferSettings, T>) -> Binding<T> {
+        Binding(get: { (bass.subwooferSettings[id] ?? .init())[keyPath: key] }, set: {
+            var sub = bass.subwooferSettings[id] ?? .init(); sub[keyPath: key] = $0; bass.subwooferSettings[id] = sub
+        })
+    }
+}
+
+@MainActor
+struct SubwooferControlView: View {
+    @ObservedObject var state: AppState
+    @ObservedObject var store: ProfileStore
+    let profile: DeviceProfile
+
+    private var settings: MultichannelProcessingSettings {
+        store.multichannelDrafts[profile.id]?.settings ?? profile.multichannel
+    }
+    private var hasSubwoofer: Bool { profile.configuredSpeakerEndpoints.contains { $0.function == .subwoofer } }
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Subwoofer Control").font(.title3.bold())
+                JoinedSegmentedControl(options: SubwooferControlMode.allCases,
+                    selection: controlBinding(\.mode), title: { $0.title })
+                    .accessibilityLabel("Subwoofer mode")
+                    .frame(width: 260)
+                    .disabled(!hasSubwoofer || state.isSavingProfileSettings)
+                if settings.subwooferControl.mode == .reduce {
+                    Text("Bass management settings remain unchanged.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if settings.subwooferControl.mode == .mute {
+                    Text("Bass management is off.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if settings.subwooferControl.mode == .reduce {
+                    HStack(spacing: 12) {
+                        Text("Reduction").font(.callout)
+                        SteppedValueSlider(value: controlBinding(\.reductionDB),
+                            in: SubwooferControlSettings.reductionRangeDB, step: 0.5)
+                            .accessibilityLabel("Subwoofer level reduction")
+                        Text(String(format: "−%.1f dB", settings.subwooferControl.reductionDB))
+                            .font(.callout.monospacedDigit()).frame(width: 78, alignment: .trailing)
+                    }.disabled(!hasSubwoofer || state.isSavingProfileSettings)
+                }
+                if !hasSubwoofer {
+                    Text("Assign a Subwoofer in Device Configuration to use these controls.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let error = state.multichannelAutosaveErrors[profile.id] {
+                    Text(error).font(.callout).foregroundStyle(.orange)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(6)
+        }
+    }
+
+    private func controlBinding<Value>(_ key: WritableKeyPath<SubwooferControlSettings, Value>) -> Binding<Value> {
+        Binding(get: { settings.subwooferControl[keyPath: key] }, set: { value in
+            var snapshot = store.multichannelDrafts[profile.id]
+                ?? MultichannelHistoryState(settings: profile.multichannel, topology: profile.speakerTopology)
+            snapshot.settings.subwooferControl[keyPath: key] = value
+            state.scheduleMultichannelAutosave(snapshot, for: profile.id)
+        })
+    }
 }
 
 /// Keeps routing edits grounded in the current speaker assignments.

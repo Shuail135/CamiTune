@@ -18,6 +18,8 @@ struct SpeakerSystemView: View {
     @State private var historyBaseline: SpeakerSystemHistoryState?
     @State private var historyGestureActive = false
     @State private var draft: SpeakerTopology?
+    @State private var bass = BassManagementSettings()
+    @State private var subwooferTestGains: [PhysicalOutputID: Double] = [:]
     @State private var seat: SpatialSeatingCalibration?
     @State private var originalSeat: SpatialSeatingCalibration?
     @State private var originalProfile: DeviceProfile?
@@ -34,7 +36,7 @@ struct SpeakerSystemView: View {
     @FocusState private var titleFocused: Bool
     @State private var boardExtent: Float = 1
 
-    private var saved: Bool { draft == profile.speakerTopology && seat == originalSeat }
+    private var saved: Bool { draft == profile.speakerTopology && seat == originalSeat && bass == profile.multichannel.bass }
     private var editingLocked: Bool { busy || audition.output != nil }
 
     var body: some View {
@@ -85,6 +87,13 @@ struct SpeakerSystemView: View {
                     SpeakerPlacementNotice(endpoint: endpointBinding(draft.endpoints[index]),
                         listener: SpatialVector3(x: seat?.roomX ?? 0, y: seat?.roomY ?? 0, z: 0))
                         .disabled(editingLocked)
+                    if draft.endpoints[index].function == .subwoofer,
+                       draft.endpoints[index].connectionState != .disabledByUser {
+                        Divider()
+                        BassManagementControlsView(profile: bassProfile, selectedSubwoofer: draft.endpoints[index].id,
+                            bass: $bass, testGainDB: subwooferTestGain(draft.endpoints[index].id))
+                            .disabled(editingLocked)
+                    }
                 }
             } else {
                 Text("Discover the physical channels to configure this room.").foregroundStyle(.secondary)
@@ -103,14 +112,14 @@ struct SpeakerSystemView: View {
         .padding(embedded ? 0 : 24)
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
-            originalProfile = profile; draft = profile.speakerTopology
+            originalProfile = profile; draft = profile.speakerTopology; bass = profile.multichannel.bass
             let existing = profile.effectiveSpatialSettings.seating
             seat = newPosition ? SpatialSeatingCalibration(outputDeviceUID: profile.outputDeviceUID, name: "Default") : existing
             if seat == nil { seat = SpatialSeatingCalibration(outputDeviceUID: profile.outputDeviceUID, name: "Default") }
             if seat?.name == "Primary" || seat?.name == "My listening position" { seat?.name = "Default" }
             originalSeat = newPosition ? nil : existing
             if !draftOnly, let session = state.speakerEditSessions[profile.id] {
-                draft = session.topology; seat = session.seat
+                draft = session.topology; seat = session.seat; bass = session.bass
             }
             historyBaseline = currentHistoryState
             selected = draft?.endpoints.first?.id
@@ -121,18 +130,19 @@ struct SpeakerSystemView: View {
         .onChange(of: state.historyReplayRevision) { _ in
             guard !draftOnly, let session = state.speakerEditSessions[profile.id] else { return }
             historyBaseline = session
-            draft = session.topology; seat = session.seat
+            draft = session.topology; seat = session.seat; bass = session.bass
             originalProfile = profile
         }
         .onChange(of: selected) { _ in commitTitle() }
         .onChange(of: titleFocused) { focused in if !focused && renamingTitle { commitTitle() } }
         .onChange(of: draft) { _ in speakerEditChanged(); publishDraft() }
         .onChange(of: seat) { _ in speakerEditChanged(); publishDraft() }
+        .onChange(of: bass) { _ in speakerEditChanged(); publishDraft() }
         .onDisappear { finishHistoryGesture(); audition.stop() }
         .onChange(of: state.isSavingProfileSettings) { saving in if saving { audition.stop() } }
         .confirmationDialog("Save changes before closing?", isPresented: $confirmClose, titleVisibility: .visible) {
             Button("Save Changes") { save(close: true) }
-            Button("Discard Changes", role: .destructive) { draft = profile.speakerTopology; seat = originalSeat; speakerEditChanged(); finishClose() }
+            Button("Discard Changes", role: .destructive) { draft = profile.speakerTopology; seat = originalSeat; bass = profile.multichannel.bass; speakerEditChanged(); finishClose() }
             Button("Cancel", role: .cancel) {}
         }
     }
@@ -180,7 +190,14 @@ struct SpeakerSystemView: View {
 
     private func testSpeaker(_ id: PhysicalOutputID, topology: SpeakerTopology) {
         if let auditionOverride { auditionOverride(id) }
-        else { audition.toggle(id, topology: topology, audio: state.coreAudioService, profile: profile) }
+        else {
+            audition.toggle(id, topology: topology, audio: state.coreAudioService, profile: profile,
+                subwooferTestGainDB: subwooferTestGains[id] ?? 0)
+        }
+    }
+
+    private func subwooferTestGain(_ id: PhysicalOutputID) -> Binding<Double> {
+        Binding(get: { subwooferTestGains[id] ?? 0 }, set: { subwooferTestGains[id] = $0 })
     }
 
     private func speakerDetails(_ endpoint: SpeakerEndpoint) -> some View {
@@ -301,7 +318,7 @@ struct SpeakerSystemView: View {
             return max(abs(point.x), abs(point.y)) + 0.25
         }.max() ?? 1)
     }
-    private var currentHistoryState: SpeakerSystemHistoryState { SpeakerSystemHistoryState(topology: draft, seat: seat) }
+    private var currentHistoryState: SpeakerSystemHistoryState { SpeakerSystemHistoryState(topology: draft, seat: seat, bass: bass) }
     private var gestureKey: GestureKey { GestureKey(target: .speakerSystem(profile.id), control: "position") }
     private func speakerEditChanged() {
         guard !draftOnly, let before = historyBaseline else { return }
@@ -329,9 +346,17 @@ struct SpeakerSystemView: View {
         historyBaseline = currentHistoryState
     }
 
+    private var bassProfile: DeviceProfile {
+        var candidate = profile
+        if let draft { candidate.speakerTopology = SpeakerLayoutGeometry.acceptingDefaultRoles(draft) }
+        candidate.multichannel.bass = bass
+        return candidate
+    }
+
     private func publishDraft() {
         guard draftOnly, let draft else { return }
         profile.speakerTopology = draft
+        profile.multichannel.bass = bass
         if let seat { profile.spatialSettings.seating = seat }
     }
     private func finishClose() { if let onClose { onClose() } else { dismiss() } }
@@ -357,6 +382,7 @@ struct SpeakerSystemView: View {
             if !listeningOnly { value.updatedAt = Date() }
             if draftOnly {
                 profile.speakerTopology = value
+                profile.multichannel.bass = bass
                 profile.spatialSettings.seating = seat
                 draft = value; originalSeat = seat; self.originalProfile = profile
                 if close { finishClose() }
@@ -364,12 +390,20 @@ struct SpeakerSystemView: View {
                 var settings = ProfileSettingsDraft(profile: profile, activation: state.profiles.activationMode(for: profile))
                 settings.speakerTopology = value
                 settings.spatialSettings.seating = seat
+                if bass != originalProfile.multichannel.bass {
+                    guard profile.multichannel.bass == originalProfile.multichannel.bass else {
+                        throw ProfileSettingsError.staleDraft
+                    }
+                    var multichannel = profile.multichannel
+                    multichannel.bass = bass
+                    settings.multichannel = multichannel
+                }
                 busy = true
                 Task {
                     defer { busy = false }
                     do {
                         try await state.saveProfileSettings(settings)
-                        historyBaseline = SpeakerSystemHistoryState(topology: value, seat: seat)
+                        historyBaseline = SpeakerSystemHistoryState(topology: value, seat: seat, bass: bass)
                         state.speakerEditSessions[profile.id] = historyBaseline
                         draft = value; originalSeat = seat; self.originalProfile = state.profiles.profiles.first { $0.id == profile.id }
                         if close { finishClose() }

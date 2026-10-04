@@ -1,12 +1,12 @@
 import CamiTuneDomain
 import Accelerate
-import AVFoundation
 import Foundation
 
 /// Imports external impulse responses into immutable app-managed storage.
 /// CamillaDSP is then free to reload them after the file importer's temporary
 /// security scope has ended.
 struct ImpulseResponseStore: Sendable {
+    static let fileExtensions = ["wav", "wave", "w64", "rf64", "bw64"]
     static let maximumTotalSamples = 4_194_304
     static let responseSafetyMarginDB = 0.25
 
@@ -20,88 +20,15 @@ struct ImpulseResponseStore: Sendable {
         at sourceURL: URL,
         expectedSampleRate: Int? = nil
     ) throws -> ImpulseResponseAsset {
-        guard sourceURL.pathExtension.caseInsensitiveCompare("wav") == .orderedSame else {
+        guard Self.fileExtensions.contains(sourceURL.pathExtension.lowercased()) else {
             throw ImpulseResponseImportError.unsupportedFileType
         }
-        let header: Data
-        do {
-            let handle = try FileHandle(forReadingFrom: sourceURL)
-            defer { try? handle.close() }
-            header = try handle.read(upToCount: 12) ?? Data()
-        } catch {
-            throw ImpulseResponseImportError.unreadableWAV(error.localizedDescription)
+        let decoded = try ImpulseResponseWAV.read(at: sourceURL, maximumSamples: Self.maximumTotalSamples)
+        if let expectedSampleRate, decoded.sampleRate != expectedSampleRate {
+            throw ImpulseResponseImportError.sampleRateMismatch(decoded.sampleRate, expectedSampleRate)
         }
-        guard header.count == 12,
-              header.prefix(4) == Data("RIFF".utf8),
-              header.suffix(4) == Data("WAVE".utf8) else {
-            throw ImpulseResponseImportError.unreadableWAV(
-                "The file does not contain a standard RIFF/WAVE header."
-            )
-        }
-
-        let file: AVAudioFile
-        do {
-            file = try AVAudioFile(
-                forReading: sourceURL,
-                commonFormat: .pcmFormatFloat32,
-                interleaved: false
-            )
-        } catch {
-            throw ImpulseResponseImportError.unreadableWAV(error.localizedDescription)
-        }
-
-        let format = file.processingFormat
-        guard file.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatLinearPCM else {
-            throw ImpulseResponseImportError.unreadableWAV(
-                "Only PCM or IEEE-float WAV encoding is supported."
-            )
-        }
-        let channelCount = Int(format.channelCount)
-        let frameCount = Int(file.length)
-        let roundedSampleRate = Int(format.sampleRate.rounded())
-        guard channelCount > 0, frameCount > 0, roundedSampleRate > 0 else {
-            throw ImpulseResponseImportError.emptyWAV
-        }
-        guard abs(format.sampleRate - Double(roundedSampleRate)) < 0.01 else {
-            throw ImpulseResponseImportError.invalidSampleRate(format.sampleRate)
-        }
-        if let expectedSampleRate, roundedSampleRate != expectedSampleRate {
-            throw ImpulseResponseImportError.sampleRateMismatch(
-                roundedSampleRate,
-                expectedSampleRate
-            )
-        }
-        let (totalSamples, overflow) = frameCount.multipliedReportingOverflow(by: channelCount)
-        guard !overflow, totalSamples <= Self.maximumTotalSamples,
-              frameCount <= Int(UInt32.max) else {
-            throw ImpulseResponseImportError.tooLarge(Self.maximumTotalSamples)
-        }
-
-        guard let buffer = AVAudioPCMBuffer(
-            pcmFormat: format,
-            frameCapacity: AVAudioFrameCount(frameCount)
-        ) else {
-            throw ImpulseResponseImportError.couldNotAllocate
-        }
-        do {
-            try file.read(into: buffer)
-        } catch {
-            throw ImpulseResponseImportError.unreadableWAV(error.localizedDescription)
-        }
-        let importedFrames = Int(buffer.frameLength)
-        guard importedFrames == frameCount,
-              importedFrames > 0,
-              let channelData = buffer.floatChannelData else {
-            throw ImpulseResponseImportError.emptyWAV
-        }
-
         var maximumMagnitudeDBByChannel: [Double] = []
-        maximumMagnitudeDBByChannel.reserveCapacity(channelCount)
-        for channel in 0..<channelCount {
-            let samples = Array(UnsafeBufferPointer(
-                start: channelData[channel],
-                count: importedFrames
-            ))
+        for (channel, samples) in decoded.channels.enumerated() {
             guard samples.allSatisfy({ $0.isFinite }) else {
                 throw ImpulseResponseImportError.nonFiniteSamples(channel)
             }
@@ -109,6 +36,7 @@ struct ImpulseResponseStore: Sendable {
                 Self.maximumMagnitudeDB(samples: samples) + Self.responseSafetyMarginDB
             )
         }
+        let managedData = try decoded.encoded()
 
         let assetID = UUID()
         let managedFileName = "\(assetID.uuidString.lowercased()).wav"
@@ -116,9 +44,9 @@ struct ImpulseResponseStore: Sendable {
             id: assetID,
             fileName: managedFileName,
             displayName: sourceURL.deletingPathExtension().lastPathComponent,
-            sampleRate: roundedSampleRate,
-            channelCount: channelCount,
-            frameCount: importedFrames,
+            sampleRate: decoded.sampleRate,
+            channelCount: decoded.channels.count,
+            frameCount: decoded.frameCount,
             maximumMagnitudeDBByChannel: maximumMagnitudeDBByChannel
         )
 
@@ -127,7 +55,7 @@ struct ImpulseResponseStore: Sendable {
                 at: directory,
                 withIntermediateDirectories: true
             )
-            try FileManager.default.copyItem(at: sourceURL, to: url(for: asset))
+            try managedData.write(to: url(for: asset), options: .atomic)
         } catch {
             throw ImpulseResponseImportError.couldNotStore(error.localizedDescription)
         }
@@ -138,41 +66,46 @@ struct ImpulseResponseStore: Sendable {
         directory.appendingPathComponent(asset.fileName, isDirectory: false)
     }
 
-    private static func maximumMagnitudeDB(samples: [Float]) -> Double {
+    private static func maximumMagnitudeDB(samples: [Double]) -> Double {
+        let peak = samples.reduce(0.0) { max($0, abs($1)) }
+        guard peak > 0 else { return -300 }
+        // Scale only the analysis input to keep the FFT finite for large float
+        // coefficients. The managed WAV retains the original coefficient gain.
+        let normalized = samples.map { $0 / peak }
         let fftLength = nextPowerOfTwo(max(2, samples.count))
         let log2Length = vDSP_Length(Int.bitWidth - (fftLength.leadingZeroBitCount + 1))
-        guard let setup = vDSP_create_fftsetup(log2Length, FFTRadix(kFFTRadix2)) else {
+        guard let setup = vDSP_create_fftsetupD(log2Length, FFTRadix(kFFTRadix2)) else {
             // Allocation failure is exceptionally unlikely after the import
             // size guard. L1 is a conservative response bound and keeps audio
             // safety intact if the FFT setup still cannot be created.
-            let bound = samples.reduce(0.0) { $0 + Double(abs($1)) }
-            return amplitudeToDB(bound)
+            let bound = normalized.reduce(0.0) { $0 + abs($1) }
+            return amplitudeToDB(bound) + amplitudeToDB(peak)
         }
-        defer { vDSP_destroy_fftsetup(setup) }
+        defer { vDSP_destroy_fftsetupD(setup) }
 
-        var real = [Float](repeating: 0, count: fftLength)
-        real.replaceSubrange(0..<samples.count, with: samples)
-        var imaginary = [Float](repeating: 0, count: fftLength)
-        var maximum: Float = 0
+        var real = [Double](repeating: 0, count: fftLength)
+        real.replaceSubrange(0..<samples.count, with: normalized)
+        var imaginary = [Double](repeating: 0, count: fftLength)
+        var maximum: Double = 0
         real.withUnsafeMutableBufferPointer { realBuffer in
             imaginary.withUnsafeMutableBufferPointer { imaginaryBuffer in
-                var split = DSPSplitComplex(
+                var split = DSPDoubleSplitComplex(
                     realp: realBuffer.baseAddress!,
                     imagp: imaginaryBuffer.baseAddress!
                 )
-                vDSP_fft_zip(
+                vDSP_fft_zipD(
                     setup,
                     &split,
                     1,
                     log2Length,
                     FFTDirection(kFFTDirection_Forward)
                 )
-                var magnitudes = [Float](repeating: 0, count: fftLength / 2 + 1)
-                vDSP_zvabs(&split, 1, &magnitudes, 1, vDSP_Length(magnitudes.count))
-                vDSP_maxv(magnitudes, 1, &maximum, vDSP_Length(magnitudes.count))
+                var magnitudes = [Double](repeating: 0, count: fftLength / 2 + 1)
+                vDSP_zvabsD(&split, 1, &magnitudes, 1, vDSP_Length(magnitudes.count))
+                vDSP_maxvD(magnitudes, 1, &maximum, vDSP_Length(magnitudes.count))
             }
         }
-        return amplitudeToDB(Double(maximum))
+        return amplitudeToDB(maximum) + amplitudeToDB(peak)
     }
 
     private static func amplitudeToDB(_ amplitude: Double) -> Double {
@@ -191,6 +124,7 @@ enum ImpulseResponseImportError: LocalizedError, Equatable {
     case unsupportedFileType
     case unreadableWAV(String)
     case emptyWAV
+    case incompleteWAV(expected: Int, actual: Int)
     case invalidSampleRate(Double)
     case sampleRateMismatch(Int, Int)
     case tooLarge(Int)
@@ -206,6 +140,8 @@ enum ImpulseResponseImportError: LocalizedError, Equatable {
             return "The impulse response could not be read as WAV audio. \(details)"
         case .emptyWAV:
             return "The impulse-response WAV contains no audio samples."
+        case .incompleteWAV(let expected, let actual):
+            return "The WAV decoder returned \(actual) of \(expected) frames. The impulse response was not imported because that would truncate the filter."
         case .invalidSampleRate(let rate):
             return "The impulse-response sample rate \(rate) Hz is invalid."
         case .sampleRateMismatch(let impulseRate, let profileRate):
@@ -217,7 +153,7 @@ enum ImpulseResponseImportError: LocalizedError, Equatable {
         case .nonFiniteSamples(let channel):
             return "Impulse-response channel \(channel + 1) contains invalid samples."
         case .couldNotStore(let details):
-            return "CamiTune could not copy the impulse response into managed storage. \(details)"
+            return "CamiTune could not save the impulse response into managed storage. \(details)"
         }
     }
 }

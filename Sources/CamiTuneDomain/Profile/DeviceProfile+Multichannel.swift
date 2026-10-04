@@ -53,6 +53,11 @@ package enum ActiveSpeakerPreset: Int, CaseIterable, Identifiable {
 }
 
 extension DeviceProfile {
+    package var hasSpeakersAndSubwoofer: Bool {
+        let endpoints = configuredSpeakerEndpoints
+        return hasPhysicalSpeakerRoute && endpoints.contains { $0.function == .subwoofer }
+            && endpoints.contains { $0.function != .subwoofer }
+    }
     package var usesSourceProcessingBus: Bool { hasPhysicalSpeakerRoute && multichannel.isEnabled }
     package var configuredSpeakerEndpoints: [SpeakerEndpoint] {
         let ids = Set(configuredProcessingChannels.map(\.physicalOutputID))

@@ -15,8 +15,8 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         switch effectiveEndpointKind {
         case .headphones, .iem:
             return [.automaticEQ, .convolution] + (supportsCrossfeed ? [.crossfeed] : [])
-        case .speakers: return [.automaticEQ, .convolution]
-        case .audioInterface, .custom: return [.convolution]
+        case .speakers: return [.automaticEQ] + ((try? validatedPhysicalSpeakerTopology()) != nil ? [.roomCorrection] : []) + [.convolution]
+        case .audioInterface, .custom: return ((try? validatedPhysicalSpeakerTopology()) != nil ? [.roomCorrection] : []) + [.convolution]
         }
     }
 
@@ -185,7 +185,11 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     /// Only the managed room-correction stage follows the selected seat. User EQ,
     /// device correction and limiter stages retain their identity and settings.
     package mutating func synchronizeListeningPositionCorrection() {
-        let bands = effectiveSpatialSettings.seating?.roomCorrectionBands ?? []
+        if let seat = effectiveSpatialSettings.seating, seat.roomCorrectionResult != nil {
+            processing.materializeRoomCorrection(seat.roomCorrectionEnabled && !roomCorrectionIsStale ? seat.roomCorrectionResult : nil)
+            return
+        }
+        let bands = effectiveSpatialSettings.seating?.roomCorrectionEnabled == false ? [] : effectiveSpatialSettings.seating?.roomCorrectionBands ?? []
         processing.global.stages.removeAll { $0.id == ProcessingProfile.spatialRoomCorrectionStageID }
         if !bands.isEmpty {
             processing.global.stages.append(ProcessingStage(id: ProcessingProfile.spatialRoomCorrectionStageID,
@@ -304,6 +308,16 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     }
 
     package func resolvedProcessing() throws -> ProcessingProfile {
+        var result = try baseResolvedProcessing()
+        if let seat = effectiveSpatialSettings.seating, seat.roomCorrectionResult != nil {
+            result.materializeRoomCorrection(seat.roomCorrectionEnabled && !roomCorrectionIsStale ? seat.roomCorrectionResult : nil)
+        } else if effectiveSpatialSettings.seating?.roomCorrectionEnabled == false {
+            result.removeRoomStages()
+        }
+        return result
+    }
+
+    package func baseResolvedProcessing() throws -> ProcessingProfile {
         if let text = unmigratedEqualizerAPOText {
             return ProcessingProfile.imported(from: try Self.parseImportableEqualizerAPOText(text))
         }

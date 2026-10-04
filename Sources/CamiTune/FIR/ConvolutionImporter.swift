@@ -20,7 +20,9 @@ struct ConvolutionImporter: ViewModifier {
     @State private var task: Task<Void, Never>?
 
     func body(content: Content) -> some View {
-        content.fileImporter(isPresented: $isPresented, allowedContentTypes: [.wav], allowsMultipleSelection: false) { result in
+        content.fileImporter(isPresented: $isPresented, allowedContentTypes: ImpulseResponseStore.fileExtensions.compactMap {
+            UTType(filenameExtension: $0, conformingTo: .audio)
+        }, allowsMultipleSelection: false) { result in
             do {
                 guard let url = try result.get().first else { return }
                 task?.cancel()

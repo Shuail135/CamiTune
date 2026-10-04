@@ -211,6 +211,17 @@ package enum SpeakerLayoutGeometry {
         endpoint.role = role
         endpoint.roleOrigin = .user
         endpoint.layer = role.speakerLayer
+        // Known roles choose the ordinary speaker function as well as the label.
+        // A Custom role implies no transducer type; active drivers retain their
+        // explicit function so a role edit cannot bypass crossover protection.
+        if role != .unknown {
+            switch endpoint.function {
+            case .fullRange, .subwoofer, .custom:
+                endpoint.function = role == .lowFrequencyEffects ? .subwoofer : .fullRange
+            case .woofer, .midrange, .tweeter:
+                break
+            }
+        }
         endpoint.connectionState = .confirmedByUser
     }
 }

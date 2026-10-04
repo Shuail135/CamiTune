@@ -16,7 +16,7 @@ package struct SimpleToneSettings: Codable, Hashable, Sendable {
     }
 
     package static let gainRange = -12.0...12.0
-    package static let step = 0.5
+    package static let step = 0.1
     package var bassDB: Double = 0
     package var midsDB: Double = 0
     package var trebleDB: Double = 0

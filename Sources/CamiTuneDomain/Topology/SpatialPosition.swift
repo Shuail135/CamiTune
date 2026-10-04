@@ -1,6 +1,6 @@
 import Foundation
 
-package struct SpatialVector3: Hashable, Sendable {
+package struct SpatialVector3: Codable, Hashable, Sendable {
     package init(x: Float, y: Float, z: Float) { self.x = x; self.y = y; self.z = z }
 
     package var x: Float

@@ -1036,13 +1036,13 @@ final class AppState: NSObject, ObservableObject {
             parentOperation: parentOperation, preparedPlan: preparedPlan)
     }
 
-    func beginSpatialCalibration(profileID: UUID) -> SpatialCalibrationContext? {
+    func beginSpatialCalibration(profileID: UUID, roomMeasurement: Bool = false) -> SpatialCalibrationContext? {
         guard isActive, !transitionInProgress, !runtimeCoordinator.hasLiveApplyWork, spatialCalibrationContext == nil,
               let session = activeSession, session.profileID == profileID,
               let rate = activeSampleRate,
               coreAudio.defaultOutputUID == activeRoutingUID,
               let profile = profiles.profiles.first(where: { $0.id == profileID }),
-              (profile.effectiveSpatialRenderingMode == .spatialAudio || profile.usesReferenceSpeakers),
+              (profile.effectiveSpatialRenderingMode == .spatialAudio || profile.usesReferenceSpeakers || (roomMeasurement && (try? profile.validatedPhysicalSpeakerTopology()) != nil)),
               profile.outputDeviceUID == activePhysicalOutputUID else { return nil }
         let context = SpatialCalibrationContext(
             id: UUID(), runtimeSessionID: session.id, profileID: profileID,
@@ -1060,7 +1060,8 @@ final class AppState: NSObject, ObservableObject {
     }
 
     func playSpatialCalibration(
-        context: SpatialCalibrationContext, clip: SpatialCalibrationClip,
+        context: SpatialCalibrationContext, clip: SpatialCalibrationClip, levelCheckGain: Float = 1,
+        started: (@Sendable (TimeInterval) -> Void)? = nil,
         completion: @escaping @Sendable () -> Void
     ) -> Bool {
         guard spatialCalibrationContext == context, activeSession?.id == context.runtimeSessionID,
@@ -1068,8 +1069,14 @@ final class AppState: NSObject, ObservableObject {
               coreAudio.defaultOutputUID == activeRoutingUID,
               Double(activeSampleRate ?? 0) == clip.sampleRate else { return false }
         return pcmRouter.playSpatialCalibration(
-            id: context.id, clip: clip, completion: completion
+            id: context.id, clip: clip, levelCheckGain: levelCheckGain, started: started, completion: completion
         )
+    }
+
+    func setLevelCheckGain(context: SpatialCalibrationContext, gain: Float) {
+        guard spatialCalibrationContext == context, activeSession?.id == context.runtimeSessionID,
+              isActive, !transitionInProgress else { return }
+        pcmRouter.setLevelCheckGain(id: context.id, gain: gain)
     }
 
     func saveSpatialCalibration(
@@ -1217,7 +1224,9 @@ final class AppState: NSObject, ObservableObject {
         guard spatialCalibrationContext == nil,
               var profile = profiles.profiles.first(where: { $0.id == profileID }) else { return }
         profile.spatialSettings.seating?.roomCorrectionBands = []
-        profile.processing.global.stages.removeAll { $0.id == ProcessingProfile.spatialRoomCorrectionStageID }
+        profile.spatialSettings.seating?.roomCorrectionResult = nil
+        profile.spatialSettings.seating?.roomCorrectionEnabled = false
+        profile.processing.removeRoomStages()
         profiles.update(profile)
         if activeProfileID == profileID { await apply(profile: profile) }
     }
@@ -1240,6 +1249,8 @@ final class AppState: NSObject, ObservableObject {
 
     @objc private func applicationWillTerminate(_ notification: Notification) {
         shutdownSynchronously()
+        do { try RoomMeasurementStore().removeUnreferencedRecordings() }
+        catch { NSLog("Room recording cleanup will be retried at the next quit: %@", error.localizedDescription) }
         updateChecker.installPreparedUpdateAfterExit()
     }
 
