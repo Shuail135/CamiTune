@@ -128,124 +128,52 @@ struct RoomMeasurementStore: Sendable {
     }
     static func analyze(_ recording: (samples: [Float], rate: Double, format: String, isLossy: Bool),
                         blocks: [RoomMeasurementBlock], session: RoomMeasurementSession) throws -> RoomMeasurementSession {
-        var session = session
-        var observations: [UUID: [Int: [RoomChannelObservation]]] = [:]
-        var matched: [(block: RoomMeasurementBlock, response: RoomChannelObservation)] = []
-        let prepared = try RoomMeasurementAnalyzer.Recording(samples: recording.samples, sampleRate: recording.rate, isLossy: recording.isLossy)
-        var issues: [RoomMeasurementIssue] = []
-        var clockAnchors: [UUID: (host: Double, recorded: Double, ratio: Double)] = [:]
-        var firstFailure: Error?
-        for block in blocks {
-            try Task.checkCancellation()
-            do {
-                let hint: Double?
-                if let clock = block.playbackClockID, let host = block.playbackStartTime, host.isFinite,
-                   let anchor = clockAnchors[clock] {
-                    hint = anchor.recorded + (host - anchor.host) * anchor.ratio
-                } else { hint = nil }
-                let response = try RoomMeasurementAnalyzer().analyze(recording: prepared,
-                    block: block, playbackRate: session.context.topology.sampleRate, calibration: session.source.calibration,
-                    expectedMarkerTime: hint)
-                if let clock = block.playbackClockID, let host = block.playbackStartTime, host.isFinite,
-                   let marker = response.recordingMarkerTime {
-                    clockAnchors[clock] = (host, marker, response.clockRatio)
-                }
-                matched.append((block, response))
-            } catch is CancellationError { throw CancellationError() }
-            catch {
-                if firstFailure == nil { firstFailure = error }
-                let missing: Bool
-                if case RoomCorrectionError.missingBlocks = error { missing = true } else { missing = false }
-                issues.append(.init(positionID: block.positionID, channel: block.channel, missingSweep: missing))
-                continue
-            }
-        }
-        // Different speaker/position codes cannot own overlapping sweeps.
-        // Resolve a weak cross-match in favour of the stronger paired markers.
-        for (index, match) in matched.enumerated() {
-            let conflict = matched.enumerated().contains { otherIndex, other in
-                guard index != otherIndex, let a = match.response.recordingMarkerTime,
-                      let b = other.response.recordingMarkerTime, abs(a - b) < 5.05 else { return false }
-                let quality = match.response.markerConfidence ?? 0, otherQuality = other.response.markerConfidence ?? 0
-                return otherQuality > quality || (otherQuality == quality && otherIndex < index)
-            }
-            if conflict { issues.append(.init(positionID: match.block.positionID, channel: match.block.channel, missingSweep: true)); continue }
-            observations[match.block.positionID, default: [:]][match.block.channel, default: []].append(match.response)
-        }
-        guard !observations.isEmpty else { throw firstFailure ?? RoomCorrectionError.missingBlocks }
-        for i in session.positions.indices {
-            guard let channels = observations[session.positions[i].id] else { continue }
-            for (channel, takes) in channels {
-                var observation = takes.last!
-                if takes.count >= 2 {
-                    observation = compareRepeats(takes[takes.count - 2], observation, recorder: session.source.kind == .recorder)
-                } else if blocks.contains(where: { $0.positionID == session.positions[i].id && $0.channel == channel && $0.isRepeat }),
-                          let previous = session.positions[i].observations.first(where: { $0.channel == channel }) {
-                    observation = compareRepeats(previous, observation, recorder: session.source.kind == .recorder)
-                } else if session.positions[i].isMain {
-                    observation.timingEligible = false; observation.relativeTimingEligible = false
-                }
-                session.positions[i].observations.removeAll { $0.channel == channel }
-                session.positions[i].observations.append(observation)
-            }
-        }
-        let analyzedIDs = Set(blocks.map(\.positionID))
-        session.analysisIssues = (session.analysisIssues ?? []).filter { !analyzedIDs.contains($0.positionID) } + issues
-        session.measurementAnalysisVersion = 2; session.roomAnalysisVersion = 2
-        return session
+        try RoomRecordingAnalyzer.analyze(recording, blocks: blocks, session: session)
     }
-    /// A phone's AGC may change overall gain between the normal and quieter
-    /// sweeps. Preserve repeatable shape, but never turn that into trusted level
-    /// or alignment data. Frequency-dependent changes still reduce confidence.
-    private static func compareRepeats(_ first: RoomChannelObservation, _ next: RoomChannelObservation, recorder: Bool) -> RoomChannelObservation {
-        guard first.bins.count == next.bins.count,
-              zip(first.bins, next.bins).allSatisfy({ abs(log2($0.frequency / $1.frequency)) < 0.001 }) else {
-            var result = first; result.timingEligible = false; result.relativeTimingEligible = false; return result
+    /// Calibration edits always start from retained audio, never corrected bins.
+    func updatingSource(_ source: RoomMeasurementSource, in snapshot: RoomMeasurementSession,
+                        force: Bool = false) throws -> RoomMeasurementSession {
+        guard source.kind == snapshot.source.kind else { throw RoomCorrectionError.stale }
+        var source = source
+        if source.kind == .recorder { source.calibration = nil }
+        try source.calibration?.validateForRoomMeasurement()
+        if source.kind == .microphone, source.deviceID != snapshot.source.deviceID,
+           snapshot.usablePositionCount > 0 || !snapshot.recordings.isEmpty { throw RoomCorrectionError.stale }
+        let needsUpgrade = !snapshot.recordings.isEmpty
+            && snapshot.measurementAnalysisVersion < RoomRecordingAnalyzer.currentAnalysisVersion
+        guard force || source != snapshot.source || needsUpgrade else { return snapshot }
+        var result = snapshot
+        result.source = source
+        if snapshot.usablePositionCount > 0 && snapshot.recordings.isEmpty { throw RoomCorrectionError.calibrationChanged }
+        for i in result.positions.indices { result.positions[i].observations = [] }
+        result.analysisIssues = nil
+        for reference in snapshot.recordings {
+            let blocks = snapshot.blocks.filter { reference.blockIDs.contains($0.id) }
+            guard !blocks.isEmpty else { continue }
+            let decoded = try Self.read(recordingURL(reference, sessionID: snapshot.id))
+            result = try Self.analyze(decoded, blocks: blocks, session: result)
         }
-        let differences = zip(first.bins, next.bins).map { $1.magnitudeDB - $0.magnitudeDB }
-        let usable = first.bins.indices.filter {
-            first.bins[$0].snrDB > 18 && next.bins[$0].snrDB > 18 && (100...8000).contains(first.bins[$0].frequency)
-        }
-        let offsets = usable.map { differences[$0] }.sorted()
-        let gain = offsets.isEmpty ? 0 : offsets[offsets.count / 2]
-        let residuals = usable.map { abs(differences[$0] - gain) }.sorted()
-        let shape = residuals.isEmpty ? 100 : residuals[residuals.count / 2]
-        let difference = differences.map(abs).reduce(0, +) / Double(max(1, differences.count))
-        var result = recorder ? first : next
-        result.repeatDifferenceDB = difference; result.repeatGainDifferenceDB = gain; result.repeatShapeDifferenceDB = shape
-        let clockAgrees = abs(first.clockRatio - next.clockRatio) < 0.0002
-        result.timingEligible = first.timingEligible && next.timingEligible && difference < 2 && clockAgrees
-        for i in result.bins.indices {
-            let residual = recorder && usable.count >= 12 ? abs(differences[i] - gain) : abs(differences[i])
-            let gainTrust = recorder && abs(gain) > 1 ? 0.85 : 1.0
-            let shapeTrust = recorder && shape > 3 ? 0.4 : 1.0
-            result.bins[i].reliability = min(first.bins[i].reliability, next.bins[i].reliability)
-                * max(0, 1 - residual / 6) * gainTrust * shapeTrust
-            let delta = first.bins[i].phase - next.bins[i].phase
-            let phaseError = abs(atan2(sin(delta), cos(delta)))
-            let delayError = abs((first.bins[i].groupDelayMS ?? 0) - (next.bins[i].groupDelayMS ?? 0))
-            let delayLimit = max(0.15, 300 / first.bins[i].frequency)
-            let agrees = clockAgrees && first.hasUsableImpulse && next.hasUsableImpulse
-                && phaseError < .pi / 6 && usable.count >= 12
-            result.bins[i].timingReliability = agrees ? min(0.75, result.bins[i].reliability) : 0
-            if !agrees || delayError >= delayLimit { result.bins[i].groupDelayMS = nil }
-        }
-        result.relativeTimingEligible = result.bins.filter { ($0.timingReliability ?? 0) > 0.4 }.count >= 12
-        result.timingEligible = result.timingEligible && result.relativeTimingEligible == true
-            && result.bins.filter { ($0.timingReliability ?? 0) > 0.4 && $0.groupDelayMS != nil }.count >= 24
+        try save(result)
         return result
     }
     static func materialize(_ design: RoomCorrectionDesign, store: ImpulseResponseStore = .init()) throws -> RoomCorrectionResult {
         var result = design.result
-        for (channel, samples) in design.impulses {
+        var created: [ImpulseResponseAsset] = []
+        var committed = false
+        defer {
+            if !committed { for asset in created { try? FileManager.default.removeItem(at: store.url(for: asset)) } }
+        }
+        for (channel, samples) in design.impulses.sorted(by: { $0.key < $1.key }) {
             try Task.checkCancellation()
             let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("room-\(UUID()).wav")
             defer { try? FileManager.default.removeItem(at: temporary) }
             try writeWAV(samples: samples, sampleRate: result.context.topology.sampleRate, to: temporary)
             var asset = try store.importWAV(at: temporary, expectedSampleRate: Int(result.context.topology.sampleRate))
+            created.append(asset)
             asset.displayName = "Room Correction · Channel \(channel + 1)"
             result.channelFIR[channel] = .init(asset: asset)
         }
+        committed = true
         return result
     }
 }

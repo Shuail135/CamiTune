@@ -29,6 +29,12 @@ var packageTargets: [Target] = [
 ]
 
 // Device Correction tests remain local and follow the existing opt-in policy.
+if ["1", "room"].contains(ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] ?? "") {
+    packageTargets.append(.testTarget(name: "RoomCorrectionRegression",
+        dependencies: ["CamiTune", "CamiTuneDomain", "CamiTuneAudio"], path: "Tests/RoomCorrectionRegression",
+        exclude: ["Fixtures", "README.md"]))
+}
+
 if ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] == "1" {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     let path = "Tests/DeviceCorrectionRegression"

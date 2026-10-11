@@ -48,18 +48,18 @@ package struct MicrophoneCalibrationCurve: Codable, Hashable, Sendable {
     package static func parse(_ text: String, name: String) throws -> Self {
         var points: [MicrophoneCalibrationPoint] = []
         for line in text.split(whereSeparator: \.isNewline) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let trimmed = line.trimmingCharacters(in: .whitespaces.union(.init(charactersIn: "\u{FEFF}")))
             if trimmed.hasPrefix("#") || trimmed.hasPrefix("*") || trimmed.hasPrefix(";") { continue }
             let fields = trimmed.split { $0.isWhitespace || $0 == "," }
-            guard fields.count >= 2, let frequency = Double(fields[0]), let db = Double(fields[1]) else { continue }
+            guard let first = fields.first, let frequency = Double(first) else { continue }
+            guard fields.count >= 2, let db = Double(fields[1]) else { throw AcousticMeasurementError.invalidCalibrationFile }
             guard frequency.isFinite, db.isFinite, (10...40_000).contains(frequency), abs(db) <= 30 else {
                 throw AcousticMeasurementError.invalidCalibrationFile
             }
             points.append(.init(frequency: frequency, correctionDB: db))
             guard points.count <= 10_000 else { throw AcousticMeasurementError.invalidCalibrationFile }
         }
-        points.sort { $0.frequency < $1.frequency }
-        guard points.count >= 5, zip(points, points.dropFirst()).allSatisfy({ $0.frequency < $1.frequency }) else {
+        guard points.count >= 2, zip(points, points.dropFirst()).allSatisfy({ $0.frequency < $1.frequency }) else {
             throw AcousticMeasurementError.invalidCalibrationFile
         }
         return Self(name: String(name.prefix(120)), points: points)

@@ -948,6 +948,18 @@
 		2E7931AC4098653E0C6D9F0F = {isa = PBXBuildFile; fileRef = 8CEDBC1C117E29108F03B713; };
 		941F43BBDACF1C76218283F3 = {isa = PBXBuildFile; fileRef = D7EC8E01743F046AA4A38207; };
 		CA6F00000000000000000101 = {isa = PBXBuildFile; fileRef = CA6F00000000000000000201; };
+		3B353F8AD8E9E70BD571E7C5 = {isa = PBXBuildFile; fileRef = 0BC0CEB76B2CDB99E5FC7DCA; };
+		0B6ABD097DCAEAE0F4C60A5C = {isa = PBXBuildFile; fileRef = 244DCF307682C8F0D43860BB; };
+		0060E45032BC70EDB20C0FB6 = {isa = PBXBuildFile; fileRef = 00550616FF8F4EB154BC11D3; };
+		D9DE295C10753B2103078BF5 = {isa = PBXBuildFile; fileRef = 8CE71D0C0F0D2ED539619257; };
+		5AD1E6284C2DEEDABE714779 = {isa = PBXBuildFile; fileRef = 74026DC98BD629E0F712756A; };
+		F63DFA44D48ECB3C45BEAAFF = {isa = PBXBuildFile; fileRef = DBFE9D44CAA1DF96E5279A78; };
+		6322201A7E085F34EE3A491C = {isa = PBXBuildFile; fileRef = EBBF7BAD2E3AAFB34BEB3055; };
+		D95C374A7FC9F972C5D7FD87 = {isa = PBXBuildFile; fileRef = 3D27184ED75A8EB895275685; };
+		AA16F2A94521C12F7142C0C0 = {isa = PBXBuildFile; fileRef = 7C9E3CD2C729C913ADE79F50; };
+		01794D55F8464999767A81EA = {isa = PBXBuildFile; fileRef = 89B6909AB6BA7AE479D7E97F; };
+		ED831E7C15B2647E539D9841 = {isa = PBXBuildFile; fileRef = 4E6B6A08C8D5CDE54BDEDEF5; };
+		173DC9FD0A511AA2519C5A03 = {isa = PBXBuildFile; fileRef = 20D01C5C6CE4905B7334A7BF; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -2622,11 +2634,23 @@
 		F786AE31B2B0B6EBB7313810 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/UI/DeviceCorrection/RoomCorrectionView.swift"; sourceTree = SOURCE_ROOT; };
 		3F5988A0B94424D4376E8410 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneDomain/RoomCorrection/RoomCorrectionStages.swift"; sourceTree = SOURCE_ROOT; };
 		82195249BD51EF3C17D0E80D = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneDomain/RoomCorrection/RoomCorrection.swift"; sourceTree = SOURCE_ROOT; };
-		F08EEA1059C5D8AB406BE3FA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/RoomMeasurementAnalyzer.swift"; sourceTree = SOURCE_ROOT; };
-		57C82CAE3281389468530F00 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/RoomMeasurementSignal.swift"; sourceTree = SOURCE_ROOT; };
-		8CEDBC1C117E29108F03B713 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/AcousticFFT.swift"; sourceTree = SOURCE_ROOT; };
-		D7EC8E01743F046AA4A38207 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/RoomCorrectionDesigner.swift"; sourceTree = SOURCE_ROOT; };
+		F08EEA1059C5D8AB406BE3FA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/Measurement/Shared/RoomMeasurementAnalyzer.swift"; sourceTree = SOURCE_ROOT; };
+		57C82CAE3281389468530F00 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/Measurement/Shared/RoomMeasurementSignal.swift"; sourceTree = SOURCE_ROOT; };
+		8CEDBC1C117E29108F03B713 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/Measurement/Shared/AcousticFFT.swift"; sourceTree = SOURCE_ROOT; };
+		D7EC8E01743F046AA4A38207 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/Correction/RoomCorrectionDesigner.swift"; sourceTree = SOURCE_ROOT; };
 		CA6F00000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImpulseResponseWAV.swift; sourceTree = "<group>"; };
+		0BC0CEB76B2CDB99E5FC7DCA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/RoomCorrection/RoomCorrectionImportPlan.swift"; sourceTree = SOURCE_ROOT; };
+		244DCF307682C8F0D43860BB = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneDomain/RoomCorrection/RoomMeasurementContext.swift"; sourceTree = SOURCE_ROOT; };
+		00550616FF8F4EB154BC11D3 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneDomain/RoomCorrection/RoomMeasurementEvidence.swift"; sourceTree = SOURCE_ROOT; };
+		8CE71D0C0F0D2ED539619257 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneDomain/RoomCorrection/RoomMeasurementGeometry.swift"; sourceTree = SOURCE_ROOT; };
+		74026DC98BD629E0F712756A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneDomain/RoomCorrection/RoomMeasurementSession.swift"; sourceTree = SOURCE_ROOT; };
+		DBFE9D44CAA1DF96E5279A78 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/Analysis/RoomAnalysisEvidenceBuilder.swift"; sourceTree = SOURCE_ROOT; };
+		EBBF7BAD2E3AAFB34BEB3055 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/Correction/RoomCorrectionOptimizer.swift"; sourceTree = SOURCE_ROOT; };
+		3D27184ED75A8EB895275685 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/Correction/RoomCorrectionRealizer.swift"; sourceTree = SOURCE_ROOT; };
+		7C9E3CD2C729C913ADE79F50 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/Correction/RoomFIRDesigner.swift"; sourceTree = SOURCE_ROOT; };
+		89B6909AB6BA7AE479D7E97F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/Measurement/Calibrated/RoomCalibratedMicrophoneAnalysis.swift"; sourceTree = SOURCE_ROOT; };
+		4E6B6A08C8D5CDE54BDEDEF5 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/Measurement/RoomRecordingAnalyzer.swift"; sourceTree = SOURCE_ROOT; };
+		20D01C5C6CE4905B7334A7BF = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/Measurement/Simple/RoomSimpleRecordingAnalysis.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -2778,6 +2802,7 @@
 			isa = PBXGroup;
 			name = CamiTune;
 			children = (
+				0BC0CEB76B2CDB99E5FC7DCA,
 				F786AE31B2B0B6EBB7313810,
 				7F9E7480CFA9A03D77B50390,
 				7A28E2A5BA911723F1969E58,
@@ -2851,6 +2876,17 @@
 		EEFE21A1443933CA4DE017DA = {
 			isa = PBXGroup;
 			children = (
+				20D01C5C6CE4905B7334A7BF,
+				4E6B6A08C8D5CDE54BDEDEF5,
+				89B6909AB6BA7AE479D7E97F,
+				7C9E3CD2C729C913ADE79F50,
+				3D27184ED75A8EB895275685,
+				EBBF7BAD2E3AAFB34BEB3055,
+				DBFE9D44CAA1DF96E5279A78,
+				74026DC98BD629E0F712756A,
+				8CE71D0C0F0D2ED539619257,
+				00550616FF8F4EB154BC11D3,
+				244DCF307682C8F0D43860BB,
 				D7EC8E01743F046AA4A38207,
 				8CEDBC1C117E29108F03B713,
 				57C82CAE3281389468530F00,
@@ -3891,6 +3927,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3B353F8AD8E9E70BD571E7C5,
 				CC96CDFA9A2A46D3EEDC9A4F,
 				78D82B7215AFF2BF4D35563D,
 				2E6966E8EBD8EB3CC232EEFD,
@@ -4101,6 +4138,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5AD1E6284C2DEEDABE714779,
+				D9DE295C10753B2103078BF5,
+				0060E45032BC70EDB20C0FB6,
+				0B6ABD097DCAEAE0F4C60A5C,
 				FFBFC6F22E0882B84A1E1CC4,
 				121A6EC6F757FB20952E2D3F,
 				6CE504C6CCC16767BF29D30C,
@@ -4192,6 +4233,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				173DC9FD0A511AA2519C5A03,
+				ED831E7C15B2647E539D9841,
+				01794D55F8464999767A81EA,
+				AA16F2A94521C12F7142C0C0,
+				D95C374A7FC9F972C5D7FD87,
+				6322201A7E085F34EE3A491C,
+				F63DFA44D48ECB3C45BEAAFF,
 				941F43BBDACF1C76218283F3,
 				2E7931AC4098653E0C6D9F0F,
 				6561B9B91F4B0301499741C4,

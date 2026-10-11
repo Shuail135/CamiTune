@@ -186,7 +186,7 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     /// device correction and limiter stages retain their identity and settings.
     package mutating func synchronizeListeningPositionCorrection() {
         if let seat = effectiveSpatialSettings.seating, seat.roomCorrectionResult != nil {
-            processing.materializeRoomCorrection(seat.roomCorrectionEnabled && !roomCorrectionIsStale ? seat.roomCorrectionResult : nil)
+            processing.materializeRoomCorrection(seat.roomCorrectionEnabled && seat.roomCorrectionResult?.isChannelProcessingImport != true && !roomCorrectionIsStale ? seat.roomCorrectionResult : nil)
             return
         }
         let bands = effectiveSpatialSettings.seating?.roomCorrectionEnabled == false ? [] : effectiveSpatialSettings.seating?.roomCorrectionBands ?? []
@@ -310,7 +310,7 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     package func resolvedProcessing() throws -> ProcessingProfile {
         var result = try baseResolvedProcessing()
         if let seat = effectiveSpatialSettings.seating, seat.roomCorrectionResult != nil {
-            result.materializeRoomCorrection(seat.roomCorrectionEnabled && !roomCorrectionIsStale ? seat.roomCorrectionResult : nil)
+            result.materializeRoomCorrection(seat.roomCorrectionEnabled && seat.roomCorrectionResult?.isChannelProcessingImport != true && !roomCorrectionIsStale ? seat.roomCorrectionResult : nil)
         } else if effectiveSpatialSettings.seating?.roomCorrectionEnabled == false {
             result.removeRoomStages()
         }

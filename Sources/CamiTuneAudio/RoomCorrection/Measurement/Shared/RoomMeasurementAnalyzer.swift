@@ -30,6 +30,7 @@ package struct RoomMeasurementAnalyzer {
     package func analyze(recording prepared: Recording, block: RoomMeasurementBlock,
                          playbackRate: Double, calibration: MicrophoneCalibrationCurve?,
                          expectedMarkerTime: Double? = nil) throws -> RoomChannelObservation {
+        try calibration?.validateForRoomMeasurement()
         let samples = prepared.samples, sampleRate = prepared.sampleRate, isLossy = prepared.isLossy
         let detectionRate = 12000.0
         let detection = prepared.detection
@@ -62,7 +63,11 @@ package struct RoomMeasurementAnalyzer {
                 let ratio = Double(lo + end.offset - start.offset) / (5.1 * detectionRate)
                 // Require two different matching codes at the correct separation;
                 // a weak single marker or a plausible sweep order is insufficient.
-                guard (0.995...1.005).contains(ratio), start.score * end.score >= 0.09 else { continue }
+                // Weak cross-correlation of unrelated 127-chip codes can pass a
+                // product-only gate when one code happens to match more strongly.
+                // Both identities must be independently convincing. A missing
+                // noisy secondary seat is safer than assigning another speaker.
+                guard (0.995...1.005).contains(ratio), min(start.score, end.score) >= 0.35 else { continue }
                 let quality = min(start.score, end.score)
                 if let located, quality <= located.2 * 1.05 { continue }
                 let refinedStart = refineMarker(samples, sampleRate: sampleRate, token: block.token,
@@ -127,7 +132,7 @@ package struct RoomMeasurementAnalyzer {
             let noisePower = noiseIndices.reduce(0.0) { $0 + Double(nr[$1] * nr[$1] + ni[$1] * ni[$1]) }
                 / Double(noiseIndices.count) / max(1, windowEnergy) * Double(recording.count)
             let snr = min(100, 10 * log10(max(1e-20, recordedPower) / max(1e-20, noisePower)))
-            let sourcePrior = calibration == nil ? 0.8 : 1.0
+            let sourcePrior = calibration == nil ? 0.8 : (calibration!.coversRoomFrequency(frequency) ? 1.0 : 0)
             let reliability = max(0, min(1, (snr - 8) / 24)) * min(1, markerQuality / 0.35) * sourcePrior
             var bin = RoomFrequencyBin(frequency: frequency, magnitudeDB: max(-100, min(100, 10 * log10(max(1e-20, power)) - (calibration?.correction(at: frequency) ?? 0))),
                 phase: Double(atan2(hi[center], hr[center])), reliability: reliability, snrDB: snr)
@@ -185,6 +190,9 @@ package struct RoomMeasurementAnalyzer {
         result.recordingMarkerTime = markerTime
         result.relativeImpulseEligible = markerQuality >= 0.28 && concentrated > 0.2
         result.relativeTimingEligible = result.timingEligible
+        result.captureEvidence = .init(recordingSampleRate: sampleRate, playbackSampleRate: playbackRate,
+            analysisSampleRate: rate, isLossy: isLossy, clippingFraction: clipFraction, calibrationApplied: calibration)
+        result.captureEvidence?.sweepBlockID = block.id
         return result
     }
     private func refineMarker(_ samples: [Float], sampleRate: Double, token: UInt32, end: Bool, time: Double) -> Double {

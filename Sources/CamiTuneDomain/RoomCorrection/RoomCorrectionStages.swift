@@ -48,6 +48,58 @@ extension ProcessingChain {
     }
 }
 extension DeviceProfile {
+    /// Imports transfer correction into ordinary editor stages. Recover their
+    /// recorded baseline only when every imported stage still matches exactly.
+    /// Edited filters are user processing and must never be silently removed.
+    package func roomMeasurementBaseline() throws -> ProcessingProfile {
+        var base = try baseResolvedProcessing()
+        base.removeRoomStages()
+        guard let seat = effectiveSpatialSettings.seating, !seat.roomCorrectionEnabled,
+              let result = seat.roomCorrectionResult,
+              result.isChannelProcessingImport == true || result.optimizerVersion < 3,
+              result.context.topology.deviceUID == outputDeviceUID else { return base }
+        struct Replacement { var channel: Int; var stage: Int; var original: ProcessingStage? }
+        var replacements: [Replacement] = []
+        for channel in configuredProcessingChannels {
+            let bands = result.sharedBands + (result.channelBands[channel.index] ?? [])
+            let fir = result.channelFIR[channel.index]
+            guard !bands.isEmpty || fir != nil else { continue }
+            guard let c = base.channels.firstIndex(where: { $0.index == channel.index }) else { return base }
+            let originals = result.context.processing.channels.first { $0.index == channel.index }?.chain.stages ?? []
+            if !bands.isEmpty {
+                guard let s = base.channels[c].chain.stages.firstIndex(where: { if case .equalizer = $0.processor { return true }; return false }),
+                      base.channels[c].chain.stages[s].isEnabled,
+                      base.channels[c].chain.stages[s].processor == .equalizer(.init(bands: bands)) else { return base }
+                replacements.append(.init(channel: c, stage: s, original: originals.first { if case .equalizer = $0.processor { return true }; return false }))
+            }
+            if let fir {
+                guard let s = base.channels[c].chain.stages.firstIndex(where: { if case .convolution = $0.processor { return true }; return false }),
+                      base.channels[c].chain.stages[s].isEnabled,
+                      base.channels[c].chain.stages[s].processor == .convolution(fir) else { return base }
+                replacements.append(.init(channel: c, stage: s, original: originals.first { if case .convolution = $0.processor { return true }; return false }))
+            }
+        }
+        // Reverse indices keep removal local to its original slot.
+        for item in replacements.sorted(by: { $0.channel == $1.channel ? $0.stage > $1.stage : $0.channel < $1.channel }) {
+            if let original = item.original { base.channels[item.channel].chain.stages[item.stage] = original }
+            else { base.channels[item.channel].chain.stages.remove(at: item.stage) }
+        }
+        return base
+    }
+
+    package func roomMeasurementProfile() throws -> DeviceProfile {
+        var profile = self
+        let baseline = try roomMeasurementBaseline()
+        profile.captureLegacyPhysicalChannels()
+        for channel in configuredProcessingChannels {
+            profile.physicalChannelProcessing[channel.physicalOutputID] = baseline.channels.first { $0.index == channel.index }?.chain ?? .init()
+        }
+        profile.replaceProcessing(baseline)
+        profile.spatialSettings.seating?.roomCorrectionEnabled = false
+        profile.synchronizeListeningPositionCorrection()
+        return profile
+    }
+
     /// Reset only room correction for the selected listening position. Speaker
     /// geometry/alignment and user processing have independent ownership.
     package mutating func resetRoomCorrection() {
@@ -66,7 +118,7 @@ extension DeviceProfile {
     }
     package func roomMeasurementContext() throws -> RoomMeasurementContext {
         guard let topology = speakerTopology, try validatedPhysicalSpeakerTopology() != nil else { throw RoomCorrectionError.routeUnavailable }
-        var base = try baseResolvedProcessing(); base.removeRoomStages()
+        var base = try roomMeasurementBaseline()
         // Empty channel chains and presentation metadata must not invalidate acoustics.
         base.channels = configuredProcessingChannels.map { configured in
             .init(index: configured.index, role: configured.role,

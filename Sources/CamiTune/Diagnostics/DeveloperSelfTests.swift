@@ -110,18 +110,22 @@ enum DeveloperSelfTests {
                     if method == .fir || method == .hybrid { result.channelFIR = [0: newFIR] }
                     let plan = try RoomCorrectionImportPlan(result: result, profile: profile)
                     let message = try plan.replacementMessage(profile: profile)
-                    try diagnosticRequire(message?.contains("per-channel EQ") == (method != .fir)
-                        && message?.contains("FIR") == (method == .fir || method == .hybrid),
-                        "Replacement prompt must name only the overwritten filter types")
+                    try diagnosticRequire(message != nil, "Replacing occupied channel EQ/FIR slots must use the existing confirmation")
                     let candidate = try plan.applying(to: profile)
                     _ = try AudioRuntimePlanPreparer.prepareForStorage(profile: candidate,
                         revision: .init(profileID: candidate.id, generation: 0))
                     let processing = try candidate.resolvedProcessing()
                     let left = processing.settings(forChannel: 0)!, right = processing.settings(forChannel: 1)!
                     try diagnosticRequire(left.bands == (method == .fir ? [oldBand] : [shared, individual])
-                        && right.bands == (method == .fir ? [oldBand] : [shared]), "Shared IIR must reach all channel editors")
+                        && right.bands == (method == .fir ? [oldBand] : [shared]), "EQ must appear in the channel editor; FIR-only import preserves existing EQ")
                     try diagnosticRequire(processing.convolution(forChannel: 0)?.processor == (method == .fir || method == .hybrid ? newFIR : oldFIR),
-                        "IIR must preserve FIR; FIR and Hybrid must install the calculated impulse")
+                        "FIR must appear in its channel editor; EQ-only import preserves existing FIR")
+                    let leftStages = processing.channels.first { $0.index == 0 }!.chain.stages
+                    let rightStages = processing.channels.first { $0.index == 1 }!.chain.stages
+                    try diagnosticRequire(!(leftStages + rightStages).contains { ProcessingProfile.isRoomStage($0.id) },
+                        "Imported filters must not also run in a hidden room stage")
+                    try diagnosticRequire(candidate.effectiveSpatialSettings.seating?.roomCorrectionEnabled == false,
+                        "Channel editors own imported filters")
                     try diagnosticRequire(left.gainDB == -2 && left.delayMilliseconds == 3
                         && right.gainDB == -2 && processing.global == original.global,
                         "Import must preserve gain, delay and global processing")
@@ -138,7 +142,7 @@ enum DeveloperSelfTests {
                     let restored = try box.profiles.profiles[0].resolvedProcessing()
                     try diagnosticRequire(restored == original, "Undo must restore the exact previous chains")
                 }
-                return .init(summary: "Auto/IIR, FIR and Hybrid map correctly; replacement prompts, physical storage and undo preserve unrelated settings")
+                return .init(summary: "EQ/FIR imports reach their physical-channel editors exactly once; replacement, other processing and undo are verified")
             }
         ]
     }
