@@ -99,7 +99,7 @@ struct DeviceCorrectionSectionView: View {
                             case .automaticEQ, .roomCorrection: EmptyView()
                             case .convolution:
                                 DeviceCorrectionSectionHeader(title: "FIR / Convolution",
-                                    hint: "Apply an imported impulse response, including externally measured room correction.")
+                                    hint: "")
                                 if !profile.isPersonalListening {
                                     JoinedSegmentedControl(options: [false, true], selection: $perChannel,
                                         title: { $0 ? "Per Speaker" : "All Speakers" })

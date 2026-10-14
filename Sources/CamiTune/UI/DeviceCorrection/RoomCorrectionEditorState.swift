@@ -6,8 +6,13 @@ import Foundation
 @MainActor
 final class RoomCorrectionEditorState: ObservableObject {
     enum Tab: String, CaseIterable { case measure, analysis, correction }
+    private static var defaultSource: RoomMeasurementSource {
+        var source = RoomMeasurementSource()
+        source.kind = .recorder
+        return source
+    }
     @Published var tab: Tab = .measure
-    @Published var source = RoomMeasurementSource() {
+    @Published var source = RoomCorrectionEditorState.defaultSource {
         didSet {
             if let session, source.kind == session.source.kind, source != session.source {
                 calculatedResult = nil
@@ -21,6 +26,7 @@ final class RoomCorrectionEditorState: ObservableObject {
     @Published var microphonePositionCount: RoomRecorderPositionCount = .nine
     @Published private(set) var microphoneLevel: MicrophoneInputLevel?
     @Published private(set) var testingSound = false
+    @Published private(set) var measuring = false
     private var levelCheckCeilingDB: Double?
     @Published private(set) var testVolumeDB = 0.0
     @Published private(set) var testVolumeMaximumDB = RoomMeasurementSignal.volumeRangeDB.upperBound
@@ -69,6 +75,7 @@ final class RoomCorrectionEditorState: ObservableObject {
         hasMeasurements && !busy && (source.kind != .microphone || session?.microphoneMeasurementsComplete == true)
     }
     var microphoneActionTitle: String {
+        if measuring { return "Cancel" }
         guard let session, let position else { return "Measure Position" }
         return session.microphonePositionIsComplete(position) ? "Measure Again" : "Measure Position"
     }
@@ -95,6 +102,7 @@ final class RoomCorrectionEditorState: ObservableObject {
         return session.positions.allSatisfy { hasPlayed($0, in: session) }
     }
     var recorderActionTitle: String {
+        if measuring { return "Cancel" }
         if recorderPlaybackComplete { return "Import Recording…" }
         if let position, let session, hasPlayed(position, in: session) { return "Play Again" }
         return session?.blocks.isEmpty == false ? "Next" : "Play Sound"
@@ -224,10 +232,35 @@ final class RoomCorrectionEditorState: ObservableObject {
         busy = true; error = nil
         task = Task { [weak self] in
             guard let self else { return }
-            defer { self.busy = false; self.testingSound = false; self.levelCheckCeilingDB = nil; self.task = nil; self.revision += 1 }
-            do { try Task.checkCancellation(); try await action() } catch is CancellationError { self.status = self.testingSound ? "" : "Stopped" }
-            catch { self.status = ""; self.error = error.localizedDescription }
+            defer { self.busy = false; self.testingSound = false; self.measuring = false; self.levelCheckCeilingDB = nil; self.task = nil; self.revision += 1 }
+            do { try Task.checkCancellation(); try await action() } catch is CancellationError { self.status = "" }
+            catch { self.status = ""; if !Task.isCancelled { self.error = error.localizedDescription } }
+            if Task.isCancelled {
+                self.status = ""
+                await self.restartCancelledRecorderMeasurement()
+            }
         }
+    }
+    private func restartCancelledRecorderMeasurement() async {
+        guard measuring, var session, session.source.kind == .recorder else { return }
+        let hadProgress = !session.blocks.isEmpty || !session.recordings.isEmpty || hasMeasurements
+        session.blocks = []; session.recordings = []; session.analysisIssues = nil
+        for index in session.positions.indices {
+            session.positions[index].observations = []
+            session.positions[index].skipped = false
+        }
+        self.session = session
+        positionIndex = 0; volume = nil; calculatedResult = nil
+        let restarted = session, store = measurementStore
+        do {
+            // Finish after any in-flight save. Cleanup must survive cancellation,
+            // so reopening cannot reuse markers from the abandoned phone recording.
+            try await Task.detached {
+                let manifest = store.folder(restarted.id).appendingPathComponent("session.plist")
+                guard hadProgress || FileManager.default.fileExists(atPath: manifest.path) else { return }
+                try store.save(restarted)
+            }.value
+        } catch { self.error = error.localizedDescription }
     }
     private func worker<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
         let task = Task.detached(priority: .userInitiated, operation: work)
@@ -244,7 +277,7 @@ final class RoomCorrectionEditorState: ObservableObject {
             guard let self, let latest = app.profiles.profiles.first(where: { $0.id == profile.id }),
                   latest.effectiveSpatialSettings.seating?.id == profile.effectiveSpatialSettings.seating?.id else { return }
             self.loadedProfile = nil; self.session = nil; self.comparison = nil; self.volume = nil
-            self.source = .init(); self.drafts = [:]; self.draftVolumes = [:]; self.positionIndex = 0; self.status = ""
+            self.source = Self.defaultSource; self.drafts = [:]; self.draftVolumes = [:]; self.positionIndex = 0; self.status = ""
             self.load(profile: latest, app: app)
         }
     }
@@ -286,7 +319,7 @@ final class RoomCorrectionEditorState: ObservableObject {
                 recorderPositionCount = RoomRecorderPositionCount(rawValue: session.positions.count) ?? .five
                 microphonePositionCount = RoomRecorderPositionCount(rawValue: session.positions.count) ?? .nine
             }
-            else { source.deviceID = microphones.first?.id }
+            else { source = Self.defaultSource; source.deviceID = microphones.first?.id }
         }
     }
     func beginSession(profile: DeviceProfile) {
@@ -309,7 +342,7 @@ final class RoomCorrectionEditorState: ObservableObject {
             if source.kind == .recorder { source.calibration = nil }
             session = .init(context: context, source: source, positions: positions)
             calculatedResult = nil; importedContext = nil; importedMeasurementContext = nil
-            positionIndex = 0; tab = .measure; status = "Position 1 of \(positions.count)"; revision += 1
+            positionIndex = 0; tab = .measure; status = ""; revision += 1
         } catch { self.error = error.localizedDescription }
     }
     func movePosition(_ coordinate: SpatialVector3, profile: DeviceProfile) {
@@ -335,9 +368,13 @@ final class RoomCorrectionEditorState: ObservableObject {
             radius: RoomMeasurementGeometry.radius(for: profile.effectiveSpatialSettings.seating), existing: session.positions.map(\.coordinate))))
         positionIndex = session.positions.count - 1; self.session = session; revision += 1; persistSession()
     }
+    var canRemovePosition: Bool {
+        guard !busy, let session, session.source.kind == .microphone,
+              let position, !position.isMain, session.positions.count > 3 else { return false }
+        return position.skipped || session.positions.filter { !$0.skipped }.count > 3
+    }
     func removePosition() {
-        guard !busy, var session, session.source.kind == .microphone,
-              session.positions.indices.contains(positionIndex), !session.positions[positionIndex].isMain else { return }
+        guard canRemovePosition, var session else { return }
         calculatedResult = nil
         let id = session.positions[positionIndex].id
         session.retireMicrophoneTakes(positionID: id, channels: Set(measurementChannels))
@@ -386,6 +423,9 @@ final class RoomCorrectionEditorState: ObservableObject {
         let channels = measurementChannels.filter { initial.source.kind == .recorder || selectedChannel == nil || $0 == selectedChannel }
         let requestedGain = testVolumeDB
         testingSound = preview
+        measuring = !preview
+        let positionLabel = "Position \(positionIndex + 1) of \(initial.positions.count)"
+        status = "Preparing sound · \(positionLabel)"
         let selectedSource = source
         let store = measurementStore
         run { [self] in
@@ -453,7 +493,7 @@ final class RoomCorrectionEditorState: ObservableObject {
                     }
                     levelCheckCeilingDB = ceiling
                     let initialGain = Float(pow(10, (testVolumeDB - ceiling) / 20))
-                    status = ""
+                    status = "Playing sound · \(positionLabel)"
                     let playback = RoomMeasurementPlaybackCompletion()
                     guard app.playSpatialCalibration(context: context, clip: clip, levelCheckGain: initialGain,
                         completion: { playback.finish() }) else { throw RoomCorrectionError.routeUnavailable }
@@ -484,8 +524,9 @@ final class RoomCorrectionEditorState: ObservableObject {
                         recorder = try await startMicrophoneCapture(id: microphone)
                         try await Task.sleep(for: .milliseconds(250))
                     } else { recorder = nil }
-                    status = preview ? "Test Sound" : initial.source.kind == .recorder ? "Playing sound · Position \(positionIndex + 1) of \(initial.positions.count)"
-                        : "Position \(positionIndex + 1) · Channel \(block.channel + 1)"
+                    let speaker = initial.context.topology.endpoints.first { $0.id.channelIndex == block.channel }?.displayName
+                        ?? "Channel \(block.channel + 1)"
+                    status = "Playing sound · \(positionLabel)" + (initial.source.kind == .microphone ? " · \(speaker)" : "")
                     let playback = RoomMeasurementPlaybackCompletion()
                     guard app.playSpatialCalibration(context: context, clip: clip,
                         started: { playback.start(at: $0) }, completion: { playback.finish() }) else { throw RoomCorrectionError.routeUnavailable }
@@ -506,6 +547,7 @@ final class RoomCorrectionEditorState: ObservableObject {
                     block.playbackStartTime = playback.startedAt; block.playbackClockID = playbackClockID
                     blocks[index] = block
                     if let recorder {
+                        status = "Analyzing · \(positionLabel) · \(speaker)"
                         session.blocks.append(block)
                         let recording = await recorder.stop(); self.capture = nil
                         guard !recording.discontinuity else { throw AcousticMeasurementError.captureFailed }
@@ -727,7 +769,7 @@ final class RoomCorrectionEditorState: ObservableObject {
             session = nil; comparison = nil; drafts = [:]; draftVolumes = [:]
             calculatedResult = nil; importedContext = nil; importedMeasurementContext = nil
             volume = nil; context = nil; issuedTokens = []
-            source = .init(); source.deviceID = microphones.first?.id
+            source = Self.defaultSource; source.deviceID = microphones.first?.id
             settings = .init(); positionIndex = 0; recorderPositionCount = .five; microphonePositionCount = .nine
             microphoneLevel = nil
             testVolumeDB = 0; testVolumeMaximumDB = RoomMeasurementSignal.volumeRangeDB.upperBound
@@ -807,6 +849,7 @@ final class RoomCorrectionEditorState: ObservableObject {
     func cancel() {
         task?.cancel()
         if let context { app?.endSpatialCalibration(id: context.id) }
+        if measuring || testingSound { status = "Stopping · Position \(positionIndex + 1)" }
     }
     func close() {
         cancel(); endCompare()

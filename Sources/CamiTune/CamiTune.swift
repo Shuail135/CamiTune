@@ -22,6 +22,9 @@ private var isSpeakerSetupPreview: Bool {
 @main
 enum CamiTuneLauncher {
     static func main() {
+        // AppKit's native tooltip delay is in milliseconds. Register before
+        // creating UI; this process-local default preserves explicit preferences.
+        UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 250])
         if let index = CommandLine.arguments.firstIndex(of: "--replay-producer-completion"), CommandLine.arguments.count > index + 1 {
             let source = URL(fileURLWithPath: CommandLine.arguments[index + 1])
             Task { @MainActor in
