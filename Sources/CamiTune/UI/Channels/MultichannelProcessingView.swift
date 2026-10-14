@@ -161,7 +161,7 @@ struct MultichannelProcessingView: View {
                         guard let route = MultichannelRoutingEditor.nextRoute(in: candidate) else { return }
                         draft.routing.routes.append(route)
                     }.disabled(MultichannelRoutingEditor.nextRoute(in: candidate) == nil)
-                    Button("Reset to speaker assignments") {
+                    SectionResetButton("Reset to speaker assignments") {
                         let candidate = self.candidate
                         if let format = try? AudioFormatDescriptor.source(sampleRate: profile.sampleRate, layout: source) {
                             draft.routing.routes = candidate.defaultSpeakerRoutes(source: format)
@@ -316,13 +316,12 @@ struct BassManagementControlsView: View {
                 Text("Test volume").font(.callout)
                 SteppedValueSlider(value: $testGainDB, in: SpatialCalibrationClip.subwooferTestGainRangeDB, step: 1)
                     .accessibilityLabel("Subwoofer test volume")
+                    .accessibilityHint("Adjusts this subwoofer’s next test sound. 0 dB uses the standard test level.")
                 Text(String(format: "%+.0f dB", testGainDB))
                     .font(.callout.monospacedDigit()).frame(width: 60, alignment: .trailing)
-                Button("Reset") { testGainDB = 0 }
-                    .controlSize(.small).disabled(testGainDB == 0)
-                    .accessibilityLabel("Reset subwoofer test volume")
+                SectionResetButton("Reset subwoofer test volume") { testGainDB = 0 }
+                    .disabled(testGainDB == 0)
             }
-            .help("Adjusts this subwoofer’s next test sound. 0 dB uses the standard test level.")
             if bass.enabled {
                 Divider()
                 bassControls.disabled(muted)
@@ -359,7 +358,7 @@ struct BassManagementControlsView: View {
                             if enabled { bass.subwooferEndpointIDs.append(sub.id) }
                         })).toggleStyle(.switch).labelsHidden()
                             .disabled(bass.subwooferEndpointIDs == [sub.id])
-                            .help("Keep at least one subwoofer selected while bass management is on.")
+                            .accessibilityHint("Keep at least one subwoofer selected while bass management is on.")
                     }
                     if bass.subwooferEndpointIDs.contains(sub.id) {
                         HStack(spacing: 12) {
@@ -382,7 +381,8 @@ struct BassManagementControlsView: View {
                         Text(profile.configuredSpeakerGroups.first { $0.id == group.groupID }?.name ?? "Unavailable group")
                         Spacer()
                         Button { bass.groups.removeAll { $0.id == group.id } } label: { Image(systemName: "minus.circle") }
-                            .buttonStyle(.borderless).help("Stop redirecting bass from this group")
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Stop redirecting bass from this group")
                     }
                     HStack(spacing: 12) {
                         Text("Crossover")

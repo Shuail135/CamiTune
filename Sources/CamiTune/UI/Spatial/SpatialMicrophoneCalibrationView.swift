@@ -81,7 +81,7 @@ struct SpatialMicrophoneCalibrationView: View {
                 }
                 Text(status).font(.caption)
                 if !measurements.isEmpty || measuredVolume != nil {
-                    Button("Reset measurements") { measurements = []; measuredVolume = nil; status = "Ready" }
+                    SectionResetButton("Reset measurements") { measurements = []; measuredVolume = nil; status = "Ready" }
                         .disabled(task != nil)
                 }
             }

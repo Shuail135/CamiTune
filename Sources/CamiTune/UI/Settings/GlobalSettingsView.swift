@@ -15,7 +15,7 @@ struct SettingsView: View {
     @State private var showingApply = false
     @State private var selectedProfiles: Set<UUID> = []
     @AppStorage("hideCloseKeepsRunningHint") private var hideCloseKeepsRunningHint = false
-    private let categories = ["General", "Section Layout", "Drivers & Components", "Diagnostics", "Confirmations"]
+    private let categories = ["General", "Drivers & Components", "Section Layout", "Diagnostics"]
 
     init(state: AppState) {
         self.state = state
@@ -45,26 +45,7 @@ struct SettingsView: View {
                         .padding(6)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                case "Section Layout":
-                    Picker("Device Type", selection: $type) {
-                        ForEach(ProfileEndpointKind.allCases, id: \.self) { Text($0.displayName).tag($0) }
-                    }
-                    Text("New profiles and profiles using global defaults will use this layout.")
-                        .foregroundStyle(.secondary)
-                    SectionLayoutEditor(type: type, layout: Binding(
-                        get: { store.defaultLayout(for: type) },
-                        set: { store.setDefaultLayout($0, for: type) }))
-                    Button("Apply to Existing Profiles…") {
-                        selectedProfiles = []
-                        showingApply = true
-                    }
-                case "Drivers & Components":
-                    SetupView(state: state, embedded: true)
-                case "Diagnostics":
-                    DiagnosticsView(state: state)
-                case "Confirmations":
-                    Text("Choose which pop-ups to show. Turn an option back on here after selecting “Do not show this again.”")
-                        .foregroundStyle(.secondary)
+                    Text("Confirmations").font(.headline)
                     GroupBox {
                         VStack(alignment: .leading, spacing: 8) {
                             Toggle("Show profile enabled explanation", isOn: $store.showProfileEnabledExplanation)
@@ -85,6 +66,23 @@ struct SettingsView: View {
                         .padding(6)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                case "Drivers & Components":
+                    SetupView(state: state, embedded: true)
+                case "Section Layout":
+                    Picker("Device Type", selection: $type) {
+                        ForEach(ProfileEndpointKind.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                    }
+                    Text("New profiles and profiles using global defaults will use this layout.")
+                        .foregroundStyle(.secondary)
+                    SectionLayoutEditor(type: type, layout: Binding(
+                        get: { store.defaultLayout(for: type) },
+                        set: { store.setDefaultLayout($0, for: type) }))
+                    Button("Apply to Existing Profiles…") {
+                        selectedProfiles = []
+                        showingApply = true
+                    }
+                case "Diagnostics":
+                    DiagnosticsView(state: state)
                 default: EmptyView()
                 }
                 Spacer(minLength: 0)

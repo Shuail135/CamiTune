@@ -115,7 +115,7 @@ struct EQBandColumn: View {
                 }
                 .buttonStyle(.borderless)
                 .frame(width: 18 * metrics.scale)
-                .help(band.enabled ? "Disable this filter" : "Enable this filter")
+                .accessibilityLabel(band.enabled ? "Disable this filter" : "Enable this filter")
 
                 Menu {
                     ForEach(EQBand.Kind.allCases, id: \.self) { kind in
@@ -139,7 +139,7 @@ struct EQBandColumn: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.visible)
                 .frame(width: 70 * metrics.scale, alignment: .center)
-                .help("Filter type")
+                .accessibilityLabel("Filter type")
             }
             .frame(width: 90 * metrics.scale)
         }

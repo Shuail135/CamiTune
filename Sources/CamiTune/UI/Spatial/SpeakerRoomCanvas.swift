@@ -31,12 +31,12 @@ struct SpeakerRoomCanvas: NSViewRepresentable {
     func updateNSView(_ view: SpeakerRoomNSView, context: Context) {
         view.configuration = self
         view.needsDisplay = true
-        view.updateHelp()
+        view.updateAccessibility()
     }
 }
 
 @MainActor
-final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
+final class SpeakerRoomNSView: NSView {
     var configuration: SpeakerRoomCanvas? {
         didSet {
             guard let configuration else { return }
@@ -71,7 +71,6 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
     private var snapX: Float?
     private var snapY: Float?
     private var menuOutput: PhysicalOutputID?
-    private var tooltipText: [NSView.ToolTipTag: String] = [:]
     private enum Target { case speaker(PhysicalOutputID), listener, pan }
     override var isFlipped: Bool { true }
     // The canvas fills its bounds. Keep its redraws local rather than asking
@@ -199,25 +198,13 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         return endpoint.role == .unknown && role != .unknown ? "Estimated: \(role.displayName)" : role.displayName
     }
 
-    func updateHelp() {
-        removeAllToolTips()
-        tooltipText.removeAll()
+    func updateAccessibility() {
         guard let config = configuration else { return }
-        for (index, endpoint) in config.topology.endpoints.enumerated() {
-            let rect = nodeRect(nodePoint(endpoint, index: index)).intersection(graph)
-            if !rect.isEmpty {
-                let tag = addToolTip(rect, owner: self, userData: nil)
-                tooltipText[tag] = "Channel \(endpoint.id.channelIndex + 1): \(endpoint.displayName) · \(roleDescription(endpoint))"
-            }
-        }
         updateAccessibilityElements()
         setAccessibilityLabel("Speaker and listening position map")
         setAccessibilityHelp(config.measurementPoint != nil && !config.allowsScrollPanning
             ? "Place the microphone at the blue Measure here marker. The grey line shows its distance from the listening position in centimeters. Click and drag to pan. Use the zoom buttons or Fit All to adjust the view. Scrolling moves the page."
             : "Drag speakers or the listener to move them. Drag empty space or scroll to pan. Click a speaker to test it. Use the arrow to assign its role. With keyboard focus, use brackets to select a speaker, L for the listener, arrow keys to move, Space to test, and R for roles.")
-    }
-    func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
-        tooltipText[tag] ?? ""
     }
 
     private var accessibilityNodes: [String: NSAccessibilityElement] = [:]
@@ -638,7 +625,7 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         let openMenu = pressedArrow
         if case .pan = target { NSCursor.pop() }
         target = nil; pressedArrow = false; snapX = nil; snapY = nil
-        needsDisplay = true; updateHelp()
+        needsDisplay = true; updateAccessibility()
         guard clicked, case .speaker(let id) = completedTarget, let config = configuration, !config.locked else { return }
         if openMenu, let endpoint = config.topology.endpoints.first(where: { $0.id == id }) {
             showRoles(endpoint, at: convert(event.locationInWindow, from: nil))
@@ -669,7 +656,7 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
               momentum.isEmpty, target == nil, x.isFinite, y.isFinite else { return }
         let multiplier: CGFloat = precise ? 1 : 12
         pan.x += x * multiplier; pan.y += y * multiplier
-        needsDisplay = true; updateHelp()
+        needsDisplay = true; updateAccessibility()
     }
     var rulerStep: CGFloat {
         if let step = [CGFloat(0.05), 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100].first(where: { $0 * scale >= 44 }) {
@@ -690,16 +677,16 @@ final class SpeakerRoomNSView: NSView, NSViewToolTipOwner {
         let next = min(4, max(0.25, value))
         guard next != zoom else { return }
         if configuration?.allowsPanning == false {
-            zoom = next; pan = .zero; needsDisplay = true; updateHelp(); return
+            zoom = next; pan = .zero; needsDisplay = true; updateAccessibility(); return
         }
         let anchor = location ?? CGPoint(x: graph.midX, y: graph.midY)
         let roomAnchor = world(anchor)
         zoom = next
         let shifted = point(roomAnchor)
         pan.x += anchor.x - shifted.x; pan.y += anchor.y - shifted.y
-        needsDisplay = true; updateHelp()
+        needsDisplay = true; updateAccessibility()
     }
-    func resetViewport() { zoom = configuration?.zoom ?? 1.25; pan = .zero; needsDisplay = true; updateHelp() }
+    func resetViewport() { zoom = configuration?.zoom ?? 1.25; pan = .zero; needsDisplay = true; updateAccessibility() }
     private func showRoles(_ endpoint: SpeakerEndpoint, at point: CGPoint) {
         roleMenu(endpoint).popUp(positioning: nil, at: point, in: self)
     }

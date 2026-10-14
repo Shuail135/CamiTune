@@ -37,7 +37,7 @@ struct SpeakerSetupPreview: View {
                     Picker("Outputs", selection: $capacity) {
                         ForEach([2, 6, 8, 10, 12, 16, 32], id: \.self) { Text("\($0)").tag($0) }
                     }.frame(width: 150)
-                    Button("Reset") { reset() }
+                    SectionResetButton("Reset simulated speakers") { reset() }
                 }
                 Text("Preview only. Edits stay in this window and speaker tests highlight the selected output without playing audio.")
                     .font(.caption).foregroundStyle(.secondary)

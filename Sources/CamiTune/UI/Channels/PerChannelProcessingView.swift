@@ -149,11 +149,6 @@ struct PerChannelProcessingView: View {
                     onEditingChanged: continuousEditingChanged
                 )
 
-                Text(selectedGroup == nil
-                    ? "Use delay to time-align this channel. Fractional-sample values are supported."
-                    : "This delay is added to each member’s individual delay. Fractional-sample values are supported.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
 
                 PerChannelResponseGraph(responses: runtime.responses)
 
@@ -236,10 +231,8 @@ private struct PerChannelHeader: View {
         HStack {
             Text("Channel Processing").font(.title3.bold())
             Spacer()
-            Button("Reset") { onReset() }
-                .buttonStyle(.bordered)
+            SectionResetButton(presentation.resetTitle) { onReset() }
                 .disabled(!status.canReset)
-                .help(presentation.resetTitle)
         }
     }
 }
@@ -286,34 +279,40 @@ private struct PerChannelGainRow: View {
 }
 
 private struct PerChannelDelayRow: View {
+    @ScaledMetric(relativeTo: .body) private var valueWidth: CGFloat = 76
     @ObservedObject var delay: PerChannelValueState<Double>
     let onChanged: @MainActor () -> Void
     let onEditingChanged: @MainActor (Bool) -> Void
+
+    private var delayBinding: Binding<Double> {
+        Binding(
+            get: { delay.value },
+            set: { newValue in
+                let clamped = min(100, max(0, newValue))
+                guard clamped != delay.value else { return }
+                delay.value = clamped
+                onChanged()
+            }
+        )
+    }
 
     var body: some View {
         HStack(spacing: 12) {
             Text("Channel delay")
                 .frame(width: 130, alignment: .leading)
             ChannelDelaySlider(
-                value: Binding(
-                    get: { delay.value },
-                    set: { newValue in
-                        let clamped = min(100, max(0, newValue))
-                        guard clamped != delay.value else { return }
-                        delay.value = clamped
-                        onChanged()
-                    }
-                ),
+                value: delayBinding,
                 onEditingChanged: onEditingChanged
             )
             .frame(minWidth: 80, maxWidth: .infinity)
-            Text(
-                delay.value.formatted(
-                    .number.precision(.fractionLength(2))
-                ) + " ms"
-            )
-            .monospacedDigit()
-            .frame(width: 76, alignment: .trailing)
+            TextField("Channel delay", value: delayBinding,
+                format: .number.precision(.fractionLength(2)))
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .monospacedDigit()
+                .frame(width: valueWidth)
+                .accessibilityLabel("Channel delay in milliseconds")
+            Text("ms").foregroundStyle(.secondary).fixedSize()
         }
     }
 }

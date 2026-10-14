@@ -923,6 +923,7 @@
 		599A4BFC4FDAAFBC1DBF94EB = {isa = PBXBuildFile; fileRef = 667CE283D6075EBAD9E7EBE6; };
 		9B533011732DF1746BB866B3 = {isa = PBXBuildFile; fileRef = 1E8A37CEEB8CBA10000913FC; };
 		9A823CBC6156538F91C355DE = {isa = PBXBuildFile; fileRef = CDCEBF370D4D7FC7B82D7081; };
+		6E118A57B53F40E1B5D3B6D8 = {isa = PBXBuildFile; fileRef = 7D6AD05DA41B4F08884DC7D9; };
 		7FF454FC928D5994100F3B36 = {isa = PBXBuildFile; fileRef = 50F6D43898268D9D619AA3D1; };
 		5FD405170420C02037A1F2E4 = {isa = PBXBuildFile; fileRef = 550859467E5074F5CB8F2724; };
 		3B1143AB2910620809463E04 = {isa = PBXBuildFile; fileRef = 484ED10998C9031833410E43; };
@@ -2614,6 +2615,7 @@
 		667CE283D6075EBAD9E7EBE6 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JoinedSegmentedControl.swift; sourceTree = "<group>"; };
 		1E8A37CEEB8CBA10000913FC = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutsideClickObserver.swift; sourceTree = "<group>"; };
 		CDCEBF370D4D7FC7B82D7081 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SectionDisclosureStyle.swift; sourceTree = "<group>"; };
+		7D6AD05DA41B4F08884DC7D9 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SectionResetButton.swift; sourceTree = "<group>"; };
 		50F6D43898268D9D619AA3D1 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextFocusClearRequest.swift; sourceTree = "<group>"; };
 		550859467E5074F5CB8F2724 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoEQCorrectionView.swift; sourceTree = "<group>"; };
 		484ED10998C9031833410E43 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceCorrectionCardStyle.swift; sourceTree = "<group>"; };
@@ -3004,6 +3006,7 @@
 				70F410E98370E0505AE0EB38,
 				D4E47A1E1D4C636FE50F5461,
 				CDCEBF370D4D7FC7B82D7081,
+				7D6AD05DA41B4F08884DC7D9,
 				6990B8E8C145A1F038A7CB49,
 				D9C1C1FC35D88EF7CE5A044B,
 				50F6D43898268D9D619AA3D1,
@@ -3947,6 +3950,7 @@
 				5FD405170420C02037A1F2E4,
 				7FF454FC928D5994100F3B36,
 				9A823CBC6156538F91C355DE,
+				6E118A57B53F40E1B5D3B6D8,
 				9B533011732DF1746BB866B3,
 				599A4BFC4FDAAFBC1DBF94EB,
 				4895351B76B026E70E0AE525,

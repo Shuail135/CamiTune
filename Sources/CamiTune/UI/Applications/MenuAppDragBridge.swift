@@ -22,8 +22,6 @@ struct MenuAppDragSource: NSViewRepresentable {
         view.drawsIdentity = drawsIdentity
         view.modifierOnlyHitTesting = modifierOnlyHitTesting
         view.requiresModifier = requiresModifier
-        view.toolTip = PerAppApplicationIdentityPolicy.isPersistentApplicationID(application.id)
-            ? "\(displayedName) — \(requiresModifier ? "Command-drag" : "Drag") to move" : displayedName
         view.setAccessibilityElement(drawsIdentity)
         view.setAccessibilityRole(.staticText)
         view.setAccessibilityLabel(displayedName)

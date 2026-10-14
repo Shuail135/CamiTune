@@ -74,7 +74,6 @@ struct ProfileEditorView: View {
                         .focused($titleFocused)
                         .onHover { titleHovered = $0 }
                         .accessibilityLabel("Rename \(profile.name)")
-                        .help("Click to rename this profile")
                     }
                     ProfileConnectionStatusView(
                         coreAudio: coreAudio,
@@ -90,7 +89,6 @@ struct ProfileEditorView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless)
-                    .help("Profile Settings")
                     .accessibilityLabel("Profile Settings")
                     Toggle("Enabled", isOn: Binding(
                         get: { profile.isEnabled },
@@ -101,13 +99,13 @@ struct ProfileEditorView: View {
                     .toggleStyle(.switch)
                     .labelsHidden()
                     .accessibilityLabel("Enable Profile")
-                    .help("Make this profile available for activation")
                 }
 
                 ForEach(Array(sections.prefix(preparedSectionCount))) { section in
                     StableEditorSection(revision: ProfileEditorSectionRevision(profile: profile, layout: layout)) {
                         profileSection(section)
                     }
+                    .id("\(profile.id):\(profile.deviceTypeConfigurationKey):\(section.rawValue)")
                 }
             }
             .padding(28)
@@ -148,7 +146,7 @@ struct ProfileEditorView: View {
                 seedGraphIfNeeded()
             }
         }
-        .onChange(of: profile.endpointKind) { _ in updateVisuals() }
+        .onChange(of: profile.deviceTypeConfigurationKey) { _ in updateVisuals(); seedGraphIfNeeded() }
         .onChange(of: profile.id) { _ in
             commitProfileRename()
             seedGraphIfNeeded()

@@ -93,6 +93,7 @@ struct DeviceCorrectionSectionView: View {
                         }
                             .opacity(selected == .automaticEQ ? 1 : 0)
                             .allowsHitTesting(selected == .automaticEQ)
+                            .disabled(selected != .automaticEQ)
                             .accessibilityHidden(selected != .automaticEQ)
                         VStack(alignment: .leading, spacing: 12) {
                             switch selected {

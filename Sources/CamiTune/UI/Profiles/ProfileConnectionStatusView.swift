@@ -16,7 +16,6 @@ struct ProfileActiveIndicator: View {
                 .fill(Color.green)
                 .frame(width: 8, height: 8)
                 .accessibilityLabel("Active profile")
-                .help("This profile’s audio runtime is running")
         }
     }
 }

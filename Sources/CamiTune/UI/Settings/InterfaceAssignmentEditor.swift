@@ -9,6 +9,7 @@ struct InterfaceAssignmentEditor: View {
     let sampleRate: Int
     @Binding var assignment: AudioInterfaceConfiguration?
     @Binding var topology: SpeakerTopology?
+    var onSelectConnectedEndpoint: ((ProfileEndpointKind) -> Void)? = nil
     @State private var discovering = false
     @State private var error: String?
     private var matches: Bool { assignment?.deviceUID == output.uid }
@@ -16,7 +17,10 @@ struct InterfaceAssignmentEditor: View {
         VStack(alignment: .leading, spacing: 10) {
             if !matches { Text("Discover this interface to configure its channels.").foregroundStyle(.secondary) }
             if let value = assignment, matches {
-                Picker("Connected Device", selection: Binding(get: { value.connectedEndpoint }, set: { assignment?.connectedEndpoint = $0 })) {
+                Picker("Connected Device", selection: Binding(get: { value.connectedEndpoint }, set: {
+                    if let onSelectConnectedEndpoint { onSelectConnectedEndpoint($0) }
+                    else { assignment?.connectedEndpoint = $0 }
+                })) {
                     ForEach(ProfileEndpointKind.allCases.filter { $0 != .audioInterface }, id: \.self) { Text($0.displayName).tag($0) }
                 }
                 Text("Hardware Channels").font(.headline)

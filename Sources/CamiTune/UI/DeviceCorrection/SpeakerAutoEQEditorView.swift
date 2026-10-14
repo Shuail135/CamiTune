@@ -11,7 +11,10 @@ struct SpeakerAutoEQEditorSnapshot: Equatable {
 
 @MainActor
 final class SpeakerAutoEQEditorModel: ObservableObject {
-    @Published var catalog: [SpeakerCatalogEntry] = []
+    @Published var catalog: [SpeakerCatalogEntry] = [] {
+        didSet { searchIndex = nil }
+    }
+    private var searchIndex: AutoEQCatalogSearchIndex<SpeakerCatalogEntry>?
     @Published var search = ""
     @Published var searchResults: [SpeakerCatalogEntry] = []
     @Published var speakerID = ""
@@ -38,7 +41,7 @@ final class SpeakerAutoEQEditorModel: ObservableObject {
     private var sourceOperation: Task<Void, Never>?
     private let provider: any SpeakerMeasurementProvider
     private let engine: SpeakerCorrectionEngine
-    let history = AutoEQEditorHistory<SpeakerAutoEQEditorSnapshot>()
+    let history = EditorSnapshotHistory<SpeakerAutoEQEditorSnapshot>()
     private var restoringHistory = false
     private var snapshot: SpeakerAutoEQEditorSnapshot {
         .init(draft: draft, hasManualEdits: hasManualEdits, mode: mode, settings: settings)
@@ -133,11 +136,13 @@ final class SpeakerAutoEQEditorModel: ObservableObject {
     func searchCatalog() async {
         let query = search
         do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
-        let entries = catalog
-        let results = await Task.detached(priority: .utility) {
-            Array(entries.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }.prefix(40))
+        let entries = catalog, cachedIndex = searchIndex
+        let (index, results) = await Task.detached(priority: .utility) {
+            let index = cachedIndex ?? AutoEQCatalogSearchIndex(entries: entries, name: { $0.name })
+            return (index, index.results(matching: query))
         }.value
-        guard !Task.isCancelled, search == query else { return }
+        guard !Task.isCancelled, search == query, catalog == entries else { return }
+        searchIndex = index
         searchResults = results
     }
     func selectSpeaker(preservingVersion: Bool = false, preservingDraft: Bool = false) {
@@ -214,7 +219,7 @@ struct SpeakerAutoEQEditorView: View {
         let validationError = displayed.flatMap { model.validationError(for: $0, sampleRate: Double(profile.sampleRate)) }
         return VStack(alignment: .leading, spacing: 12) {
             DeviceCorrectionSectionHeader(title: "Auto EQ",
-                hint: "Generate correction from anechoic speaker measurements. Load into Equalizer to apply it. This corrects the speaker model; it does not measure your room.")
+                hint: "Generate correction from anechoic speaker measurements. Load into Equalizer to apply it. This corrects the speaker model. Recommend use room correction after.")
             VStack(alignment: .leading, spacing: 18) {
                 GroupBox("Device") {
                     VStack(alignment: .leading, spacing: 12) {
@@ -224,9 +229,12 @@ struct SpeakerAutoEQEditorView: View {
                                 model.speakerID = speaker.id; model.search = speaker.name
                                 model.selectSpeaker()
                             }
-                            Button("Refresh") { Task { await model.loadCatalog(refresh: true) } }
-                                .fixedSize()
+                            Button { Task { await model.loadCatalog(refresh: true) } } label: {
+                                Image(systemName: "arrow.clockwise").frame(width: 22, height: 22)
+                            }
+                                .buttonStyle(.borderless)
                                 .disabled(model.isLoadingCatalog)
+                                .accessibilityLabel("Refresh speaker catalog")
                         }
                         if model.isLoadingCatalog {
                             HStack(spacing: 8) {
@@ -257,7 +265,7 @@ struct SpeakerAutoEQEditorView: View {
                         JoinedSegmentedControl(options: SpeakerListeningMode.allCases, selection: $model.mode, title: { $0.title })
                             .accessibilityLabel("Speaker listening setup")
                         Text(model.mode == .nearField ? "Prioritizes direct sound and listening-window behavior for desktop and near-field listening."
-                             : "Uses full CEA2034 speaker data to optimize predicted room listening behavior. This does not measure your room.")
+                             : "Uses full CEA2034 speaker data to optimize predicted room listening behavior.")
                             .font(.caption).foregroundStyle(.secondary)
                         DisclosureGroup("Advanced", isExpanded: $presentation.advancedExpanded) {
                             VStack(alignment: .leading, spacing: 10) {
@@ -328,8 +336,6 @@ struct SpeakerAutoEQEditorView: View {
             }.padding(.bottom, 16)
             Divider()
             HStack(alignment: .top) {
-                AutoEQUndoButton(history: model.history)
-                AutoEQUndoButton(history: model.history, isRedo: true)
                 Spacer()
                 AutoEQSaveTXTButton(correction: displayed) { model.error = $0 }
                     .disabled(displayed == nil || validationError != nil)
@@ -338,6 +344,7 @@ struct SpeakerAutoEQEditorView: View {
             }.padding(.vertical, 5)
         }
         .groupBoxStyle(DeviceCorrectionCardStyle())
+        .modifier(EditorHistoryCommands(history: model.history))
         .disabled(state.isSavingProfileSettings || state.history.isReplaying)
         .task {
             reload()

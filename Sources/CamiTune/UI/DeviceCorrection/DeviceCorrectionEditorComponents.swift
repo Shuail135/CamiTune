@@ -62,8 +62,12 @@ extension DeviceCorrectionEditorView {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Button("Refresh") { refreshDeviceMatch() }
-                            .disabled(isLoadingDeviceMatch)
+                        Button { refreshDeviceMatch() } label: {
+                            Image(systemName: "arrow.clockwise").frame(width: 22, height: 22)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(isLoadingDeviceMatch)
+                        .accessibilityLabel("Refresh target device measurements")
                     }
                 } else if !DeviceNameNormalizer.key(for: deviceMatchSearchText).isEmpty,
                           matchSearchResults.isEmpty {
@@ -75,31 +79,35 @@ extension DeviceCorrectionEditorView {
         }
     }
 
+    var targetImportControls: some View {
+        HStack(spacing: 6) {
+            Button("Import…") { showingTargetImporter = true }
+                .fixedSize()
+                .disabled(measurement == nil)
+                .accessibilityLabel("Import target")
+            DeviceCorrectionHelpIcon(title: "Available targets", message: targetHelpMessage)
+        }
+    }
+
     @ViewBuilder
     func responseRow(
         title: String? = nil,
         response: FrequencyResponse?,
-        emptyText: String,
-        buttonTitle: String,
-        action: @escaping () -> Void
+        emptyText: String
     ) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                if let title {
-                    Text(title).font(.headline)
-                }
-                if let response {
-                    Text("\(response.name) · \(response.points.count) points")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text(emptyText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+        VStack(alignment: .leading, spacing: 2) {
+            if let title {
+                Text(title).font(.headline)
             }
-            Spacer()
-            Button(buttonTitle, action: action)
+            if let response {
+                Text("\(response.name) · \(response.points.count) points")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(emptyText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -112,7 +120,7 @@ extension DeviceCorrectionEditorView {
                 Spacer()
                 Button { replaceFilters((generated?.filters ?? []) + [EQBand(kind: .peaking, frequency: 1_000, gain: 0, q: 0.707)]) } label: {
                     Image(systemName: "plus")
-                }.disabled((generated?.filters.count ?? 0) >= 20).help("Add band")
+                }.disabled((generated?.filters.count ?? 0) >= 20).accessibilityLabel("Add band")
             }
             Text("Automatic headroom \(generatedAutomaticHeadroomDB, format: .number.precision(.fractionLength(2))) dB")
                 .font(.caption.monospacedDigit().weight(.medium))
@@ -274,17 +282,73 @@ struct AutoEQGenerateButton: View {
 }
 
 @MainActor
-struct AutoEQUndoButton<Snapshot: Equatable>: View {
-    @ObservedObject var history: AutoEQEditorHistory<Snapshot>
-    var isRedo = false
-    var body: some View {
-        Button {
-            if isRedo { history.manager.redo() } else { history.manager.undo() }
-        } label: {
-            Image(systemName: isRedo ? "arrow.uturn.forward" : "arrow.uturn.backward")
+struct EditorHistoryCommands<Snapshot: Equatable>: ViewModifier {
+    @ObservedObject var history: EditorSnapshotHistory<Snapshot>
+    var isExclusive = false
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.undoCommandRouter) private var router
+
+    func body(content: Content) -> some View {
+        content.background(EditorHistoryRegistration(manager: history.manager, revision: history.revision,
+            isEnabled: isEnabled && !history.isEditing, isExclusive: isExclusive, router: router))
+    }
+}
+
+/// The main window uses NSHostingController, not a SwiftUI Window scene.
+/// Register against its actual NSWindow so graph gestures need no text focus.
+@MainActor
+private struct EditorHistoryRegistration: NSViewRepresentable {
+    let manager: UndoManager
+    let revision: Int
+    let isEnabled: Bool
+    let isExclusive: Bool
+    let router: UndoCommandRouter?
+
+    func makeNSView(context: Context) -> EditorHistoryCommandView { EditorHistoryCommandView() }
+    func updateNSView(_ view: EditorHistoryCommandView, context: Context) {
+        view.configure(manager: manager, revision: revision, isEnabled: isEnabled, isExclusive: isExclusive, router: router)
+    }
+    static func dismantleNSView(_ view: EditorHistoryCommandView, coordinator: ()) {
+        view.router?.unregister(view)
+    }
+}
+
+@MainActor
+final class EditorHistoryCommandView: NSView {
+    private(set) var manager: UndoManager?
+    private(set) weak var router: UndoCommandRouter?
+    private var revision: Int?
+    private var commandsEnabled = false
+    private(set) var isExclusive = false
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func configure(manager: UndoManager, revision: Int, isEnabled: Bool, isExclusive: Bool, router: UndoCommandRouter?) {
+        let changed = self.revision != nil && self.revision != revision
+        if self.router !== router {
+            self.router?.unregister(self)
+            self.router = router
+            router?.register(self)
         }
-        .disabled(isRedo ? !history.manager.canRedo : !history.manager.canUndo)
-        .help(isRedo ? "Redo Auto EQ edit" : "Undo Auto EQ edit")
+        self.manager = manager
+        self.revision = revision
+        commandsEnabled = isEnabled
+        self.isExclusive = isExclusive
+        if changed { router?.editorDidChange(self) }
+        router?.refreshCommands()
+    }
+
+    func isAvailable(in window: NSWindow?) -> Bool {
+        commandsEnabled && isInWindow(window)
+    }
+
+    func isInWindow(_ window: NSWindow?) -> Bool {
+        window != nil && self.window === window && !isHiddenOrHasHiddenAncestor
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        router?.refreshCommands()
     }
 }
 
@@ -312,7 +376,6 @@ struct AutoEQSaveTXTButton: View {
             }
         }
         .disabled(correction == nil || isSaving)
-        .help("Save Equalizer APO filters as a .txt file in a location you choose.")
     }
 }
 

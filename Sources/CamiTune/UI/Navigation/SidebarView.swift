@@ -813,7 +813,7 @@ private final class SidebarCell: NSTableCellView {
         addButton.imagePosition = .imageOnly
         addButton.isBordered = false
         addButton.contentTintColor = .secondaryLabelColor
-        addButton.toolTip = "Add Output"
+        addButton.setAccessibilityLabel("Add Output")
         addButton.target = self
         addButton.action = #selector(addOutputClicked)
     }

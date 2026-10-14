@@ -66,29 +66,58 @@ struct CorrectionEditorSnapshot: Equatable {
 }
 
 @MainActor
-final class AutoEQEditorHistory<Snapshot: Equatable>: ObservableObject {
+final class EditorSnapshotHistory<Snapshot: Equatable>: ObservableObject {
     let manager = UndoManager()
     @Published var revision = 0
+    @Published private(set) var replayRevision = 0
+    @Published private(set) var isEditing = false
     var current: Snapshot?
     var restore: ((Snapshot) -> Void)?
     private var lastEdit = Date.distantPast
+    private var gestureStart: Snapshot?
+    private let actionName: String
+    private let coalescingInterval: TimeInterval
+
+    init(actionName: String = "Edit Device Correction", coalescingInterval: TimeInterval = 0.4) {
+        self.actionName = actionName
+        self.coalescingInterval = coalescingInterval
+    }
 
     func reset() {
         manager.removeAllActions()
         current = nil
         lastEdit = .distantPast
+        gestureStart = nil
+        isEditing = false
         revision &+= 1
+    }
+
+    func beginGesture(_ snapshot: Snapshot) {
+        guard !isEditing else { return }
+        gestureStart = snapshot
+        current = snapshot
+        isEditing = true
+    }
+
+    func endGesture(_ snapshot: Snapshot) {
+        guard isEditing, let before = gestureStart else { return }
+        gestureStart = nil
+        isEditing = false
+        current = before
+        lastEdit = .distantPast
+        record(snapshot)
     }
 
     func record(_ snapshot: Snapshot) {
         guard let previous = current else { current = snapshot; return }
         guard previous != snapshot else { return }
         current = snapshot
+        guard !isEditing else { return }
         // Pointer updates and repeated numeric edits form one transaction.
         let now = Date()
-        if now.timeIntervalSince(lastEdit) > 0.4 {
+        if coalescingInterval == 0 || now.timeIntervalSince(lastEdit) > coalescingInterval {
             manager.registerUndo(withTarget: self) { $0.apply(previous) }
-            manager.setActionName("Edit Device Correction")
+            manager.setActionName(actionName)
         }
         lastEdit = now
         revision &+= 1
@@ -101,8 +130,9 @@ final class AutoEQEditorHistory<Snapshot: Equatable>: ObservableObject {
         current = snapshot
         lastEdit = .distantPast
         restore?(snapshot)
+        replayRevision &+= 1
         revision &+= 1
     }
 }
 
-typealias CorrectionEditorHistory = AutoEQEditorHistory<CorrectionEditorSnapshot>
+typealias CorrectionEditorHistory = EditorSnapshotHistory<CorrectionEditorSnapshot>

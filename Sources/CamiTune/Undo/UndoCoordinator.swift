@@ -72,6 +72,21 @@ final class UndoCoordinator: ObservableObject {
         guard !isReplaying else { return }
         gestures.removeAll(); undoStack.removeAll(); redoStack.removeAll(); refresh()
     }
+    /// Old processing gestures must not install another device's calibration.
+    func discardDeviceConfiguration(for profileID: UUID) {
+        func belongs(_ entry: HistoryEntry) -> Bool {
+            if case .profileName = entry.before { return false }
+            switch entry.target {
+            case .profile(let id), .profileChannel(let id, _), .profileGroup(let id, _),
+                 .speakerSystem(let id), .referenceCorrection(let id): return id == profileID
+            default: return false
+            }
+        }
+        undoStack.removeAll(where: belongs)
+        redoStack.removeAll(where: belongs)
+        gestures = gestures.filter { !belongs($0.value) }
+        refresh()
+    }
     func undo() async { await replay(undo: true) }
     func redo() async { await replay(undo: false) }
     private func replay(undo: Bool) async {

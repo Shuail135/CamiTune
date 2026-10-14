@@ -39,31 +39,31 @@ package enum DeviceCorrectionTargetPreset: String, Codable, Hashable, Sendable, 
 
     package var shortDescription: String {
         switch self {
-        case .neutral: return "A fixture-matched neutral baseline without an additional preference bass shelf."
-        case .autoEqInEar: return "AutoEq in-ear preference target with fixture-specific compensation."
-        case .jm1Harman: return "JM-1 with published Harman bass and treble shelves for B&K 5128."
-        case .lmg5128: return "LMG 0.6 preference target for B&K 5128."
-        case .optimumHiFi: return "oratory1990 Optimum HiFi over-ear target for GRAS-compatible measurements."
+        case .neutral: return "A balanced starting point, matched to your device's measurements, with no extra bass boost."
+        case .autoEqInEar: return "An earphone listening target with added bass."
+        case .jm1Harman: return "The JM-1 reference with fuller bass and Harman treble adjustments."
+        case .lmg5128: return "LMG's alternative listening target for devices measured on a B&K 5128."
+        case .optimumHiFi: return "A neutral-leaning headphone target with restrained bass."
         case .flat:
-            return "Corrects the measurement toward a mathematically flat coupler response. This is mainly a diagnostic option, not a perceptual listening target."
+            return "A straight measurement line for testing; it may not sound neutral."
         case .jm1PopAvgDFTilt:
-            return "A population-average diffuse-field reference. The adjustable tilt changes the overall warm-to-bright balance; −1.0 dB per octave is a useful neutral starting point."
+            return "Lets you adjust the overall balance from warmer to brighter with the Tilt slider."
         case .harmanOverEar2018:
-            return "Harman over-ear preference target for GRAS measurements."
+            return "A headphone target based on listener preferences, with added bass."
         case .harmanInEar2019V2:
-            return "A listener-preference target with strong bass and forward upper mids. It is a familiar, energetic consumer reference rather than a universal definition of neutral."
+            return "A lively earphone target with strong bass and more prominent vocals."
         case .iefPreference2025:
-            return "Crinacle's 2025 preference tuning: elevated sub-bass and less upper-treble energy than the JM-1 baseline. It aims for balanced, enjoyable listening."
+            return "Deep bass with gentler high treble than the JM-1 reference."
         case .iefNeutral2023:
-            return "A neutral-focused 711 target with restrained bass and a smoother ear-gain region. Choose it when you want the recording, not added bass preference, to lead."
+            return "Restrained bass and a smoother vocal range for a neutral-leaning sound."
         case .diffuseFieldReference:
-            return "The acoustic response associated with sound arriving evenly from all directions. It has no added preference bass shelf and can sound leaner or brighter."
+            return "Models sound arriving from all directions; can sound leaner or brighter."
         case .etymotic:
-            return "Etymotic's classic perceptually-flat in-ear reference, emphasizing the ear-canal compensation region around 2–5 kHz with comparatively restrained bass."
+            return "A clear, vocal-focused earphone balance with restrained bass."
         case .deviceMatch:
-            return "Matches the selected device's measured tonal balance to another headphone or earphone measured on the same fixture and configuration type."
+            return "Aims for the sound balance of another headphone or earphone with compatible measurements."
         case .custom:
-            return "Uses a frequency-response CSV that you provide. Its measurement fixture must match the source measurement fixture."
+            return "Uses your own target CSV. Choose the same measurement setup as the source device."
         }
     }
 }

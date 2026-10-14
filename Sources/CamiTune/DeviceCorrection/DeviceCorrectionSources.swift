@@ -68,51 +68,87 @@ struct DeviceCatalogEntry: Codable, Hashable, Sendable, Identifiable {
     }
 }
 
-/// Manually reviewed spelling/model aliases. Rules replace only an exact name
-/// or an exact leading token sequence; every unknown suffix (switch, nozzle,
-/// pad, revision, ANC mode, and so on) remains part of configuration identity.
+/// Shared search behavior for headphones, IEMs, device-match targets, and speakers.
+/// These forgiving keys are only for finding entries; catalog identities stay intact.
+struct AutoEQCatalogSearchIndex<Entry: Sendable>: Sendable {
+    private struct Row: Sendable {
+        var entry: Entry
+        var compacts: [String]
+    }
+    private let rows: [Row]
+
+    init(entries: [Entry], name: (Entry) -> String) {
+        rows = entries.sorted {
+            let lhs = name($0), rhs = name($1)
+            if lhs.count != rhs.count { return lhs.count < rhs.count }
+            return lhs.localizedStandardCompare(rhs) == .orderedAscending
+        }.map {
+            let literal = Self.normalizedName(name($0))
+            let compact = DeviceNameAliasCatalog.canonicalKey(for: literal).replacingOccurrences(of: " ", with: "")
+            let literalCompact = literal.replacingOccurrences(of: " ", with: "")
+            // Keep the displayed spelling searchable even if an alias changes it
+            // (e.g. "Monarch MK2" becomes "Monarch MK II" in the canonical key).
+            return Row(entry: $0, compacts: compact == literalCompact ? [compact] : [compact, literalCompact])
+        }
+    }
+
+    func contains(where predicate: (Entry) -> Bool) -> Bool {
+        rows.contains { predicate($0.entry) }
+    }
+
+    func results(matching query: String, limit: Int = 40, including predicate: (Entry) -> Bool = { _ in true }) -> [Entry] {
+        let key = DeviceNameAliasCatalog.canonicalKey(for: Self.normalizedName(query))
+        guard !key.isEmpty, limit > 0 else { return [] }
+        let compact = key.replacingOccurrences(of: " ", with: "")
+        let tokens = key.split(separator: " ").map(String.init)
+        var buckets = [[Entry](), [], []]
+        for row in rows {
+            guard predicate(row.entry) else { continue }
+            var rank = 3
+            for candidate in row.compacts {
+                guard candidate.contains(compact) || tokens.allSatisfy(candidate.contains) else { continue }
+                rank = min(rank, candidate == compact ? 0 : (candidate.hasPrefix(compact) ? 1 : 2))
+            }
+            guard rank < 3 else { continue }
+            if buckets[rank].count < limit { buckets[rank].append(row.entry) }
+        }
+        return Array(buckets.joined().prefix(limit))
+    }
+
+    private static func normalizedName(_ name: String) -> String {
+        DeviceNameNormalizer.key(for: name.folding(
+            options: .widthInsensitive, locale: Locale(identifier: "en_US_POSIX")
+        ))
+    }
+}
 
 enum DeviceCatalogSearch {
     struct Index: Sendable {
         struct Row: Sendable {
             var entry: DeviceCatalogEntry
-            var key: String
-            var compact: String
             var identity: String
             var compatibilityKeys: Set<String>
         }
         let id = UUID()
-        private let rows: [Row]
+        private let names: AutoEQCatalogSearchIndex<Row>
 
         init(entries: [DeviceCatalogEntry]) {
-            rows = entries.sorted {
-                if $0.displayName.count != $1.displayName.count { return $0.displayName.count < $1.displayName.count }
-                return $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
-            }.map {
-                let key = DeviceNameAliasCatalog.canonicalKey(for: $0.displayName)
-                return Row(entry: $0, key: key, compact: key.replacingOccurrences(of: " ", with: ""),
-                           identity: $0.identity.stableKey, compatibilityKeys: Set($0.measurements.map(\.compatibilityKey)))
-            }
+            names = AutoEQCatalogSearchIndex(entries: entries.map {
+                Row(entry: $0, identity: $0.identity.stableKey,
+                    compatibilityKeys: Set($0.measurements.map(\.compatibilityKey)))
+            }, name: { $0.entry.displayName })
         }
 
         func hasCompatibleDevice(keys: Set<String>, excluding identity: String?) -> Bool {
-            !keys.isEmpty && rows.contains { $0.identity != identity && !$0.compatibilityKeys.isDisjoint(with: keys) }
+            !keys.isEmpty && names.contains { $0.identity != identity && !$0.compatibilityKeys.isDisjoint(with: keys) }
         }
 
         func results(matching query: String, limit: Int = 40, compatibleKeys: Set<String>? = nil, excluding identity: String? = nil) -> [DeviceCatalogEntry] {
-            let key = DeviceNameAliasCatalog.canonicalKey(for: query)
-            guard !key.isEmpty, limit > 0 else { return [] }
-            let compact = key.replacingOccurrences(of: " ", with: "")
-            let tokens = key.split(separator: " ").map(String.init)
-            var buckets = [[DeviceCatalogEntry](), [], []]
-            for row in rows {
-                if let identity, row.identity == identity { continue }
-                if let compatibleKeys, row.compatibilityKeys.isDisjoint(with: compatibleKeys) { continue }
-                guard row.compact.contains(compact) || tokens.allSatisfy(row.compact.contains) else { continue }
-                let rank = row.compact == compact ? 0 : (row.compact.hasPrefix(compact) ? 1 : 2)
-                if buckets[rank].count < limit { buckets[rank].append(row.entry) }
-            }
-            return Array(buckets.joined().prefix(limit))
+            names.results(matching: query, limit: limit) { row in
+                if let identity, row.identity == identity { return false }
+                if let compatibleKeys, row.compatibilityKeys.isDisjoint(with: compatibleKeys) { return false }
+                return true
+            }.map(\.entry)
         }
     }
 

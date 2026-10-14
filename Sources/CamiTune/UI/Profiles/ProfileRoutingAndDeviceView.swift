@@ -68,11 +68,9 @@ struct ProfileRoutingAndDeviceView: View {
                 Text("Activation Mode").font(.headline)
                 Text("To activate CamiTune, choose the audio device from macOS Sound Settings.")
                     .font(.callout).foregroundStyle(.secondary)
-                activationRow(.physicalOutput, title: "When I select \(profile.outputDeviceName)",
-                    hint: "Activate this profile when \(profile.outputDeviceName) is selected in macOS Sound Settings.")
-                activationRow(.profileAudioDevice, title: "When I select \(profileRoutingName)",
-                    hint: "Activate this profile when \(profileRoutingName) is selected in macOS Sound Settings.")
-                activationRow(.manual, title: "Only when I select it in CamiTune", hint: "Activate and deactivate in CamiTune.")
+                activationRow(.physicalOutput, title: "When I select \(profile.outputDeviceName)")
+                activationRow(.profileAudioDevice, title: "When I select \(profileRoutingName)")
+                activationRow(.manual, title: "Only when I select it in CamiTune")
                 if let owner = state.profiles.automaticProfileID(forPhysicalDeviceUID: profile.outputDeviceUID),
                    owner != profile.id, let other = state.profiles.profiles.first(where: { $0.id == owner }) {
                     Text("\(profile.outputDeviceName) currently starts \(other.name). Selecting the first option makes this profile the default for that output.")
@@ -83,17 +81,13 @@ struct ProfileRoutingAndDeviceView: View {
         .disabled(state.transitionInProgress || state.isSavingProfileSettings)
     }
 
-    private func activationRow(_ mode: ProfileActivationMode, title: String, hint: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            ActivationRadioButton(selection: activationBinding, value: mode, title: title, hint: hint)
+    private func activationRow(_ mode: ProfileActivationMode, title: String) -> some View {
+        HStack(spacing: 8) {
+            ActivationRadioButton(selection: activationBinding, value: mode, title: title)
                 .frame(width: 18, height: 20)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                Text(hint).font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .contentShape(Rectangle())
-            .onTapGesture { activationBinding.wrappedValue = mode }
+            Text(title)
+                .contentShape(Rectangle())
+                .onTapGesture { activationBinding.wrappedValue = mode }
             Spacer(minLength: 8)
             if mode == .manual {
                 Button(profileIsActive ? "Deactivate" : "Activate") {
@@ -116,7 +110,6 @@ private struct ActivationRadioButton: NSViewRepresentable {
     @Binding var selection: ProfileActivationMode
     let value: ProfileActivationMode
     let title: String
-    let hint: String
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSButton {
         NSButton(radioButtonWithTitle: "", target: context.coordinator, action: #selector(Coordinator.select))
@@ -126,7 +119,6 @@ private struct ActivationRadioButton: NSViewRepresentable {
         button.state = selection == value ? .on : .off
         button.isEnabled = isEnabled
         button.setAccessibilityLabel(title)
-        button.setAccessibilityHelp(hint)
     }
     @MainActor
     final class Coordinator: NSObject {

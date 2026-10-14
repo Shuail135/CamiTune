@@ -36,11 +36,13 @@ struct GlobalEqualizerEditorView: View {
                     Text("Equalizer").font(.title3.bold())
                     if bandReduction.isRunning { ProgressView("Fitting bands…").controlSize(.small) }
                     Spacer()
-                    Button("Import .txt") { showTextImporter = true }
-                    Button("Reset") { resetEqualizer() }
-                        .buttonStyle(.bordered)
+                    HStack(spacing: 6) {
+                        Button("Import .txt") { showTextImporter = true }
+                        DeviceCorrectionHelpIcon(title: "Equalizer import",
+                            message: "Imports ON/OFF PK/PEQ, LS/LSC, HS/HSC, LP/LPQ, HP/HPQ, NO, and AP filters using Q, BW Oct, or 6/12 dB shelf slopes. APO Preamp is ignored; use User Preamp instead. Other valid APO commands are skipped.")
+                    }
+                    SectionResetButton(presentation.resetTitle) { resetEqualizer() }
                         .disabled(!canResetEqualizer)
-                        .help(presentation.resetTitle)
                 }
                 JoinedSegmentedControl(
                     options: EqualizerPresentation.allCases,
@@ -49,10 +51,6 @@ struct GlobalEqualizerEditorView: View {
                 )
                 .accessibilityLabel("Equalizer controls")
                 .frame(width: 260)
-                Text("Imports ON/OFF PK/PEQ, LS/LSC, HS/HSC, LP/LPQ, HP/HPQ, NO, and AP filters using Q, BW Oct, or 6/12 dB shelf slopes. APO Preamp is ignored; use User Preamp instead. Other valid APO commands are skipped.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
                 PreampGainControl(
                     gainDB: $preampDB,
                     limiterEnabled: $limiterEnabled,
@@ -61,8 +59,7 @@ struct GlobalEqualizerEditorView: View {
                     onEditingChanged: continuousEditingChanged
                 )
                 Text("Automatic system headroom: \(automaticSystemHeadroomDB, format: .number.precision(.fractionLength(2))) dB")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.caption.monospacedDigit().weight(.medium))
 
                 if presentation != .simpleTone {
                     HStack(spacing: 8) {

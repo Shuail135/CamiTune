@@ -2,7 +2,7 @@ import CamiTuneDomain
 import SwiftUI
 
 /// One local value owns every step. No profile exists in the store until Add.
-struct AddOutputDraft {
+struct AddOutputDraft: Equatable {
     static let incompleteMessage = "Configure all required items before adding the profile."
     var profile = DeviceProfile(name: "", outputDeviceUID: "", outputDeviceName: "")
     var deviceType: ProfileEndpointKind?
@@ -40,6 +40,14 @@ struct AddOutputDraft {
         candidate.name = candidate.name.trimmingCharacters(in: .whitespacesAndNewlines)
         candidate.endpointKind = deviceType
         candidate.setPlaybackMode(.direct)
+        if !needsSpeakers {
+            // Backtracking through the wizard keeps the room draft available,
+            // but a personal/unspecified output must not activate that setup.
+            candidate.speakerTopology = nil
+            candidate.spatialSettings = .init()
+            candidate.multichannel = .init()
+            candidate.physicalChannelProcessing = [:]
+        }
         if deviceType == .audioInterface {
             guard let discovered, let connectedEndpoint else {
                 throw ProfileSettingsError.runtime(Self.incompleteMessage)
@@ -86,6 +94,7 @@ struct AddOutputProfileSheet: View {
     let onCancel: @MainActor () -> Void
     let onAdded: @MainActor (UUID) -> Void
     @State private var draft = AddOutputDraft()
+    @StateObject private var history: EditorSnapshotHistory<AddOutputDraft>
     @State private var step = 0
     @State private var movingForward = true
     @State private var busy = false
@@ -109,7 +118,9 @@ struct AddOutputProfileSheet: View {
         })
     }
 
-    init(state: AppState, initialUID: String?, onCancel: @escaping @MainActor () -> Void, onAdded: @escaping @MainActor (UUID) -> Void) {
+    init(state: AppState, initialUID: String?, initialDraft: AddOutputDraft? = nil,
+         history: EditorSnapshotHistory<AddOutputDraft>? = nil,
+         onCancel: @escaping @MainActor () -> Void, onAdded: @escaping @MainActor (UUID) -> Void) {
         self.state = state
         _audio = ObservedObject(wrappedValue: state.coreAudio)
         _store = ObservedObject(wrappedValue: state.profiles)
@@ -120,7 +131,8 @@ struct AddOutputProfileSheet: View {
         if let device = devices.first(where: { $0.id == initialUID }) ?? devices.first {
             initial.selectDevice(device, name: ProfileNamePolicy.uniqueName(base: device.name, existingNames: state.profiles.profiles.map(\.name)))
         }
-        _draft = State(initialValue: initial)
+        _draft = State(initialValue: initialDraft ?? initial)
+        _history = StateObject(wrappedValue: history ?? EditorSnapshotHistory(actionName: "Edit Output Profile", coalescingInterval: 0))
     }
 
     private var connected: Bool { audio.physicalOutputDevices.contains { $0.id == draft.profile.outputDeviceUID } }
@@ -165,9 +177,13 @@ struct AddOutputProfileSheet: View {
             Divider()
             HStack(spacing: 12) {
                 Button("Cancel") { onCancel() }.keyboardShortcut(.cancelAction)
+                    .uiInteractionAnchor("add-output-cancel")
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
-                if step > 0 { Button("Back") { move(to: step - 1) }.frame(minWidth: 70) }
+                if step > 0 {
+                    Button("Back") { move(to: step - 1) }.frame(minWidth: 70)
+                        .uiInteractionAnchor("add-output-back")
+                }
                 Button(step == lastStep ? "Add Profile" : "Next") {
                     guard canProceed else { incomplete(); return }
                     if step == lastStep { add() } else { move(to: step + 1) }
@@ -175,15 +191,25 @@ struct AddOutputProfileSheet: View {
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canProceed)
+                .uiInteractionAnchor("add-output-next")
             }.controlSize(.regular).padding(.horizontal, 24).padding(.vertical, 16)
         }
         .frame(width: 780, height: 760)
         .background(Color(nsColor: .windowBackgroundColor))
+        .modifier(EditorHistoryCommands(history: history, isExclusive: true))
+        .environment(\.undoCommandRouter, state.undoCommands)
         .disabled(busy)
         .interactiveDismissDisabled(busy)
-        .onChange(of: draft.profile.sampleRate) { rate in
-            draft.profile.speakerTopology?.sampleRate = Double(rate)
+        .onAppear {
+            history.current = draft
+            history.restore = { restored in
+                draft = restored
+                step = min(step, lastStep)
+                message = nil
+            }
         }
+        .onChange(of: draft) { history.record($0) }
+        .onDisappear { history.restore = nil }
     }
 
     private var stepPage: some View {
@@ -223,8 +249,6 @@ struct AddOutputProfileSheet: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .accessibilityLabel("Available audio outputs")
             HStack {
-                Text("Choose the device this profile will play through.")
-                    .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button {
                     Task { await state.coreAudioService.refreshWithoutBlockingUI() }
@@ -235,7 +259,6 @@ struct AddOutputProfileSheet: View {
                 .buttonStyle(.borderless)
                 .controlSize(.regular)
                 .fixedSize()
-                .help("Refresh connected audio outputs")
             }
 
         }
@@ -284,7 +307,12 @@ struct AddOutputProfileSheet: View {
                 HStack {
                     Text("Sample Rate")
                     Spacer()
-                    Picker("Sample Rate", selection: $draft.profile.sampleRate) {
+                    Picker("Sample Rate", selection: Binding(get: { draft.profile.sampleRate }, set: { rate in
+                        var updated = draft
+                        updated.profile.sampleRate = rate
+                        updated.profile.speakerTopology?.sampleRate = Double(rate)
+                        draft = updated
+                    })) {
                         ForEach([44100, 48000, 88200, 96000, 176400, 192000], id: \.self) {
                             Text("\(Double($0) / 1000, specifier: "%g") kHz").tag($0)
                         }
@@ -350,7 +378,12 @@ struct AddOutputProfileSheet: View {
                             draft.profile.speakerTopology = value.speakerTopology
                             draft.profile.spatialSettings = value.spatialSettings
                             draft.profile.multichannel = value.multichannel
-                        }), draftOnly: true, embedded: true)
+                        }), draftOnly: true, embedded: true,
+                        draftHistoryReplayRevision: history.replayRevision,
+                        onDraftEditingChanged: { editing in
+                            if editing { history.beginGesture(draft) }
+                            else { history.endGesture(draft) }
+                        })
                 } else if !busy {
                     Text("Channels could not be discovered. Check the connection and try again.").foregroundStyle(.secondary)
                     Button("Discover Channels") { discover() }

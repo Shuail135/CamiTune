@@ -57,7 +57,6 @@ struct PreampGainControl: View {
         Toggle("Limiter", isOn: $limiterEnabled)
             .toggleStyle(.checkbox)
             .fixedSize()
-            .help("Hard-limit the final processed signal to −0.5 dBFS")
     }
 
     private var limiterStatus: some View {

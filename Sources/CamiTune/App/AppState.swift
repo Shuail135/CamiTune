@@ -889,8 +889,15 @@ final class AppState: NSObject, ObservableObject {
         guard draft.activation == draft.originalActivation || originalActivation == draft.originalActivation || originalActivation == draft.activation else { throw ProfileSettingsError.staleDraft }
         let activation = draft.activation == draft.originalActivation ? originalActivation : draft.activation
         var candidate = try draft.candidate(applyingTo: original)
+        let changingDeviceType = candidate.endpointKind != original.endpointKind
+            || candidate.effectiveEndpointKind != original.effectiveEndpointKind
+        if changingDeviceType {
+            // Save pending tuning with the outgoing context, never overlay it
+            // onto the incoming device's freshly selected configuration.
+            candidate = try draft.candidate(applyingTo: applyingSessionEQDrafts(to: original))
+        }
         candidate.autoActivateWhenProfileDeviceSelected = activation == .profileAudioDevice
-        let newRuntime = try applyingSessionEQDrafts(to: candidate, replacingGlobalEqualizer: draft.replacesUserEqualizer)
+        let newRuntime = changingDeviceType ? candidate : try applyingSessionEQDrafts(to: candidate, replacingGlobalEqualizer: draft.replacesUserEqualizer)
         func validatePersistence() throws {
             guard draftRevision == self.eqDraftRevision else { throw ProfileSettingsError.busy }
             try self.profiles.validateSettingsSnapshot(original, activation: originalActivation)
@@ -913,7 +920,22 @@ final class AppState: NSObject, ObservableObject {
             catch { throw ProfileSettingsError.rollback(failure.localizedDescription, error.localizedDescription) }
             throw failure
         }
-        if draft.replacesUserEqualizer && eqDraftRevision == draftRevision {
+        if changingDeviceType {
+            invalidateDeferredEdits()
+            clearEQDraft(for: candidate.id)
+            sessionChannelToneDrafts[candidate.id] = nil
+            sessionChannelEQDrafts[candidate.id] = nil
+            sessionChannelLimiterDrafts[candidate.id] = nil
+            sessionChannelDelayDrafts[candidate.id] = nil
+            sessionGroupProcessingDrafts[candidate.id] = nil
+            referenceCorrectionSessions[candidate.id] = nil
+            speakerEditSessions[candidate.id] = nil
+            multichannelEditSessions[candidate.id] = nil
+            multichannelAutosaveErrors[candidate.id] = nil
+            clearPendingEditorApply(candidate.id)
+            history.discardDeviceConfiguration(for: candidate.id)
+            equalizerReplacementChanges.send(candidate.id)
+        } else if draft.replacesUserEqualizer && eqDraftRevision == draftRevision {
             clearEQDraft(for: candidate.id)
             equalizerReplacementChanges.send(candidate.id)
         }

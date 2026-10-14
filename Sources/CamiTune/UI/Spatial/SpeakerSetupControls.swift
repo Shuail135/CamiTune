@@ -53,43 +53,6 @@ struct SpeakerLayoutSelector: View {
     }
 }
 
-struct SpeakerRoleSelector: View {
-    let topology: SpeakerTopology
-    let endpoint: SpeakerEndpoint
-    let assign: (ChannelRole?) -> Void
-
-    private var selectedRole: ChannelRole { SpeakerLayoutGeometry.defaultRole(for: endpoint, in: topology) }
-
-    var body: some View {
-        let choices = SpeakerRoleChoices(topology: topology, selectedRole: selectedRole)
-        HStack {
-            Text("Role").font(.callout)
-            Spacer()
-            Menu {
-                ForEach(choices.common, id: \.self) { role in roleButton(role) }
-                Divider()
-                Button("Disabled") { assign(nil) }
-                if !choices.more.isEmpty {
-                    Divider()
-                    Menu("More Roles…") {
-                        ForEach(choices.more, id: \.self) { role in roleButton(role) }
-                    }
-                }
-            } label: {
-                Text(endpoint.connectionState == .disabledByUser ? "Disabled" : selectedRole.displayName)
-            }.fixedSize().accessibilityLabel("Speaker role")
-        }
-    }
-
-    @ViewBuilder private func roleButton(_ role: ChannelRole) -> some View {
-        Button { assign(role) } label: {
-            if selectedRole == role && endpoint.connectionState != .disabledByUser {
-                Label(role.displayName, systemImage: "checkmark")
-            } else { Text(role.displayName) }
-        }
-    }
-}
-
 struct SpeakerPlacementNotice: View {
     @Binding var endpoint: SpeakerEndpoint
     let listener: SpatialVector3

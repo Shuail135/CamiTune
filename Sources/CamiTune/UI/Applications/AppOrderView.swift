@@ -27,7 +27,7 @@ struct AppOrderView: View {
                 Text(error).font(.caption).foregroundStyle(.orange)
             }
             HStack {
-                Button("Reset Order") { store.resetOrder(systemNames: currentNames) }
+                SectionResetButton("Reset Order") { store.resetOrder(systemNames: currentNames) }
                     .disabled(store.snapshot.orderedApplicationIDs.isEmpty)
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
@@ -291,13 +291,9 @@ final class AppOrderCellView: NSTableCellView {
 
     func configure(name: String, bundleID: String, shown: Bool, onChange: @escaping () -> Void) {
         nameLabel.stringValue = name
-        nameLabel.toolTip = name
         bundleLabel.stringValue = bundleID
-        bundleLabel.toolTip = bundleID
-        handle.toolTip = "Drag to reorder \(name)"
         handle.setAccessibilityLabel("Reorder \(name)")
         visibility.image = NSImage(systemSymbolName: shown ? "eye.slash" : "eye", accessibilityDescription: nil)
-        visibility.toolTip = shown ? "Hide from Menu Bar" : "Show in Menu Bar"
         visibility.setAccessibilityLabel("\(shown ? "Hide" : "Show") \(name) in menu bar")
         onVisibilityChange = onChange
     }

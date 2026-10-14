@@ -47,6 +47,5 @@ struct PerAppPlaybackModeMenu: View {
         }
         .disabled(isLoading || context == nil)
         .accessibilityLabel("\(displayedName) playback mode: \(effective?.compactDisplayName ?? "No active profile")")
-        .help("\(displayedName) playback mode: \(effective?.compactDisplayName ?? "No active profile")")
     }
 }

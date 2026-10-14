@@ -159,13 +159,6 @@ struct DeviceCorrectionEditorView: View {
 
             Divider()
             HStack(alignment: .top) {
-                if embedded {
-                    undoButton
-                    redoButton
-                } else {
-                    undoButton.keyboardShortcut("z", modifiers: .command)
-                    redoButton.keyboardShortcut("z", modifiers: [.command, .shift])
-                }
                 Spacer()
                 if !embedded { Button("Cancel") { onCancel() } }
                 AutoEQSaveTXTButton(correction: generated) { errorMessage = $0 }
@@ -178,6 +171,7 @@ struct DeviceCorrectionEditorView: View {
         }
         .frame(minWidth: embedded ? nil : 700, idealWidth: embedded ? nil : 760,
             minHeight: embedded ? nil : 620, idealHeight: embedded ? nil : 720)
+        .modifier(EditorHistoryCommands(history: history))
         .onAppear {
             updateDeviceMatchAvailability()
             history.current = editorSnapshot
@@ -280,14 +274,6 @@ struct DeviceCorrectionEditorView: View {
         }
     }
 
-    private var undoButton: some View {
-        AutoEQUndoButton(history: history)
-    }
-
-    private var redoButton: some View {
-        AutoEQUndoButton(history: history, isRedo: true)
-    }
-
     private var editorContent: some View {
         let sourceSearchResults = selectedCatalogID == nil ? searchResults : []
         return VStack(alignment: .leading, spacing: 18) {
@@ -304,8 +290,9 @@ struct DeviceCorrectionEditorView: View {
                             }
                             .fixedSize()
                             .disabled(isLoadingMeasurements)
-                            .help("Download these saved measurement references again without searching for the device.")
                         }
+                        Button("Import…") { showingMeasurementImporter = true }
+                            .fixedSize()
                     }
 
                     if isLoadingCatalog {
@@ -326,9 +313,8 @@ struct DeviceCorrectionEditorView: View {
 
                     responseRow(
                         response: measurement,
-                        emptyText: "Choose a search result or import your own CSV",
-                        buttonTitle: "Import Measurement…"
-                    ) { showingMeasurementImporter = true }
+                        emptyText: "Choose a search result or import your own CSV"
+                    )
 
                     if sourceMeasurements.first?.source.origin == .local {
                         Picker("Measurement fixture", selection: sourceRigBinding) {
@@ -339,14 +325,18 @@ struct DeviceCorrectionEditorView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Picker(selection: compatibleTargetBinding) {
-                            Text("—").tag(DeviceCorrectionTargetPreset?.none)
-                            ForEach(availableTargets, id: \.self) {
-                                Text(targetTitle($0)).tag(Optional($0))
+                        HStack(spacing: 8) {
+                            Picker(selection: compatibleTargetBinding) {
+                                Text("—").tag(DeviceCorrectionTargetPreset?.none)
+                                ForEach(availableTargets, id: \.self) {
+                                    Text(targetTitle($0)).tag(Optional($0))
+                                }
+                            } label: {
+                                Text("Target").font(.headline)
                             }
-                        } label: {
-                            Text("Target").font(.headline)
-                        }.pickerStyle(.menu).disabled(measurement == nil)
+                            .pickerStyle(.menu).disabled(measurement == nil)
+                            targetImportControls
+                        }
                         if measurement != nil && availableTargets.isEmpty {
                             Text("No compatible target is available for this measurement data.")
                                 .font(.caption).foregroundStyle(.secondary)
@@ -367,16 +357,12 @@ struct DeviceCorrectionEditorView: View {
                             deviceMatchControls
                         }
 
-                        Button("Import Target…") { showingTargetImporter = true }
-                            .disabled(measurement == nil)
-                            .frame(maxWidth: .infinity, alignment: .trailing)
                         if customTarget != nil {
                             responseRow(
                                 title: "Custom target",
                                 response: customTarget,
-                                emptyText: "No target CSV imported",
-                                buttonTitle: "Import Custom Target…"
-                            ) { showingTargetImporter = true }
+                                emptyText: "No target CSV imported"
+                            )
                             Picker(
                                 "Target CSV fixture",
                                 selection: customTargetRigFamilyBinding
@@ -394,7 +380,15 @@ struct DeviceCorrectionEditorView: View {
 
                     Divider()
 
-                    Text("Correction policy").font(.headline)
+                    HStack {
+                        Text("Correction policy").font(.headline)
+                        DeviceCorrectionHelpIcon(title: "Correction policy", message: """
+                            Recommended: Makes gentler changes where measurements are less reliable, especially in the treble. A good starting point for everyday listening.
+
+                            Exact target: Tries to follow the target more closely, with less allowance for measurement uncertainty.
+                            """)
+                        Spacer()
+                    }
 
                     JoinedSegmentedControl(
                         options: DeviceCorrectionPolicyKind.allCases,

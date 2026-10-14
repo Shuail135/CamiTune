@@ -10,6 +10,8 @@ struct SpeakerSystemView: View {
     var newPosition = false
     var embedded = false
     var compact = false
+    var draftHistoryReplayRevision = 0
+    var onDraftEditingChanged: ((Bool) -> Void)? = nil
     var onClose: (() -> Void)?
     /// Preview/test seam: exercising the real editor need not open an audio device.
     var auditionOverride: ((PhysicalOutputID) -> Void)? = nil
@@ -63,25 +65,12 @@ struct SpeakerSystemView: View {
                         .disabled(editingLocked)
                 }
                 roomMap(draft)
-                ViewThatFits(in: .horizontal) {
-                    HStack {
-                        mapInstructions.fixedSize()
-                        Spacer()
-                        zoomControls
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        mapInstructions.fixedSize(horizontal: false, vertical: true)
-                        HStack {
-                            Spacer()
-                            zoomControls
-                        }
-                    }
+                HStack {
+                    Spacer()
+                    zoomControls
                 }
                 if let index = draft.endpoints.firstIndex(where: { $0.id == selected }), !listeningOnly {
                     speakerTitle(draft.endpoints[index])
-                    SpeakerRoleSelector(topology: draft, endpoint: draft.endpoints[index],
-                        assign: { setRole($0, for: draft.endpoints[index].id) })
-                        .disabled(editingLocked)
                     heightEditor(index: index)
                     speakerDetails(draft.endpoints[index])
                     SpeakerPlacementNotice(endpoint: endpointBinding(draft.endpoints[index]),
@@ -133,6 +122,18 @@ struct SpeakerSystemView: View {
             draft = session.topology; seat = session.seat; bass = session.bass
             originalProfile = profile
         }
+        .onChange(of: draftHistoryReplayRevision) { _ in
+            guard draftOnly else { return }
+            audition.stop()
+            cancelTitle()
+            draft = profile.speakerTopology
+            seat = profile.effectiveSpatialSettings.seating
+            bass = profile.multichannel.bass
+            historyBaseline = currentHistoryState
+            if draft?.endpoints.contains(where: { $0.id == selected }) != true {
+                selected = draft?.endpoints.first?.id
+            }
+        }
         .onChange(of: selected) { _ in commitTitle() }
         .onChange(of: titleFocused) { focused in if !focused && renamingTitle { commitTitle() } }
         .onChange(of: draft) { _ in speakerEditChanged(); publishDraft() }
@@ -165,15 +166,10 @@ struct SpeakerSystemView: View {
                 seat?.roomX = point.x; seat?.roomY = point.y
                 seat?.useMeasuredAlignment = false
                 updateDistances()
-            }, assignRole: { id, role in audition.stop(); setRole(role, for: id) }, zoom: graphZoom, zoomChanged: { graphZoom = $0 }, editingChanged: historyEditingChanged)
+            }, assignRole: { id, role in audition.stop(); setRole(role, for: id) },
+            zoom: graphZoom, zoomChanged: { graphZoom = $0 }, editingChanged: historyEditingChanged)
             .id(canvasID)
             .frame(height: compact && topology.endpoints.count <= 8 ? 270 : 370)
-    }
-
-    private var mapInstructions: some View {
-        Text(listeningOnly ? "Drag the listener. Drag empty space to pan."
-             : "Drag a speaker to place it. Click to test. Drag empty space to pan.")
-            .font(.caption).foregroundStyle(.secondary)
     }
 
     private func topologyBinding(_ fallback: SpeakerTopology) -> Binding<SpeakerTopology> {
@@ -204,7 +200,6 @@ struct SpeakerSystemView: View {
         VStack(alignment: .leading, spacing: 6) {
             DisclosureGroup("Advanced") {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Hardware output \(endpoint.id.channelIndex + 1)").font(.caption).foregroundStyle(.secondary)
                     Picker("Function", selection: Binding(get: { endpoint.function }, set: { value in
                         guard let index = draft?.endpoints.firstIndex(where: { $0.id == endpoint.id }) else { return }
                         draft?.endpoints[index].function = value
@@ -217,25 +212,27 @@ struct SpeakerSystemView: View {
                             Text($0.displayName).tag($0)
                         }
                     }.disabled(editingLocked)
-                    if let groups = draft?.groups.filter({ $0.members.contains(endpoint.id) }), !groups.isEmpty {
-                        Text("Groups: " + groups.map(\.name).joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
-                    }
                 }.padding(.top, 4)
             }.font(.callout)
         }
     }
 
     private var zoomControls: some View {
-        HStack {
-            Button { graphZoom = max(0.25, graphZoom / 1.25) } label: {
-                Image(systemName: "minus.magnifyingglass")
-            }.help("Zoom out").accessibilityLabel("Zoom out").disabled(graphZoom <= 0.25)
-            Text("\(Int((graphZoom * 100).rounded()))%")
-                .font(.caption.monospacedDigit()).frame(width: 42)
-            Button { graphZoom = min(4, graphZoom * 1.25) } label: {
-                Image(systemName: "plus.magnifyingglass")
-            }.help("Zoom in").accessibilityLabel("Zoom in").disabled(graphZoom >= 4)
-            Button("Reset View") { graphZoom = 1.25; canvasID = UUID() }.controlSize(.small)
+        HStack(spacing: 8) {
+            HStack(spacing: 2) {
+                Button { graphZoom = max(0.25, graphZoom / 1.25) } label: {
+                    Image(systemName: "minus.magnifyingglass")
+                        .frame(width: 22, height: 22).contentShape(Rectangle())
+                }.accessibilityLabel("Zoom out").disabled(graphZoom <= 0.25)
+                Text("\(Int((graphZoom * 100).rounded()))%")
+                    .font(.caption.monospacedDigit()).frame(width: 32)
+                Button { graphZoom = min(4, graphZoom * 1.25) } label: {
+                    Image(systemName: "plus.magnifyingglass")
+                        .frame(width: 22, height: 22).contentShape(Rectangle())
+                }.accessibilityLabel("Zoom in").disabled(graphZoom >= 4)
+            }
+            .buttonStyle(.plain)
+            SectionResetButton("Reset View") { graphZoom = 1.25; canvasID = UUID() }
         }
         .fixedSize()
     }
@@ -259,7 +256,6 @@ struct SpeakerSystemView: View {
                     }.contentShape(Rectangle())
                 }.buttonStyle(.plain).onHover { titleHovered = $0 }
                     .accessibilityLabel("Rename \(endpoint.displayName)")
-                    .help("Rename this speaker")
             }
             Spacer()
         }.disabled(busy)
@@ -292,16 +288,22 @@ struct SpeakerSystemView: View {
         updateDistances()
     }
     private func heightEditor(index: Int) -> some View {
-        let height = Binding<Float>(get: { SpeakerLayoutGeometry.vector(draft?.endpoints[index].position).z }, set: { value in
+        let height = Binding<Double>(get: { Double(SpeakerLayoutGeometry.vector(draft?.endpoints[index].position).z) }, set: { value in
             let point = SpeakerLayoutGeometry.vector(draft?.endpoints[index].position)
-            draft?.endpoints[index].position = SpeakerLayoutGeometry.position(x: point.x, y: point.y, height: value)
+            draft?.endpoints[index].position = SpeakerLayoutGeometry.position(x: point.x, y: point.y, height: Float(min(3, max(-3, value))))
             draft?.endpoints[index].positionSource = .userPlacement
             updateDistances()
         })
+        let centimeters = (height.wrappedValue * 100).rounded()
+        let heightLabel = abs(centimeters) < 100
+            ? String(format: "%+.0f cm", centimeters)
+            : String(format: "%+.2f m", centimeters / 100)
         return HStack {
             Text("Height relative to your head").font(.callout)
-            Slider(value: height, in: -10...10, onEditingChanged: { historyEditingChanged($0) }).accessibilityLabel("Height relative to your head")
-            Text(String(format: "%+.2f m", height.wrappedValue)).font(.caption.monospacedDigit()).frame(width: 65)
+            SteppedValueSlider(value: height, in: -3...3, step: 0.01, onEditingChanged: { historyEditingChanged($0) })
+                .accessibilityLabel("Height relative to your head")
+                .accessibilityValue(heightLabel)
+            Text(heightLabel).font(.caption.monospacedDigit()).frame(width: 65)
         }.disabled(editingLocked)
     }
     private func updateDistances() {
@@ -330,7 +332,13 @@ struct SpeakerSystemView: View {
         historyBaseline = after
     }
     private func historyEditingChanged(_ editing: Bool) {
-        guard !draftOnly else { return }
+        if draftOnly {
+            guard historyGestureActive != editing else { return }
+            historyGestureActive = editing
+            if !editing { publishDraft() }
+            onDraftEditingChanged?(editing)
+            return
+        }
         if editing {
             guard !historyGestureActive else { return }
             historyGestureActive = true
@@ -339,6 +347,7 @@ struct SpeakerSystemView: View {
         } else { finishHistoryGesture() }
     }
     private func finishHistoryGesture() {
+        if draftOnly { historyEditingChanged(false); return }
         guard historyGestureActive else { return }
         historyGestureActive = false
         state.speakerEditSessions[profile.id] = currentHistoryState

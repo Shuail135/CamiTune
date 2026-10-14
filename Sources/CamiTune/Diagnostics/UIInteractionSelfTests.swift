@@ -1487,7 +1487,7 @@ enum UIInteractionSelfTests {
 }
 #endif
 
-// Native frame anchors exist only in the UI diagnostic executable's test mode.
+// Native frame anchors exist only in UI diagnostics and XCTest.
 // Tests send real mouse events at these controls, without hard-coded pixels.
 extension View {
     @ViewBuilder
@@ -1503,7 +1503,9 @@ extension View {
 }
 #if DEBUG
 private struct UIInteractionAnchor: NSViewRepresentable {
-    static let isEnabled = ProcessInfo.processInfo.arguments.contains("--ui-self-test") || ProcessInfo.processInfo.arguments.contains("--ui-app-self-test")
+    static let isEnabled = ProcessInfo.processInfo.arguments.contains("--ui-self-test")
+        || ProcessInfo.processInfo.arguments.contains("--ui-app-self-test")
+        || NSClassFromString("XCTestCase") != nil
     final class AnchorView: NSView {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }

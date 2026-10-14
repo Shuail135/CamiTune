@@ -216,13 +216,11 @@ final class SectionLayoutCellView: NSTableCellView {
         label.stringValue = section.title
         handle.image = NSImage(systemSymbolName: locked ? "lock.fill" : "line.3.horizontal",
                                accessibilityDescription: locked ? "Locked section" : "Reorder section")
-        handle.toolTip = locked ? "Always visible and first" : "Drag to reorder \(section.title)"
         handle.setAccessibilityLabel(locked ? "\(section.title), locked, always visible and first" : "Reorder \(section.title)")
         visibility.isHidden = locked
         visibility.isEnabled = !locked
         visibility.state = (locked || shown) ? .on : .off
         visibility.setAccessibilityLabel("Show \(section.title)")
-        visibility.toolTip = "Show or hide \(section.title)"
         onVisibilityChange = onChange
     }
 
@@ -233,7 +231,7 @@ final class SectionLayoutCellView: NSTableCellView {
         automaticVisibility.isHidden = false
         automaticVisibility.selectItem(at: SectionVisibility.allCases.firstIndex(of: mode) ?? 0)
         automaticVisibility.setAccessibilityLabel("Subwoofer Control visibility")
-        automaticVisibility.toolTip = "Automatic shows this section when speakers and a subwoofer are configured."
+        automaticVisibility.setAccessibilityHelp("Automatic shows this section when speakers and a subwoofer are configured.")
         onAutomaticVisibilityChange = onChange
     }
 

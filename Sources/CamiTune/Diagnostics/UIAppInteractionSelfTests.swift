@@ -242,7 +242,7 @@ extension UIInteractionSelfTests {
         }
         commands.send(.settings)
         await idle("Open settings")
-        for category in ["Section Layout", "Drivers & Components", "Diagnostics", "Confirmations", "General"] {
+        for category in ["Drivers & Components", "Section Layout", "Diagnostics", "General"] {
             commands.settingsCategory = category
             await idle("Settings: \(category)", milliseconds: 500)
         }

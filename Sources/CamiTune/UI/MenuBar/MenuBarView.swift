@@ -317,7 +317,8 @@ struct MenuBarRootView: View {
                     Text("Mode").font(.caption)
                     JoinedSegmentedControl(options: profile.availablePlaybackModes, selection: Binding(
                         get: { profile.playbackMode }, set: { model.setPlaybackMode($0) }
-                    ), title: { $0.compactDisplayName }, symbol: { $0.systemImageName }, unavailableReason: { profile.playbackReadiness($0).reason })
+                    ), title: { $0.compactDisplayName }, symbol: { $0.systemImageName },
+                        unavailableReason: { profile.playbackReadiness($0).reason })
                     .accessibilityLabel("Mode")
                     .disabled(model.actionInFlight || model.state.transitionInProgress || model.state.isSavingProfileSettings || model.state.spatialCalibrationContext != nil)
                 }
@@ -555,8 +556,12 @@ private struct MenuBarApplicationsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("APPLICATIONS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                .padding(.bottom, 5)
+            HStack(spacing: 4) {
+                Text("APPLICATIONS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                DeviceCorrectionHelpIcon(title: "Applications",
+                    message: "Press ⌘ and drag an app to reorder.")
+            }
+            .padding(.bottom, 5)
             if applications.isEmpty {
                 Text("No shown apps are playing audio.")
                     .font(.caption).foregroundStyle(.secondary).padding(.vertical, 8)

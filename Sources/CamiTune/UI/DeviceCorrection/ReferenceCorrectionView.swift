@@ -29,9 +29,7 @@ struct ReferenceCorrectionView: View {
             if profile.processing.deviceCorrection != nil { Text("Your device correction applies globally. Manage it in Device Correction.").font(.caption).foregroundStyle(.secondary) }
             HStack {
                 Button("Device Correction…") { showingCorrection = true }
-                    .help("Choose a device and compatible target.")
-                Button("Import .txt") { importing = true }.help("Import compatible filter values from a text file.")
-                    .help("Paste Equalizer APO-compatible filter text.")
+                Button("Import .txt") { importing = true }
             }.buttonStyle(.bordered)
             if let correction = draft {
                 HStack {
@@ -64,7 +62,6 @@ struct ReferenceCorrectionView: View {
                         Button("Discard Edits") { draft = profile.personalReferenceCorrection; reload() }
                     }
                     Button("Import to Equalizer") { requestTransfer() }.disabled(dirty)
-                        .help("Replace User Equalizer bands and remove this correction after a successful save.")
                 }.buttonStyle(.bordered)
                 if dirty { Text("Save your correction edits before transferring to Equalizer.").font(.caption).foregroundStyle(.secondary) }
             }

@@ -66,14 +66,47 @@ extension DeviceCorrectionEditorView {
         if hasCompatibleDeviceMatch {
             result.append(.deviceMatch)
         }
-        // The default alias and its named preset can resolve to the same curve.
-        // Keep the current selection when collapsing identical menu labels.
-        if targetChosen, let index = result.firstIndex(of: targetSelection.preset) {
-            let selected = result.remove(at: index)
-            result.insert(selected, at: 0)
+        return Self.uniqueTargetsInOriginalOrder(result,
+            selected: targetChosen ? targetSelection.preset : nil, title: targetTitle)
+    }
+
+    static func uniqueTargetsInOriginalOrder(
+        _ presets: [DeviceCorrectionTargetPreset],
+        selected: DeviceCorrectionTargetPreset?,
+        title: (DeviceCorrectionTargetPreset) -> String
+    ) -> [DeviceCorrectionTargetPreset] {
+        var result: [DeviceCorrectionTargetPreset] = []
+        var positions: [String: Int] = [:]
+        for preset in presets {
+            let label = title(preset)
+            if let position = positions[label] {
+                // Preserve a saved alias without moving its label in the menu.
+                if preset == selected { result[position] = preset }
+            } else {
+                positions[label] = result.count
+                result.append(preset)
+            }
         }
-        var titles = Set<String>()
-        return result.filter { titles.insert(targetTitle($0)).inserted }
+        return result
+    }
+
+    var targetHelpMessage: String {
+        guard measurement != nil else {
+            return "Choose a device or import a measurement to see explanations of the available targets. A target is the sound balance Auto EQ aims for."
+        }
+        let targets = availableTargets
+        guard !targets.isEmpty else {
+            return "No compatible target is available for these measurements. If you imported a measurement, choose its measurement fixture first."
+        }
+        let explanations = targets.map { preset in
+            let title = targetTitle(preset)
+            let describedPreset = preset == .neutral
+                ? DeviceCorrectionTargetPreset.allCases.first { $0 != .neutral && $0.title == title } ?? preset
+                : preset
+            return "\(title): \(describedPreset.shortDescription)"
+        }
+        return (["A target is the sound balance Auto EQ aims for."] + explanations)
+            .joined(separator: "\n")
     }
 
     func updateDeviceMatchAvailability() {

@@ -27,6 +27,9 @@ enum ProfileDocumentMutation: Sendable {
             }
             candidate.outputVolumeScalar = result.profiles[index].outputVolumeScalar
             candidate.autoActivateWhenProfileDeviceSelected = activation == .profileAudioDevice
+            if candidate.deviceTypeConfigurationKey != result.profiles[index].deviceTypeConfigurationKey {
+                result.multichannelDrafts[candidate.id] = nil
+            }
             result.profiles[index] = candidate
             result.physicalDeviceDefaults.removeAll { $0.profileID == candidate.id }
             if activation == .physicalOutput {

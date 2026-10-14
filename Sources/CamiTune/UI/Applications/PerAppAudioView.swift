@@ -32,7 +32,7 @@ struct PerAppAudioView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("App Audio").font(.largeTitle.bold())
-                    Text("Press ⌘ and drag an app to reorder. Work in menu bar too.")
+                    Text("Press ⌘ and drag an app to reorder.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -47,7 +47,6 @@ struct PerAppAudioView: View {
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("App Order")
-                .help("App Order")
             }
             .padding(.horizontal, 28)
             .padding(.top, 28)
@@ -201,7 +200,6 @@ struct PerAppAudioList: View {
                                 .frame(width: 34, height: 24)
                             }
                             .buttonStyle(.borderless)
-                            .help(expanded.wrappedValue ? "Close equalizer" : "Show equalizer")
                             .accessibilityLabel("Equalizer for \(name)")
                             .accessibilityValue("\(application.settings.isEqualizerActive ? "Active" : "Inactive"), \(expanded.wrappedValue ? "expanded" : "collapsed")")
                             PerAppPlaybackModeMenu(application: application, displayedName: name,
@@ -314,7 +312,6 @@ private struct PerApplicationIdentityHeader: View {
                 if let bundleID = application.bundleID {
                     Text(bundleID).font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle)
-                        .help(bundleID)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -326,7 +323,6 @@ private struct PerApplicationIdentityHeader: View {
                     .accessibilityHidden(true)
             }
         }
-        .help(canRename ? "\(name) — Click name to rename; Command-drag icon or name to move" : name)
         .onHover { hovering = $0 }
         .onDisappear { finish(save: true) }
     }
@@ -387,7 +383,6 @@ private struct PerApplicationEQControls: View, Equatable {
                     .font(.headline)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .help("\(displayedName) Equalizer")
                 Spacer()
                 Toggle("EQ", isOn: Binding(
                     get: { !settings.eqBypassed },
@@ -409,13 +404,16 @@ private struct PerApplicationEQControls: View, Equatable {
             Group {
                 if let headroom = automaticSystemHeadroomDB {
                     Text("Automatic system headroom: \(headroom, format: .number.precision(.fractionLength(2))) dB")
-                } else { Text("Calculating headroom…") }
-            }.font(.caption).foregroundStyle(.secondary)
+                        .font(.caption.monospacedDigit().weight(.medium))
+                } else {
+                    Text("Calculating headroom…").font(.caption).foregroundStyle(.secondary)
+                }
+            }
             if presentation != .bands {
                 HStack {
                     Text("Simple").font(.subheadline.weight(.medium))
                     Spacer()
-                    Button("Reset Tone") {
+                    SectionResetButton("Reset Tone") {
                         simpleTone = SimpleToneSettings()
                         controller.editEqualizer(for: applicationID) { $0.simpleTone = simpleTone }
                     }
@@ -439,7 +437,7 @@ private struct PerApplicationEQControls: View, Equatable {
                         ForEach(0...20, id: \.self) { Text("\($0)").tag($0) }
                     }.labelsHidden().frame(width: 64)
                     Spacer()
-                    Button("Reset Bands") { setBands(EQDefaults.bands) }
+                    SectionResetButton("Reset Bands") { setBands(EQDefaults.bands) }
                 }
                 if bands.isEmpty {
                     Text("No PEQ bands. Simple still applies.")

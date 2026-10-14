@@ -6,7 +6,8 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     package var outputDevice: PhysicalOutputIdentity
     /// User-described use, independent of hardware identity and DSP selection.
     package var endpointKind: ProfileEndpointKind = .custom
-    /// Inactive contexts retain their mode without duplicating shared DSP/geometry.
+    /// Device-specific settings are restored only for the same endpoint context.
+    package var deviceTypeConfigurations: [String: ProfileDeviceConfiguration] = [:]
     package var physicalChannelProcessing: [PhysicalOutputID: ProcessingChain] = [:]
     package var speakerTopologyNeedsReview = false
     package var multichannel = MultichannelProcessingSettings()
@@ -355,7 +356,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
 """
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, outputDevice, outputDeviceUID, outputDeviceName, isEnabled, endpointKind
+        case id, name, outputDevice, outputDeviceUID, outputDeviceName, isEnabled, endpointKind, deviceTypeConfigurations
         case autoActivateWhenProfileDeviceSelected, playbackModesByEndpoint, sectionLayout, audioInterface, personalReferenceCorrections, physicalChannelProcessing, speakerTopologyNeedsReview
         case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize, playbackMode
         case spatialRenderingMode, spatialContentMode, spatialListenerProfile, spatialAcousticProfile, equalizerAPOText, processing
@@ -382,6 +383,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         }
         isEnabled = try values.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
         endpointKind = try values.decodeIfPresent(ProfileEndpointKind.self, forKey: .endpointKind) ?? .custom
+        deviceTypeConfigurations = try values.decodeIfPresent([String: ProfileDeviceConfiguration].self, forKey: .deviceTypeConfigurations) ?? [:]
         multichannel = try values.decodeIfPresent(MultichannelProcessingSettings.self, forKey: .multichannel) ?? .init()
         speakerVerification = try values.decodeIfPresent(SpeakerVerificationRecord.self, forKey: .speakerVerification)
         physicalChannelProcessing = try values.decodeIfPresent([PhysicalOutputID: ProcessingChain].self, forKey: .physicalChannelProcessing) ?? [:]
@@ -472,6 +474,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         try values.encode(name, forKey: .name)
         try values.encode(outputDevice, forKey: .outputDevice)
         try values.encode(endpointKind, forKey: .endpointKind)
+        try values.encode(deviceTypeConfigurations, forKey: .deviceTypeConfigurations)
         try values.encode(multichannel, forKey: .multichannel)
         try values.encodeIfPresent(speakerVerification, forKey: .speakerVerification)
         try values.encode(playbackModesByEndpoint, forKey: .playbackModesByEndpoint)

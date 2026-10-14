@@ -57,9 +57,9 @@ private struct CorrectionFilterRow: View {
                 .frame(width: 80)
             Toggle("Enabled", isOn: $band.enabled).toggleStyle(.checkbox).font(.caption)
             Button { band.isLocked.toggle() } label: { Image(systemName: band.isLocked ? "lock.fill" : "lock.open") }
-                .buttonStyle(.borderless).help(band.isLocked ? "Unlock band" : "Lock band")
+                .buttonStyle(.borderless).accessibilityLabel(band.isLocked ? "Unlock band" : "Lock band")
             Button(action: onDelete) { Image(systemName: "minus.circle") }
-                .buttonStyle(.borderless).help("Delete band")
+                .buttonStyle(.borderless).accessibilityLabel("Delete band")
         }
         .textFieldStyle(.roundedBorder)
         .padding(.vertical, 3)

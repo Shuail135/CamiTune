@@ -30,8 +30,8 @@ struct RoomCorrectionView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Room Correction").font(.title3.bold())
-                RoomCorrectionHelpIcon(title: "Room correction",
-                    message: "Measures how your room affects your speakers at several listening positions and calculate for a more balanced sound. Import the correction to apply those filters to your speaker channels.")
+                DeviceCorrectionHelpIcon(title: "Room correction",
+                    message: "Measures how your room affects your speakers at several listening positions and calculate for a more balanced sound. Import the correction to apply those filters to your speaker channels. Suggest use after auto eq applied.")
                 Spacer()
             }
             tabs
@@ -194,7 +194,7 @@ struct RoomCorrectionView: View {
     }
     private var navigation: some View {
         HStack {
-            Button("Reset") {
+            SectionResetButton("Reset Room Correction") {
                 NSApp.keyWindow?.makeFirstResponder(nil)
                 confirmReset = true
             }
@@ -247,7 +247,7 @@ struct RoomCorrectionView: View {
                 }
                 .buttonStyle(.borderedProminent).disabled(editor.busy && !editor.measuring)
                 .uiInteractionAnchor("room-recorder-next").accessibilityIdentifier("room-recorder-next")
-                RoomCorrectionHelpIcon(title: "Simple recording",
+                DeviceCorrectionHelpIcon(title: "Simple recording",
                     message: "1. Start your phone’s recorder and place the phone at the blue marker on the graph before pressing Play Sound. \n 2. Keep it still at ear level while sound plays. \n 3. Between positions, keep recording, move to the next marker, then press Next. \n 4. Stop only after all positions are finished, then import that single audio file.")
             } else if (editor.tab == .measure || editor.measuring) && editor.source.kind == .microphone {
                 if editor.session?.microphoneMeasurementsComplete == true && !editor.measuring {
@@ -306,7 +306,7 @@ struct RoomCorrectionView: View {
                         .uiInteractionAnchor("room-calibration-name")
                     Button(editor.source.calibration == nil ? "Choose…" : "Change…") { chooseFile(.calibration) }
                         .uiInteractionAnchor("room-calibration-import").disabled(editor.busy)
-                    RoomCorrectionHelpIcon(title: "Microphone calibration",
+                    DeviceCorrectionHelpIcon(title: "Microphone calibration",
                         message: "Use the calibration file supplied for your microphone. Match its orientation to the file.")
                 }
                 positionCountControl(microphone: true)
@@ -335,7 +335,7 @@ struct RoomCorrectionView: View {
                         .uiInteractionAnchor("room-test-sound")
                         .accessibilityLabel(editor.testingSound ? "Stop Sound" : "Test Sound")
                     }
-                    RoomCorrectionHelpIcon(title: "Test sound", message: editor.source.kind == .microphone
+                    DeviceCorrectionHelpIcon(title: "Test sound", message: editor.source.kind == .microphone
                             ? "DBFS shows recording level, not sound pressure (SPL)."
                             : "Check the playback volume before measuring. Aim for approximately 75 dB SPL. (Download sound meter on phone)")
                 }
@@ -418,7 +418,7 @@ struct RoomCorrectionView: View {
                             coordinateField("Front / back (cm)", axis: \.y)
                             coordinateField("Height (cm)", axis: \.z)
                         }
-                        RoomCorrectionHelpIcon(title: "Measurement position",
+                        DeviceCorrectionHelpIcon(title: "Measurement position",
                             message: "Place the microphone at the blue marker. Offsets are in cm from the main listening position."
                                 + "\n\nNegative values mean left, back or below ear level; positive values mean right, forward or above."
                                 + "\n\nKeep at least 3 positions, including the fixed main position.")
@@ -712,22 +712,6 @@ private struct RoomCorrectionResultDetails: View {
         case .notch: return "Notch"
         case .allPass: return "All pass"
         }
-    }
-}
-
-private struct RoomCorrectionHelpIcon: View {
-    let title: String
-    let message: String
-
-    var body: some View {
-        Image(systemName: "questionmark.circle")
-            .font(.system(size: 14))
-            .foregroundStyle(.secondary)
-            .frame(width: 22, height: 22)
-            .contentShape(Rectangle())
-            .help(message)
-            .accessibilityLabel("\(title) help")
-            .accessibilityHint(message)
     }
 }
 

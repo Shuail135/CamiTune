@@ -37,18 +37,15 @@ struct ConvolutionControl: View {
             HStack {
                 if let title { Text(title).font(.title3.bold()) }
                 Button("Import WAV…") { showImporter = true }
-                    .help(convolution == nil ? "Import an impulse response" : "Replace the impulse response")
                 Spacer()
-                Toggle("Enable FIR correction", isOn: Binding(get: { isEnabled }, set: { isEnabled = $0; onCommit() }))
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .disabled(convolution == nil)
                 if convolution != nil {
+                    Toggle("Enable FIR correction", isOn: Binding(get: { isEnabled }, set: { isEnabled = $0; onCommit() }))
+                        .toggleStyle(.switch)
+                        .labelsHidden()
                     Button { convolution = nil; isEnabled = false; onCommit() } label: {
                         Image(systemName: "minus.circle")
                     }
                     .buttonStyle(.borderless)
-                    .help("Remove impulse response")
                     .accessibilityLabel("Remove impulse response")
                 }
             }
@@ -108,7 +105,7 @@ struct ConvolutionControl: View {
                 let name = context.channels.first { $0.index == assignment.outputChannel }?.displayName
                     ?? "Output \(assignment.outputChannel + 1)"
                 HStack(spacing: 12) {
-                    Text(name).lineLimit(1).help(name).frame(maxWidth: .infinity, alignment: .leading)
+                    Text(name).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     Picker("WAV source for \(name)", selection: Binding(get: { assignment.impulseChannel }, set: { source in
                         editMapping(output: assignment.outputChannel) { $0.impulseChannel = source }
                     })) {

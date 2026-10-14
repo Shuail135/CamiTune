@@ -137,7 +137,7 @@ struct CorrectionResponseGraph: View {
                                                 updateDrag(band, translation: value.translation, plot: plot, range: levelRange, bandwidthSide: side)
                                                 finishDrag()
                                             })
-                                        .help("Bandwidth")
+                                        .accessibilityLabel("Bandwidth")
                                 }
                             }
                         }

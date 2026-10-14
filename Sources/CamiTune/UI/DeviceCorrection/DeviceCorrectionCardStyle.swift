@@ -5,13 +5,29 @@ struct DeviceCorrectionSectionHeader: View {
     let hint: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        HStack {
             Text(title).font(.title3.bold())
-            Text(hint)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if !hint.isEmpty {
+                DeviceCorrectionHelpIcon(title: title, message: hint)
+            }
+            Spacer()
         }
+    }
+}
+
+struct DeviceCorrectionHelpIcon: View {
+    let title: String
+    let message: String
+
+    var body: some View {
+        Image(systemName: "questionmark.circle")
+            .font(.system(size: 14))
+            .foregroundStyle(.secondary)
+            .frame(width: 22, height: 22)
+            .contentShape(Rectangle())
+            .help(message)
+            .accessibilityLabel("\(title) help")
+            .accessibilityHint(message)
     }
 }
 

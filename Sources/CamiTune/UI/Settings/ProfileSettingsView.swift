@@ -14,6 +14,7 @@ struct ProfileSettingsView: View {
     @State private var recovery: AppErrorRecovery?
     @State private var showingRepair = false
     @State private var confirmClose = false
+    @State private var showingDeviceConfiguration = false
     @Environment(\.dismiss) private var dismiss
 
     init(state: AppState, profile: DeviceProfile) {
@@ -37,11 +38,34 @@ struct ProfileSettingsView: View {
     private var hasChanges: Bool {
         (try? draft.candidate()) != draft.original || draft.activation != draft.originalActivation
     }
+    private var needsSpeakerConfiguration: Bool { (try? draft.preview().needsSpeakerConfiguration) == true }
+    private var speakerConfiguration: some View {
+        Group {
+            if let preview = try? draft.preview() {
+                SpeakerSystemView(state: state, profile: Binding(
+                    get: { (try? draft.preview()) ?? preview },
+                    set: { value in
+                        draft.speakerTopology = value.speakerTopology
+                        draft.spatialSettings = value.spatialSettings
+                        draft.multichannel = value.multichannel
+                    }), draftOnly: true, embedded: true, compact: true)
+                    .id(preview.deviceTypeConfigurationKey)
+            }
+        }
+    }
+    private func selectDeviceType(_ type: ProfileEndpointKind, connectedEndpoint: ProfileEndpointKind? = nil) {
+        do {
+            try draft.selectDeviceType(type, connectedEndpoint: connectedEndpoint)
+            failure = nil
+            if !categories.contains(category) { category = "General" }
+            showingDeviceConfiguration = needsSpeakerConfiguration
+        } catch { failure = error.localizedDescription }
+    }
     private var generalSettings: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 TextField("Profile name", text: $draft.name)
-                Picker("Device Type", selection: $draft.selectedType) {
+                Picker("Device Type", selection: Binding(get: { draft.selectedType }, set: { selectDeviceType($0) })) {
                     ForEach(ProfileEndpointKind.allCases, id: \.self) { Text($0.displayName).tag($0) }
                 }
                 Picker("Output Device", selection: Binding(
@@ -56,13 +80,17 @@ struct ProfileSettingsView: View {
                     }
                     ForEach(audio.physicalOutputDevices) { Text($0.name).tag($0.id) }
                 }
-                Text("Changing device type keeps your EQ and saved device configuration. A new device type starts in Direct unless it has a remembered supported mode.")
-                    .font(.callout).foregroundStyle(.secondary)
                 if draft.selectedType == .audioInterface {
                     InterfaceAssignmentEditor(state: state, output: draft.outputDevice,
                         sampleRate: draft.sampleRate, assignment: $draft.audioInterface,
-                        topology: $draft.speakerTopology)
+                        topology: $draft.speakerTopology,
+                        onSelectConnectedEndpoint: { selectDeviceType(.audioInterface, connectedEndpoint: $0) })
 
+                }
+                if needsSpeakerConfiguration {
+                    Button("Configure Speaker and Listening Position…") { showingDeviceConfiguration = true }
+                    Text("Configure speaker placement before saving this device type.")
+                        .font(.callout).foregroundStyle(.secondary)
                 }
                 Picker("Processing Sample Rate", selection: $draft.sampleRate) {
                     ForEach(Array(Set([44100, 48000, 88200, 96000, 176400, 192000, draft.sampleRate])).sorted(), id: \.self) {
@@ -92,18 +120,10 @@ struct ProfileSettingsView: View {
                         SectionLayoutEditor(type: draft.selectedType, layout: Binding(
                             get: { draft.sectionLayout ?? store.defaultLayout(for: draft.selectedType) },
                             set: { draft.sectionLayout = $0 }))
-                        Button("Reset to Global Defaults") { draft.sectionLayout = nil }
+                        SectionResetButton("Reset to Global Defaults") { draft.sectionLayout = nil }
                             .disabled(draft.sectionLayout == nil)
                     case "Speaker & Listening Position":
-                        ScrollView {
-                            SpeakerSystemView(state: state, profile: Binding(
-                                get: { (try? draft.candidate()) ?? draft.original },
-                                set: { value in
-                                    draft.speakerTopology = value.speakerTopology
-                                    draft.spatialSettings = value.spatialSettings
-                                    draft.multichannel = value.multichannel
-                                }), draftOnly: true, embedded: true, compact: true)
-                        }
+                        ScrollView { speakerConfiguration }
                     default: EmptyView()
                     }
                     Spacer(minLength: 0)
@@ -132,6 +152,18 @@ struct ProfileSettingsView: View {
             Button("Cancel", role: .cancel) { }
         } message: { Text("Your changes have not been saved.") }
         .sheet(isPresented: $showingRepair) { SetupPanel(state: state) }
+        .sheet(isPresented: $showingDeviceConfiguration) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Configure Speakers").font(.title2.bold())
+                ScrollView { speakerConfiguration }
+                HStack {
+                    Spacer()
+                    Button("Cancel") { showingDeviceConfiguration = false }.keyboardShortcut(.cancelAction)
+                    Button("Done") { showingDeviceConfiguration = false }
+                        .keyboardShortcut(.defaultAction).disabled(needsSpeakerConfiguration)
+                }
+            }.padding(24).frame(width: 720, height: 600)
+        }
         .onChange(of: draft.selectedType) { _ in
             if !categories.contains(category) { category = "General" }
         }

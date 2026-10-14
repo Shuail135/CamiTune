@@ -114,10 +114,10 @@ struct CamiTuneCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .undoRedo) {
-            Button(undo.undoMenuTitle) { undo.performUndo() }
-                .keyboardShortcut("z", modifiers: .command).disabled(!undo.canUndo)
-            Button(undo.redoMenuTitle) { undo.performRedo() }
-                .keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!undo.canRedo)
+            Button(undo.undoMenuTitle()) { undo.performUndo() }
+                .keyboardShortcut("z", modifiers: .command).disabled(!undo.canUndo())
+            Button(undo.redoMenuTitle()) { undo.performRedo() }
+                .keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!undo.canRedo())
         }
         CommandGroup(replacing: .appSettings) {
             Button("Settings…") { coordinator.send(.settings) }
@@ -171,7 +171,7 @@ struct CamiTuneCommands: Commands {
                         Label(mode.compactDisplayName, systemImage: mode.systemImageName)
                     }
                     .disabled(!coordinator.context.canSelectMode(mode))
-                    .help(coordinator.context.readiness[mode]?.reason ?? "")
+                    .accessibilityHint(coordinator.context.readiness[mode]?.reason ?? "")
                 }
             }
         }

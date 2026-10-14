@@ -68,6 +68,7 @@ struct ContentView: View {
         }
         .disclosureGroupStyle(SectionDisclosureStyle())
         .environmentObject(commands)
+        .environment(\.undoCommandRouter, state.undoCommands)
         .modifier(HistoryReplayInteractionGate(history: history))
         .onAppear { commands.selection = selection }
         .onChange(of: columnVisibility) { commands.sidebarVisible = $0 != .detailOnly }
