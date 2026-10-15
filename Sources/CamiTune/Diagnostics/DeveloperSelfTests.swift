@@ -132,7 +132,9 @@ enum DeveloperSelfTests {
                     try diagnosticRequire(plan.matches(profile: candidate), "Imported filters must remain compatible with their original measurement")
                     var changed = candidate
                     try changed.setChannelProcessing(index: 0, role: .left, gainDB: -8, bands: left.bands)
-                    try diagnosticRequire(!plan.matches(profile: changed), "An unrelated processing edit must still invalidate measurements")
+                    try diagnosticRequire(plan.matches(profile: changed), "Bypassed channel gain must not invalidate measurements")
+                    changed.setGlobalEqualizer(preampDB: -8, bands: processing.globalEqualizer.bands)
+                    try diagnosticRequire(!plan.matches(profile: changed), "A global EQ change must invalidate measurements")
                     let before = try app.roomCorrectionImportSnapshot(profile: profile)
                     let after = try app.roomCorrectionImportSnapshot(profile: candidate)
                     try app.storeRoomCorrectionImport(after, profileID: profile.id)

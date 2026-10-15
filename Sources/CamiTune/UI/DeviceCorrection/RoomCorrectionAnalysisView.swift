@@ -14,6 +14,7 @@ private func roomChannelColor(_ channel: Int) -> Color {
 @MainActor
 struct RoomCorrectionAnalysisView: View {
     @ObservedObject var editor: RoomCorrectionEditorState
+    var loadingChanged: (Bool) -> Void = { _ in }
     @State private var view = "Frequency"
     @State private var hiddenChannels = Set<Int>()
     @State private var smoothed = true
@@ -71,10 +72,10 @@ struct RoomCorrectionAnalysisView: View {
                 if editor.comparison != nil { Toggle("Compare previous session", isOn: $comparingSessions) }
             }.font(.caption)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if operation.isRunning { ProgressView().controlSize(.small) }
             if editor.session == nil { Text("Measure a listening position to view its response.").foregroundStyle(.secondary) }
         }
         .onAppear { refresh() }
+        .onChange(of: operation.isRunning) { loadingChanged($0) }
         .onChange(of: editor.revision) { _ in refresh() }
         .onChange(of: view) { _ in refresh() }
         .onChange(of: hiddenChannels) { _ in refresh() }
@@ -83,7 +84,7 @@ struct RoomCorrectionAnalysisView: View {
         .onChange(of: hidden) { _ in refresh() }
         .onChange(of: reliability) { _ in refresh() }
         .onChange(of: comparingSessions) { _ in refresh() }
-        .onDisappear { operation.cancel() }
+        .onDisappear { operation.cancel(); loadingChanged(false) }
     }
     private func channelToggle(_ channel: Int, title: String) -> some View {
         Button {

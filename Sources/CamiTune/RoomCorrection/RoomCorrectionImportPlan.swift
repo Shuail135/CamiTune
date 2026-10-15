@@ -11,15 +11,7 @@ struct RoomCorrectionImportPlan {
 
     init(result: RoomCorrectionResult, profile: DeviceProfile) throws {
         channels = profile.configuredProcessingChannels
-        let available = Set(channels.map(\.index))
-        guard result.optimizerVersion == RoomCorrectionResult.currentOptimizerVersion,
-              result.firGeneratorVersion == RoomCorrectionResult.currentFIRGeneratorVersion,
-              result.context.topology.deviceUID == profile.outputDeviceUID,
-              result.context.topology.sampleRate == Double(profile.sampleRate),
-              result.channelFIR.values.allSatisfy({ $0.asset.sampleRate == profile.sampleRate }),
-              Set(result.channelBands.keys).union(result.channelFIR.keys).isSubset(of: available) else {
-            throw RoomCorrectionError.stale
-        }
+        try Self.validateOutput(result: result, profile: profile)
         bands = Dictionary(uniqueKeysWithValues: channels.compactMap { channel in
             let value = result.sharedBands + (result.channelBands[channel.index] ?? [])
             return value.isEmpty ? nil : (channel.index, value)
@@ -28,7 +20,20 @@ struct RoomCorrectionImportPlan {
         physicalResult.sharedBands = []
         physicalResult.channelBands = bands
         physicalResult.isChannelProcessingImport = true
+        physicalResult.context.importBaselineProcessing = try profile.roomMeasurementBaseline()
         self.result = physicalResult
+    }
+
+    private static func validateOutput(result: RoomCorrectionResult, profile: DeviceProfile) throws {
+        let available = Set(profile.configuredProcessingChannels.map(\.index))
+        guard result.optimizerVersion == RoomCorrectionResult.currentOptimizerVersion,
+              result.firGeneratorVersion == RoomCorrectionResult.currentFIRGeneratorVersion,
+              result.context.topology.deviceUID == profile.outputDeviceUID,
+              result.context.topology.sampleRate == Double(profile.sampleRate),
+              result.channelFIR.values.allSatisfy({ $0.asset.sampleRate == profile.sampleRate }),
+              Set(result.channelBands.keys).union(result.channelFIR.keys).isSubset(of: available) else {
+            throw RoomCorrectionError.stale
+        }
     }
 
     private func replacingFilters(in original: ProcessingProfile) -> ProcessingProfile {
@@ -87,7 +92,10 @@ struct RoomCorrectionImportPlan {
     }
 
     func applying(to profile: DeviceProfile) throws -> DeviceProfile {
-        guard try profile.roomMeasurementContext() == result.context else { throw RoomCorrectionError.stale }
+        // Import transfers the calculated filters to compatible output channels.
+        // Changes to editor settings or listening geometry do not invalidate that
+        // transfer; output, channel and sample-rate compatibility is checked above.
+        try Self.validateOutput(result: result, profile: profile)
         var candidate = profile
         candidate.captureLegacyPhysicalChannels()
         let processing = replacingFilters(in: try profile.roomMeasurementBaseline())

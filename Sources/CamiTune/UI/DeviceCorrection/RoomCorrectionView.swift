@@ -16,6 +16,7 @@ struct RoomCorrectionView: View {
     @State private var mapViewportRevision = 0
     @State private var confirmReset = false
     @State private var correctionDetailsExpanded = false
+    @State private var analysisLoading = false
     @State private var replacementMessage: String?
     @State private var confirmReplacement = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -36,15 +37,16 @@ struct RoomCorrectionView: View {
             }
             tabs
             SelectedEditorPageLayout(selection: stepIndex) {
-                step(.measure) { measure }
-                step(.analysis) { RoomCorrectionAnalysisView(editor: editor) }
+                step(.measure) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        recordingSelection
+                        if editor.measurementOpen && editor.profileIsActive { measure }
+                    }
+                }
+                step(.analysis) { RoomCorrectionAnalysisView(editor: editor, loadingChanged: { analysisLoading = $0 }) }
                 step(.correction) { correction }
             }.clipped()
-            if editor.busy && !editor.testingSound && !editor.measuring {
-                HStack { ProgressView().controlSize(.small); Text(editor.status); Button("Cancel") { editor.cancel() } }
-                    .uiInteractionAnchor("room-operation-cancel")
-            }
-            else if !editor.busy && showsStatus { Text(editor.status).font(.caption).foregroundStyle(.secondary) }
+            if !editor.busy && showsStatus { Text(editor.status).font(.caption).foregroundStyle(.secondary) }
             if let error = editor.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
             Divider()
             navigation
@@ -53,11 +55,11 @@ struct RoomCorrectionView: View {
         .onDisappear { importPanel?.cancel(nil); editor.close() }
         .onChange(of: saved?.id) { _ in editor.selectSeat(profile: profile, app: state) }
         .onChange(of: isVisible) { visible in
-            if !visible { importPanel?.cancel(nil); editor.endCompare(); if editor.testingSound { editor.cancel() } }
+            if !visible { importPanel?.cancel(nil); editor.endCompare(); editor.pauseMeasurement() }
         }
         .onChange(of: editor.tab) { tab in
             if tab != .correction { editor.endCompare() }
-            if tab != .measure && editor.testingSound { editor.cancel() }
+            if tab != .measure { editor.pauseMeasurement() }
         }
         .onChange(of: editor.calculationRevision) { _ in correctionDetailsExpanded = true }
         .onChange(of: editor.importRevision) { _ in correctionDetailsExpanded = false }
@@ -200,22 +202,43 @@ struct RoomCorrectionView: View {
             }
             .disabled(editor.busy)
             .uiInteractionAnchor("room-correction-reset")
+            if editor.tab == .measure && !editor.measurementOpen && !editor.profileIsActive {
+                Text(editor.session == nil ? "Activate profile to start measurement" : "Activate profile to continue measurement")
+                    .font(.caption).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .uiInteractionAnchor("room-measurement-activation-hint")
+            }
             Spacer(minLength: 12)
-            if editor.measuring || editor.testingSound {
+            if editor.busy || (editor.tab == .analysis && analysisLoading) {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text(editor.status).font(.caption).foregroundStyle(.secondary)
+                    Text(editor.busy ? editor.status : "Updating analysis…").font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .uiInteractionAnchor("room-measurement-status")
             }
-            if editor.tab == .measure && importedRecording != nil { recordingControls }
-            if editor.tab != .measure && !hasImportedAnalysis && !editor.measuring {
+            if editor.busy && !editor.testingSound && !editor.measuring && !editor.importingRecording && !editor.correctionInProgress {
+                Button("Cancel") { editor.cancel() }
+                    .uiInteractionAnchor("room-operation-cancel")
+            }
+            if editor.tab == .measure && editor.measurementOpen && importedRecording != nil { recordingControls }
+            if editor.tab != .measure && !hasImportedAnalysis && !editor.measuring && !editor.importingRecording {
                 Button("Re-measure") { select(.measure) }
                     .disabled(editor.busy)
                     .uiInteractionAnchor("room-correction-remeasure")
             }
-            if editor.tab == .correction && !editor.measuring {
+            if editor.importingRecording || ((editor.tab == .measure && editor.measurementOpen || editor.measuring)
+                && editor.source.kind == .recorder && importedRecording == nil) {
+                Button(editor.recorderActionTitle) {
+                    if editor.measuring || editor.importingRecording { editor.cancel() }
+                    else if editor.recorderPlaybackComplete { chooseFile(.recording) }
+                    else { editor.measure(profile: profile, selectedChannel: nil) }
+                }
+                .buttonStyle(.borderedProminent).disabled(editor.busy && !editor.measuring && !editor.importingRecording)
+                .uiInteractionAnchor("room-recorder-next").accessibilityIdentifier("room-recorder-next")
+                DeviceCorrectionHelpIcon(title: "Simple recording",
+                    message: "1. Start your phone’s recorder and place the phone at the blue marker on the graph before pressing Play Sound. \n 2. Keep it still at ear level while sound plays. \n 3. Between positions, keep recording, move to the next marker, then press Next. \n 4. Stop only after all positions are finished, then import that single audio file.")
+            } else if editor.tab == .correction && !editor.measuring {
                 Button(editor.calculatedResult == nil ? "Calculate" : "Recalculate") {
                     calculateCorrection()
                 }
@@ -234,21 +257,11 @@ struct RoomCorrectionView: View {
                 .disabled(!editor.canImport)
                 .uiInteractionAnchor("room-correction-import")
                 .accessibilityIdentifier("room-correction-import")
-            } else if editor.tab == .measure && editor.session == nil {
-                Button("Start Measurement") { editor.beginSession(profile: profile) }
+            } else if editor.tab == .measure && !editor.measurementOpen {
+                Button(editor.measurementActionTitle) { editor.openMeasurement(profile: profile) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(editor.busy || (editor.source.kind == .microphone && !editor.microphoneIsConfigured))
+                    .disabled(editor.busy || !editor.profileIsActive)
                     .uiInteractionAnchor("room-correction-start").accessibilityIdentifier("room-correction-start")
-            } else if (editor.tab == .measure || editor.measuring) && editor.source.kind == .recorder && importedRecording == nil {
-                Button(editor.recorderActionTitle) {
-                    if editor.measuring { editor.cancel() }
-                    else if editor.recorderPlaybackComplete { chooseFile(.recording) }
-                    else { editor.measure(profile: profile, selectedChannel: nil) }
-                }
-                .buttonStyle(.borderedProminent).disabled(editor.busy && !editor.measuring)
-                .uiInteractionAnchor("room-recorder-next").accessibilityIdentifier("room-recorder-next")
-                DeviceCorrectionHelpIcon(title: "Simple recording",
-                    message: "1. Start your phone’s recorder and place the phone at the blue marker on the graph before pressing Play Sound. \n 2. Keep it still at ear level while sound plays. \n 3. Between positions, keep recording, move to the next marker, then press Next. \n 4. Stop only after all positions are finished, then import that single audio file.")
             } else if (editor.tab == .measure || editor.measuring) && editor.source.kind == .microphone {
                 if editor.session?.microphoneMeasurementsComplete == true && !editor.measuring {
                     microphoneMeasureButton
@@ -277,12 +290,14 @@ struct RoomCorrectionView: View {
         .disabled(!editor.measuring && (editor.busy || !editor.microphoneIsConfigured))
         .uiInteractionAnchor("room-microphone-measure")
     }
+    private var recordingSelection: some View {
+        Picker("Recording", selection: Binding(get: { editor.source.kind }, set: { editor.setSourceKind($0, profile: profile) })) {
+            Text("Simple(Phone or Others Microphone)").tag(RoomMeasurementSource.Kind.recorder)
+            Text("Microphone with Calibration").tag(RoomMeasurementSource.Kind.microphone)
+        }.pickerStyle(.radioGroup).disabled(editor.busy).uiInteractionAnchor("room-recording-type")
+    }
     private var measure: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Picker("Recording", selection: Binding(get: { editor.source.kind }, set: { editor.setSourceKind($0, profile: profile) })) {
-                Text("Simple(Phone or Others Microphone)").tag(RoomMeasurementSource.Kind.recorder)
-                Text("Microphone with Calibration").tag(RoomMeasurementSource.Kind.microphone)
-            }.pickerStyle(.radioGroup).disabled(editor.busy).uiInteractionAnchor("room-recording-type")
             if editor.source.kind == .microphone {
                 HStack {
                     RoomCorrectionMenu(label: "Microphone", selection: Binding(get: { editor.source.deviceID }, set: { editor.setMicrophone($0) }),
@@ -309,20 +324,17 @@ struct RoomCorrectionView: View {
                     DeviceCorrectionHelpIcon(title: "Microphone calibration",
                         message: "Use the calibration file supplied for your microphone. Match its orientation to the file.")
                 }
-                positionCountControl(microphone: true)
-            } else {
-                positionCountControl(microphone: false)
             }
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 10) {
-                    Text("Test volume")
-                    SteppedValueSlider(value: Binding(get: { editor.testVolumeDB }, set: { editor.setTestVolumeDB($0) }),
-                        in: editor.testVolumeRangeDB, step: 1)
-                        .frame(width: 160).accessibilityLabel("Test volume")
-                        .uiInteractionAnchor("room-test-volume")
-                        .disabled(editor.busy && !editor.testingSound)
-                    Text(String(format: "%+.0f dB", editor.testVolumeDB)).monospacedDigit().frame(width: 55, alignment: .trailing)
-                    if editor.session != nil {
+            if editor.session != nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 10) {
+                        Text("Test volume")
+                        SteppedValueSlider(value: Binding(get: { editor.testVolumeDB }, set: { editor.setTestVolumeDB($0) }),
+                            in: editor.testVolumeRangeDB, step: 1)
+                            .frame(width: 160).accessibilityLabel("Test volume")
+                            .uiInteractionAnchor("room-test-volume")
+                            .disabled(editor.busy && !editor.testingSound)
+                        Text(String(format: "%+.0f dB", editor.testVolumeDB)).monospacedDigit().frame(width: 55, alignment: .trailing)
                         Button {
                             if editor.testingSound { editor.cancel() }
                             else { editor.measure(profile: profile, selectedChannel: nil, preview: true) }
@@ -334,24 +346,25 @@ struct RoomCorrectionView: View {
                         .disabled(editor.busy && !editor.testingSound)
                         .uiInteractionAnchor("room-test-sound")
                         .accessibilityLabel(editor.testingSound ? "Stop Sound" : "Test Sound")
+                        DeviceCorrectionHelpIcon(title: "Test sound", message: editor.source.kind == .microphone
+                                ? "Plays each measurement speaker in turn at the sweep level. Adjust Test volume for a clear recording without clipping. DBFS shows recording level, not sound pressure (SPL)."
+                                : "Plays each measurement speaker in turn at the sweep level. Check the playback volume before measuring. Aim for approximately 75 dB SPL. (Download sound meter on phone)")
                     }
-                    DeviceCorrectionHelpIcon(title: "Test sound", message: editor.source.kind == .microphone
-                            ? "DBFS shows recording level, not sound pressure (SPL)."
-                            : "Check the playback volume before measuring. Aim for approximately 75 dB SPL. (Download sound meter on phone)")
-                }
-                if editor.source.kind == .microphone {
-                    if let level = editor.microphoneLevel, editor.busy {
-                        HStack {
-                            Text(String(format: "Microphone · peak %.1f dBFS · RMS %.1f dBFS", level.peakDBFS, level.rmsDBFS)).monospacedDigit()
-                            Text(level.clipped ? "Clipping — lower the level" : level.peakDBFS > -6 ? "Leave more headroom" : "")
-                                .foregroundStyle(level.clipped ? Color.red : Color.orange)
-                        }.font(.caption).uiInteractionAnchor("room-microphone-level")
+                    if editor.source.kind == .microphone {
+                        if let level = editor.microphoneLevel, editor.busy {
+                            HStack {
+                                Text(String(format: "Microphone · peak %.1f dBFS · RMS %.1f dBFS", level.peakDBFS, level.rmsDBFS)).monospacedDigit()
+                                Text(level.clipped ? "Clipping — lower the level" : level.peakDBFS > -6 ? "Leave more headroom" : "")
+                                    .foregroundStyle(level.clipped ? Color.red : Color.orange)
+                            }.font(.caption).uiInteractionAnchor("room-microphone-level")
+                        }
                     }
                 }
             }
+            positionCountControl(microphone: editor.source.kind == .microphone)
             if let session = editor.session, let position = editor.position {
                 positionNavigation(session)
-                SpeakerRoomCanvas(topology: session.context.topology, listener: session.context.listener, selected: nil, playing: nil,
+                SpeakerRoomCanvas(topology: session.context.topology, listener: session.context.listener, selected: nil, playing: editor.playingOutput,
                     extent: 3, locked: true, listeningOnly: true, select: { _ in }, audition: { _ in }, moveSpeaker: { _, _ in },
                     moveListener: { _ in }, assignRole: { _, _ in }, measurementPoint: position.coordinate,
                     measurementRadius: 0,
@@ -364,14 +377,20 @@ struct RoomCorrectionView: View {
                         : "Microphone · \(microphoneHeightDescription(position, in: session))")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer(minLength: 0)
-                    Button { mapZoom = max(0.25, mapZoom / 1.25) } label: { Image(systemName: "minus.magnifyingglass") }
+                    Button { mapZoom = max(0.25, mapZoom / 1.25) } label: {
+                        Image(systemName: "minus.magnifyingglass")
+                            .frame(width: 22, height: 22).contentShape(Rectangle())
+                    }
+                        .buttonStyle(.plain)
                         .disabled(mapZoom <= 0.25).accessibilityLabel("Zoom Out")
                         .uiInteractionAnchor("room-map-zoom-out")
-                    Button { mapZoom = min(4, mapZoom * 1.25) } label: { Image(systemName: "plus.magnifyingglass") }
+                    Button { mapZoom = min(4, mapZoom * 1.25) } label: {
+                        Image(systemName: "plus.magnifyingglass")
+                            .frame(width: 22, height: 22).contentShape(Rectangle())
+                    }
+                        .buttonStyle(.plain)
                         .disabled(mapZoom >= 4).accessibilityLabel("Zoom In")
                         .uiInteractionAnchor("room-map-zoom-in")
-                    Button("Fit All") { mapZoom = 1; mapViewportRevision += 1 }
-                        .uiInteractionAnchor("room-map-fit")
                 }.controlSize(.small)
                 if session.source.kind == .microphone {
                     if position.skipped {
@@ -380,9 +399,6 @@ struct RoomCorrectionView: View {
                     }
                     microphonePositionEditor(position).id(position.id)
                 }
-            }
-            if editor.hasMeasurements {
-                Text("\(measurementCount) \(measurementCount == 1 ? "measurement" : "measurements") ready").font(.callout)
             }
         }
     }
@@ -484,7 +500,9 @@ struct RoomCorrectionView: View {
                 .onChange(of: session.positions.count) { _ in proxy.scrollTo(editor.positionIndex, anchor: .center) }
                 .onAppear { proxy.scrollTo(editor.positionIndex, anchor: .center) }
             }
-            if let position = editor.position, position.skipped || !position.observations.isEmpty {
+            if let position = editor.position,
+               position.skipped || (session.source.kind == .microphone && !position.observations.isEmpty
+                   && !session.microphonePositionIsComplete(position)) {
                 Text(positionStatus(position, in: session))
                     .font(.caption).foregroundStyle(.secondary).fixedSize()
             }
@@ -601,9 +619,6 @@ struct RoomCorrectionView: View {
             }
             .disclosureGroupStyle(SectionDisclosureStyle())
         }
-    }
-    private var measurementCount: Int {
-        editor.source.kind == .microphone ? (editor.session?.completeMicrophonePositionCount ?? 0) : (editor.session?.usablePositionCount ?? 0)
     }
     private func limit(_ label: String, _ value: Binding<Double?>, values: [Double], unit: String) -> some View {
         RoomCorrectionMenu(label: label, selection: value, options: [nil] + values.map { Optional($0) },

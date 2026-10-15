@@ -24,6 +24,10 @@ enum SpeakerAuditionProtection {
         var bank = PerAppFilterBank()
         bank.process(&samples, channelCount: 1, sampleRate: Double(profile.sampleRate), bands: bands, settingsRevision: 0)
         let gain = Float(pow(10, min(0, protection.maximumGainDB ?? 0) / 20))
-        return samples.map { $0.isFinite ? min(0.025, max(-0.025, $0 * gain)) : 0 }
+        // Keep the conservative active-driver ceiling without hard-clipping a
+        // louder identification clip and reintroducing out-of-band harmonics.
+        let peak = samples.reduce(Float.zero) { $1.isFinite ? max($0, abs($1)) : $0 }
+        let boundedGain = peak > 0 ? min(gain, 0.025 / peak) : gain
+        return samples.map { $0.isFinite ? $0 * boundedGain : 0 }
     }
 }

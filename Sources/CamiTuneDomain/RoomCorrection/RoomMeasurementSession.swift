@@ -79,6 +79,7 @@ package struct RoomMeasurementPosition: Codable, Hashable, Sendable, Identifiabl
 }
 /// A block is one bounded physical-channel clip. Tokens distinguish retries and repeated sweeps.
 package struct RoomMeasurementBlock: Codable, Hashable, Sendable, Identifiable {
+    package static let playbackGainRangeDB: ClosedRange<Double> = -120...20
     package var id = UUID()
     package var token: UInt32
     package var positionID: UUID
@@ -172,7 +173,7 @@ extension RoomMeasurementSession {
               positions.count <= 1000, Set(positions.map(\.id)).count == positions.count,
               positions.filter(\.isMain).count == 1,
               blocks.count <= 10000, Set(blocks.map(\.id)).count == blocks.count,
-              blocks.allSatisfy({ block in (block.playbackGainDB ?? 0).isFinite && (-120...12).contains(block.playbackGainDB ?? 0) && positions.contains(where: { $0.id == block.positionID }) && context.topology.endpoints.contains(where: { $0.id.channelIndex == block.channel }) }),
+              blocks.allSatisfy({ block in (block.playbackGainDB ?? 0).isFinite && RoomMeasurementBlock.playbackGainRangeDB.contains(block.playbackGainDB ?? 0) && positions.contains(where: { $0.id == block.positionID }) && context.topology.endpoints.contains(where: { $0.id.channelIndex == block.channel }) }),
               positions.allSatisfy({ position in
                   [position.coordinate.x, position.coordinate.y, position.coordinate.z].allSatisfy(\.isFinite)
                     && Set(position.observations.map(\.channel)).count == position.observations.count

@@ -5,6 +5,9 @@ package struct RoomMeasurementContext: Codable, Hashable, Sendable {
     package var listener: SpatialVector3
     /// Exact downstream processing through which the sweep was measured, excluding room correction.
     package var processing: ProcessingProfile
+    /// Editor settings retained for replacing previously imported correction.
+    /// These bypassed settings are not part of acoustic equality or staleness.
+    package var importBaselineProcessing: ProcessingProfile?
     package var revision = 1
     package var multichannel: MultichannelProcessingSettings?
     package init(topology: SpeakerTopology, listener: SpatialVector3, processing: ProcessingProfile) {

@@ -28,7 +28,7 @@ package struct RoomCorrectionSettings: Codable, Hashable, Sendable {
     }
 }
 package enum RoomCorrectionError: LocalizedError {
-    case invalidSettings, invalidSession, unreliable, timingUnavailable, latencyLimit, stale, missingBlocks, routeUnavailable
+    case invalidSettings, invalidSession, unreliable, timingUnavailable, latencyLimit, stale, missingBlocks, routeUnavailable, outputMuted
     case calibrationRequired, calibrationChanged, incompleteMicrophoneMeasurement, inputClipped, microphoneSweepMissing
     package var errorDescription: String? {
         switch self {
@@ -45,6 +45,7 @@ package enum RoomCorrectionError: LocalizedError {
         case .stale: return "The output, processing or listening geometry changed. Re-measure this setup."
         case .missingBlocks: return "No complete measurement blocks were found. Import the recording made during this session."
         case .routeUnavailable: return "Activate this speaker profile and wait for audio changes to finish before measuring."
+        case .outputMuted: return "Unmute the speaker output and raise the system volume before testing or measuring."
         }
     }
 }

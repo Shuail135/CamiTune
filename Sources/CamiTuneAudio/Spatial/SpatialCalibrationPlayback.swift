@@ -37,7 +37,7 @@ package struct SpatialCalibrationClip: Sendable {
         let isSub = endpoint.isSubwooferLike
         let upper = Float(1 - exp(-2 * Double.pi * 4000 / sampleRate))
         let lower = Float(1 - exp(-2 * Double.pi * 300 / sampleRate))
-        let peakLimit: Float = 0.025
+        let peakLimit: Float = 0.25
         var sumSquares = 0.0
         var peak: Float = 0
         for i in 0..<frames {
@@ -60,7 +60,7 @@ package struct SpatialCalibrationClip: Sendable {
             sumSquares += Double(sample) * Double(sample)
             peak = max(peak, abs(sample))
         }
-        // Match the complete, faded identification clips to about -46 dBFS RMS
+        // Match the complete, faded identification clips to -26 dBFS RMS
         // by default, with an optional test-only subwoofer adjustment. Measure
         // only the selected channel so unused outputs do not change its level.
         // Limit gain rather than clipping peaks, preserving the signal shape.
@@ -68,7 +68,7 @@ package struct SpatialCalibrationClip: Sendable {
         if rms > 0, peak > 0 {
             let testGainDB = isSub ? min(Self.subwooferTestGainRangeDB.upperBound,
                 max(Self.subwooferTestGainRangeDB.lowerBound, subwooferTestGainDB)) : 0
-            let targetRMS = 0.005 * pow(10, testGainDB / 20)
+            let targetRMS = pow(10, (-26 + testGainDB) / 20)
             let gain = Float(min(targetRMS / rms, Double(peakLimit / peak)))
             for i in 0..<frames {
                 result[i * count + physicalOutput.channelIndex] *= gain

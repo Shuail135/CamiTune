@@ -677,11 +677,16 @@ enum UIInteractionSelfTests {
             try diagnosticRequire((try? marker("room-position-editing")) == nil,
                 "Phone recording must not expose Adjust, Skip, Remove, or Add Position")
         }
+        try diagnosticRequire(!editor.profileIsActive && !editor.measurementOpen,
+            "Inactive profiles must not open recording controls")
+        await state.activate(profile: profile)
+        await fixture.settle()
         if ProcessInfo.processInfo.environment["CAMITUNE_UI_ROOM_IMPORT_ONLY"] == "1" {
             // Isolate import lifecycle checks from the separate microphone,
             // position-navigation and native-slider interaction checks.
             editor.setSourceKind(.recorder, profile: profile)
             editor.beginSession(profile: profile)
+            editor.openMeasurement(profile: profile)
             for index in 0..<(editor.session?.positions.count ?? 0) {
                 editor.selectPosition(index)
                 let blocks = editor.plannedBlocks(selectedChannel: nil)
@@ -691,20 +696,20 @@ enum UIInteractionSelfTests {
             }
             await fixture.settle()
         } else {
+            try diagnosticRequire((try? marker("room-test-volume")) == nil && (try? marker("room-test-sound")) == nil,
+                "Test volume and sound must stay hidden until Start Measurement")
+            try await press("room-correction-start")
+            try diagnosticRequire(editor.session?.source.kind == .recorder && !editor.busy && editor.error == nil
+                && editor.session?.blocks.isEmpty == true, "Start Measurement must prepare the session without starting playback")
             _ = try marker("room-test-volume")
+            _ = try marker("room-test-sound")
             guard let slider = fixture.views.compactMap({ $0 as? NSSlider }).first else {
                 throw DiagnosticFailure(message: "Missing native test-volume slider")
             }
             try diagnosticRequire(slider.accessibilityPerformIncrement(), "Test volume must accept native slider adjustments")
             await fixture.settle()
-            try diagnosticRequire(editor.testVolumeDB == 1, "Test-volume adjustment did not reach the measurement state")
-            try await press("room-correction-start")
-            try diagnosticRequire(editor.session?.source.kind == .microphone && !editor.busy && editor.error == nil
-                && editor.session?.blocks.isEmpty == true, "Start Measurement must prepare the Mac microphone without starting capture/playback")
-            _ = try marker("room-measurement-channels")
+            try diagnosticRequire(editor.testVolumeDB == RoomMeasurementSignal.defaultVolumeDB + 1, "Test-volume adjustment did not reach the measurement state")
             try fixture.snapshot(to: artifacts.appendingPathComponent("room-recording-type.png"))
-            try await press("room-recording-type", fraction: 0.35, verticalFraction: 0.25)
-            try diagnosticRequire(editor.source.kind == .recorder, "Recording type must remain switchable after Start Measurement")
             try requirePositions(5)
             try diagnosticRequire((try? marker("room-new-session")) == nil, "New Session must not be exposed")
             try diagnosticRequire((try? marker("room-measurement-channels")) == nil, "Phone recording must play all speakers without a channel chooser")
@@ -875,12 +880,15 @@ enum UIInteractionSelfTests {
         try diagnosticRequire(editor.session?.id == sessionBeforeReset, "Cancelling Reset must preserve the session")
         try await press("room-correction-reset")
         try await answerReset("Reset")
-        try diagnosticRequire(editor.session == nil && editor.comparison == nil && editor.source.kind == .microphone
-            && editor.testVolumeDB == 0 && editor.recorderPositionCount == .five && editor.error == nil,
+        try diagnosticRequire(editor.session == nil && editor.comparison == nil && editor.source.kind == .recorder
+            && editor.testVolumeDB == RoomMeasurementSignal.defaultVolumeDB && editor.recorderPositionCount == .five && editor.error == nil,
             "Reset must restore a fresh Room Correction workflow")
         _ = try marker("room-correction-start")
         try diagnosticRequire((try? marker("room-imported-recording")) == nil && (try? marker("room-recorder-next")) == nil,
             "Reset must clear the imported file and require a new measurement setup")
+        try await press("room-correction-start")
+        editor.setSourceKind(.microphone, profile: box.profiles.profiles[0])
+        await fixture.settle()
         try await press("room-calibration-import")
         for _ in 0..<100 where !NSApp.windows.contains(where: { $0 is NSOpenPanel && $0.isVisible }) {
             try await Task.sleep(for: .milliseconds(20))
@@ -890,6 +898,7 @@ enum UIInteractionSelfTests {
         }
         try diagnosticRequire(calibration.allowedContentTypes == [.plainText, .data], "Calibration must use its own file types")
         calibration.cancel(nil); await fixture.settle()
+        await state.deactivate()
         print("Room recorder: silent preparation, recording type/count switching, all-speaker sequence, and final single-file import")
     }
 
@@ -1160,7 +1169,9 @@ enum UIInteractionSelfTests {
         }
         try diagnosticRequire(fixture.views.contains { $0.identifier?.rawValue == "correction-content-roomCorrection" },
             "Room Correction must be visible before advancing its workflow")
-        guard let map = fixture.views.compactMap({ $0 as? SpeakerRoomNSView }).first,
+        await state.activate(profile: profile)
+        await fixture.settle()
+        guard var map = fixture.views.compactMap({ $0 as? SpeakerRoomNSView }).first,
               var mapConfiguration = map.configuration else { throw DiagnosticFailure(message: "Missing measurement map") }
         try diagnosticRequire(!fixture.views.contains { $0.identifier?.rawValue == "room-menu-Position" },
             "Measurement positions must use numbered navigation instead of a dropdown")
@@ -1175,10 +1186,10 @@ enum UIInteractionSelfTests {
             guard let config = view.configuration else { throw DiagnosticFailure(message: "Missing map configuration") }
             for (index, speaker) in config.topology.endpoints.enumerated() {
                 try diagnosticRequire(view.graph.contains(view.nodeRect(view.nodePoint(speaker, index: index))),
-                    "Fit All clipped a speaker")
+                    "Automatic map fitting clipped a speaker")
             }
             for point in [config.listener] + config.viewportPoints {
-                try diagnosticRequire(view.graph.contains(view.nodeRect(view.point(point))), "Fit All clipped a listening or measurement position")
+                try diagnosticRequire(view.graph.contains(view.nodeRect(view.point(point))), "Automatic map fitting clipped a listening or measurement position")
             }
         }
         try diagnosticRequire(map.bounds.height == 300 && mapConfiguration.fitsAllContent && !mapConfiguration.allowsScrollPanning,
@@ -1242,9 +1253,6 @@ enum UIInteractionSelfTests {
         try diagnosticRequire(map.zoom > 1, "Zoom In did not magnify the map")
         try await press("room-map-zoom-out")
         try diagnosticRequire(abs(map.zoom - 1) < 0.001, "Zoom Out did not restore the scale")
-        try await press("room-map-fit")
-        try diagnosticRequire(map.pan == .zero && map.zoom == 1, "Fit All must reset a dragged map even when the zoom is already 100 percent")
-        try requireFitted(map)
         // A separate native view exercises asymmetric rooms and viewport resizing.
         let geometryProbe = SpeakerRoomNSView(frame: .init(x: 0, y: 0, width: 360, height: 300))
         for index in mapConfiguration.topology.endpoints.indices {
@@ -1287,7 +1295,10 @@ enum UIInteractionSelfTests {
         for width: CGFloat in [600, 950] {
             fixture.resize(width: width, height: 850); await fixture.settle()
             try await press("room-correction-tab-measure")
-            try await press("room-map-fit")
+            guard let resumedMap = fixture.views.compactMap({ $0 as? SpeakerRoomNSView }).first else {
+                throw DiagnosticFailure(message: "The active profile did not retain its measurement map")
+            }
+            map = resumedMap
             try requireFitted(map)
             try fixture.snapshot(to: artifacts.appendingPathComponent("room-map-\(Int(width)).png"))
             for tab in ["analysis", "measure", "correction"] { try await press("room-correction-tab-\(tab)") }
@@ -1317,6 +1328,7 @@ enum UIInteractionSelfTests {
         // in the complete profile editor, at both narrow and wide widths.
         try diagnosticRequire(!sortedGaps.isEmpty && p95 < 45 && (sortedGaps.last ?? 0) < 150,
             "Room Correction tab switching exceeded its responsiveness budget")
+        await state.deactivate()
         print("Room Correction: fitted measurement map, mouse-only pan, zoom/reset controls, Next/Re-measure workflow, compact controls and resize")
     }
 

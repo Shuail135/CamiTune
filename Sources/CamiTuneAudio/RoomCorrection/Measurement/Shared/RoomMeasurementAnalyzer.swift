@@ -36,6 +36,8 @@ package struct RoomMeasurementAnalyzer {
         let detection = prepared.detection
         let startTemplate = RoomMeasurementSignal.marker(token: block.token, end: false, rate: detectionRate)
         let endTemplate = RoomMeasurementSignal.marker(token: block.token, end: true, rate: detectionRate)
+        let startQuadrature = RoomMeasurementSignal.marker(token: block.token, end: false, rate: detectionRate, phase: .pi / 2)
+        let endQuadrature = RoomMeasurementSignal.marker(token: block.token, end: true, rate: detectionRate, phase: .pi / 2)
         var located: (Double, Double, Double)?
         var searchRanges: [Range<Int>] = []
         if let expectedMarkerTime, expectedMarkerTime.isFinite {
@@ -47,7 +49,7 @@ package struct RoomMeasurementAnalyzer {
         // Fall back to the whole file; never invent a match from elapsed time.
         searchRanges.append(0..<detection.count)
         for range in searchRanges {
-            let starts = try correlations(Array(detection[range]), template: startTemplate, rate: detectionRate)
+            let starts = try correlations(Array(detection[range]), template: startTemplate, quadrature: startQuadrature)
                 .map { (offset: $0.offset + range.lowerBound, score: $0.score) }
             // Prefer the strongest complete code pair. A later weak cross-match to
             // another token must not replace the correct take. For equal evidence,
@@ -57,25 +59,26 @@ package struct RoomMeasurementAnalyzer {
                 let expected = start.offset + Int(5.1 * detectionRate)
                 let lo = max(0, expected - 500), hi = min(detection.count, expected + 2500)
                 guard hi > lo + endTemplate.count,
-                      let end = try correlations(Array(detection[lo..<hi]), template: endTemplate, rate: detectionRate)
+                      let end = try correlations(Array(detection[lo..<hi]), template: endTemplate, quadrature: endQuadrature)
                         .filter({ (0.995...1.005).contains(Double(lo + $0.offset - start.offset) / (5.1 * detectionRate)) })
                         .max(by: { $0.score < $1.score }) else { continue }
                 let ratio = Double(lo + end.offset - start.offset) / (5.1 * detectionRate)
-                // Require two different matching codes at the correct separation;
-                // a weak single marker or a plausible sweep order is insufficient.
-                // Weak cross-correlation of unrelated 127-chip codes can pass a
-                // product-only gate when one code happens to match more strongly.
-                // Both identities must be independently convincing. A missing
-                // noisy secondary seat is safer than assigning another speaker.
-                guard (0.995...1.005).contains(ratio), min(start.score, end.score) >= 0.35 else { continue }
                 let quality = min(start.score, end.score)
+                // A room reflection can weaken one code without losing the sweep.
+                // Accept that pair only with a strong second identity, adequate
+                // joint evidence and a tighter clock agreement. A timestamp hint
+                // alone can never supply either missing marker.
+                let balancedPair = quality >= 0.35
+                let unevenPair = quality >= 0.30 && max(start.score, end.score) >= 0.45
+                    && start.score * end.score >= 0.15 && abs(ratio - 1) <= 0.001
+                guard balancedPair || unevenPair else { continue }
                 if let located, quality <= located.2 * 1.05 { continue }
                 let refinedStart = refineMarker(samples, sampleRate: sampleRate, token: block.token,
                     end: false, time: Double(start.offset) / detectionRate)
                 let refinedEnd = refineMarker(samples, sampleRate: sampleRate, token: block.token,
                     end: true, time: Double(lo + end.offset) / detectionRate)
                 let refinedRatio = (refinedEnd - refinedStart) / 5.1
-                guard (0.995...1.005).contains(refinedRatio) else { continue }
+                guard (0.995...1.005).contains(refinedRatio), balancedPair || abs(refinedRatio - 1) <= 0.001 else { continue }
                 located = (refinedStart, refinedRatio, quality)
             }
             if let located, located.2 >= 0.5 { break }
@@ -223,14 +226,18 @@ package struct RoomMeasurementAnalyzer {
         }
         return (Double(lo + peak) + fraction) / sampleRate
     }
-    private func correlations(_ samples: [Float], template: [Float], rate: Double) throws -> [(offset: Int, score: Double)] {
+    private func correlations(_ samples: [Float], template: [Float], quadrature: [Float]) throws -> [(offset: Int, score: Double)] {
         guard samples.count >= template.count else { return [] }
         let window = 131072, overlap = template.count
         let fft = try AcousticFFT(minimumSize: min(window, samples.count) + template.count)
         var tr = [Float](repeating: 0, count: fft.size), ti = tr
         tr.replaceSubrange(0..<template.count, with: template.reversed())
+        ti.replaceSubrange(0..<quadrature.count, with: quadrature.reversed())
         fft.transform(real: &tr, imaginary: &ti)
         let energy = template.reduce(0.0) { $0 + Double($1) * Double($1) }
+        let quadratureEnergy = quadrature.reduce(0.0) { $0 + Double($1) * Double($1) }
+        let crossEnergy = zip(template, quadrature).reduce(0.0) { $0 + Double($1.0) * Double($1.1) }
+        let determinant = energy * quadratureEnergy - crossEnergy * crossEnergy
         var found: [(Int, Double)] = []
         for start in stride(from: 0, to: samples.count, by: window - overlap) {
             try Task.checkCancellation()
@@ -252,7 +259,12 @@ package struct RoomMeasurementAnalyzer {
                     sum += added * added - removed * removed
                 }
                 guard sum > max(1e-10, energy * 1e-8) else { continue }
-                let score = abs(Double(real[offset + template.count - 1])) / sqrt(sum * energy)
+                // Fit both carrier phases at the same code offset. This measures
+                // code identity without penalizing acoustic carrier phase, and
+                // the Gram normalization keeps confidence bounded by one.
+                let a = Double(real[offset + template.count - 1]), b = Double(imaginary[offset + template.count - 1])
+                let projected = quadratureEnergy * a * a - 2 * crossEnergy * a * b + energy * b * b
+                let score = sqrt(max(0, projected) / max(1e-30, sum * determinant))
                 if score > 0.25 && score <= 1.01 {
                     if offset - last < template.count / 2, !found.isEmpty {
                         if score > found[found.count - 1].1 { found[found.count - 1] = (start + offset, score) }

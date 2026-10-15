@@ -274,6 +274,24 @@ final class AudioRuntimeCoordinator: ObservableObject {
         if !alreadyWorking { await reconciliationWorker?.value }
     }
     func waitUntilSettled() async { await reconciliationWorker?.value }
+    /// A no-op apply keeps the acknowledged plan, whose editor identities and
+    /// empty chains can differ from the request. Validate the compiled audio
+    /// configuration, using the same comparison that admits runtime updates.
+    func hasAppliedConfiguration(for profile: DeviceProfile) async throws -> Bool {
+        guard let applied = activeRuntimePlan, applied.intent.id == profile.id else { return false }
+        let matches = try await Task.detached(priority: .userInitiated) {
+            let normalized = try AudioRuntimePlanPreparer.normalize(profile)
+            let expected = try AudioRuntimePlanCompiler().compile(.init(
+                revision: applied.revision, preparedAt: applied.preparedAt, profile: normalized,
+                hardware: applied.hardwareEvidence, assets: applied.assets,
+                deliveryConfiguration: applied.deliveryConfiguration))
+            return RuntimePlanDiffer().delta(from: applied, to: expected).isNoOp
+        }.value
+        await waitUntilSettled()
+        try Task.checkCancellation()
+        return matches && activeRuntimePlan?.revision == applied.revision
+            && !transitionInProgress && !hasLiveApplyWork
+    }
     func requestStartupPresentation(publishProfiles: Bool) {
         guard !terminated, ownedSession == nil, provisionalSession == nil, reconciliationWorker == nil else { return }
         endpointRequests.append(.init(generation: desiredRuntime.generation, restoreProfile: nil,

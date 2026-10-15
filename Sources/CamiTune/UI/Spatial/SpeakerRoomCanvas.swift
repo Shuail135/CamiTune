@@ -171,13 +171,16 @@ final class SpeakerRoomNSView: NSView {
         return CGPoint(x: graph.minX + 42 + CGFloat(index % 5) * 64 + pan.x,
                        y: graph.maxY - 28 - CGFloat(index / 5) * 44 + pan.y)
     }
-    // Match the compact room map without making its drag targets too small.
-    // Use the same geometry for drawing, pointer tracking, and accessibility.
-    private var nodeScale: CGFloat { min(1, max(0.75, bounds.height / 370)) }
+    // Preserve each map's default icon sizes, then zoom them with the room.
+    // Drawing, pointer tracking, and accessibility share the scaled geometry.
+    private var baseNodeScale: CGFloat { min(1, max(0.75, bounds.height / 370)) }
+    private var nodeZoom: CGFloat { zoom / (configuration?.fitsAllContent == true ? 1 : 1.25) }
+    private var nodeScale: CGFloat { baseNodeScale * nodeZoom }
 
     private func nodeContentRect(_ point: CGPoint, x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat) -> CGRect {
-        CGRect(x: point.x + x * nodeScale, y: point.y + y * nodeScale,
-               width: width * nodeScale, height: height * nodeScale)
+        let scale = nodeScale
+        return CGRect(x: point.x + x * scale, y: point.y + y * scale,
+                      width: width * scale, height: height * scale)
     }
 
     func nodeRect(_ point: CGPoint) -> CGRect {
@@ -203,7 +206,7 @@ final class SpeakerRoomNSView: NSView {
         updateAccessibilityElements()
         setAccessibilityLabel("Speaker and listening position map")
         setAccessibilityHelp(config.measurementPoint != nil && !config.allowsScrollPanning
-            ? "Place the microphone at the blue Measure here marker. The grey line shows its distance from the listening position in centimeters. Click and drag to pan. Use the zoom buttons or Fit All to adjust the view. Scrolling moves the page."
+            ? "Place the microphone at the blue Measure here marker. The grey line shows its distance from the listening position in centimeters. Click and drag to pan. Use the zoom buttons to adjust the view. Scrolling moves the page."
             : "Drag speakers or the listener to move them. Drag empty space or scroll to pan. Click a speaker to test it. Use the arrow to assign its role. With keyboard focus, use brackets to select a speaker, L for the listener, arrow keys to move, Space to test, and R for roles.")
     }
 
@@ -488,6 +491,7 @@ final class SpeakerRoomNSView: NSView {
             let p = nodePoint(endpoint, index: index)
             let rect = nodeRect(p)
             let selected = configuration?.selected == endpoint.id
+            let playing = configuration?.playing == endpoint.id
             let disabled = endpoint.connectionState == .disabledByUser
             let background = selected
                 ? (NSColor.windowBackgroundColor.blended(withFraction: 0.16, of: .controlAccentColor) ?? .windowBackgroundColor)
@@ -495,9 +499,9 @@ final class SpeakerRoomNSView: NSView {
             background.withAlphaComponent(1).setFill()
             NSBezierPath(roundedRect: rect, xRadius: 7 * nodeScale, yRadius: 7 * nodeScale).fill()
             if selected { NSColor.controlAccentColor.setStroke(); NSBezierPath(roundedRect: rect, xRadius: 7 * nodeScale, yRadius: 7 * nodeScale).stroke() }
-            symbol(configuration?.playing == endpoint.id ? "stop.circle.fill" : "speaker.wave.2.fill",
+            symbol(playing && configuration?.locked == false ? "stop.circle.fill" : "speaker.wave.2.fill",
                    rect: nodeContentRect(p, x: -20, y: -19, width: 24, height: 22),
-                   color: configuration?.playing == endpoint.id ? .systemOrange : disabled ? .tertiaryLabelColor : .controlAccentColor)
+                   color: playing ? .systemOrange : disabled ? .tertiaryLabelColor : .controlAccentColor)
             if configuration?.listeningOnly == false {
                 symbol("chevron.down", rect: nodeContentRect(p, x: 11, y: -12, width: 9, height: 8), color: .labelColor)
             }
@@ -508,7 +512,7 @@ final class SpeakerRoomNSView: NSView {
             let role = displayedRole(endpoint)
             label(disabled ? "Off" : role.shortName,
                   rect: nodeContentRect(p, x: -23, y: 7, width: 46, height: 15), alignment: .center,
-                  fontSize: max(9, 10 * nodeScale))
+                  fontSize: max(9, 10 * baseNodeScale) * nodeZoom)
     }
 
     private func ticks(origin: CGFloat, lower: CGFloat, upper: CGFloat, step: CGFloat) -> [CGFloat] {

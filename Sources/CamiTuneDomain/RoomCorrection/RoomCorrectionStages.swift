@@ -65,7 +65,8 @@ extension DeviceProfile {
             let fir = result.channelFIR[channel.index]
             guard !bands.isEmpty || fir != nil else { continue }
             guard let c = base.channels.firstIndex(where: { $0.index == channel.index }) else { return base }
-            let originals = result.context.processing.channels.first { $0.index == channel.index }?.chain.stages ?? []
+            let originals = (result.context.importBaselineProcessing ?? result.context.processing)
+                .channels.first { $0.index == channel.index }?.chain.stages ?? []
             if !bands.isEmpty {
                 guard let s = base.channels[c].chain.stages.firstIndex(where: { if case .equalizer = $0.processor { return true }; return false }),
                       base.channels[c].chain.stages[s].isEnabled,
@@ -87,14 +88,26 @@ extension DeviceProfile {
         return base
     }
 
+    /// Apply the global EQ/tone and level controls while measuring, without FIR
+    /// or user channel/group processing. Routing and driver protection stay active.
+    private func roomMeasurementPlaybackProcessing(_ baseline: ProcessingProfile) -> ProcessingProfile {
+        var playback = baseline
+        playback.global.stages.removeAll { if case .convolution = $0.processor { return true }; return false }
+        playback.channels = configuredProcessingChannels.map {
+            .init(index: $0.index, role: $0.role, chain: .init())
+        }.sorted { $0.index < $1.index }
+        playback.groups = []
+        return playback
+    }
+
     package func roomMeasurementProfile() throws -> DeviceProfile {
         var profile = self
-        let baseline = try roomMeasurementBaseline()
-        profile.captureLegacyPhysicalChannels()
-        for channel in configuredProcessingChannels {
-            profile.physicalChannelProcessing[channel.physicalOutputID] = baseline.channels.first { $0.index == channel.index }?.chain ?? .init()
-        }
-        profile.replaceProcessing(baseline)
+        let playback = roomMeasurementPlaybackProcessing(try roomMeasurementBaseline())
+        // Physical chains are authoritative during normalization; clearing only
+        // processing.channels would allow the saved channel filters back in.
+        profile.physicalChannelProcessing = Dictionary(uniqueKeysWithValues:
+            configuredProcessingChannels.map { ($0.physicalOutputID, ProcessingChain()) })
+        profile.replaceProcessing(playback)
         profile.spatialSettings.seating?.roomCorrectionEnabled = false
         profile.synchronizeListeningPositionCorrection()
         return profile
@@ -118,14 +131,11 @@ extension DeviceProfile {
     }
     package func roomMeasurementContext() throws -> RoomMeasurementContext {
         guard let topology = speakerTopology, try validatedPhysicalSpeakerTopology() != nil else { throw RoomCorrectionError.routeUnavailable }
-        var base = try roomMeasurementBaseline()
-        // Empty channel chains and presentation metadata must not invalidate acoustics.
-        base.channels = configuredProcessingChannels.map { configured in
-            .init(index: configured.index, role: configured.role,
-                  chain: base.channels.first(where: { $0.index == configured.index })?.chain ?? .init())
-        }.sorted { $0.index < $1.index }
+        let baseline = try roomMeasurementBaseline()
+        let playback = roomMeasurementPlaybackProcessing(baseline)
         let seat = effectiveSpatialSettings.seating
-        var context = RoomMeasurementContext(topology: topology, listener: .init(x: seat?.roomX ?? 0, y: seat?.roomY ?? 0, z: 0), processing: base)
+        var context = RoomMeasurementContext(topology: topology, listener: .init(x: seat?.roomX ?? 0, y: seat?.roomY ?? 0, z: 0), processing: playback)
+        context.importBaselineProcessing = baseline
         context.multichannel = multichannel
         return context
     }

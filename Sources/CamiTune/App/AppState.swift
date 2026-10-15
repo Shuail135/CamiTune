@@ -1146,7 +1146,7 @@ final class AppState: NSObject, ObservableObject {
         pcmRouter.holdSpatialMeasurement(id: context.id, enabled: enabled)
     }
 
-    var acousticVolumeSnapshot: SystemVolumeControlSession.Snapshot? { volumeBridge.measurementSnapshot }
+    var acousticVolumeSnapshot: SystemVolumeControlSession.Snapshot? { runtimeServices.currentVolumeLease()?.controlSession.snapshot() }
 
     func acousticMeasurementIsCurrent(context: SpatialCalibrationContext, processing: ProcessingProfile) -> Bool {
         spatialCalibrationContext == context && isActive && !transitionInProgress && !runtimeCoordinator.hasLiveApplyWork
