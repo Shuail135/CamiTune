@@ -82,7 +82,8 @@ final class AppState: NSObject, ObservableObject {
                 profiles: { [weak self] in self?.profiles.profiles ?? [] },
                 automaticProfile: { [weak self] in self?.profiles.automaticProfile(forPhysicalDeviceUID: $0) },
                 applyingDrafts: { [weak self] profile in try self?.applyingSessionEQDrafts(to: profile) ?? profile },
-                settingsBusy: { [weak self] in (self?.isSavingProfileSettings ?? false) || (self?.profiles.hasDurableCommit ?? false) },
+                settingsBusy: { [weak self] in (self?.isSavingProfileSettings ?? false)
+                    || (self?.profiles.hasDurableCommit ?? false) || (self?.dependencies.setupInProgress ?? false) },
                 retireOverlays: { [weak self] in
                     if let context = self?.spatialCalibrationContext { self?.endSpatialCalibration(id: context.id) }
                 },
@@ -257,10 +258,9 @@ final class AppState: NSObject, ObservableObject {
             await self.dependencies.refreshWithoutBlockingUI()
             guard !Task.isCancelled, self.coreAudio.hasCompletedInitialRefresh,
                   !self.transitionInProgress, !self.isActive else { return }
-            let existingEndpoints = self.coreAudio.outputDevices.contains {
-                ProfileRoutingDescriptor.isProfileRoutingUID($0.id)
-            }
-            self.runtimeCoordinator.requestStartupPresentation(publishProfiles: !existingEndpoints)
+            // Existing endpoints may be incomplete or belong to outputs that
+            // have since disconnected. Always reconcile the full desired set.
+            self.runtimeCoordinator.requestStartupPresentation(publishProfiles: true)
             // Finish the startup task before activation can wait for its retirement.
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -320,6 +320,7 @@ final class AppState: NSObject, ObservableObject {
     func inspectRuntimePlanDiff() async { await runtimeCoordinator.inspectRuntimePlanDiff() }
     func activate(plan: AudioRuntimePlan, reportErrors: Bool = true,
                   performanceReason: String? = nil, parentOperation: PerformanceOperationID? = nil) async {
+        guard !dependencies.setupInProgress else { return }
         await runtimeCoordinator.activate(plan: plan, reportErrors: reportErrors,
             performanceReason: performanceReason, parentOperation: parentOperation)
     }
@@ -366,15 +367,16 @@ final class AppState: NSObject, ObservableObject {
     }
 
     func prepareForDependencyRepair() async -> Bool {
-        for _ in 0..<200 where transitionInProgress {
-            try? await Task.sleep(for: .milliseconds(25))
+        if let task = startupConfigurationTask {
+            task.cancel()
+            await task.value
+            startupConfigurationTask = nil
         }
-        guard !transitionInProgress else {
-            errorMessage = "Audio routing is still changing. Wait a moment, then start the repair again."
-            return false
-        }
-        if isActive { await deactivate(manual: true) }
-        guard !isActive else {
+        // Stop also supersedes a provisional activation. Await its retirement
+        // even when deactivate submitted intent to an already-running worker.
+        await deactivate(manual: true, performanceReason: "dependencyRepair")
+        await runtimeCoordinator.waitUntilSettled()
+        guard !isActive, !transitionInProgress else {
             errorMessage = "CamiTune could not stop the active audio route before repair."
             return false
         }
@@ -1053,6 +1055,7 @@ final class AppState: NSObject, ObservableObject {
         parentOperation: PerformanceOperationID? = nil,
         preparedPlan: AudioRuntimePlan? = nil
     ) async {
+        guard !dependencies.setupInProgress else { return }
         await runtimeCoordinator.activate(profile: profile, reportErrors: reportErrors, automatic: automatic,
             performanceReason: performanceReason,
             parentOperation: parentOperation, preparedPlan: preparedPlan)
@@ -1345,6 +1348,9 @@ extension AppState {
             currentVolumeLease: { [volumeBridge] in volumeBridge.currentLease },
             freshDefaultOutput: { [coreAudioService] in await coreAudioService.readDefaultOutputWithoutBlockingUI() },
             bindingGeneration: { [coreAudioService] in coreAudioService.deviceGraphGeneration },
+            publishedProfileUIDs: { [coreAudioService] in
+                Set(coreAudioService.outputDevices.lazy.map(\.id).filter(ProfileRoutingDescriptor.isProfileRoutingUID))
+            },
             cancelReadiness: { [coreAudioService] in coreAudioService.cancelReadiness() },
             resolveBinding: { [coreAudioService] in try await coreAudioService.resolveRuntimeBinding(routingUID: $0, physicalUID: $1) },
             rebindVolume: { [volumeBridge] in try await volumeBridge.rebind($0, binding: $1) },
@@ -1384,7 +1390,9 @@ extension AppState {
             nominalRate: { [unowned self] in await coreAudioService.nominalSampleRateWithoutBlockingUI(uid: $0) },
             synchronizeRouting: { [unowned self] profiles, active, visible, descriptors in
                 let request = try ProfileEndpointPublicationRequest(profiles: profiles, activeProfileID: active,
-                    defaultOutputUID: coreAudio.defaultOutputUID, additionallyVisible: visible, preparedDescriptors: descriptors)
+                    defaultOutputUID: coreAudio.defaultOutputUID,
+                    connectedOutputUIDs: Set(coreAudio.physicalOutputDevices.map(\.uid)),
+                    additionallyVisible: visible, preparedDescriptors: descriptors)
                 _ = try await coreAudioService.publishProfileEndpoints(request)
             },
             waitForRouting: { [unowned self] in await coreAudioService.waitForProfileRoutingDevice(profileID: $0) },

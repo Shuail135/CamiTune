@@ -46,6 +46,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
     private final class RunContext: @unchecked Sendable {
         let transport: SABRClientTransportRef
         let deviceObjectID: AudioObjectID
+        let sourceDeviceObjectID: UInt32
         private let controlBindingLock = NSLock()
         private var storedControlDeviceObjectID: AudioObjectID
         var controlDeviceObjectID: AudioObjectID {
@@ -60,7 +61,8 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         private var storedMasterControlConsumer: @Sendable (Float, Bool) -> Void
         func consumeControl(_ control: SABRClientControlState) -> Bool {
             controlBindingLock.lock()
-            let consumer = control.deviceObjectID == storedControlDeviceObjectID ? storedMasterControlConsumer : nil
+            let consumer = storedControlDeviceObjectID != 0 && control.deviceObjectID == sourceDeviceObjectID
+                ? storedMasterControlConsumer : nil
             controlBindingLock.unlock()
             guard let consumer else { return false }
             consumer(control.linearGain, control.muted.boolValue)
@@ -91,6 +93,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             transport: SABRClientTransportRef,
             deviceObjectID: AudioObjectID,
             controlDeviceObjectID: AudioObjectID,
+            sourceDeviceObjectID: UInt32,
             pcmRouter: PCMRouter,
             perAppAudio: PerAppAudioController,
             masterControlConsumer: @escaping @Sendable (Float, Bool) -> Void,
@@ -100,6 +103,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         ) {
             self.transport = transport
             self.deviceObjectID = deviceObjectID
+            self.sourceDeviceObjectID = sourceDeviceObjectID
             self.storedControlDeviceObjectID = controlDeviceObjectID
             self.pcmRouter = pcmRouter
             self.perAppAudio = perAppAudio
@@ -107,7 +111,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             self.expectedSampleRate = expectedSampleRate
             self.channelCapacity = channelCapacity
             self.generation = generation
-            self.completion = ProducerCompletionAssembler(generation: generation)
+            self.completion = ProducerCompletionAssembler(generation: generation, deliveryDeviceID: sourceDeviceObjectID)
         }
 
         func requestStop() {
@@ -266,6 +270,10 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         guard channelCapacity > 0 else {
             throw TransportError.incompatibleDriver
         }
+        // The HAL renumbers plug-in objects. Bind through the endpoint's
+        // capability instead of comparing HAL IDs with packet identities.
+        let sourceDeviceID = sabr_client_source_device_id(controlDeviceObjectID)
+        guard sourceDeviceID != 0 else { throw TransportError.missingSourceIdentity }
         guard let transport = sabr_client_transport_create(
             channelCapacity,
             sabr_client_transport_default_frame_capacity()
@@ -286,6 +294,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             transport: transport,
             deviceObjectID: deviceObjectID,
             controlDeviceObjectID: controlDeviceObjectID,
+            sourceDeviceObjectID: sourceDeviceID,
             pcmRouter: pcmRouter,
             perAppAudio: perAppAudio,
             masterControlConsumer: masterControlConsumer,
@@ -466,7 +475,8 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                           packet.sampleTime.isFinite, packet.sampleTime >= Double(Int64.min),
                           packet.sampleTime < Double(Int64.max), packet.sampleTime.rounded() == packet.sampleTime,
                           (kind == .end || kind == .fault || packet.timestampFlags & 1 != 0),
-                          abs(packet.sampleRate - context.expectedSampleRate) < 0.5 else {
+                          (packet.deviceObjectID != context.sourceDeviceObjectID ||
+                           abs(packet.sampleRate - context.expectedSampleRate) < 0.5) else {
                         try context.completion.fail("invalid timestamp, format or source sample rate")
                     }
                     let frames = Int(packet.frameCount)
@@ -702,9 +712,15 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
     enum TransportError: LocalizedError {
         case couldNotCreateSharedRegion
         case incompatibleDriver
+        case missingSourceIdentity
         case coreAudio(OSStatus)
         case disconnect(OSStatus)
         case shutdownTimedOut
+
+        var producerIsActive: Bool {
+            if case .coreAudio(let status) = self { return status == SABR_TRANSPORT_PRODUCER_ACTIVE_ERROR }
+            return false
+        }
 
         var errorDescription: String? {
             switch self {
@@ -712,13 +728,15 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                 return "CamiTune could not create the private driver audio transport."
             case .incompatibleDriver:
                 return "The live System Audio Bridge driver does not support this SABR transport v6 completion ABI. Use Settings → Setup → Install to install latest driver."
+            case .missingSourceIdentity:
+                return "The live System Audio Bridge driver needs the profile-switching update. Open Settings → Setup → Install / Repair Everything."
             case .disconnect(let status):
                 return "System Audio Bridge did not acknowledge transport disconnect after three attempts (Core Audio \(Self.describe(status))). The worker released its local mapping safely; repair or reload the driver before starting another route."
             case .shutdownTimedOut:
                 return "System Audio Bridge shutdown exceeded 2 seconds. Its worker still owns the mapped region and will release it when the in-flight audio operation returns."
             case .coreAudio(let status):
                 if status == SABR_TRANSPORT_PRODUCER_ACTIVE_ERROR {
-                    return "System Audio Bridge is still processing an earlier audio session. Pause(Quit) applications using the bridge, then reactivate profile. The connection was refused because earlier contributions could be missing."
+                    return "An application is still using a CamiTune audio device. Switch that application's output to the system default, or quit it, then activate the profile again. (Core Audio \(Self.describe(status)))"
                 }
                 if status == kAudioHardwareUnknownPropertyError ||
                     status == kAudioHardwareBadPropertySizeError {

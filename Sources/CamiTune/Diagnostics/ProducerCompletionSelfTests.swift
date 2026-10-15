@@ -57,8 +57,8 @@ extension DeveloperSelfTests {
         func record(_ sequence: UInt64, _ kind: ProducerRecordKind = .pcm, start: Int64 = 0,
                     frames: Int = 512, client: UInt32 = 1, epoch: UInt64 = 1,
                     generation: UInt64 = 1, value: Float = 0.125, time: Double = 0,
-                    rate: Double = 48_000) -> ProducerCompletionRecord {
-            .init(generation: generation, sequence: sequence, epoch: epoch, kind: kind, device: 100,
+                    rate: Double = 48_000, device: UInt32 = 100) -> ProducerCompletionRecord {
+            .init(generation: generation, sequence: sequence, epoch: epoch, kind: kind, device: device,
                 client: client, process: 0, cycle: 1, start: start, frames: frames,
                 channels: 2, layout: .stereo, rate: rate, received: origin.advanced(seconds: time),
                 samples: kind == .pcm ? Array(repeating: value, count: frames * 2) : [])
@@ -73,6 +73,46 @@ extension DeveloperSelfTests {
             }
         }
         return [
+            check("PC22", "Overlapping profile IO cannot cross delivery PCM, clock or END ownership") {
+                var a = record(0, value: 0.125, device: 100)
+                a.hostTime = 100; a.timestampFlags = 3
+                var b = record(1, value: 0.875, rate: 96_000, device: 101)
+                b.hostTime = 500; b.timestampFlags = 3
+                let records = [a, b,
+                    record(2, .close, rate: 96_000, device: 101),
+                    record(3, .close, device: 100),
+                    record(4, .end, frames: 0, rate: 96_000, device: 101),
+                    record(5, .end, frames: 0, device: 100)]
+                for selected: UInt32 in [100, 101] {
+                    let assembler = ProducerCompletionAssembler(generation: 1, deliveryDeviceID: selected)
+                    var delivered: [ProducerCompletedInterval] = []
+                    for event in records { delivered += try assembler.ingest(event) }
+                    try diagnosticRequire(delivered.count == 2 && delivered.allSatisfy { $0.device == selected }
+                        && delivered.filter(\.terminal).count == 1, "Other profile's PCM or END entered the session")
+                    let first = delivered[0]
+                    try diagnosticRequire(first.clock?.deviceID == selected && first.contributions.count == 1
+                        && first.contributions[0].samples.allSatisfy { $0 == (selected == 100 ? 0.125 : 0.875) },
+                        "Source clock or samples crossed profiles")
+                    var clocks = AudioClockDrift(started: origin)
+                    for interval in delivered {
+                        if let clock = interval.clock { clocks.observeSource(clock) }
+                    }
+                    try diagnosticRequire(clocks.state(at: origin) == .warming, "Profile overlap poisoned clock history")
+                    try diagnosticRequire(assembler.statistics.records == 6 && assembler.pendingFrames == 0,
+                        "Filtering bypassed shared-transport sequencing or drainage")
+                }
+            },
+            check("PC23", "Profile filtering still waits for reservations belonging to other endpoints") {
+                let assembler = ProducerCompletionAssembler(generation: 1, deliveryDeviceID: 100)
+                let staged = try assembler.ingest(record(1, device: 100))
+                let closed = try assembler.ingest(record(2, .close, device: 100))
+                try diagnosticRequire(staged.isEmpty && closed.isEmpty, "Profile filter skipped a missing transport reservation")
+                let released = try assembler.ingest(record(0, device: 101))
+                try diagnosticRequire(released.count == 1 && released[0].device == 100,
+                    "Shared sequencing lost the selected profile interval")
+                let other = try assembler.ingest(record(3, .end, frames: 0, device: 101))
+                try diagnosticRequire(other.isEmpty, "Other profile's terminal tail reached the selected writer")
+            },
             check("PC21", "Fast source validation still rejects NaN and infinite audio") {
                 for value in [Float.nan, .infinity, -.infinity] {
                     let assembler = ProducerCompletionAssembler(generation: 1)

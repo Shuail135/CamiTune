@@ -45,12 +45,14 @@ struct ProfileEndpointPublicationRequest: Sendable {
     let descriptors: [UUID: ProfileRoutingDescriptor]
     let endpoints: [ProfileEndpointState]
     init(profiles: [DeviceProfile], activeProfileID: UUID?, defaultOutputUID: String?,
+         connectedOutputUIDs: Set<String>,
          additionallyVisible: Set<UUID> = [], preparedDescriptors: [UUID: ProfileRoutingDescriptor] = [:]) throws {
         let resolved = ProfileRoutingDescriptor.descriptors(for: profiles.filter { preparedDescriptors[$0.id] == nil })
             .merging(preparedDescriptors) { _, prepared in prepared }
         descriptors = resolved
         let desired = ProfileRoutingDescriptor.visibleProfileIDs(profiles: profiles, activeProfileID: activeProfileID,
-            defaultOutputUID: defaultOutputUID, additionallyVisible: additionallyVisible)
+            defaultOutputUID: defaultOutputUID, connectedOutputUIDs: connectedOutputUIDs,
+            additionallyVisible: additionallyVisible)
         endpoints = try desired.sorted { $0.uuidString < $1.uuidString }.compactMap { id in
             guard let descriptor = resolved[id] else { return nil }
             return try ProfileEndpointState(payload: descriptor.formatPayload())
@@ -80,6 +82,8 @@ enum ProfileEndpointPublication {
         }
         try backend.checkSupport()
         let previous = try backend.current()
+        // Display names are metadata. HAL clients may retain old labels after
+        // the driver has acknowledged a rename; that must not block activation.
         if equivalent(previous, desired) { return }
         let defaultUID = try backend.defaultOutputUID()
         do {
@@ -186,6 +190,14 @@ struct NativeProfileEndpointBackend: ProfileEndpointPublicationBackend {
         let status = AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil,
             UInt32(MemoryLayout<AudioObjectID>.size), &id)
         guard status == noErr else { throw ProfileSettingsError.runtime("The macOS output could not be restored (\(status)).") }
+        let result = CoreAudioConditionWaiter.waitSynchronously(backend: .live, event: .defaultOutput, timeout: .seconds(3)) {
+            (try? self.defaultOutputUID()) == uid
+        }
+        waitObserver(result)
+        if result.source == .cancelled { throw CancellationError() }
+        guard result.source != .timedOut else {
+            throw ProfileSettingsError.runtime("macOS did not finish restoring the selected profile audio device.")
+        }
     }
 
     private static func resolve(_ uid: String) -> AudioObjectID {

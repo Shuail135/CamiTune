@@ -104,7 +104,7 @@ struct PerAppAudioList: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(AppAudioSection.allCases) { section in
                     applicationSection(section)
                 }

@@ -73,8 +73,8 @@ typedef struct SABRRealtimeClientIdentity {
 } SABRRealtimeClientIdentity;
 
 static SABRRealtimeClientIdentity gRealtimeClients[SABR_TRANSPORT_CLIENT_CAPACITY];
-// AddDeviceClient can precede the first StartIO (or survive a profile hide).
-// ProcessOutput still needs that registration's PID in either case.
+// AddDeviceClient can precede the first StartIO. Preserve that PID for early
+// callbacks, but suspend attribution while the endpoint is unpublished.
 #define SABR_REGISTERED_REALTIME_CAPACITY 512
 static SABRRealtimeClientIdentity gRealtimeRegisteredClients[SABR_REGISTERED_REALTIME_CAPACITY];
 static uint64_t gClientGeneration = 0;
@@ -724,6 +724,11 @@ OSStatus sabr_driver_transport_start_client(AudioObjectID deviceObjectID, uint32
         // Refuse IO before it starts rather than delivering unattributed PID-0 audio.
         status = kAudioHardwareIllegalOperationError;
     }
+    if (status == noErr && registration->realtimeSlot < SABR_REGISTERED_REALTIME_CAPACITY) {
+        // A retained HAL registration may resume without another AddDeviceClient.
+        sabr_store_realtime_identity_locked(
+            &gRealtimeRegisteredClients[registration->realtimeSlot], &registration->identity);
+    }
     syslog(LOG_NOTICE, "SABR client start device=%u client=%u status=%d pid=%d",
         (unsigned)deviceObjectID, (unsigned)clientID, (int)status,
         registration ? (int)registration->identity.processID : 0);
@@ -788,6 +793,16 @@ void sabr_driver_transport_suspend_device_clients(AudioObjectID deviceObjectID) 
     /* HAL can keep a registered client across a profile hide/show. Stop its
      * real-time attribution now, but allow a later StartIO to reactivate the
      * same registration even if HAL does not call AddDeviceClient again. */
+    for (SABRRegisteredClient* item = gRegisteredClients; item; item = item->next) {
+        if (item->identity.deviceObjectID != deviceObjectID ||
+            item->realtimeSlot >= SABR_REGISTERED_REALTIME_CAPACITY) { continue; }
+        // Keep the slot reserved until RemoveDeviceClient. Marking it empty
+        // would let a new registration reuse it while this one still owns it.
+        SABRDriverClient suspended = item->identity;
+        suspended.processID = 0;
+        sabr_store_realtime_identity_locked(
+            &gRealtimeRegisteredClients[item->realtimeSlot], &suspended);
+    }
     for (uint32_t index = 0; index < SABR_TRANSPORT_CLIENT_CAPACITY; ++index) {
         if (!gClients[index].occupied || gClients[index].deviceObjectID != deviceObjectID) {
             continue;

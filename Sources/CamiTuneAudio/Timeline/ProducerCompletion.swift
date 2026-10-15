@@ -153,10 +153,14 @@ package final class ProducerCompletionAssembler {
     package private(set) var fault: ProducerCompletionFault?
     private let maximumFrames: Int
     private let maximumRecords: Int
+    private let deliveryDeviceID: UInt32?
 
-    package init(generation: UInt64, maximumFrames: Int = 65_536, maximumRecords: Int = 1024) {
+    package init(generation: UInt64, maximumFrames: Int = 65_536, maximumRecords: Int = 1024,
+                 deliveryDeviceID: UInt32? = nil) {
         precondition((1...262_144).contains(maximumFrames) && (1...1024).contains(maximumRecords))
+        precondition(deliveryDeviceID != 0)
         self.generation = generation; self.maximumFrames = maximumFrames; self.maximumRecords = maximumRecords
+        self.deliveryDeviceID = deliveryDeviceID
     }
 
     package var pendingFrames: Int { epochs.values.reduce(0) { $0 + $1.pieces.reduce(0) { $0 + $1.count } } }
@@ -241,7 +245,11 @@ package final class ProducerCompletionAssembler {
         lastEvidenceReceived = max(lastEvidenceReceived ?? record.received, record.received)
         largestObservedPacketFrames = max(largestObservedPacketFrames, record.frames)
         observedSampleRate = record.rate
-        return completed
+        // Reservations span every endpoint in the shared transport. Validate
+        // and sequence all of them, then deliver only the owned profile's PCM,
+        // clock and END. A newly selected profile can start IO before the old
+        // runtime retires; it must never enter the old writer's clock history.
+        return completed.filter { deliveryDeviceID == nil || $0.device == deliveryDeviceID }
     }
 
     private func apply(_ record: ProducerCompletionRecord) throws -> [ProducerCompletedInterval] {

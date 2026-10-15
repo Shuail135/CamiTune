@@ -232,7 +232,7 @@ struct AutoEQSearchField<Entry: Identifiable>: View {
         .onChange(of: isFocused) { focused in
             if focused { showsResults = true }
         }
-        .background(OutsideClickObserver { dismissResults() })
+        .background(OutsideClickObserver(textFieldFocused: isFocused) { dismissResults() })
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in dismissResults() }
     }
 

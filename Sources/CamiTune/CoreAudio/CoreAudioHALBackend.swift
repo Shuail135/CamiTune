@@ -1,5 +1,16 @@
 import Foundation
 import CoreAudio
+import SystemAudioBridgeC
+
+struct CoreAudioBridgeCapabilities: Sendable {
+    let transportSupported: Bool
+    let profileFormatVersion: UInt32
+    let sourceDeviceID: UInt32
+
+    var supportsProfileRouting: Bool {
+        transportSupported && profileFormatVersion == 1 && sourceDeviceID != 0
+    }
+}
 
 /// Internal I/O adapter. It never chooses a profile or owns runtime transitions.
 struct CoreAudioHALBackend: Sendable {
@@ -8,6 +19,10 @@ struct CoreAudioHALBackend: Sendable {
     var readDefaultOutput: @Sendable () -> String?
     var readRateCapabilities: @Sendable (AudioDeviceInfo) -> CoreAudioRateCapabilities
     var subscribe: @Sendable (CoreAudioEvent, @escaping @Sendable () -> Void) -> CoreAudioListenerToken?
+
+    var bridgeCapabilities: @Sendable (AudioDeviceInfo) -> CoreAudioBridgeCapabilities = { _ in
+        .init(transportSupported: false, profileFormatVersion: 0, sourceDeviceID: 0)
+    }
 
     var publishEndpoints: @Sendable (AudioDeviceInfo, [ProfileEndpointState]) throws -> [CoreAudioWaitResult] = { _, _ in throw CoreAudioService.AudioError.deviceNotFound("Unconfigured publisher") }
     var setDefaultOutput: @Sendable (AudioDeviceInfo) throws -> Void = { _ in throw CoreAudioService.AudioError.deviceNotFound("Unconfigured backend") }
@@ -32,6 +47,11 @@ struct CoreAudioHALBackend: Sendable {
                 var address = event.address
                 _ = AudioObjectRemovePropertyListenerBlock(event.objectID, &address, queue, block)
             }
+        },
+        bridgeCapabilities: { bridge in
+            .init(transportSupported: sabr_client_transport_is_supported(bridge.objectID),
+                profileFormatVersion: sabr_client_profile_format_version(bridge.objectID),
+                sourceDeviceID: sabr_client_source_device_id(bridge.objectID))
         },
         publishEndpoints: { bridge, endpoints in
             let log = CoreAudioWaitLog()

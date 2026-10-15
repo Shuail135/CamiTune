@@ -81,6 +81,7 @@ final class SetupPresentationState: ObservableObject {
     @Published var isPresented = false
     @Published var componentNotice: String?
     private var checkedInitialPresentation = false
+    private var lastNotifiedComponents: [DependencyManager.Status]?
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) { self.defaults = defaults }
@@ -99,6 +100,10 @@ final class SetupPresentationState: ObservableObject {
 
     func checkComponents(camilla: DependencyManager.Status, driver: DependencyManager.Status) {
         guard !isPresented else { return }
+        let components = [camilla, driver]
+        guard components.allSatisfy({ status in
+            switch status { case .checking, .working: return false; default: return true }
+        }) else { return }
         func requiresSetup(_ status: DependencyManager.Status) -> Bool {
             switch status {
             case .missing, .failed: return true
@@ -106,7 +111,12 @@ final class SetupPresentationState: ObservableObject {
             }
         }
         if requiresSetup(camilla) || requiresSetup(driver) {
+            guard components != lastNotifiedComponents else { return }
+            lastNotifiedComponents = components
             componentNotice = "An audio driver or managed component is missing or needs repair. Open Setup to check and update CamiTune’s components."
+        } else {
+            lastNotifiedComponents = nil
+            componentNotice = nil
         }
     }
 }
@@ -115,15 +125,30 @@ final class SetupPresentationState: ObservableObject {
 struct SetupPresentationModifier: ViewModifier {
     let state: AppState
     @ObservedObject var presentation: SetupPresentationState
+    @ObservedObject private var dependencies: DependencyManager
+
+    init(state: AppState, presentation: SetupPresentationState) {
+        self.state = state
+        self.presentation = presentation
+        _dependencies = ObservedObject(wrappedValue: state.dependencies)
+    }
+
+    private func checkComponents() {
+        guard !dependencies.setupInProgress else { return }
+        presentation.checkComponents(camilla: dependencies.camillaDSPStatus, driver: dependencies.audioDriverStatus)
+    }
 
     func body(content: Content) -> some View {
         content
             .task {
-                guard presentation.begin(hasExistingProfiles: !state.profiles.profiles.isEmpty) else { return }
-                await state.dependencies.refreshWithoutBlockingUI()
-                presentation.checkComponents(camilla: state.dependencies.camillaDSPStatus,
-                    driver: state.dependencies.audioDriverStatus)
+                if presentation.begin(hasExistingProfiles: !state.profiles.profiles.isEmpty) {
+                    await state.dependencies.refreshWithoutBlockingUI()
+                }
+                checkComponents()
             }
+            .onChange(of: dependencies.camillaDSPStatus) { _ in checkComponents() }
+            .onChange(of: dependencies.audioDriverStatus) { _ in checkComponents() }
+            .onChange(of: dependencies.setupInProgress) { _ in checkComponents() }
             .sheet(isPresented: $presentation.isPresented) {
                 SetupPanel(state: state)
             }

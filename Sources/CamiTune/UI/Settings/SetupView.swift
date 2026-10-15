@@ -25,8 +25,7 @@ struct SetupView: View {
                     detail: "UID-capable build bundled with CamiTune; installed under ~/Library/Application Support/CamiTune/bin.",
                     action: {
                         Task {
-                            guard await state.prepareForDependencyRepair() else { return }
-                            await dependencies.installCamillaDSP()
+                            await dependencies.installCamillaDSP(preparing: state.prepareForDependencyRepair)
                         }
                     }
                 )
@@ -37,14 +36,12 @@ struct SetupView: View {
                     detail: "Installed under ~/Library/Application Support/CamiTune/Drivers; installation asks once for macOS administrator approval.",
                     action: {
                         Task {
-                            guard await state.prepareForDependencyRepair() else { return }
-                            await dependencies.installAudioDriver()
+                            await dependencies.installAudioDriver(preparing: state.prepareForDependencyRepair)
                         }
                     },
                     uninstall: {
                         Task {
-                            guard await state.prepareForDependencyRepair() else { return }
-                            await dependencies.uninstallAudioDriver()
+                            await dependencies.uninstallAudioDriver(preparing: state.prepareForDependencyRepair)
                         }
                     }
                 )
@@ -52,8 +49,7 @@ struct SetupView: View {
                 HStack {
                     Button("Install / Repair Everything") {
                         Task {
-                            guard await state.prepareForDependencyRepair() else { return }
-                            await dependencies.installEverything()
+                            await dependencies.installEverything(preparing: state.prepareForDependencyRepair)
                         }
                     }
                     .buttonStyle(.borderedProminent)

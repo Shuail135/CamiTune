@@ -1,6 +1,7 @@
 import CamiTuneAudio
 import CamiTuneDomain
 import Foundation
+import SystemAudioBridgeC
 
 @MainActor
 private final class CoordinatorFixture {
@@ -332,6 +333,256 @@ extension DeveloperSelfTests {
                     try diagnosticRequire(f.state.isActive && f.owner.maximumWorkerCount == 1, "Startup worker did not settle")
                     await f.cleanUp()
                 } catch { gate.release(); await f.cleanUp(); throw error }
+            },
+            check("C41", "Mode 2 rename publishes before selection and preserves active ownership") {
+                for active in [false, true] {
+                    var endpoints: [ProfileEndpointState] = []
+                    let f = try CoordinatorFixture { services, fake in
+                        services.synchronizeRouting = { profiles, activeID, visible, descriptors in
+                            endpoints = try ProfileEndpointPublicationRequest(profiles: profiles, activeProfileID: activeID,
+                                defaultOutputUID: fake.defaultUID,
+                                connectedOutputUIDs: fake.scenario.outputPresent ? [fake.output.id] : [], additionallyVisible: visible,
+                                preparedDescriptors: descriptors).endpoints
+                            fake.record("synchronize routing")
+                        }
+                    }
+                    do {
+                        var profile = f.profile; profile.autoActivateWhenProfileDeviceSelected = true
+                        f.box.profiles.profiles = [profile]
+                        if active { await f.state.activate(profile: profile) }
+                        let owner = f.owner.currentOwnershipID, route = f.fake.defaultUID
+                        let starts = f.fake.events.filter { $0.hasPrefix("start ") }
+                        try await f.state.commitProfileRename(id: profile.id, to: "Renamed Mode 2")
+                        let uid = ProfileRoutingDescriptor.uid(for: profile.id)
+                        try diagnosticRequire(endpoints.count == 1 && endpoints[0].uid == uid
+                            && endpoints[0].name == "Renamed Mode 2", "Rename left stale endpoint metadata")
+                        // A driver device-list refresh must retain the current
+                        // session when the selected endpoint identity is unchanged.
+                        if active { await f.state.monitorRouting() }
+                        try diagnosticRequire(f.fake.defaultUID == route && f.owner.currentOwnershipID == owner
+                            && starts == f.fake.events.filter { $0.hasPrefix("start ") }, "Rename redirected or restarted audio")
+                        if !active {
+                            f.fake.defaultUID = uid
+                            await f.state.monitorRouting()
+                            try diagnosticRequire(f.state.activeProfileID == profile.id && f.fake.defaultUID == uid,
+                                "The first selection after rename failed to activate")
+                        }
+                        await f.cleanUp()
+                    } catch { await f.cleanUp(); throw error }
+                }
+            },
+            fixture("C42", "Repair waits for a provisional activation to retire on the first request") { f in
+                let gate = DiagnosticManualGate(); defer { gate.release(); f.state.dependencies.setupInProgress = false }
+                f.fake.scenario.routingGate = gate
+                let activation = Task { await f.state.activate(profile: f.profile) }
+                try await gate.waitUntilEntered()
+                let generation = f.owner.desiredRuntime.generation
+                f.state.dependencies.setupInProgress = true
+                let repair = Task { await f.state.prepareForDependencyRepair() }
+                try await coordinatorWait { f.owner.desiredRuntime.generation > generation }
+                gate.release()
+                let ready = await repair.value
+                await activation.value
+                try diagnosticRequire(ready && !f.state.isActive && !f.state.transitionInProgress && f.fake.resources.isEmpty,
+                    "Repair needed another click or left activation resources running")
+            },
+            fixture("C43", "Repair suppresses automatic and manual activation until it completes") { f in
+                var profile = f.profile; profile.autoActivateWhenProfileDeviceSelected = true
+                f.box.profiles.profiles = [profile]
+                f.fake.defaultUID = ProfileRoutingDescriptor.uid(for: profile.id)
+                f.state.dependencies.setupInProgress = true
+                defer { f.state.dependencies.setupInProgress = false }
+                await f.state.monitorRouting()
+                await f.state.activate(profile: profile)
+                try diagnosticRequire(!f.state.isActive && !f.fake.events.contains("start engine"), "Setup raced audio activation")
+                f.state.dependencies.setupInProgress = false
+                await f.state.monitorRouting()
+                try diagnosticRequire(f.state.activeProfileID == profile.id, "Activation stayed blocked after setup")
+            },
+            fixture("C44", "Explicit profile device selection reports activation failure") { f in
+                var profile = f.profile; profile.autoActivateWhenProfileDeviceSelected = true
+                f.box.profiles.profiles = [profile]
+                f.fake.defaultUID = ProfileRoutingDescriptor.uid(for: profile.id)
+                f.fake.scenario.engineFails = true
+                await f.state.monitorRouting()
+                try diagnosticRequire(!f.state.isActive && f.state.errorMessage != nil,
+                    "Explicit device selection silently fell back")
+            },
+            check("C45", "First profile selection drains existing producer IO and completes activation") {
+                var attempts = 0
+                let f = try CoordinatorFixture { services, fake in
+                    services.startTransport = { _, _, _, _ in
+                        attempts += 1
+                        if fake.defaultUID != fake.output.id || attempts < 5 {
+                            throw SystemAudioBridgeTransport.TransportError.coreAudio(SABR_TRANSPORT_PRODUCER_ACTIVE_ERROR)
+                        }
+                        fake.start("transport")
+                    }
+                }
+                do {
+                    var profile = f.profile; profile.autoActivateWhenProfileDeviceSelected = true
+                    f.box.profiles.profiles = [profile]
+                    try await f.state.commitProfileRename(id: profile.id, to: "Renamed with playing clients")
+                    let uid = ProfileRoutingDescriptor.uid(for: profile.id)
+                    f.fake.defaultUID = uid
+                    await f.state.monitorRouting()
+                    try diagnosticRequire(f.state.activeProfileID == profile.id && f.fake.defaultUID == uid
+                        && f.state.errorMessage == nil && attempts == 5, "Selection did not recover after the producer stopped")
+                    let order = ["start volume", "prepare volume", "restore output", "start transport", "select routing"]
+                        .compactMap { f.fake.events.firstIndex(of: $0) }
+                    try diagnosticRequire(order.count == 5 && order == order.sorted(), "Unsafe producer handoff ordering")
+                    try diagnosticRequire(f.fake.events.filter { $0 == "start engine" }.count == 1,
+                        "Producer recovery restarted the engine")
+                    await f.cleanUp()
+                } catch { await f.cleanUp(); throw error }
+            },
+            check("C46", "Pinned producer times out with no leaked resources or repeated output switches") {
+                var attempts = 0
+                let f = try CoordinatorFixture { services, _ in
+                    services.startTransport = { _, _, _, _ in
+                        attempts += 1
+                        throw SystemAudioBridgeTransport.TransportError.coreAudio(SABR_TRANSPORT_PRODUCER_ACTIVE_ERROR)
+                    }
+                }
+                do {
+                    f.fake.defaultUID = ProfileRoutingDescriptor.uid(for: f.profile.id)
+                    await f.state.activate(profile: f.profile)
+                    try diagnosticRequire(!f.state.isActive && f.fake.resources.isEmpty && attempts == 31,
+                        "Producer recovery did not stop within its bounded retry budget")
+                    try diagnosticRequire(f.fake.defaultUID == f.fake.output.id && f.state.errorMessage?.contains("sact") == true
+                        && f.fake.events.filter { $0 == "restore output" }.count == 1, "Timeout lost the error or kept switching outputs")
+                    await f.cleanUp()
+                } catch { await f.cleanUp(); throw error }
+            },
+            check("C47", "Stop or external output choice supersedes producer recovery") {
+                for manualStop in [true, false] {
+                    let gate = DiagnosticManualGate(); defer { gate.release() }
+                    let f = try CoordinatorFixture { services, _ in
+                        services.startTransport = { _, _, _, _ in
+                            throw SystemAudioBridgeTransport.TransportError.coreAudio(SABR_TRANSPORT_PRODUCER_ACTIVE_ERROR)
+                        }
+                        services.sleep = { _ in try await gate.enter() }
+                    }
+                    do {
+                        f.fake.defaultUID = ProfileRoutingDescriptor.uid(for: f.profile.id)
+                        let activation = Task { await f.state.activate(profile: f.profile) }
+                        try await gate.waitUntilEntered()
+                        if manualStop { await f.state.deactivate() }
+                        else { f.fake.defaultUID = "external.choice" }
+                        gate.release(); await activation.value
+                        try diagnosticRequire(!f.state.isActive && f.fake.resources.isEmpty
+                            && !f.fake.events.contains("notify activation"), "Recovery ignored a superseding choice")
+                        if !manualStop { try diagnosticRequire(f.fake.defaultUID == "external.choice", "Recovery stole the user's new output") }
+                        await f.cleanUp()
+                    } catch { gate.release(); await f.cleanUp(); throw error }
+                }
+            },
+            check("C48", "Selecting a renamed mode 2 profile replaces the old route in one monitor pass") {
+                var previousRouteFault: String?
+                let f = try CoordinatorFixture { services, fake in
+                    services.transportError = { previousRouteFault }
+                    services.stopTransport = { previousRouteFault = nil; fake.stop("transport") }
+                }
+                do {
+                    await f.state.activate(profile: f.profile)
+                    var next = f.otherProfile(); next.autoActivateWhenProfileDeviceSelected = true
+                    f.box.profiles.profiles[f.box.profiles.profiles.count - 1] = next
+                    try await f.state.commitProfileRename(id: next.id, to: "Renamed next profile")
+                    f.fake.defaultUID = ProfileRoutingDescriptor.uid(for: next.id)
+                    previousRouteFault = "Audio paused: source device changed inside the delivery session."
+                    await f.state.monitorRouting()
+                    try diagnosticRequire(f.state.activeProfileID == next.id
+                        && f.fake.defaultUID == ProfileRoutingDescriptor.uid(for: next.id)
+                        && f.state.errorMessage == nil, "Old-route failure displaced the selected profile")
+                    try diagnosticRequire(f.fake.events.filter { $0 == "stop transport" }.count == 1
+                        && f.fake.events.filter { $0 == "start transport" }.count == 2, "Profile switch duplicated or skipped lifecycle work")
+                    await f.cleanUp()
+                } catch { await f.cleanUp(); throw error }
+            },
+            fixture("C49", "A later physical output choice takes precedence over an old-route fault", configure: { services, fake in
+                services.transportError = { fake.defaultUID == "external.choice" ? "Old route fault" : nil }
+            }) { f in
+                await f.state.activate(profile: f.profile)
+                f.fake.defaultUID = "external.choice"
+                await f.state.monitorRouting()
+                try diagnosticRequire(!f.state.isActive && f.fake.resources.isEmpty
+                    && f.fake.defaultUID == "external.choice" && f.state.errorMessage == nil,
+                    "A retiring session overwrote the user's output choice")
+            },
+            check("C50", "Startup and device-list recovery publish mode 2 endpoints without activation") {
+                var endpoints: [ProfileEndpointState] = [], attempts = 0
+                var ready = false
+                let f = try CoordinatorFixture { services, fake in
+                    services.hasSnapshot = { ready }
+                    services.publishedProfileUIDs = { Set(endpoints.map(\.uid)) }
+                    services.synchronizeRouting = { profiles, active, visible, descriptors in
+                        attempts += 1
+                        if attempts == 1 { throw fake.fail("Driver is still starting") }
+                        endpoints = try ProfileEndpointPublicationRequest(profiles: profiles, activeProfileID: active,
+                            defaultOutputUID: fake.defaultUID, connectedOutputUIDs: [fake.output.id],
+                            additionallyVisible: visible, preparedDescriptors: descriptors).endpoints
+                    }
+                }
+                do {
+                    var first = f.profile, second = f.otherProfile()
+                    first.autoActivateWhenProfileDeviceSelected = true; second.autoActivateWhenProfileDeviceSelected = true
+                    f.box.profiles.profiles = [first, second]
+                    await f.state.monitorRouting()
+                    try diagnosticRequire(attempts == 0, "Published before the initial device snapshot")
+                    ready = true
+                    f.owner.requestStartupPresentation(publishProfiles: true); await f.owner.waitUntilSettled()
+                    try diagnosticRequire(endpoints.isEmpty && attempts == 1, "Startup failure was not exercised")
+                    await f.state.monitorRouting()
+                    try diagnosticRequire(endpoints.count == 2 && attempts == 2, "Startup failure required manual activation")
+                    await f.state.monitorRouting()
+                    try diagnosticRequire(attempts == 2, "Healthy device list was republished")
+                    endpoints.removeLast(); await f.state.monitorRouting()
+                    try diagnosticRequire(endpoints.count == 2, "Partial device list was treated as complete")
+                    endpoints = []; await f.state.monitorRouting()
+                    try diagnosticRequire(endpoints.count == 2 && !f.state.isActive && f.fake.resources.isEmpty
+                        && f.fake.defaultUID == f.profile.outputDeviceUID, "Recovery changed the selected output or activated audio")
+                    await f.cleanUp()
+                } catch { await f.cleanUp(); throw error }
+            },
+            check("C51", "Disconnected profiles disappear and reconnect without activating audio") {
+                var endpoints: [ProfileEndpointState] = []
+                let f = try CoordinatorFixture { services, fake in
+                    services.publishedProfileUIDs = { Set(endpoints.map(\.uid)) }
+                    services.synchronizeRouting = { profiles, active, visible, descriptors in
+                        if !fake.scenario.outputPresent {
+                            try diagnosticRequire(fake.resources.isEmpty, "Removed endpoints before retiring the disconnected route")
+                        }
+                        endpoints = try ProfileEndpointPublicationRequest(profiles: profiles, activeProfileID: active,
+                            defaultOutputUID: fake.defaultUID,
+                            connectedOutputUIDs: fake.scenario.outputPresent ? [fake.output.id] : [],
+                            additionallyVisible: visible, preparedDescriptors: descriptors).endpoints
+                    }
+                }
+                do {
+                    var profile = f.profile; profile.autoActivateWhenProfileDeviceSelected = true
+                    var absent = f.otherProfile(); absent.outputDeviceUID = "unplugged.output"
+                    absent.autoActivateWhenProfileDeviceSelected = true
+                    f.box.profiles.profiles = [profile, absent]
+                    await f.state.monitorRouting()
+                    try diagnosticRequire(endpoints.map(\.uid) == [ProfileRoutingDescriptor.uid(for: profile.id)],
+                        "An unavailable profile was published at startup")
+                    f.fake.scenario.outputPresent = false; await f.state.monitorRouting()
+                    try diagnosticRequire(endpoints.isEmpty, "Inactive disconnected profile remained visible")
+                    f.fake.scenario.outputPresent = true; await f.state.monitorRouting()
+                    try diagnosticRequire(endpoints.count == 1 && !f.state.isActive, "Reconnection required activation")
+                    await f.state.activate(profile: profile)
+                    f.fake.scenario.outputPresent = false; await f.state.monitorRouting()
+                    try diagnosticRequire(endpoints.isEmpty && !f.state.isActive && f.fake.resources.isEmpty,
+                        "The active/default endpoint survived disconnection")
+                    // HAL can still report the removed virtual UID briefly.
+                    await f.state.monitorRouting()
+                    try diagnosticRequire(endpoints.isEmpty && !f.state.isActive, "A stale default resurrected the disconnected profile")
+                    f.fake.defaultUID = "external.choice"; f.fake.scenario.outputPresent = true
+                    await f.state.monitorRouting()
+                    try diagnosticRequire(endpoints.count == 1 && !f.state.isActive && f.fake.defaultUID == "external.choice",
+                        "Reconnection stole the current output")
+                    await f.cleanUp()
+                } catch { await f.cleanUp(); throw error }
             },
             fixture("C36", "Disabled-profile maintenance cannot redirect an owned audio session") { f in
                 await f.state.activate(profile: f.profile)

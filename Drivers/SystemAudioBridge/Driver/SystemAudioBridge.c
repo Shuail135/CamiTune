@@ -135,6 +135,8 @@ enum
     kObjectID_ProfileVolume_Last        = 107,
     kObjectID_ProfileMute_First         = 108,
     kObjectID_ProfileMute_Last          = 139,
+    kObjectID_ProfileSource_First       = 140,
+    kObjectID_ProfileSource_Last        = 171,
 };
 
 #define kProfileDevice_Count 32
@@ -155,6 +157,10 @@ _Static_assert(
 _Static_assert(
     kObjectID_ProfileMute_Last - kObjectID_ProfileMute_First + 1 == kProfileDevice_Count,
     "profile mute ID range must match profile capacity"
+);
+_Static_assert(
+    kObjectID_ProfileSource_Last - kObjectID_ProfileSource_First + 1 == kProfileDevice_Count,
+    "profile source ID range must match profile capacity"
 );
 
 enum
@@ -623,6 +629,11 @@ static bool is_profile_mute_id(AudioObjectID objectID)
         objectID <= kObjectID_ProfileMute_Last;
 }
 
+static bool is_profile_source_id(AudioObjectID objectID)
+{
+    return objectID >= kObjectID_ProfileSource_First && objectID <= kObjectID_ProfileSource_Last;
+}
+
 static UInt32 profile_device_index(AudioObjectID objectID)
 {
     return (UInt32)(objectID - kObjectID_ProfileDevice_First);
@@ -648,10 +659,16 @@ static AudioObjectID profile_mute_id(UInt32 index)
     return kObjectID_ProfileMute_First + index;
 }
 
+static AudioObjectID profile_source_id(UInt32 index)
+{
+    return kObjectID_ProfileSource_First + index;
+}
+
 static UInt32 profile_child_index(AudioObjectID objectID)
 {
     if(is_profile_stream_id(objectID)) { return (UInt32)(objectID - kObjectID_ProfileStream_First); }
     if(is_profile_volume_id(objectID)) { return (UInt32)(objectID - kObjectID_ProfileVolume_First); }
+    if(is_profile_source_id(objectID)) { return (UInt32)(objectID - kObjectID_ProfileSource_First); }
     return (UInt32)(objectID - kObjectID_ProfileMute_First);
 }
 
@@ -677,7 +694,7 @@ static bool is_profile_stream_object(AudioObjectID objectID)
 
 static bool is_profile_control_object(AudioObjectID objectID)
 {
-    return (is_profile_volume_id(objectID) || is_profile_mute_id(objectID)) &&
+    return (is_profile_volume_id(objectID) || is_profile_mute_id(objectID) || is_profile_source_id(objectID)) &&
         profile_slot_is_live(profile_child_index(objectID));
 }
 
@@ -765,7 +782,7 @@ static Float64 endpoint_available_rate(AudioObjectID deviceID, UInt32 index)
 
 static AudioObjectID control_owner_device(AudioObjectID controlObjectID)
 {
-    return (is_profile_volume_id(controlObjectID) || is_profile_mute_id(controlObjectID))
+    return (is_profile_volume_id(controlObjectID) || is_profile_mute_id(controlObjectID) || is_profile_source_id(controlObjectID))
         ? profile_owner_device(controlObjectID)
         : kObjectID_Device;
 }
@@ -1086,8 +1103,15 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
 
     if(gPlugIn_Host != NULL)
     {
-        AudioObjectPropertyAddress nameAddress = {
-            kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain
+        // The name getter supports all three scopes. HAL clients may cache the
+        // output-scoped name independently of the global device name, so a
+        // rename must invalidate each of them without changing device identity.
+        // Avoid DeviceHasChanged for metadata edits; it also invalidates device
+        // configuration. Control Center observes the source selector below.
+        AudioObjectPropertyAddress nameAddresses[] = {
+            { kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain },
+            { kAudioObjectPropertyName, kAudioObjectPropertyScopeInput, kAudioObjectPropertyElementMain },
+            { kAudioObjectPropertyName, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain },
         };
         if(deviceListChanged)
         {
@@ -1125,9 +1149,19 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
                 gPlugIn_Host->PropertiesChanged(
                     gPlugIn_Host,
                     profile_device_id(slot),
-                    1,
-                    &nameAddress
+                    sizeof(nameAddresses) / sizeof(nameAddresses[0]),
+                    nameAddresses
                 );
+                // HAL maps this output selector to the device's data source.
+                // Its single item keeps its identity; only its display name
+                // changes. Refresh both the name and current-source cache so
+                // Sound menu clients re-read the label without restarting IO.
+                AudioObjectPropertyAddress sourceAddresses[] = {
+                    { kAudioSelectorControlPropertyItemName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain },
+                    { kAudioSelectorControlPropertyCurrentItem, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain },
+                };
+                gPlugIn_Host->PropertiesChanged(gPlugIn_Host, profile_source_id(slot),
+                    sizeof(sourceAddresses) / sizeof(sourceAddresses[0]), sourceAddresses);
             }
         }
     }
@@ -1182,7 +1216,7 @@ static CFArrayRef copy_profile_descriptors(void)
     return profiles;
 }
 
-static CFPropertyListRef create_transport_capabilities(void)
+static CFPropertyListRef create_transport_capabilities(AudioObjectID sourceDeviceID)
 {
     CFMutableDictionaryRef capabilities = CFDictionaryCreateMutable(
         kCFAllocatorDefault,
@@ -1240,6 +1274,11 @@ static CFPropertyListRef create_transport_capabilities(void)
     if(formatVersion == NULL) { CFRelease(capabilities); return NULL; }
     CFDictionarySetValue(capabilities, CFSTR(SABR_PROFILE_KEY_VERSION), formatVersion);
     CFRelease(formatVersion);
+    int64_t sourceValue = sourceDeviceID;
+    CFNumberRef source = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &sourceValue);
+    if(source == NULL) { CFRelease(capabilities); return NULL; }
+    CFDictionarySetValue(capabilities, CFSTR(SABR_TRANSPORT_KEY_SOURCE_DEVICE_ID), source);
+    CFRelease(source);
     CFArrayRef profiles = copy_profile_descriptors();
     if(profiles == NULL) { CFRelease(capabilities); return NULL; }
     CFDictionarySetValue(capabilities, CFSTR(SABR_TRANSPORT_KEY_PROFILES), profiles);
@@ -1297,14 +1336,10 @@ static void notify_mute_control_changed(AudioObjectID volumeControlID)
 {
     if(gPlugIn_Host == NULL) { return; }
     const AudioObjectID muteControlID = mute_control_for_volume(volumeControlID);
-    const AudioObjectPropertyScope scope =
-        canonical_control_id(volumeControlID) == kObjectID_Volume_Input_Master
-            ? kAudioObjectPropertyScopeInput
-            : kAudioObjectPropertyScopeOutput;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         AudioObjectPropertyAddress address = {
             kAudioBooleanControlPropertyValue,
-            scope,
+            kAudioObjectPropertyScopeGlobal,
             kAudioObjectPropertyElementMain
         };
         gPlugIn_Host->PropertiesChanged(gPlugIn_Host, muteControlID, 1, &address);
@@ -1363,20 +1398,39 @@ static bool set_volume_control_state(
     return volumeChanged;
 }
 
+// Use one bounded enumeration for list sizes and data. In particular, a
+// disabled pitch control must not be counted and then skipped while copying:
+// HAL discovers the volume controls through these lists.
+static UInt32 copy_main_device_objects(AudioObjectPropertyScope scope, bool controlsOnly,
+    AudioObjectID* destination, UInt32 capacity)
+{
+    UInt32 count = 0;
+    pthread_mutex_lock(&gPlugIn_StateMutex);
+    for(UInt32 index = 0; index < kDevice_ObjectListSize; ++index)
+    {
+        const struct ObjectInfo* object = &kDevice_ObjectList[index];
+        if((controlsOnly && object->type != kObjectType_Control) ||
+            (scope != kAudioObjectPropertyScopeGlobal && object->scope != scope) ||
+            (object->id == kObjectID_Pitch_Adjust && !gPitch_Adjust_Enabled)) { continue; }
+        if(destination != NULL)
+        {
+            if(count == capacity) { break; }
+            destination[count] = object->id;
+        }
+        ++count;
+    }
+    pthread_mutex_unlock(&gPlugIn_StateMutex);
+    return count;
+}
+
 static UInt32 device_object_list_size(AudioObjectPropertyScope scope, AudioObjectID objectID) {
     if(is_profile_device_object(objectID))
     {
         return scope == kAudioObjectPropertyScopeGlobal ||
-            scope == kAudioObjectPropertyScopeOutput ? 3 : 0;
+            scope == kAudioObjectPropertyScopeOutput ? 4 : 0;
     }
     if(objectID != kObjectID_Device) { return 0; }
-    if(scope == kAudioObjectPropertyScopeGlobal) { return kDevice_ObjectListSize; }
-    UInt32 count = 0;
-    for(UInt32 index = 0; index < kDevice_ObjectListSize; ++index)
-    {
-        count += (kDevice_ObjectList[index].scope == scope);
-    }
-    return count;
+    return copy_main_device_objects(scope, false, NULL, 0);
 }
 
 static UInt32 device_stream_list_size(AudioObjectPropertyScope scope, AudioObjectID objectID) {
@@ -1399,16 +1453,10 @@ static UInt32 device_control_list_size(AudioObjectPropertyScope scope, AudioObje
     if(is_profile_device_object(objectID))
     {
         return scope == kAudioObjectPropertyScopeGlobal ||
-            scope == kAudioObjectPropertyScopeOutput ? 2 : 0;
+            scope == kAudioObjectPropertyScopeOutput ? 3 : 0;
     }
     if(objectID != kObjectID_Device) { return 0; }
-    UInt32 count = 0;
-    for(UInt32 index = 0; index < kDevice_ObjectListSize; ++index)
-    {
-        count += kDevice_ObjectList[index].type == kObjectType_Control &&
-            (kDevice_ObjectList[index].scope == scope || scope == kAudioObjectPropertyScopeGlobal);
-    }
-    return count;
+    return copy_main_device_objects(scope, true, NULL, 0);
 }
 
 static UInt32 related_device_count(void)
@@ -1814,16 +1862,23 @@ static OSStatus	SystemAudioBridge_PerformDeviceConfigurationChange(AudioServerPl
     switch(inChangeAction)
     {
         case ChangeAction_EnablePitchControl:
-            FailWithAction(inDeviceObjectID != kObjectID_Device, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_PerformDeviceConfigurationChange: pitch belongs to the main device");
-            pthread_mutex_lock(&gPlugIn_StateMutex);
-            gPitch_Adjust_Enabled = true;
-            pthread_mutex_unlock(&gPlugIn_StateMutex);
-            break;
         case ChangeAction_DisablePitchControl:
             FailWithAction(inDeviceObjectID != kObjectID_Device, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_PerformDeviceConfigurationChange: pitch belongs to the main device");
             pthread_mutex_lock(&gPlugIn_StateMutex);
-            gPitch_Adjust_Enabled = false;
+            bool controlsChanged = gPitch_Adjust_Enabled != (inChangeAction == ChangeAction_EnablePitchControl);
+            gPitch_Adjust_Enabled = inChangeAction == ChangeAction_EnablePitchControl;
             pthread_mutex_unlock(&gPlugIn_StateMutex);
+            if(controlsChanged && gPlugIn_Host != NULL)
+            {
+                AudioObjectPropertyAddress addresses[] = {
+                    { kAudioObjectPropertyControlList, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain },
+                    { kAudioObjectPropertyControlList, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain },
+                    { kAudioObjectPropertyOwnedObjects, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain },
+                    { kAudioObjectPropertyOwnedObjects, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain },
+                };
+                gPlugIn_Host->PropertiesChanged(gPlugIn_Host, inDeviceObjectID,
+                    sizeof(addresses) / sizeof(addresses[0]), addresses);
+            }
             break;
         case ChangeAction_SetSampleRate:
             pthread_mutex_lock(&gPlugIn_StateMutex);
@@ -3501,7 +3556,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			{
 				UInt32 slot = profile_device_index(inObjectID);
 				AudioObjectID profileObjects[] = {
-					profile_stream_id(slot), profile_volume_id(slot), profile_mute_id(slot)
+					profile_stream_id(slot), profile_volume_id(slot), profile_mute_id(slot), profile_source_id(slot)
 				};
 				for(UInt32 index = 0; index < theNumberItemsToFetch; ++index)
 				{
@@ -3510,13 +3565,8 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			}
 			else
 			{
-				for(UInt32 index = 0, written = 0; written < theNumberItemsToFetch; ++index)
-				{
-					if(kDevice_ObjectList[index].scope == inAddress->mScope || inAddress->mScope == kAudioObjectPropertyScopeGlobal)
-					{
-						((AudioObjectID*)outData)[written++] = kDevice_ObjectList[index].id;
-					}
-				}
+				theNumberItemsToFetch = copy_main_device_objects(
+					inAddress->mScope, false, outData, inDataSize / sizeof(AudioObjectID));
 			}
 
 			//	report how much we wrote
@@ -3686,7 +3736,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			{
 				UInt32 slot = profile_device_index(inObjectID);
 				AudioObjectID profileControls[] = {
-					profile_volume_id(slot), profile_mute_id(slot)
+					profile_volume_id(slot), profile_mute_id(slot), profile_source_id(slot)
 				};
 				for(UInt32 index = 0; index < theNumberItemsToFetch; ++index)
 				{
@@ -3695,16 +3745,8 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			}
 			else
 			{
-				pthread_mutex_lock(&gPlugIn_StateMutex);
-				for(UInt32 index = 0, written = 0; written < theNumberItemsToFetch; ++index)
-				{
-					if(kDevice_ObjectList[index].type == kObjectType_Control &&
-						!(!gPitch_Adjust_Enabled && kDevice_ObjectList[index].id == kObjectID_Pitch_Adjust))
-					{
-						((AudioObjectID*)outData)[written++] = kDevice_ObjectList[index].id;
-					}
-				}
-				pthread_mutex_unlock(&gPlugIn_StateMutex);
+				theNumberItemsToFetch = copy_main_device_objects(
+					inAddress->mScope, true, outData, inDataSize / sizeof(AudioObjectID));
 			}
 
 			//	report how much we wrote
@@ -3840,7 +3882,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 
 		case SABR_TRANSPORT_PROPERTY:
 			FailWithAction(inDataSize < sizeof(CFPropertyListRef), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetDevicePropertyData: not enough space for transport property list");
-			*((CFPropertyListRef*)outData) = create_transport_capabilities();
+			*((CFPropertyListRef*)outData) = create_transport_capabilities(inObjectID);
 			FailWithAction(*((CFPropertyListRef*)outData) == NULL, theAnswer = kAudioHardwareUnspecifiedError, Done, "SystemAudioBridge_GetDevicePropertyData: could not create transport capabilities");
 			*outDataSize = sizeof(CFPropertyListRef);
 			break;
@@ -4491,6 +4533,66 @@ Done:
 
 #pragma mark Control Property Operations
 
+// Each profile has one output source, named after the profile. Source controls
+// let HAL publish the display label through its standard data-source API.
+static UInt32 profile_source_property_size(const AudioObjectPropertyAddress* address)
+{
+    if(address->mScope != kAudioObjectPropertyScopeGlobal ||
+        address->mElement != kAudioObjectPropertyElementMain) { return UINT32_MAX; }
+    switch(address->mSelector) {
+        case kAudioObjectPropertyBaseClass:
+        case kAudioObjectPropertyClass:
+        case kAudioObjectPropertyOwner:
+        case kAudioControlPropertyScope:
+        case kAudioControlPropertyElement:
+        case kAudioSelectorControlPropertyCurrentItem:
+        case kAudioSelectorControlPropertyAvailableItems:
+            return sizeof(UInt32);
+        case kAudioObjectPropertyName:
+        case kAudioSelectorControlPropertyItemName:
+            return sizeof(CFStringRef);
+        case kAudioObjectPropertyOwnedObjects:
+            return 0;
+        default:
+            return UINT32_MAX;
+    }
+}
+
+static OSStatus get_profile_source_property(AudioObjectID objectID,
+    const AudioObjectPropertyAddress* address, UInt32 qualifierSize, const void* qualifier,
+    UInt32 capacity, UInt32* size, void* data)
+{
+    const UInt32 required = profile_source_property_size(address);
+    *size = 0;
+    if(required == UINT32_MAX) { return kAudioHardwareUnknownPropertyError; }
+    // Selector arrays allow callers to read a prefix, including an empty one.
+    if(address->mSelector == kAudioSelectorControlPropertyAvailableItems && capacity < required) { return noErr; }
+    if(capacity < required) { return kAudioHardwareBadPropertySizeError; }
+    UInt32 value = 0;
+    switch(address->mSelector) {
+        case kAudioObjectPropertyBaseClass: value = kAudioSelectorControlClassID; break;
+        case kAudioObjectPropertyClass: value = kAudioDataSourceControlClassID; break;
+        case kAudioObjectPropertyOwner: value = profile_owner_device(objectID); break;
+        case kAudioControlPropertyScope: value = kAudioObjectPropertyScopeOutput; break;
+        case kAudioControlPropertyElement: value = kAudioObjectPropertyElementMain; break;
+        case kAudioObjectPropertyOwnedObjects: return noErr;
+        case kAudioObjectPropertyName:
+        case kAudioSelectorControlPropertyItemName:
+            if(address->mSelector == kAudioSelectorControlPropertyItemName) {
+                if(qualifierSize != sizeof(UInt32) || qualifier == NULL) { return kAudioHardwareBadPropertySizeError; }
+                if(*(const UInt32*)qualifier != 0) { return kAudioHardwareIllegalOperationError; }
+            }
+            *(CFStringRef*)data = copy_profile_device_name(profile_owner_device(objectID));
+            if(*(CFStringRef*)data == NULL) { return kAudioHardwareBadObjectError; }
+            *size = required;
+            return noErr;
+        default: break; // CurrentItem and AvailableItems both contain source 0.
+    }
+    *(UInt32*)data = value;
+    *size = required;
+    return noErr;
+}
+
 static Boolean	SystemAudioBridge_HasControlProperty(AudioServerPlugInDriverRef inDriver, AudioObjectID inObjectID, pid_t inClientProcessID, const AudioObjectPropertyAddress* inAddress)
 {
 	//	This method returns whether or not the given object has the given property.
@@ -4504,6 +4606,7 @@ static Boolean	SystemAudioBridge_HasControlProperty(AudioServerPlugInDriverRef i
 	FailIf(inDriver != gAudioServerPlugInDriverRef, Done, "SystemAudioBridge_HasControlProperty: bad driver reference");
 	FailIf(inAddress == NULL, Done, "SystemAudioBridge_HasControlProperty: no address");
 	FailIf(!is_control_object(inObjectID), Done, "SystemAudioBridge_HasControlProperty: not a control object");
+	if(is_profile_source_id(inObjectID)) { return profile_source_property_size(inAddress) != UINT32_MAX; }
 	
 	//	Note that for each object, this driver implements all the required properties plus a few
 	//	extras that are useful but not required. There is more detailed commentary about each
@@ -4598,6 +4701,12 @@ static OSStatus	SystemAudioBridge_IsControlPropertySettable(AudioServerPlugInDri
 	FailWithAction(inAddress == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_IsControlPropertySettable: no address");
 	FailWithAction(outIsSettable == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_IsControlPropertySettable: no place to put the return value");
 	FailWithAction(!is_control_object(inObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_IsControlPropertySettable: not a control object");
+	if(is_profile_source_id(inObjectID)) {
+        if(profile_source_property_size(inAddress) == UINT32_MAX) { return kAudioHardwareUnknownPropertyError; }
+        // Selecting the sole source is a no-op, including while audio runs.
+        *outIsSettable = inAddress->mSelector == kAudioSelectorControlPropertyCurrentItem;
+        return noErr;
+    }
 	
 	//	Note that for each object, this driver implements all the required properties plus a few
 	//	extras that are useful but not required. There is more detailed commentary about each
@@ -4720,6 +4829,12 @@ static OSStatus	SystemAudioBridge_GetControlPropertyDataSize(AudioServerPlugInDr
 	FailWithAction(inAddress == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetControlPropertyDataSize: no address");
 	FailWithAction(outDataSize == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetControlPropertyDataSize: no place to put the return value");
 	FailWithAction(!is_control_object(inObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetControlPropertyDataSize: not a control object");
+	if(is_profile_source_id(inObjectID)) {
+        const UInt32 size = profile_source_property_size(inAddress);
+        if(size == UINT32_MAX) { return kAudioHardwareUnknownPropertyError; }
+        *outDataSize = size;
+        return noErr;
+    }
 	
 	//	Note that for each object, this driver implements all the required properties plus a few
 	//	extras that are useful but not required. There is more detailed commentary about each
@@ -4916,6 +5031,10 @@ static OSStatus	SystemAudioBridge_GetControlPropertyData(AudioServerPlugInDriver
 	FailWithAction(outDataSize == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetControlPropertyData: no place to put the return value size");
 	FailWithAction(outData == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_GetControlPropertyData: no place to put the return value");
 	FailWithAction(!is_control_object(inObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_GetControlPropertyData: not a control object");
+	if(is_profile_source_id(inObjectID)) {
+        return get_profile_source_property(inObjectID, inAddress, inQualifierDataSize,
+            inQualifierData, inDataSize, outDataSize, outData);
+    }
 	
 	//	Note that for each object, this driver implements all the required properties plus a few
 	//	extras that are useful but not required.
@@ -5302,6 +5421,13 @@ static OSStatus	SystemAudioBridge_SetControlPropertyData(AudioServerPlugInDriver
 	FailWithAction(outChangedAddresses == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetControlPropertyData: no place to return the properties that changed");
 	FailWithAction(inData == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetControlPropertyData: no data");
 	FailWithAction(!is_control_object(inObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_SetControlPropertyData: not a control object");
+	if(is_profile_source_id(inObjectID)) {
+        *outNumberPropertiesChanged = 0;
+        if(profile_source_property_size(inAddress) == UINT32_MAX ||
+            inAddress->mSelector != kAudioSelectorControlPropertyCurrentItem) { return kAudioHardwareUnknownPropertyError; }
+        if(inDataSize != sizeof(UInt32)) { return kAudioHardwareBadPropertySizeError; }
+        return *(const UInt32*)inData == 0 ? noErr : kAudioHardwareIllegalOperationError;
+    }
 	
 	//	initialize the returned number of changed properties
 	*outNumberPropertiesChanged = 0;
@@ -5336,9 +5462,12 @@ static OSStatus	SystemAudioBridge_SetControlPropertyData(AudioServerPlugInDriver
                     );
                     if(scalarVolumeChanged)
                     {
+                        // AudioControl properties live on the global scope.
+                        // kAudioControlPropertyScope separately describes the
+                        // device input/output scope controlled by this object.
                         *outNumberPropertiesChanged = 2;
                         outChangedAddresses[0].mSelector = kAudioLevelControlPropertyScalarValue;
-                        outChangedAddresses[0].mScope = canonical_control_id(inObjectID) == kObjectID_Volume_Input_Master ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput;
+                        outChangedAddresses[0].mScope = kAudioObjectPropertyScopeGlobal;
                         outChangedAddresses[0].mElement = kAudioObjectPropertyElementMain;
                         outChangedAddresses[1].mSelector = kAudioLevelControlPropertyDecibelValue;
                         outChangedAddresses[1].mScope = outChangedAddresses[0].mScope;
@@ -5372,7 +5501,7 @@ static OSStatus	SystemAudioBridge_SetControlPropertyData(AudioServerPlugInDriver
                     {
                         *outNumberPropertiesChanged = 2;
                         outChangedAddresses[0].mSelector = kAudioLevelControlPropertyScalarValue;
-                        outChangedAddresses[0].mScope = canonical_control_id(inObjectID) == kObjectID_Volume_Input_Master ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput;
+                        outChangedAddresses[0].mScope = kAudioObjectPropertyScopeGlobal;
                         outChangedAddresses[0].mElement = kAudioObjectPropertyElementMain;
                         outChangedAddresses[1].mSelector = kAudioLevelControlPropertyDecibelValue;
                         outChangedAddresses[1].mScope = outChangedAddresses[0].mScope;
@@ -5419,7 +5548,7 @@ static OSStatus	SystemAudioBridge_SetControlPropertyData(AudioServerPlugInDriver
 						);
 						*outNumberPropertiesChanged = 1;
 						outChangedAddresses[0].mSelector = kAudioBooleanControlPropertyValue;
-						outChangedAddresses[0].mScope = canonical_control_id(inObjectID) == kObjectID_Mute_Input_Master ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput;
+						outChangedAddresses[0].mScope = kAudioObjectPropertyScopeGlobal;
 						outChangedAddresses[0].mElement = kAudioObjectPropertyElementMain;
 					}
 					break;

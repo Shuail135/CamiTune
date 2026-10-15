@@ -80,6 +80,9 @@ OSStatus sabr_client_set_profile_devices(
  * before publication rather than silently advertising their compiled width. */
 uint32_t sabr_client_profile_format_version(AudioObjectID deviceObjectID);
 CFArrayRef sabr_client_copy_profile_devices(AudioObjectID deviceObjectID) CF_RETURNS_RETAINED;
+/* Resolve a HAL endpoint to the device identity carried by its SABR records.
+ * Returns zero when the live driver does not expose this capability. */
+uint32_t sabr_client_source_device_id(AudioObjectID deviceObjectID);
 OSStatus sabr_client_set_profile_devices_with_formats(AudioObjectID deviceObjectID, CFArrayRef profiles);
 
 OSStatus sabr_client_transport_disconnect(

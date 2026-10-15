@@ -19,6 +19,7 @@ final class DiagnosticCoreAudioWorld: @unchecked Sendable {
         var writes: [UInt32] = []
         var removed = 0
         var postWriteReads = 0
+        var bridgeCapabilities = CoreAudioBridgeCapabilities(transportSupported: true, profileFormatVersion: 1, sourceDeviceID: 3)
     }
     private let lock = NSLock()
     private var state = State()
@@ -48,7 +49,8 @@ final class DiagnosticCoreAudioWorld: @unchecked Sendable {
             hook?()
             let id = UUID(); self.update { $0.listeners[id] = (event, callback) }
             return CoreAudioListenerToken { self.update { if $0.listeners.removeValue(forKey: id) != nil { $0.removed += 1 } } }
-        }, setDefaultOutput: { device in self.update { s in s.writes.append(device.objectID); if s.setDefaultImmediately { s.defaultUID = device.id } } },
+        }, bridgeCapabilities: { _ in self.update { $0.bridgeCapabilities } },
+        setDefaultOutput: { device in self.update { s in s.writes.append(device.objectID); if s.setDefaultImmediately { s.defaultUID = device.id } } },
         readNominalRate: { _ in self.update { if !$0.writes.isEmpty { $0.postWriteReads += 1 }; return $0.rate } },
         setNominalRate: { device, rate in self.update { s in s.writes.append(device.objectID); if s.setRateImmediately { s.rate = rate } } },
         schedule: { delay, callback in
@@ -288,6 +290,7 @@ private final class CoreAudioCoordinatorFixture {
     var routingID: UInt32 = 102
     var replaceOnPublish = false
     var replaceBridge = false
+    var failPublication = false
     var controlID: UInt32 = 102
     var held = 0
     var permitted = 0
@@ -318,6 +321,7 @@ private final class CoreAudioCoordinatorFixture {
         }
         services.synchronizeRouting = { [unowned self] _, _, _, _ in
             fake.record("synchronize routing")
+            if failPublication { throw fake.fail("Endpoint is still in use") }
             if replaceOnPublish { routingID += 1; if replaceBridge { bridgeID += 1 } }
         }
         services.rebindVolume = { [unowned self] value, _ in
@@ -362,6 +366,80 @@ extension DeveloperSelfTests {
             }
         }
         return [
+            check("K38", "Driver readiness follows live capabilities across a replacement") {
+                let world = DiagnosticCoreAudioWorld()
+                let service = CoreAudioService(observesHardware: false, backend: world.backend)
+                service.refresh()
+                for capabilities in [
+                    CoreAudioBridgeCapabilities(transportSupported: true, profileFormatVersion: 1, sourceDeviceID: 0),
+                    .init(transportSupported: false, profileFormatVersion: 1, sourceDeviceID: 3),
+                    .init(transportSupported: true, profileFormatVersion: 0, sourceDeviceID: 3)
+                ] {
+                    world.update { $0.bridgeCapabilities = capabilities }
+                    let asynchronous = await service.systemAudioBridgePresentationIsSupportedWithoutBlockingUI()
+                    try diagnosticRequire(!service.isSystemAudioBridgePresentationSupported && !asynchronous,
+                        "An incompatible live driver was reported ready")
+                }
+                world.update { $0.bridgeCapabilities = .init(transportSupported: true, profileFormatVersion: 1, sourceDeviceID: 3) }
+                let asynchronous = await service.systemAudioBridgePresentationIsSupportedWithoutBlockingUI()
+                try diagnosticRequire(service.isSystemAudioBridgePresentationSupported && asynchronous,
+                    "The loaded replacement required a version change or relaunch")
+            },
+            check("K37", "A superseded maintenance recovery cannot cancel a newer activation") {
+                let f = try CoreAudioCoordinatorFixture(), gate = DiagnosticManualGate()
+                defer { gate.release() }
+                do {
+                    await f.state.activate(profile: f.profile)
+                    f.failPublication = true; f.incomingGate = gate
+                    let maintenance = Task { try? await f.state.runtimeCoordinator.synchronizeProfileEndpoints() }
+                    try await gate.waitUntilEntered()
+                    let generation = f.state.runtimeCoordinator.desiredRuntime.generation
+                    let next = DeviceProfile(name: "New selection", outputDeviceUID: f.profile.outputDeviceUID,
+                        outputDeviceName: f.profile.outputDeviceName)
+                    f.box.profiles.profiles.append(next)
+                    f.failPublication = false; f.incomingGate = nil
+                    let activation = Task { await f.state.activate(profile: next) }
+                    try await coreAudioWaitUntil { f.state.runtimeCoordinator.desiredRuntime.generation > generation }
+                    gate.cancel(); await maintenance.value; await activation.value
+                    try diagnosticRequire(f.state.activeProfileID == next.id && f.state.errorMessage == nil,
+                        "An old maintenance failure cancelled the newer profile selection")
+                    await f.cleanUp()
+                } catch { gate.release(); await f.cleanUp(); throw error }
+            },
+            check("K35", "A disconnected selected profile releases the system output before removal") {
+                let world = DiagnosticCoreAudioWorld()
+                let profile = DeviceProfile(name: "Unplugged", outputDeviceUID: "unplugged", outputDeviceName: "Unplugged")
+                let uid = ProfileRoutingDescriptor.uid(for: profile.id)
+                world.update { $0.outputs.append(.init(id: uid, objectID: 100, name: profile.name)); $0.defaultUID = uid }
+                var backend = world.backend
+                backend.publishEndpoints = { _, endpoints in
+                    try diagnosticRequire(endpoints.isEmpty && world.update { $0.defaultUID } == "physical",
+                        "Selected endpoint was removed before switching to an available output")
+                    world.update { $0.outputs.removeAll { $0.id == uid } }
+                    return []
+                }
+                let service = CoreAudioService(observesHardware: false, backend: backend)
+                service.refresh()
+                let request = try ProfileEndpointPublicationRequest(profiles: [profile], activeProfileID: profile.id,
+                    defaultOutputUID: uid, connectedOutputUIDs: ["physical"])
+                _ = try await service.publishProfileEndpoints(request)
+                try diagnosticRequire(world.update { $0.writes } == [10], "Fallback was missing or repeated")
+            },
+            fixture("K36", "Failed endpoint maintenance restores audibility without retiring the active route") { f in
+                await f.state.activate(profile: f.profile)
+                let ownership = f.state.runtimeCoordinator.currentOwnershipID
+                f.failPublication = true
+                do {
+                    try await f.state.runtimeCoordinator.synchronizeProfileEndpoints()
+                    throw DiagnosticFailure(message: "Injected publication failure was ignored")
+                } catch let failure as DiagnosticFailure {
+                    try diagnosticRequire(failure.message == "Endpoint is still in use", "Unexpected maintenance failure")
+                }
+                try diagnosticRequire(f.state.isActive && f.state.runtimeCoordinator.currentOwnershipID == ownership
+                    && f.lease?.controlSession.snapshot().audibility == .permitted,
+                    "Retryable maintenance left the current route muted or retired")
+                f.failPublication = false
+            },
             binding("K14", "Endpoint publication invalidates routing object identity", bridge: false),
             binding("K15", "Complete runtime binding freshly resolves the base bridge", bridge: true),
             fixture("K16", "Active rename refreshes controls without restarting engine or PCM") { f in

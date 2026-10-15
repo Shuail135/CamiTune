@@ -21,10 +21,6 @@ struct OutputVolumeCapabilities: Sendable, Equatable {
 
 @MainActor
 final class CoreAudioService {
-    // Driver 0.9.0 adds ordered producer closure and sealed-epoch records.
-    // The companion must never infer this contract from a legacy v5 driver.
-    static let minimumPresentationDriverVersion = "0.9.0"
-
     let snapshots = CoreAudioSnapshotStore()
     private(set) var outputDevices: [AudioDeviceInfo] = []
     var defaultOutputUID: String? {
@@ -309,32 +305,21 @@ final class CoreAudioService {
     }
 
     var isSystemAudioBridgePresentationSupported: Bool {
-        guard isSystemAudioBridgeTransportSupported,
-              let version = installedSystemAudioBridgeVersion else { return false }
-        return Self.version(version, isAtLeast: Self.minimumPresentationDriverVersion)
+        guard let bridge = systemAudioBridge else { return false }
+        return backend.bridgeCapabilities(bridge).supportsProfileRouting
     }
 
     func systemAudioBridgePresentationIsSupportedWithoutBlockingUI() async -> Bool {
-        guard let version = installedSystemAudioBridgeVersion,
-              Self.version(version, isAtLeast: Self.minimumPresentationDriverVersion),
-              let bridge = await resolveSystemAudioBridgeWithoutBlockingUI() else {
+        guard let bridge = await resolveSystemAudioBridgeWithoutBlockingUI() else {
             return false
         }
-        let objectID = bridge.objectID
+        let backend = backend
         return await Task.detached(priority: .utility) {
-            sabr_client_transport_is_supported(objectID)
+            // The on-disk bundle can already be replaced while coreaudiod
+            // still serves the previous driver. Check the live capabilities
+            // required by activation, including the stable source identity.
+            backend.bridgeCapabilities(bridge).supportsProfileRouting
         }.value
-    }
-
-    private static func version(_ candidate: String, isAtLeast minimum: String) -> Bool {
-        let lhs = candidate.split(separator: ".").map { Int($0) ?? 0 }
-        let rhs = minimum.split(separator: ".").map { Int($0) ?? 0 }
-        for index in 0..<max(lhs.count, rhs.count) {
-            let left = index < lhs.count ? lhs[index] : 0
-            let right = index < rhs.count ? rhs[index] : 0
-            if left != right { return left > right }
-        }
-        return true
     }
 
     func setSystemAudioBridgePresentation(name: String, visible: Bool) throws {
@@ -460,7 +445,8 @@ final class CoreAudioService {
         guard let bridge = systemAudioBridge else { throw AudioError.deviceNotFound(AudioDeviceInfo.systemAudioBridgeUID) }
 
         let request = try ProfileEndpointPublicationRequest(profiles: profiles, activeProfileID: activeProfileID,
-            defaultOutputUID: defaultOutputUID, additionallyVisible: additionallyVisible, preparedDescriptors: preparedDescriptors)
+            defaultOutputUID: defaultOutputUID, connectedOutputUIDs: Set(physicalOutputDevices.map(\.id)),
+            additionallyVisible: additionallyVisible, preparedDescriptors: preparedDescriptors)
 
         // One-time migration: native driver endpoints replace the aggregate
         // selectors used by older builds.
@@ -492,6 +478,15 @@ final class CoreAudioService {
     /// Native publication and legacy compatibility execute off MainActor. Profile
     /// visibility/descriptor policy has already produced this immutable request.
     func publishProfileEndpoints(_ request: ProfileEndpointPublicationRequest) async throws -> CoreAudioEndpointPublicationReceipt {
+        // A disconnected output can leave its virtual endpoint selected in
+        // macOS. Move that selection to an available output before removing the
+        // endpoint, so system clients can stop their IO and release it.
+        if let selected = await readDefaultOutputWithoutBlockingUI(),
+           ProfileRoutingDescriptor.isProfileRoutingUID(selected),
+           !request.endpoints.contains(where: { $0.uid == selected }),
+           let fallback = physicalOutputDevices.first {
+            try await setDefaultOutputAndWait(uid: fallback.id)
+        }
         let backend = backend
         let legacy = outputDevices.filter { ProfileRoutingDescriptor.isProfileRoutingUID($0.id) && $0.transportType == kAudioDeviceTransportTypeAggregate }
         let migratedDefault = try await Task.detached(priority: .utility) {

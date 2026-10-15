@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 @MainActor
 final class DependencyManager: ObservableObject {
@@ -17,14 +18,24 @@ final class DependencyManager: ObservableObject {
     @Published var setupFailed = false
 
     private let coreAudio: CoreAudioService
+    private let bundledDriverURL: URL?
+    private let installedDriverURL: URL
+    private let supportRoot: URL
+    private var statusRevision: UInt64 = 0
     private static let requiredCamillaCapability = "coreaudio-uid-playback-clock-v1"
 
-    init(coreAudio: CoreAudioService) {
+    init(coreAudio: CoreAudioService,
+         bundledDriverURL: URL? = Bundle.main.url(forResource: "CamillaAudio", withExtension: "driver", subdirectory: "Drivers"),
+         installedDriverURL: URL = AudioDriverInstallation.installedURL,
+         supportDirectory: URL? = nil) {
         self.coreAudio = coreAudio
+        self.bundledDriverURL = bundledDriverURL
+        self.installedDriverURL = installedDriverURL
+        supportRoot = supportDirectory ?? CamiTunePaths.supportDirectory
     }
 
     var supportDirectory: URL {
-        CamiTunePaths.supportDirectory
+        supportRoot
     }
 
     var camillaDSPBinary: URL { supportDirectory.appendingPathComponent("bin/camilladsp") }
@@ -51,17 +62,27 @@ final class DependencyManager: ObservableObject {
     }
 
     func refresh() {
+        guard !setupInProgress else { return }
+        statusRevision &+= 1
         try? createSupportLayout()
         refreshCamillaDSPStatus()
         let bridgePresent = coreAudio.systemAudioBridge != nil
         applyAudioDriverStatus(
             supported: coreAudio.isSystemAudioBridgePresentationSupported,
-            bridgePresent: bridgePresent
+            bridgePresent: bridgePresent,
+            installation: AudioDriverInstallation.inspect(bundled: bundledDriverURL, installed: installedDriverURL)
         )
         finishRefreshMessage()
     }
 
     func refreshWithoutBlockingUI() async {
+        guard !setupInProgress else { return }
+        await refreshStatuses()
+    }
+
+    private func refreshStatuses() async {
+        statusRevision &+= 1
+        let revision = statusRevision
         let base = supportDirectory
         let binary = camillaDSPBinary
         let capabilityMarker = camillaDSPCapabilityMarker
@@ -72,9 +93,10 @@ final class DependencyManager: ObservableObject {
                 capabilityMarker: capabilityMarker
             )
         }.value
-        if camillaDSPStatus != camillaStatus {
-            camillaDSPStatus = camillaStatus
-        }
+        let bundled = bundledDriverURL, installed = installedDriverURL
+        let installation = await Task.detached(priority: .utility) {
+            AudioDriverInstallation.inspect(bundled: bundled, installed: installed)
+        }.value
         let supported = await coreAudio
             .systemAudioBridgePresentationIsSupportedWithoutBlockingUI()
         let bridgePresent: Bool
@@ -83,7 +105,13 @@ final class DependencyManager: ObservableObject {
         } else {
             bridgePresent = await coreAudio.resolveSystemAudioBridgeWithoutBlockingUI() != nil
         }
-        applyAudioDriverStatus(supported: supported, bridgePresent: bridgePresent)
+        // A startup probe can finish after repair starts or after a newer
+        // recheck. Only the latest operation may publish component status.
+        // The result remains useful if its originating view has disappeared.
+        // Setup/newer probes, not view-task cancellation, invalidate it.
+        guard revision == statusRevision else { return }
+        if camillaDSPStatus != camillaStatus { camillaDSPStatus = camillaStatus }
+        applyAudioDriverStatus(supported: supported, bridgePresent: bridgePresent, installation: installation)
         finishRefreshMessage()
     }
 
@@ -134,16 +162,31 @@ final class DependencyManager: ObservableObject {
         }
     }
 
-    private func applyAudioDriverStatus(supported: Bool, bridgePresent: Bool) {
-        if supported {
-            let version = coreAudio.installedSystemAudioBridgeVersion ?? "unknown"
-            audioDriverStatus = .installed("System Audio Bridge \(version)")
+    private func applyAudioDriverStatus(supported: Bool, bridgePresent: Bool,
+                                       installation: AudioDriverInstallation.Inspection) {
+        audioDriverStatus = Self.driverStatus(supported: supported, bridgePresent: bridgePresent, installation: installation)
+    }
+
+    nonisolated static func driverStatus(supported: Bool, bridgePresent: Bool,
+                                        installation: AudioDriverInstallation.Inspection) -> Status {
+        if let problem = installation.problem {
+            return .failed(problem)
+        } else if !installation.isInstalled {
+            return .missing
+        } else if supported {
+            return .installed("System Audio Bridge \(installation.version ?? "unknown")")
         } else if bridgePresent {
-            let version = coreAudio.installedSystemAudioBridgeVersion ?? "unknown"
-            audioDriverStatus = .failed("Driver \(version) is outdated; select Install / Repair Everything.")
+            return .failed("Driver \(installation.version ?? "unknown") is outdated; select Install / Repair Everything.")
         } else {
-            audioDriverStatus = .missing
+            return .failed("The installed audio driver is not loaded. Select Recheck, or Install / Repair Everything.")
         }
+    }
+
+    private func beginSetup() -> Bool {
+        guard !setupInProgress else { return false }
+        statusRevision &+= 1
+        setupInProgress = true
+        return true
     }
 
     private func finishRefreshMessage() {
@@ -153,9 +196,8 @@ final class DependencyManager: ObservableObject {
     }
 
     func recheck() async {
-        guard !setupInProgress else { return }
+        guard beginSetup() else { return }
         setupFailed = false
-        setupInProgress = true
         setupMessage = "Checking CamillaDSP and the system-audio routing driver…"
         camillaDSPStatus = .checking
         audioDriverStatus = .checking
@@ -163,7 +205,7 @@ final class DependencyManager: ObservableObject {
 
         for attempt in 0..<8 {
             await coreAudio.refreshWithoutBlockingUI()
-            await refreshWithoutBlockingUI()
+            await refreshStatuses()
             if case .installed = audioDriverStatus { break }
             if attempt < 7 { try? await Task.sleep(for: .milliseconds(500)) }
         }
@@ -181,10 +223,10 @@ final class DependencyManager: ObservableObject {
         }
     }
 
-    func installCamillaDSP() async {
-        guard !setupInProgress else { return }
-        setupInProgress = true
+    func installCamillaDSP(preparing: () async -> Bool = { true }) async {
+        guard beginSetup() else { return }
         defer { setupInProgress = false }
+        guard await preparing() else { return }
         await performCamillaDSPInstall()
     }
 
@@ -239,7 +281,7 @@ final class DependencyManager: ObservableObject {
                 encoding: .utf8
             )
             setupMessage = "CamillaDSP is installed and verified."
-            await refreshWithoutBlockingUI()
+            await refreshStatuses()
         } catch {
             setupFailed = true
             camillaDSPStatus = .failed(error.localizedDescription)
@@ -247,10 +289,10 @@ final class DependencyManager: ObservableObject {
         }
     }
 
-    func installAudioDriver() async {
-        guard !setupInProgress else { return }
-        setupInProgress = true
+    func installAudioDriver(preparing: () async -> Bool = { true }) async {
+        guard beginSetup() else { return }
         defer { setupInProgress = false }
+        guard await preparing() else { return }
         await performAudioDriverInstall()
     }
 
@@ -259,11 +301,7 @@ final class DependencyManager: ObservableObject {
         setupMessage = "Installing the bundled System Audio Bridge driver…"
         audioDriverStatus = .working("Waiting for macOS administrator approval…")
         do {
-            guard let bundledDriver = Bundle.main.url(
-                forResource: "CamillaAudio",
-                withExtension: "driver",
-                subdirectory: "Drivers"
-            ) else {
+            guard let bundledDriver = bundledDriverURL else {
                 throw SetupError.bundledDriverMissing
             }
             _ = try await run(
@@ -299,23 +337,8 @@ final class DependencyManager: ObservableObject {
             }
 
             await coreAudio.destroyAllProfileRoutingDevicesWithoutBlockingUI()
-            let destination = "/Library/Audio/Plug-Ins/HAL/CamillaAudio.driver"
-            let legacyDestinations = [
-                "/Library/Audio/Plug-Ins/HAL/CamillaEQAudio.driver",
-                "/Library/Audio/Plug-Ins/HAL/CamillaAudioBridge.driver",
-                "/Library/Audio/Plug-Ins/HAL/SystemAudioBridge.driver"
-            ]
-            let removalTargets = ([destination] + legacyDestinations)
-                .map(shellQuote)
-                .joined(separator: " ")
-            let command = [
-                "/bin/rm -rf \(removalTargets)",
-                "/usr/bin/ditto \(shellQuote(managedDriverURL.path)) \(shellQuote(destination))",
-                "/usr/sbin/chown -R root:wheel \(shellQuote(destination))",
-                "/bin/chmod -R go-w \(shellQuote(destination))",
-                "(/usr/bin/xattr -dr com.apple.quarantine \(shellQuote(destination)) || true)",
-                "(/bin/launchctl kickstart -k system/com.apple.audio.coreaudiod || /usr/bin/killall coreaudiod)"
-            ].joined(separator: " && ")
+            let command = AudioDriverInstallation.replacementCommand(source: managedDriverURL,
+                destination: installedDriverURL, legacyDestinations: AudioDriverInstallation.legacyURLs)
             let script = "do shell script \(appleScriptQuote(command)) with administrator privileges"
             _ = try await run("/usr/bin/osascript", ["-e", script])
 
@@ -337,21 +360,16 @@ final class DependencyManager: ObservableObject {
         }
     }
 
-    func uninstallAudioDriver() async {
-        guard !setupInProgress else { return }
-        setupInProgress = true
+    func uninstallAudioDriver(preparing: () async -> Bool = { true }) async {
+        guard beginSetup() else { return }
+        defer { setupInProgress = false }
+        guard await preparing() else { return }
         setupFailed = false
         setupMessage = "Removing the System Audio Bridge driver…"
         audioDriverStatus = .working("Waiting for macOS administrator approval…")
-        defer { setupInProgress = false }
         do {
             await coreAudio.destroyAllProfileRoutingDevicesWithoutBlockingUI()
-            let targets = [
-                "/Library/Audio/Plug-Ins/HAL/CamillaAudio.driver",
-                "/Library/Audio/Plug-Ins/HAL/CamillaEQAudio.driver",
-                "/Library/Audio/Plug-Ins/HAL/CamillaAudioBridge.driver",
-                "/Library/Audio/Plug-Ins/HAL/SystemAudioBridge.driver"
-            ]
+            let targets = ([installedDriverURL] + AudioDriverInstallation.legacyURLs).map(\.path)
             let command = [
                 "/bin/rm -rf \(targets.map(shellQuote).joined(separator: " "))",
                 "(/bin/launchctl kickstart -k system/com.apple.audio.coreaudiod || /usr/bin/killall coreaudiod)"
@@ -362,28 +380,28 @@ final class DependencyManager: ObservableObject {
                 try FileManager.default.removeItem(at: managedDriverURL)
             }
             await coreAudio.refreshWithoutBlockingUI()
-            await refreshWithoutBlockingUI()
+            await refreshStatuses()
             audioDriverStatus = .missing
             setupMessage = "System Audio Bridge driver uninstalled. Your profiles and CamillaDSP are kept. Restart the Mac if its audio devices still appear."
         } catch {
             await coreAudio.refreshWithoutBlockingUI()
-            await refreshWithoutBlockingUI()
+            await refreshStatuses()
             setupFailed = true
             setupMessage = "Driver removal did not complete: \(error.localizedDescription)"
         }
     }
 
-    func installEverything() async {
-        guard !setupInProgress else { return }
-        setupInProgress = true
+    func installEverything(preparing: () async -> Bool = { true }) async {
+        guard beginSetup() else { return }
         defer { setupInProgress = false }
+        guard await preparing() else { return }
         setupMessage = "Setting up CamiTune dependencies…"
 
         await performCamillaDSPInstall()
 
         await performAudioDriverInstall()
 
-        await refreshWithoutBlockingUI()
+        await refreshStatuses()
         if case .installed = camillaDSPStatus, case .installed = audioDriverStatus {
             setupFailed = false
             setupMessage = "Setup complete. CamillaDSP and System Audio Bridge are ready."
@@ -406,7 +424,11 @@ final class DependencyManager: ObservableObject {
         for attempt in 0..<30 {
             await coreAudio.refreshWithoutBlockingUI()
             if await coreAudio.systemAudioBridgePresentationIsSupportedWithoutBlockingUI() {
-                return true
+                let bundled = bundledDriverURL, installed = installedDriverURL
+                let inspection = await Task.detached(priority: .utility) {
+                    AudioDriverInstallation.inspect(bundled: bundled, installed: installed)
+                }.value
+                return inspection.isInstalled && inspection.problem == nil
             }
             if attempt < 29 { try? await Task.sleep(for: .milliseconds(500)) }
         }
@@ -459,5 +481,120 @@ final class DependencyManager: ObservableObject {
             case .commandFailed(let output): return output.isEmpty ? "Installer command failed." : output
             }
         }
+    }
+}
+
+/// Installation identity is separate from the minimum supported transport ABI.
+/// Read the plist directly: Bundle caches can retain metadata across replacement.
+enum AudioDriverInstallation {
+    static let installedURL = URL(fileURLWithPath: "/Library/Audio/Plug-Ins/HAL/CamillaAudio.driver", isDirectory: true)
+    static let legacyURLs = ["CamillaEQAudio", "CamillaAudioBridge", "SystemAudioBridge"].map {
+        installedURL.deletingLastPathComponent().appendingPathComponent($0 + ".driver", isDirectory: true)
+    }
+
+    struct Inspection: Equatable, Sendable {
+        let isInstalled: Bool
+        let version: String?
+        let problem: String?
+    }
+
+    private struct Identity: Equatable {
+        let version: String
+        let build: String
+        let identifier: String
+        let channels: Int?
+        let layout: UInt32?
+        let executableHash: Data
+
+        init(_ url: URL) throws {
+            let info = try Data(contentsOf: url.appendingPathComponent("Contents/Info.plist"))
+            guard let plist = try PropertyListSerialization.propertyList(from: info, format: nil) as? [String: Any],
+                  let version = plist["CFBundleShortVersionString"] as? String, !version.isEmpty,
+                  let identifier = plist["CFBundleIdentifier"] as? String,
+                  let executable = plist["CFBundleExecutable"] as? String,
+                  !executable.isEmpty, executable == (executable as NSString).lastPathComponent else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            self.version = version; self.identifier = identifier
+            build = plist["CFBundleVersion"] as? String ?? ""
+            channels = plist["SystemAudioBridgeChannelCount"] as? Int
+            layout = plist["SystemAudioBridgeChannelLayoutTag"] as? UInt32
+            let bytes = try Data(contentsOf: url.appendingPathComponent("Contents/MacOS/" + executable), options: .mappedIfSafe)
+            executableHash = Data(SHA256.hash(data: bytes))
+        }
+    }
+
+    static func inspect(bundled: URL?, installed: URL) -> Inspection {
+        guard FileManager.default.fileExists(atPath: installed.path) else {
+            return .init(isInstalled: false, version: nil, problem: nil)
+        }
+        let current: Identity
+        do { current = try Identity(installed) }
+        catch {
+            return .init(isInstalled: true, version: nil,
+                problem: "The installed audio driver is incomplete. Select Install / Repair Everything.")
+        }
+        if let bundled {
+            do {
+                let expected = try Identity(bundled)
+                if current != expected {
+                    return .init(isInstalled: true, version: current.version,
+                        problem: "Installed driver \(current.version) differs from this app's bundled driver \(expected.version). Select Install / Repair Everything.")
+                }
+            } catch {
+                return .init(isInstalled: true, version: current.version,
+                    problem: "This app's bundled audio driver is incomplete. Reinstall CamiTune.")
+            }
+        }
+        return .init(isInstalled: true, version: current.version, problem: nil)
+    }
+
+    static func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+
+    /// Copy and validate before retiring the old bundle. A failed swap restores
+    /// it in the same invocation, so repair never means uninstall on click one.
+    static func replacementCommand(source: URL, destination: URL, legacyDestinations: [URL],
+                                   prepareStaged: String = """
+                                   /usr/bin/codesign --verify --strict "$staged"
+                                   /usr/sbin/chown -R root:wheel "$staged"
+                                   /bin/chmod -R go-w "$staged"
+                                   /usr/bin/xattr -dr com.apple.quarantine "$staged" 2>/dev/null || true
+                                   """,
+                                   restart: String = "(/bin/launchctl kickstart -k system/com.apple.audio.coreaudiod || /usr/bin/killall coreaudiod || true)") -> String {
+        let legacyRemoval = legacyDestinations.isEmpty ? ":" : "/bin/rm -rf " + legacyDestinations.map { shellQuote($0.path) }.joined(separator: " ")
+        return """
+        set -eu
+        destination=\(shellQuote(destination.path))
+        /bin/mkdir -p \(shellQuote(destination.deletingLastPathComponent().path))
+        workspace=$(/usr/bin/mktemp -d \(shellQuote(destination.deletingLastPathComponent().appendingPathComponent(".CamiTune-install.XXXXXX").path)))
+        staged="$workspace/CamillaAudio.driver"
+        backup="$workspace/previous.driver"
+        had_previous=0
+        published=0
+        committed=0
+        cleanup() {
+            result=$?
+            trap - EXIT HUP INT TERM
+            if [ "$committed" -eq 0 ]; then
+                if [ "$published" -eq 1 ]; then /bin/rm -rf "$destination"; fi
+                if [ "$had_previous" -eq 1 ]; then /bin/mv "$backup" "$destination" || exit 1; fi
+            fi
+            /bin/rm -rf "$workspace"
+            exit "$result"
+        }
+        trap cleanup EXIT
+        trap 'exit 1' HUP INT TERM
+        /usr/bin/ditto \(shellQuote(source.path)) "$staged"
+        \(prepareStaged)
+        if [ -e "$destination" ]; then
+            /bin/mv "$destination" "$backup"
+            had_previous=1
+        fi
+        /bin/mv "$staged" "$destination"
+        published=1
+        \(legacyRemoval)
+        committed=1
+        \(restart)
+        """
     }
 }

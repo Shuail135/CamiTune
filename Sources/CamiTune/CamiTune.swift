@@ -462,27 +462,31 @@ final class TextEditingCompatibility: NSObject {
         guard #unavailable(macOS 14), eventMonitor == nil else { return }
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { event in
             guard let window = event.window else { return event }
-            Self.prepare(window.firstResponder as? NSTextView)
-            if event.type != .keyDown, let content = window.contentView {
-                let point = content.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
-                var target = content.hitTest(point)
-                while let view = target {
-                    if let editor = view as? NSTextView {
-                        Self.prepare(editor)
-                        break
-                    }
-                    if let field = view as? NSTextField, field.isEditable || field.isSelectable {
-                        Self.prepare(window.fieldEditor(true, for: field))
-                        break
-                    }
-                    target = view.superview
-                }
-            }
+            Self.prepare(for: event, in: window)
             // Preserve the original event and focus; AppKit handles the click.
             return event
         }
         NotificationCenter.default.addObserver(self, selector: #selector(editingDidBegin(_:)),
             name: NSControl.textDidBeginEditingNotification, object: nil)
+    }
+
+    static func prepare(for event: NSEvent, in window: NSWindow) {
+        prepare(window.firstResponder as? NSTextView)
+        if event.type != .keyDown, let content = window.contentView {
+            let point = content.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+            var target = content.hitTest(point)
+            while let view = target {
+                if let editor = view as? NSTextView {
+                    prepare(editor)
+                    break
+                }
+                if let field = view as? NSTextField, field.isEditable || field.isSelectable {
+                    prepare(window.fieldEditor(true, for: field))
+                    break
+                }
+                target = view.superview
+            }
+        }
     }
 
     @objc private func editingDidBegin(_ notification: Notification) {

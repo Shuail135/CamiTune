@@ -50,6 +50,8 @@ extern "C" {
 #define SABR_TRANSPORT_KEY_VISIBLE "visible"
 #define SABR_TRANSPORT_KEY_PROFILES "profiles"
 #define SABR_TRANSPORT_KEY_DEVICE_UID "deviceUID"
+/* Plug-in-local packet identity, distinct from the client's HAL object ID. */
+#define SABR_TRANSPORT_KEY_SOURCE_DEVICE_ID "sourceDeviceID"
 #define SABR_TRANSPORT_COMMAND_DISCONNECT "disconnect"
 #define SABR_TRANSPORT_COMMAND_PRESENTATION "presentation"
 #define SABR_TRANSPORT_COMMAND_PROFILE_DEVICES "profileDevices"

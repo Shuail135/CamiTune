@@ -91,6 +91,7 @@ package struct ProfileRoutingDescriptor: Hashable, Sendable {
         profiles: [DeviceProfile],
         activeProfileID: UUID?,
         defaultOutputUID: String?,
+        connectedOutputUIDs: Set<String>,
         additionallyVisible: Set<UUID> = []
     ) -> Set<UUID> {
         var result = additionallyVisible
@@ -107,7 +108,12 @@ package struct ProfileRoutingDescriptor: Hashable, Sendable {
         // Keep the active native profile endpoint published. The driver routes
         // every profile endpoint into the same hidden PCM transport.
         if let activeProfileID { result.insert(activeProfileID) }
-        return result
+        // A selected or previously active endpoint is not usable once its
+        // physical output disappears. Apply availability to every visibility
+        // reason, including explicit activation and the current macOS default.
+        return result.intersection(profiles.lazy.filter {
+            connectedOutputUIDs.contains($0.outputDeviceUID)
+        }.map(\.id))
     }
 
     private static func baseName(for profile: DeviceProfile) -> String {

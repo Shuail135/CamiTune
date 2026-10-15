@@ -532,6 +532,21 @@ CFArrayRef sabr_client_copy_profile_devices(AudioObjectID deviceObjectID) {
     return result;
 }
 
+uint32_t sabr_client_source_device_id(AudioObjectID deviceObjectID) {
+    AudioObjectPropertyAddress address = {
+        SABR_TRANSPORT_PROPERTY, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain
+    };
+    CFPropertyListRef capabilities = NULL;
+    UInt32 size = sizeof(capabilities), source = 0;
+    OSStatus status = AudioObjectGetPropertyData(deviceObjectID, &address, 0, NULL, &size, &capabilities);
+    if (status == noErr && size == sizeof(capabilities) && capabilities != NULL &&
+        CFGetTypeID(capabilities) == CFDictionaryGetTypeID()) {
+        (void)sabr_profile_uint32(capabilities, CFSTR(SABR_TRANSPORT_KEY_SOURCE_DEVICE_ID), &source);
+    }
+    if (capabilities != NULL) { CFRelease(capabilities); }
+    return source;
+}
+
 uint32_t sabr_client_profile_format_version(AudioObjectID deviceObjectID) {
     AudioObjectPropertyAddress address = {
         SABR_TRANSPORT_PROPERTY, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain
