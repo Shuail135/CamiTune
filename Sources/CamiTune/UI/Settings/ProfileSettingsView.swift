@@ -4,11 +4,18 @@ import AppKit
 
 @MainActor
 struct ProfileSettingsView: View {
+    enum Destination: String, Identifiable {
+        case general, subwoofer
+        var id: String { rawValue }
+    }
+
     let state: AppState
+    private let initialSpeaker: PhysicalOutputID?
     @ObservedObject private var store: ProfileStore
     @ObservedObject private var audio: CoreAudioSnapshotStore
     @State private var draft: ProfileSettingsDraft
     @State private var category = "General"
+    @State private var speakerToReveal: PhysicalOutputID?
     @State private var saving = false
     @State private var failure: String?
     @State private var recovery: AppErrorRecovery?
@@ -17,11 +24,18 @@ struct ProfileSettingsView: View {
     @State private var showingDeviceConfiguration = false
     @Environment(\.dismiss) private var dismiss
 
-    init(state: AppState, profile: DeviceProfile) {
+    init(state: AppState, profile: DeviceProfile, destination: Destination = .general) {
         self.state = state
         _store = ObservedObject(wrappedValue: state.profiles)
         _audio = ObservedObject(wrappedValue: state.coreAudio)
         _draft = State(initialValue: ProfileSettingsDraft(profile: profile, activation: state.profiles.activationMode(for: profile)))
+        let openSubwoofer = destination == .subwoofer && profile.effectiveEndpointKind == .speakers
+        let subwoofers = profile.configuredSpeakerEndpoints.filter { $0.function == .subwoofer }
+        initialSpeaker = openSubwoofer
+            ? (subwoofers.first { profile.multichannel.bass.subwooferEndpointIDs.contains($0.id) } ?? subwoofers.first)?.id
+            : nil
+        _category = State(initialValue: openSubwoofer ? "Speaker & Listening Position" : "General")
+        _speakerToReveal = State(initialValue: initialSpeaker)
     }
     private func save() {
         saving = true; failure = nil; recovery = nil
@@ -48,7 +62,7 @@ struct ProfileSettingsView: View {
                         draft.speakerTopology = value.speakerTopology
                         draft.spatialSettings = value.spatialSettings
                         draft.multichannel = value.multichannel
-                    }), draftOnly: true, embedded: true, compact: true)
+                    }), draftOnly: true, embedded: true, compact: true, initialSelectedSpeaker: initialSpeaker)
                     .id(preview.deviceTypeConfigurationKey)
             }
         }
@@ -123,7 +137,14 @@ struct ProfileSettingsView: View {
                         SectionResetButton("Reset to Global Defaults") { draft.sectionLayout = nil }
                             .disabled(draft.sectionLayout == nil)
                     case "Speaker & Listening Position":
-                        ScrollView { speakerConfiguration }
+                        ScrollViewReader { proxy in
+                            ScrollView { speakerConfiguration }
+                                .onPreferenceChange(SpeakerBassManagementSelectionKey.self) { selected in
+                                    guard let selected, selected == speakerToReveal else { return }
+                                    proxy.scrollTo(selected, anchor: .top)
+                                    speakerToReveal = nil
+                                }
+                        }
                     default: EmptyView()
                     }
                     Spacer(minLength: 0)
@@ -136,7 +157,6 @@ struct ProfileSettingsView: View {
                     Button("Open Setup…") { showingRepair = true }
                 }
                 HStack {
-                    if saving { ProgressView().controlSize(.small); Text("Saving…") }
                     Spacer()
                     Button("Cancel") { if hasChanges { confirmClose = true } else { dismiss() } }.keyboardShortcut(.cancelAction)
                     Button("Save") { save()                    }.keyboardShortcut(.defaultAction).disabled(!hasChanges || (try? draft.candidate()) == nil)

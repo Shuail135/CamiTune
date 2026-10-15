@@ -9,7 +9,7 @@ struct ProfileEditorView: View {
     let state: AppState
     let coreAudio: CoreAudioSnapshotStore
     @ObservedObject private var store: ProfileStore
-    @State private var showingSettings = false
+    @State private var settingsDestination: ProfileSettingsView.Destination?
     @Binding var profile: DeviceProfile
     // Only graph views observe response publications. This owner retains the
     // model without making a response calculation rebuild the complete page.
@@ -80,7 +80,7 @@ struct ProfileEditorView: View {
                         outputDeviceUID: profile.outputDeviceUID
                     )
                     Spacer()
-                    Button { showingSettings = true } label: {
+                    Button { settingsDestination = .general } label: {
                         Image(systemName: "gearshape")
                             .font(.system(size: 20, weight: .regular))
                             .symbolRenderingMode(.hierarchical)
@@ -131,15 +131,15 @@ struct ProfileEditorView: View {
             guard let request else { return }
             switch request.intent {
             case .rename(let id) where id == profile.id: beginProfileRename()
-            case .profileSettings(let id) where id == profile.id: showingSettings = true
+            case .profileSettings(let id) where id == profile.id: settingsDestination = .general
             default: return
             }
             commands.consume(request.id)
         }
-        .sheet(isPresented: $showingSettings, onDismiss: { titleFocused = true }) {
-            ProfileSettingsView(state: state, profile: profile)
+        .sheet(item: $settingsDestination, onDismiss: { titleFocused = true }) { destination in
+            ProfileSettingsView(state: state, profile: profile, destination: destination)
         }
-        .onChange(of: showingSettings) { commands.modalReservation = $0 }
+        .onChange(of: settingsDestination) { commands.modalReservation = $0 != nil }
         .onChange(of: layout) { _ in
             updateVisuals()
             if sections.contains(.equalizer) || sections.contains(.spectrum) {
@@ -206,7 +206,8 @@ struct ProfileEditorView: View {
         case .multichannel:
             if profile.hasPhysicalSpeakerRoute { MultichannelProcessingView(state: state, profile: $profile) }
         case .subwooferControl:
-            SubwooferControlView(state: state, store: state.profiles, profile: profile)
+            SubwooferControlView(state: state, store: state.profiles, profile: profile,
+                onOpenSettings: { settingsDestination = .subwoofer })
         case .perChannel:
             PerChannelProcessingView(state: state, profile: $profile)
         case .convolution:

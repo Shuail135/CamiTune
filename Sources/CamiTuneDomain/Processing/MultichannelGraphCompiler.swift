@@ -240,6 +240,8 @@ extension DeviceProfile {
 
     package func validateMultichannelHardware(_ discovered: SpeakerTopology) throws {
         guard multichannel.crossover.enabled else { return }
+        // Missing drivers or an unconfirmed setup are not hardware changes.
+        try validateMultichannelSettings()
         guard multichannel.crossover.reviewedHardware == (try? HardwareTopologyFingerprint(topology: discovered)) else {
             throw ProfileSettingsError.runtime("The active speaker hardware map changed. Review Speakers and driver protection before activation.")
         }

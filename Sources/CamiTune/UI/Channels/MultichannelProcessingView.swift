@@ -21,7 +21,14 @@ struct MultichannelProcessingView: View {
         case routing = "Routing", crossovers = "Crossovers"
     }
 
-    private var saving: Bool { state.isSavingProfileSettings }
+    private var saving: Bool {
+        // Subwoofer autosaves share the transaction without locking this editor.
+        state.isSavingProfileSettings && (
+            draft.routing != profile.multichannel.routing
+            || draft.crossover != profile.multichannel.crossover
+            || topologyDraft != profile.speakerTopology
+        )
+    }
     private var editorSnapshot: MultichannelHistoryState { .init(settings: draft, topology: topologyDraft) }
 
     private var candidate: DeviceProfile {
@@ -35,6 +42,7 @@ struct MultichannelProcessingView: View {
     }
     private var routingEnabled: Binding<Bool> {
         Binding(get: { draft.routing.enabled }, set: { enabled in
+            finishEditing()
             if enabled {
                 draft.routing = MultichannelRoutingEditor.enablingRouting(in: candidate)
             } else { draft.routing.enabled = false }
@@ -55,7 +63,7 @@ struct MultichannelProcessingView: View {
         return draft.crossover.reviewedHardware == fingerprint
     }
     private var source: LPCMChannelLayout {
-        return ProfileRoutingDescriptor.sourceLayout(for: candidate)
+        draft.routing.sourceLayout.layout(channelCount: draft.routing.discreteChannelCount)
     }
 
     var body: some View {
@@ -71,13 +79,16 @@ struct MultichannelProcessingView: View {
                     crossoverControls
                 }
                 Divider()
-                HStack {
+                HStack(alignment: .top) {
+                    if let message = state.multichannelAutosaveErrors[profile.id] ?? message {
+                        Text(message).font(.callout).foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
                     Button("Export runtime plan…") {
                         Task { do { try await state.exportRuntimePlan(profile: profile, previewOnly: previewOnly) } catch { message = error.localizedDescription } }
-                    }.disabled(changed)
+                    }.fixedSize().disabled(changed)
                 }
-                if saving { ProgressView("Saving processing…").controlSize(.small) }
-                if let message = state.multichannelAutosaveErrors[profile.id] ?? message { Text(message).font(.callout).foregroundStyle(.orange) }
             }.padding(6).disabled(saving).id(editorRevision)
         }
         .onAppear {
@@ -89,6 +100,9 @@ struct MultichannelProcessingView: View {
             // Returning to the saved value still supersedes an older queued edit.
             if loadedID == profile.id, changed || pending != nil, !state.history.isReplaying,
                pending != editorSnapshot { scheduleAutosave() }
+        }
+        .onChange(of: draft.routing.enabled) { enabled in
+            if !enabled { collapsedRouteIDs = Set(draft.routing.routes.map(\.id)) }
         }
         .onReceive(state.profiles.$multichannelDrafts) { sessions in
             guard loadedID == profile.id, let session = sessions[profile.id], session != editorSnapshot else { return }
@@ -111,32 +125,37 @@ struct MultichannelProcessingView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Custom Routing").font(.headline)
+                DeviceCorrectionHelpIcon(title: "Custom Routing",
+                    message: "Enable custom routing to apply these connections. Edits save automatically, even while routing is off. Speaker assignments are used while routing is off.")
                 Spacer()
                 Toggle("Enable custom routing", isOn: routingEnabled)
                     .toggleStyle(.switch).labelsHidden()
             }
-            if !draft.routing.enabled {
-                Text("Enable custom routing to edit connections. Speaker assignments are used while routing is off.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
             VStack(alignment: .leading, spacing: 12) {
-                WrappingControlLayout {
-                    Picker("Input layout", selection: $draft.routing.sourceLayout) {
-                        ForEach(RoutingSourceLayout.allCases, id: \.self) { Text($0.title).tag($0) }
-                    }.frame(width: 280)
-                    if draft.routing.sourceLayout == .discrete {
-                        Stepper("\(draft.routing.discreteChannelCount) channels", value: $draft.routing.discreteChannelCount, in: 1...32)
-                            .accessibilityLabel("Input channel count")
+                HStack(alignment: .top) {
+                    WrappingControlLayout {
+                        Picker("Input layout", selection: $draft.routing.sourceLayout) {
+                            ForEach(RoutingSourceLayout.allCases, id: \.self) { Text($0.title).tag($0) }
+                        }.frame(width: 280)
+                        if draft.routing.sourceLayout == .discrete {
+                            Stepper("\(draft.routing.discreteChannelCount) channels", value: $draft.routing.discreteChannelCount, in: 1...32)
+                                .accessibilityLabel("Input channel count")
+                        }
                     }
-                }.disabled(!draft.routing.enabled)
-                HStack {
+                    Spacer()
                     Button {
                         finishEditing()
                         guard let route = MultichannelRoutingEditor.nextRoute(in: candidate) else { return }
                         draft.routing.routes.append(route)
-                    } label: { Label("Add route", systemImage: "plus") }
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 14))
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Add route")
                         .disabled(MultichannelRoutingEditor.nextRoute(in: candidate) == nil)
-                    Spacer()
                     SectionResetButton("Reset to speaker assignments") {
                         finishEditing()
                         let candidate = self.candidate
@@ -144,8 +163,8 @@ struct MultichannelProcessingView: View {
                             draft.routing.routes = candidate.defaultSpeakerRoutes(source: format)
                                 .filter { !draft.bass.enabled || !draft.bass.subwooferEndpointIDs.contains($0.destination) }
                         }
-                    }.help("Reset to speaker assignments")
-                }.disabled(!draft.routing.enabled)
+                    }
+                }
                 if draft.routing.routes.isEmpty {
                     Text("No routes yet. Add a connection or start from speaker assignments.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -159,12 +178,15 @@ struct MultichannelProcessingView: View {
 
     private func routingRow(_ route: Binding<SpeakerRoute>) -> some View {
         let number = (draft.routing.routes.firstIndex { $0.id == route.wrappedValue.id } ?? 0) + 1
-        return DisclosureGroup(isExpanded: routeExpanded(route.wrappedValue.id)) {
-            routingDetails(route).disabled(!draft.routing.enabled)
+        let expanded = routeExpanded(route.wrappedValue.id)
+        return DisclosureGroup(isExpanded: expanded) {
+            routingDetails(route)
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Route \(number)").font(.subheadline.weight(.semibold))
-                Text(routeSummary(route.wrappedValue)).font(.caption).foregroundStyle(.secondary)
+                if !expanded.wrappedValue {
+                    Text(routeSummary(route.wrappedValue)).font(.caption).foregroundStyle(.secondary)
+                }
             }.padding(.trailing, 30)
         }
         .disclosureGroupStyle(SectionDisclosureStyle())
@@ -175,8 +197,6 @@ struct MultichannelProcessingView: View {
             } label: { Image(systemName: "minus.circle").frame(width: 22, height: 22) }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Remove route \(number)")
-                .help("Remove this connection")
-                .disabled(!draft.routing.enabled)
         }
         .padding(12)
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.18), lineWidth: 0.5))
@@ -214,14 +234,19 @@ struct MultichannelProcessingView: View {
                         ForEach(0..<source.channelCount, id: \.self) { index in Text(sourceName(index)).tag(index) }
                     }.labelsHidden().frame(maxWidth: .infinity)
                 }.frame(maxWidth: .infinity, alignment: .leading)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Destination speaker").font(.caption).foregroundStyle(.secondary)
-                    Picker("Destination speaker", selection: route.destination) {
-                        if !routingEndpoints.contains(where: { $0.id == route.wrappedValue.destination }) {
-                            Text("Unavailable output \(route.wrappedValue.destination.channelIndex + 1)").tag(route.wrappedValue.destination)
-                        }
-                        ForEach(routingEndpoints) { Text($0.displayName).tag($0.id) }
-                    }.labelsHidden().frame(maxWidth: .infinity)
+                HStack(alignment: .lastTextBaseline, spacing: 16) {
+                    Image(systemName: "arrow.right")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Destination speaker").font(.caption).foregroundStyle(.secondary)
+                        Picker("Destination speaker", selection: route.destination) {
+                            if !routingEndpoints.contains(where: { $0.id == route.wrappedValue.destination }) {
+                                Text("Unavailable output \(route.wrappedValue.destination.channelIndex + 1)").tag(route.wrappedValue.destination)
+                            }
+                            ForEach(routingEndpoints) { Text($0.displayName).tag($0.id) }
+                        }.labelsHidden().frame(maxWidth: .infinity)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
             HStack(spacing: 12) {
@@ -245,16 +270,39 @@ struct MultichannelProcessingView: View {
         })
     }
 
+    private var crossoverHelpMessage: String {
+        var hints = [
+            "For speakers whose individual drivers connect to separate amplifier outputs.",
+            "Active stereo setups need at least 4 output channels for 2-way or 6 for 3-way. The current setup has \(topologyDraft?.endpoints.count ?? 0)."
+        ]
+        if drivers.isEmpty {
+            if (topologyDraft?.endpoints.count ?? 0) >= ActiveSpeakerPreset.twoWay.rawValue * 2 {
+                hints.append("Choose an active stereo setup, or assign Woofer, Midrange or Tweeter speaker functions in Device Configuration.")
+            }
+        } else {
+            if !draft.crossover.enabled {
+                hints.append("Enable crossovers to edit driver filters and protection.")
+            }
+            hints.append("Choose crossover frequencies and protection limits for each driver, then confirm the hardware map. Valid changes save automatically.")
+            hints.append("Starting crossover values are 300 Hz and/or 2,000 Hz. Adjust them for the connected drivers, then confirm the hardware map. Valid changes save automatically.")
+            hints.append("Required limiters run last at −3 dBFS. Tweeters and midrange drivers require high-pass and limiter protection. Positive global preamp is blocked by the default 0 dB gain limit.")
+            if hardwareMapConfirmed {
+                hints.append("Hardware map confirmed. Changes save automatically once every driver's protection is valid.")
+            }
+        }
+        return hints.joined(separator: "\n\n")
+    }
+
     private var crossoverControls: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Active Crossovers & Protection").font(.headline)
+                DeviceCorrectionHelpIcon(title: "Active Crossovers & Protection", message: crossoverHelpMessage)
                 Spacer()
                 Toggle("Enable active crossovers", isOn: $draft.crossover.enabled)
                     .toggleStyle(.switch).labelsHidden()
+                    .disabled(drivers.isEmpty && !draft.crossover.enabled)
             }
-            Text("For speakers whose individual drivers connect to separate amplifier outputs.")
-                .font(.caption).foregroundStyle(.secondary)
             Menu("Prepare active stereo setup") {
                 ForEach(ActiveSpeakerPreset.allCases) { preset in
                     Button(preset.title) {
@@ -264,15 +312,12 @@ struct MultichannelProcessingView: View {
                             topologyDraft = prepared.speakerTopology
                             draft = prepared.multichannel
                             selectedDriverID = nil
-                            message = "Starting crossover values are 300 Hz and/or 2,000 Hz. Adjust them for the connected drivers, then confirm the hardware map. Valid changes save automatically."
+                            message = nil
                         } catch { message = error.localizedDescription }
                     }.disabled((topologyDraft?.endpoints.count ?? 0) < preset.rawValue * 2)
                 }
             }.fixedSize()
-            if drivers.isEmpty {
-                Text("Choose an active stereo setup above, or assign Woofer, Midrange or Tweeter speaker functions in Device Configuration.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
+            if !drivers.isEmpty {
                 driverControls.disabled(!draft.crossover.enabled)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
@@ -280,13 +325,7 @@ struct MultichannelProcessingView: View {
 
     private var driverControls: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if !draft.crossover.enabled {
-                Text("Enable crossovers to edit driver filters and protection.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
             if let driver = selectedDriver {
-                Text("Choose crossover frequencies and protection limits for each driver, then confirm the hardware map. Valid changes save automatically.")
-                    .font(.caption).foregroundStyle(.secondary)
                 Picker("Driver", selection: Binding(get: { driver.id }, set: { value in
                     finishEditing()
                     selectedDriverID = value
@@ -319,7 +358,7 @@ struct MultichannelProcessingView: View {
                     do {
                         guard let topology = topologyDraft else { throw SpeakerTopologyError.invalidDeviceUID }
                         draft.crossover.reviewedHardware = try .init(topology: topology)
-                        message = "Hardware map confirmed. Changes save automatically once every driver's protection is valid."
+                        message = nil
                     } catch { message = error.localizedDescription }
                 }.disabled(hardwareMapConfirmed || topologyDraft == nil)
             }
@@ -352,8 +391,6 @@ struct MultichannelProcessingView: View {
             }
             Toggle("Require limiter", isOn: protectionBinding(driver.id, \.limiterRequired))
                 .toggleStyle(.checkbox)
-            Text("Required limiters run last at −3 dBFS. Tweeters and midrange drivers require high-pass and limiter protection. Positive global preamp is blocked by the default 0 dB gain limit.")
-                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -405,7 +442,7 @@ struct MultichannelProcessingView: View {
         if changedProfile {
             selectedEditor = draft.crossover.enabled && !draft.routing.enabled ? .crossovers : .routing
             selectedDriverID = nil
-            collapsedRouteIDs.removeAll()
+            collapsedRouteIDs = draft.routing.enabled ? [] : Set(draft.routing.routes.map(\.id))
         }
         loadedID = profile.id; message = nil
         // SwiftUI retains a numeric field's editing text across external binding
@@ -561,6 +598,7 @@ struct SubwooferControlView: View {
     @ObservedObject var state: AppState
     @ObservedObject var store: ProfileStore
     let profile: DeviceProfile
+    let onOpenSettings: () -> Void
 
     private var settings: MultichannelProcessingSettings {
         store.multichannelDrafts[profile.id]?.settings ?? profile.multichannel
@@ -570,7 +608,21 @@ struct SubwooferControlView: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Subwoofer Control").font(.title3.bold())
+                HStack {
+                    Text("Subwoofer Control").font(.title3.bold())
+                    Spacer()
+                    Button(action: onOpenSettings) {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 20, weight: .regular))
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Subwoofer Settings")
+                    .accessibilityHint("Opens the subwoofer channel’s bass management in Speaker & Listening Position.")
+                }
                 JoinedSegmentedControl(options: SubwooferControlMode.allCases,
                     selection: controlBinding(\.mode), title: { $0.title })
                     .accessibilityLabel("Subwoofer mode")
@@ -620,7 +672,8 @@ struct SubwooferControlView: View {
 enum MultichannelRoutingEditor {
     static func enablingRouting(in profile: DeviceProfile) -> AdvancedRoutingSettings {
         var routing = profile.multichannel.routing
-        if routing.routes.isEmpty {
+        // Seed only untouched settings; preserve configurations edited while off.
+        if routing == AdvancedRoutingSettings() {
             let source = ProfileRoutingDescriptor.sourceLayout(for: profile)
             routing.sourceLayout = RoutingSourceLayout.allCases.first {
                 $0.layout(channelCount: source.channelCount) == source

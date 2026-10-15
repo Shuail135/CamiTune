@@ -10,6 +10,7 @@ struct SpeakerSystemView: View {
     var newPosition = false
     var embedded = false
     var compact = false
+    var initialSelectedSpeaker: PhysicalOutputID? = nil
     var draftHistoryReplayRevision = 0
     var onDraftEditingChanged: ((Bool) -> Void)? = nil
     var onClose: (() -> Void)?
@@ -82,6 +83,8 @@ struct SpeakerSystemView: View {
                         BassManagementControlsView(profile: bassProfile, selectedSubwoofer: draft.endpoints[index].id,
                             bass: $bass, testGainDB: subwooferTestGain(draft.endpoints[index].id))
                             .disabled(editingLocked)
+                            .id(draft.endpoints[index].id)
+                            .preference(key: SpeakerBassManagementSelectionKey.self, value: draft.endpoints[index].id)
                     }
                 }
             } else {
@@ -111,7 +114,7 @@ struct SpeakerSystemView: View {
                 draft = session.topology; seat = session.seat; bass = session.bass
             }
             historyBaseline = currentHistoryState
-            selected = draft?.endpoints.first?.id
+            selected = draft?.endpoints.first { $0.id == initialSelectedSpeaker }?.id ?? draft?.endpoints.first?.id
             if let draft { fitBoard(draft) }
             if newPosition { updateDistances() }
             publishDraft()
@@ -445,4 +448,12 @@ struct SpeakerSystemView: View {
         }
     }
 
+}
+
+/// Reports when the selected channel's bass controls are ready to reveal.
+struct SpeakerBassManagementSelectionKey: PreferenceKey {
+    static var defaultValue: PhysicalOutputID? { nil }
+    static func reduce(value: inout PhysicalOutputID?, nextValue: () -> PhysicalOutputID?) {
+        value = nextValue() ?? value
+    }
 }
