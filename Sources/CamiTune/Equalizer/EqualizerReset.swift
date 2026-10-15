@@ -1,4 +1,5 @@
 import CamiTuneDomain
+import Foundation
 
 extension EqualizerPresentation {
     var resetTitle: String {
@@ -11,6 +12,17 @@ extension EqualizerPresentation {
 }
 
 enum EqualizerReset {
+    struct Request {
+        let profileID: UUID
+        let editGeneration: UInt64
+        let presentation: EqualizerPresentation
+    }
+
+    static func requiresScopeConfirmation(_ current: GlobalEQHistoryState, presentation: EqualizerPresentation) -> Bool {
+        presentation != .both && !current.simpleTone.isNeutral
+            && (bands(current.bands) != current.bands || current.deviceCorrectionProvenance != nil)
+    }
+
     static func bands(_ current: [EQBand]) -> [EQBand] {
         let defaults = EQEditorSupport.resizedBands([], count: current.count)
         return current.enumerated().map { index, original in
@@ -23,13 +35,13 @@ enum EqualizerReset {
 
     static func global(_ current: GlobalEQHistoryState, presentation: EqualizerPresentation) -> GlobalEQHistoryState {
         var reset = current
+        reset.preampDB = 0
         if presentation != .bands { reset.simpleTone = .init() }
         if presentation != .simpleTone {
             reset.bands = bands(current.bands)
             reset.deviceCorrectionProvenance = nil
         }
         if presentation == .both {
-            reset.preampDB = 0
             reset.limiterEnabled = false
         }
         return reset

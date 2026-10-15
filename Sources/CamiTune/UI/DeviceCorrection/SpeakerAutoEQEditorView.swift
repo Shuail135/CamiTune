@@ -260,13 +260,19 @@ struct SpeakerAutoEQEditorView: View {
 
                         Divider()
 
-                        Text("Listening setup").font(.headline)
+                        HStack(spacing: 6) {
+                            Text("Listening setup").font(.headline)
+                            DeviceCorrectionHelpIcon(title: "Listening setup", message: """
+                                Near-field / Desktop: Prioritizes direct sound and listening-window behavior for desktop and near-field listening.
+
+                                Far-field / Room listening: Uses full CEA2034 speaker data to optimize predicted room listening behavior.
+                                """)
+                            Spacer()
+                        }
 
                         JoinedSegmentedControl(options: SpeakerListeningMode.allCases, selection: $model.mode, title: { $0.title })
                             .accessibilityLabel("Speaker listening setup")
-                        Text(model.mode == .nearField ? "Prioritizes direct sound and listening-window behavior for desktop and near-field listening."
-                             : "Uses full CEA2034 speaker data to optimize predicted room listening behavior.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .help("")
                         DisclosureGroup("Advanced", isExpanded: $presentation.advancedExpanded) {
                             VStack(alignment: .leading, spacing: 10) {
                                 Picker("Measurement source/version", selection: $model.versionID) {

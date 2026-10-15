@@ -176,7 +176,7 @@ struct EQBandColumn: View {
 }
 
 
-private struct FilterShapeIcon: View {
+struct FilterShapeIcon: View {
     let kind: EQBand.Kind
 
     var body: some View {

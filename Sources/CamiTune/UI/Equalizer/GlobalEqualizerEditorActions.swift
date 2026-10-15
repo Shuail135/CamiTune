@@ -10,6 +10,7 @@ extension GlobalEqualizerEditorView {
     }
 
     func loadGraphicEQ() {
+        pendingReset = nil
         // Replacement notifications arrive before SwiftUI necessarily refreshes
         // the binding. Auto EQ has already persisted and retired its draft.
         let profile = state.profiles.profiles.first(where: { $0.id == self.profile.id }) ?? self.profile
@@ -146,19 +147,33 @@ extension GlobalEqualizerEditorView {
     }
 
     var canResetEqualizer: Bool {
-        (presentation != .bands && !simpleTone.isNeutral)
+        preampDB != 0
+            || (presentation != .bands && !simpleTone.isNeutral)
             || (presentation != .simpleTone && (EqualizerReset.bands(graphicBands) != graphicBands || currentDeviceCorrectionProvenance != nil))
-            || (presentation == .both && (preampDB != 0 || limiterEnabled))
+            || (presentation == .both && limiterEnabled)
     }
 
-    func resetEqualizer() {
+    func requestEqualizerReset() {
+        let request = EqualizerReset.Request(profileID: profile.id, editGeneration: state.editGeneration,
+            presentation: presentation)
+        // Check hidden edits on Reset, not on every control or meter update.
+        if EqualizerReset.requiresScopeConfirmation(currentHistoryState, presentation: presentation) {
+            pendingReset = request
+        } else {
+            resetEqualizer(request, presentation: presentation)
+        }
+    }
+
+    func resetEqualizer(_ request: EqualizerReset.Request, presentation resetPresentation: EqualizerPresentation) {
+        pendingReset = nil
+        guard request.profileID == profile.id, request.editGeneration == state.editGeneration else { return }
         let before = currentHistoryState
-        let reset = EqualizerReset.global(before, presentation: presentation)
+        let reset = EqualizerReset.global(before, presentation: resetPresentation)
         guard reset != before else { return }
         bandReduction.cancel()
         runtime.liveApplyTask?.cancel()
         runtime.historyBaseline = before
-        runtime.historyActionName = presentation.resetTitle
+        runtime.historyActionName = resetPresentation.resetTitle
         runtime.suppressChanges = true
         preampDB = reset.preampDB
         limiterEnabled = reset.limiterEnabled

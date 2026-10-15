@@ -25,6 +25,14 @@ extension AppState {
             guard !Task.isCancelled, self.editGeneration == generation,
                   self.multichannelAutosaveRevisions[profileID] == revision,
                   self.multichannelEditSessions[profileID] == draft else { return }
+            // Recheck after earlier saves settle: a rapid reversal can restore
+            // the persisted value and needs no runtime transaction or undo entry.
+            if let saved = self.profiles.profiles.first(where: { $0.id == profileID }),
+               saved.multichannel == draft.settings,
+               draft.topology == nil || saved.speakerTopology == draft.topology {
+                self.multichannelEditSessions[profileID] = nil
+                return
+            }
             do {
                 try await self.saveMultichannelSettings(draft.settings, profileID: profileID,
                     topology: draft.topology, previewOnly: previewOnly)

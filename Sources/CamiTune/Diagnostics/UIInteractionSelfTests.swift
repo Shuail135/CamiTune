@@ -73,6 +73,10 @@ private struct UIWorkFixture: PersistedAutoEQWork {
 enum UIInteractionSelfTests {
     static func run(artifacts: URL) async throws {
         try FileManager.default.createDirectory(at: artifacts, withIntermediateDirectories: true)
+        if ProcessInfo.processInfo.environment["CAMITUNE_UI_ROUTING_ONLY"] == "1" {
+            try await routingToggleInteractions()
+            return
+        }
         if ProcessInfo.processInfo.environment["CAMITUNE_UI_ROOM_RESULT_ONLY"] == "1" {
             try await roomCorrectionResultInteractions(artifacts: artifacts)
             return
@@ -112,6 +116,7 @@ enum UIInteractionSelfTests {
         }
         try await overflowAndResize(artifacts: artifacts)
         try await channelSwitching(artifacts: artifacts)
+        try await routingToggleInteractions()
         try await disclosureLayout()
         try await responsiveLayouts(artifacts: artifacts)
         try await adaptiveEditor(artifacts: artifacts)
@@ -120,6 +125,75 @@ enum UIInteractionSelfTests {
         try await scrollingCadence()
         try await correctionInteractions(artifacts: artifacts)
         try await spectrumPresentation(artifacts: artifacts)
+    }
+
+    private static func routingToggleInteractions() async throws {
+        for initiallyEnabled in [true, false] {
+            let box = try DiagnosticSandbox(); defer { box.cleanUp() }
+            var profile = SpeakerSetupPreview.profile(channelCount: 2)
+            profile.speakerTopology = SpeakerLayoutGeometry.acceptingDefaultRoles(profile.speakerTopology!)
+            profile.multichannel.routing = MultichannelRoutingEditor.enablingRouting(in: profile)
+            profile.multichannel.routing.enabled = initiallyEnabled
+            box.profiles.profiles = [profile]
+            let state = AppState(profiles: box.profiles, perAppAudio: box.perApp,
+                runtimeServices: DiagnosticRuntimeFakes().services())
+            defer { state.cancelMultichannelAutosaves() }
+            let fixture = WindowFixture(RoutingToggleFixture(state: state, store: box.profiles),
+                size: .init(width: 700, height: 700))
+            defer { fixture.close() }
+            // Native control actions also run without a connected display.
+            fixture.host.autoresizingMask = []
+            fixture.host.setFrameSize(.init(width: 700, height: 700))
+            await fixture.settle()
+            func routingSwitch() throws -> NSSwitch {
+                guard let control = fixture.views.compactMap({ $0 as? NSSwitch }).first else {
+                    throw DiagnosticFailure(message: "Missing Custom Routing switch")
+                }
+                return control
+            }
+            func toggle(to enabled: Bool) async throws {
+                let control = try routingSwitch()
+                try diagnosticRequire(control.isEnabled, "Custom Routing switch rejected input")
+                control.state = enabled ? .on : .off
+                try diagnosticRequire(control.sendAction(control.action, to: control.target), "Routing switch action was not delivered")
+                fixture.host.layoutSubtreeIfNeeded()
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            try await toggle(to: !initiallyEnabled)
+            try diagnosticRequire(state.multichannelEditSessions[profile.id]?.settings.routing.enabled == !initiallyEnabled,
+                "First routing click was not queued")
+            try await toggle(to: initiallyEnabled)
+            await state.multichannelAutosaveTasks[profile.id]?.value
+            await fixture.settle()
+            try diagnosticRequire(box.profiles.profiles[0].multichannel.routing.enabled == initiallyEnabled,
+                "An older routing autosave overrode the latest switch click (expected \(initiallyEnabled))")
+            let finalSwitch = try routingSwitch()
+            try diagnosticRequire(finalSwitch.state == (initiallyEnabled ? .on : .off),
+                "Routing switch no longer reflects the last click")
+            try diagnosticRequire(state.multichannelEditSessions[profile.id] == nil && state.multichannelAutosaveErrors[profile.id] == nil,
+                "Rapid routing reversal left an unsaved draft or error")
+            try diagnosticRequire(state.history.undoStack.isEmpty, "Returning to the saved routing state added an undo entry")
+            try await toggle(to: !initiallyEnabled)
+            await state.multichannelAutosaveTasks[profile.id]?.value
+            await fixture.settle()
+            let changedSwitch = try routingSwitch()
+            try diagnosticRequire(box.profiles.profiles[0].multichannel.routing.enabled == !initiallyEnabled
+                && changedSwitch.state == (initiallyEnabled ? .off : .on), "A subsequent routing click failed to save")
+            try diagnosticRequire(state.history.undoStack.count == 1, "A single routing change must add exactly one undo entry")
+        }
+        print("Routing: rapid off/on and on/off clicks preserve the latest intent without extra undo entries")
+    }
+
+    private struct RoutingToggleFixture: View {
+        let state: AppState
+        @ObservedObject var store: ProfileStore
+        var body: some View {
+            ScrollView {
+                MultichannelProcessingView(state: state,
+                    profile: Binding(get: { store.profiles[0] }, set: { store.update($0) }), previewOnly: true)
+                    .padding(16)
+            }
+        }
     }
 
     private static func overflowAndResize(artifacts: URL) async throws {

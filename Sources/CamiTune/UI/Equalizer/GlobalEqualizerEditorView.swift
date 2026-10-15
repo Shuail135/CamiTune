@@ -20,6 +20,7 @@ struct GlobalEqualizerEditorView: View {
     @State var graphicBands: [EQBand] = []
     @State var pendingBandCount: Int?
     @State var showBandReductionConfirmation = false
+    @State var pendingReset: EqualizerReset.Request?
     @State var showTextImporter = false
     @State var simpleTone = SimpleToneSettings()
     @StateObject var runtime = GlobalEQEditorRuntime()
@@ -41,16 +42,9 @@ struct GlobalEqualizerEditorView: View {
                         DeviceCorrectionHelpIcon(title: "Equalizer import",
                             message: "Imports ON/OFF PK/PEQ, LS/LSC, HS/HSC, LP/LPQ, HP/HPQ, NO, and AP filters using Q, BW Oct, or 6/12 dB shelf slopes. APO Preamp is ignored; use User Preamp instead. Other valid APO commands are skipped.")
                     }
-                    SectionResetButton(presentation.resetTitle) { resetEqualizer() }
+                    SectionResetButton(presentation.resetTitle) { requestEqualizerReset() }
                         .disabled(!canResetEqualizer)
                 }
-                JoinedSegmentedControl(
-                    options: EqualizerPresentation.allCases,
-                    selection: Binding(get: { presentation }, set: onPresentationChanged),
-                    title: { $0.title }
-                )
-                .accessibilityLabel("Equalizer controls")
-                .frame(width: 260)
                 PreampGainControl(
                     gainDB: $preampDB,
                     limiterEnabled: $limiterEnabled,
@@ -58,6 +52,13 @@ struct GlobalEqualizerEditorView: View {
                     profileID: profile.id,
                     onEditingChanged: continuousEditingChanged
                 )
+                JoinedSegmentedControl(
+                    options: EqualizerPresentation.allCases,
+                    selection: Binding(get: { presentation }, set: onPresentationChanged),
+                    title: { $0.title }
+                )
+                .accessibilityLabel("Equalizer controls")
+                .frame(width: 260)
                 Text("Automatic system headroom: \(automaticSystemHeadroomDB, format: .number.precision(.fractionLength(2))) dB")
                     .font(.caption.monospacedDigit().weight(.medium))
 
@@ -110,6 +111,7 @@ struct GlobalEqualizerEditorView: View {
         .onChange(of: state.historyReplayRevision) { _ in loadGraphicEQ() }
         .onAppear { loadGraphicEQIfNeeded() }
         .onDisappear {
+            pendingReset = nil
             bandReduction.cancel()
             if runtime.continuousEditDepth > 0 {
                 runtime.continuousEditDepth = 1
@@ -162,6 +164,20 @@ struct GlobalEqualizerEditorView: View {
             Button("Recalculate", role: .destructive) { applyPendingBandReduction() }
         } message: {
             Text(bandReductionConfirmationMessage)
+        }
+        .alert("Reset Equalizer?", isPresented: Binding(
+            get: { pendingReset != nil },
+            set: { if !$0 { pendingReset = nil } }
+        ), presenting: pendingReset) { request in
+            Button(request.presentation == .simpleTone ? "Reset Simple Only" : "Reset Bands Only", role: .destructive) {
+                resetEqualizer(request, presentation: request.presentation)
+            }
+            Button("Reset Both", role: .destructive) {
+                resetEqualizer(request, presentation: .both)
+            }
+            Button("Cancel", role: .cancel) { pendingReset = nil }
+        } message: { request in
+            Text("Simple and Bands both have changes. Reset only \(request.presentation.title), or both? User Preamp will reset to 0 dB either way.")
         }
     }
 

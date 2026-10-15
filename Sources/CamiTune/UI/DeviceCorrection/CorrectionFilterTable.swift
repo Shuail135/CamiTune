@@ -45,11 +45,25 @@ private struct CorrectionFilterRow: View {
 
     var body: some View {
         HStack {
-            Picker("Type", selection: Binding(get: { band.kind }, set: { EQEditorSupport.setKind($0, for: &band) })) {
+            Menu {
                 ForEach(EQBand.Kind.allCases, id: \.self) { kind in
-                    Text(Self.title(kind)).tag(kind)
+                    Button(Self.title(kind)) {
+                        EQEditorSupport.setKind(kind, for: &band)
+                    }
                 }
-            }.labelsHidden().frame(width: 100)
+            } label: {
+                HStack(spacing: 3) {
+                    FilterShapeIcon(kind: band.kind)
+                        .frame(width: 20, height: 15)
+                    Text(Self.title(band.kind))
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.visible)
+            .frame(width: 100)
+            .accessibilityLabel("Filter type")
             TextField("Frequency", value: $band.frequency, format: .number.precision(.fractionLength(0))).frame(width: 115)
             TextField("Gain", value: Binding(get: { band.gain ?? 0 }, set: { band.gain = $0 }), format: .number.precision(.fractionLength(0...1)))
                 .frame(width: 90).disabled(![.peaking, .lowShelf, .highShelf].contains(band.kind))

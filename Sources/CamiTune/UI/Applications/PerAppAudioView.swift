@@ -403,7 +403,7 @@ private struct PerApplicationEQControls: View, Equatable {
             }
             Group {
                 if let headroom = automaticSystemHeadroomDB {
-                    Text("Automatic system headroom: \(headroom, format: .number.precision(.fractionLength(2))) dB")
+                    Text("Automatic System Headroom: \(headroom, format: .number.precision(.fractionLength(2))) dB")
                         .font(.caption.monospacedDigit().weight(.medium))
                 } else {
                     Text("Calculating headroom…").font(.caption).foregroundStyle(.secondary)

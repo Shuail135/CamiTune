@@ -1,10 +1,10 @@
 import CamiTuneAudio
 import CamiTuneDomain
+import AppKit
 import SwiftUI
 
 @MainActor
 struct MultichannelProcessingView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var state: AppState
     @Binding var profile: DeviceProfile
     var previewOnly = false
@@ -13,8 +13,13 @@ struct MultichannelProcessingView: View {
     @State private var editorRevision = UUID()
     @State private var loadedID: UUID?
     @State private var message: String?
-    @State private var routingExpanded = false
-    @State private var crossoverExpanded = false
+    @State private var selectedEditor = Editor.routing
+    @State private var selectedDriverID: PhysicalOutputID?
+    @State private var collapsedRouteIDs: Set<UUID> = []
+
+    private enum Editor: String, CaseIterable {
+        case routing = "Routing", crossovers = "Crossovers"
+    }
 
     private var saving: Bool { state.isSavingProfileSettings }
     private var editorSnapshot: MultichannelHistoryState { .init(settings: draft, topology: topologyDraft) }
@@ -32,9 +37,22 @@ struct MultichannelProcessingView: View {
         Binding(get: { draft.routing.enabled }, set: { enabled in
             if enabled {
                 draft.routing = MultichannelRoutingEditor.enablingRouting(in: candidate)
-                routingExpanded = true
             } else { draft.routing.enabled = false }
         })
+    }
+    private var editorSelection: Binding<Editor> {
+        Binding(get: { selectedEditor }, set: { value in
+            finishEditing()
+            selectedEditor = value
+        })
+    }
+    private var selectedDriver: SpeakerEndpoint? {
+        drivers.first { $0.id == selectedDriverID } ?? drivers.first
+    }
+    private var hardwareMapConfirmed: Bool {
+        guard let topology = topologyDraft,
+              let fingerprint = try? HardwareTopologyFingerprint(topology: topology) else { return false }
+        return draft.crossover.reviewedHardware == fingerprint
     }
     private var source: LPCMChannelLayout {
         return ProfileRoutingDescriptor.sourceLayout(for: candidate)
@@ -42,12 +60,14 @@ struct MultichannelProcessingView: View {
 
     var body: some View {
         GroupBox {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
                 Text("Routing & Crossovers").font(.title3.bold())
-                processingDisclosure("Custom Routing", expanded: $routingExpanded, enabled: routingEnabled) {
+                JoinedSegmentedControl(options: Editor.allCases, selection: editorSelection, title: { $0.rawValue })
+                    .frame(width: 260)
+                    .accessibilityLabel("Routing and crossover controls")
+                if selectedEditor == .routing {
                     routingControls
-                }
-                processingDisclosure("Active Crossovers & Protection", expanded: $crossoverExpanded) {
+                } else {
                     crossoverControls
                 }
                 Divider()
@@ -58,10 +78,6 @@ struct MultichannelProcessingView: View {
                 }
                 if saving { ProgressView("Saving processing…").controlSize(.small) }
                 if let message = state.multichannelAutosaveErrors[profile.id] ?? message { Text(message).font(.callout).foregroundStyle(.orange) }
-                if draft.isEnabled {
-                    Text("Valid changes are saved and applied automatically. These controls use Direct playback.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
             }.padding(6).disabled(saving).id(editorRevision)
         }
         .onAppear {
@@ -69,8 +85,10 @@ struct MultichannelProcessingView: View {
             if changed { scheduleAutosave() }
         }
         .onChange(of: editorSnapshot) { _ in
-            if loadedID == profile.id, changed, !state.history.isReplaying,
-               state.multichannelEditSessions[profile.id] != editorSnapshot { scheduleAutosave() }
+            let pending = state.multichannelEditSessions[profile.id]
+            // Returning to the saved value still supersedes an older queued edit.
+            if loadedID == profile.id, changed || pending != nil, !state.history.isReplaying,
+               pending != editorSnapshot { scheduleAutosave() }
         }
         .onReceive(state.profiles.$multichannelDrafts) { sessions in
             guard loadedID == profile.id, let session = sessions[profile.id], session != editorSnapshot else { return }
@@ -80,7 +98,7 @@ struct MultichannelProcessingView: View {
         .onChange(of: profile.speakerTopology) { _ in reloadAfterAutosave() }
         .onChange(of: profile.id) { _ in load() }
         .onDisappear {
-            if changed, loadedID == profile.id { scheduleAutosave() }
+            if loadedID == profile.id, changed || state.multichannelEditSessions[profile.id] != nil { scheduleAutosave() }
         }
         .onChange(of: state.historyReplayRevision) { _ in
             if let current = state.profiles.profiles.first(where: { $0.id == profile.id }) { profile = current }
@@ -89,171 +107,280 @@ struct MultichannelProcessingView: View {
         }
     }
 
-    private func processingDisclosure<Content: View>(_ title: String, expanded: Binding<Bool>,
-                                                     enabled: Binding<Bool>? = nil,
-                                                     @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Button {
-                    expanded.wrappedValue.toggle()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold)).frame(width: 10)
-                            .rotationEffect(.degrees(expanded.wrappedValue ? 90 : 0))
-                            .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: expanded.wrappedValue)
-                        Text(title)
-                    }.contentShape(Rectangle())
-                }.buttonStyle(.plain)
-                    .accessibilityValue(expanded.wrappedValue ? "Expanded" : "Collapsed")
-                Spacer()
-                if let enabled {
-                    Toggle(title, isOn: enabled).toggleStyle(.switch).labelsHidden()
-                }
-            }
-            if expanded.wrappedValue {
-                content().frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }.frame(maxWidth: .infinity, alignment: .leading)
-    }
-
     private var routingControls: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if draft.routing.enabled {
-                HStack {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Custom Routing").font(.headline)
+                Spacer()
+                Toggle("Enable custom routing", isOn: routingEnabled)
+                    .toggleStyle(.switch).labelsHidden()
+            }
+            if !draft.routing.enabled {
+                Text("Enable custom routing to edit connections. Speaker assignments are used while routing is off.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                WrappingControlLayout {
                     Picker("Input layout", selection: $draft.routing.sourceLayout) {
                         ForEach(RoutingSourceLayout.allCases, id: \.self) { Text($0.title).tag($0) }
-                    }.frame(maxWidth: 300)
+                    }.frame(width: 280)
                     if draft.routing.sourceLayout == .discrete {
                         Stepper("\(draft.routing.discreteChannelCount) channels", value: $draft.routing.discreteChannelCount, in: 1...32)
+                            .accessibilityLabel("Input channel count")
                     }
-                }
-                if draft.routing.routes.isEmpty {
-                    Text("No routes yet. Add a connection or start from speaker assignments.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                ForEach($draft.routing.routes) { $route in
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack {
-                            Picker("Source channel", selection: $route.sourceChannel) {
-                                ForEach(0..<source.channelCount, id: \.self) { index in Text(sourceName(index)).tag(index) }
-                            }.frame(maxWidth: 270)
-                            Image(systemName: "arrow.right").foregroundStyle(.secondary)
-                            Picker("Destination speaker", selection: $route.destination) {
-                                if !routingEndpoints.contains(where: { $0.id == route.destination }) {
-                                    Text("Unavailable output \(route.destination.channelIndex + 1)").tag(route.destination)
-                                }
-                                ForEach(routingEndpoints) { Text($0.displayName).tag($0.id) }
-                            }.frame(maxWidth: 310)
-                            Button { draft.routing.routes.removeAll { $0.id == route.id } } label: { Image(systemName: "minus.circle") }
-                                .buttonStyle(.borderless)
-                                .accessibilityLabel("Remove route")
-                        }
-                        HStack {
-                            Text("Gain"); numeric("Route gain dB", value: $route.gainDB); Text("dB")
-                            Toggle("Mute route", isOn: $route.muted)
-                            Toggle("Invert route", isOn: $route.inverted)
-                        }
-                    }
-                }
+                }.disabled(!draft.routing.enabled)
                 HStack {
-                    Button("Add route") {
+                    Button {
+                        finishEditing()
                         guard let route = MultichannelRoutingEditor.nextRoute(in: candidate) else { return }
                         draft.routing.routes.append(route)
-                    }.disabled(MultichannelRoutingEditor.nextRoute(in: candidate) == nil)
+                    } label: { Label("Add route", systemImage: "plus") }
+                        .disabled(MultichannelRoutingEditor.nextRoute(in: candidate) == nil)
+                    Spacer()
                     SectionResetButton("Reset to speaker assignments") {
+                        finishEditing()
                         let candidate = self.candidate
                         if let format = try? AudioFormatDescriptor.source(sampleRate: profile.sampleRate, layout: source) {
                             draft.routing.routes = candidate.defaultSpeakerRoutes(source: format)
                                 .filter { !draft.bass.enabled || !draft.bass.subwooferEndpointIDs.contains($0.destination) }
                         }
-                    }
+                    }.help("Reset to speaker assignments")
+                }.disabled(!draft.routing.enabled)
+                if draft.routing.routes.isEmpty {
+                    Text("No routes yet. Add a connection or start from speaker assignments.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(draft.routing.routes) { route in
+                    routingRow(routeBinding(route))
                 }
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private func routingRow(_ route: Binding<SpeakerRoute>) -> some View {
+        let number = (draft.routing.routes.firstIndex { $0.id == route.wrappedValue.id } ?? 0) + 1
+        return DisclosureGroup(isExpanded: routeExpanded(route.wrappedValue.id)) {
+            routingDetails(route).disabled(!draft.routing.enabled)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Route \(number)").font(.subheadline.weight(.semibold))
+                Text(routeSummary(route.wrappedValue)).font(.caption).foregroundStyle(.secondary)
+            }.padding(.trailing, 30)
+        }
+        .disclosureGroupStyle(SectionDisclosureStyle())
+        .overlay(alignment: .topTrailing) {
+            Button {
+                finishEditing()
+                draft.routing.routes.removeAll { $0.id == route.wrappedValue.id }
+            } label: { Image(systemName: "minus.circle").frame(width: 22, height: 22) }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Remove route \(number)")
+                .help("Remove this connection")
+                .disabled(!draft.routing.enabled)
+        }
+        .padding(12)
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.18), lineWidth: 0.5))
+        .focusSection()
+    }
+
+    private func routeExpanded(_ id: UUID) -> Binding<Bool> {
+        Binding(get: { !collapsedRouteIDs.contains(id) }, set: { expanded in
+            if expanded {
+                collapsedRouteIDs.remove(id)
+            } else {
+                finishEditing()
+                collapsedRouteIDs.insert(id)
+            }
+        })
+    }
+
+    private func routeSummary(_ route: SpeakerRoute) -> String {
+        let input = (0..<source.channelCount).contains(route.sourceChannel)
+            ? sourceName(route.sourceChannel) : "Unavailable source \(route.sourceChannel + 1)"
+        let output = routingEndpoints.first { $0.id == route.destination }?.displayName
+            ?? "Unavailable output \(route.destination.channelIndex + 1)"
+        return "\(input) → \(output)"
+    }
+
+    private func routingDetails(_ route: Binding<SpeakerRoute>) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ResponsiveStackLayout(minimumHorizontalWidth: 560, horizontalSpacing: 16, verticalSpacing: 10) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Source channel").font(.caption).foregroundStyle(.secondary)
+                    Picker("Source channel", selection: route.sourceChannel) {
+                        if !(0..<source.channelCount).contains(route.wrappedValue.sourceChannel) {
+                            Text("Unavailable source \(route.wrappedValue.sourceChannel + 1)").tag(route.wrappedValue.sourceChannel)
+                        }
+                        ForEach(0..<source.channelCount, id: \.self) { index in Text(sourceName(index)).tag(index) }
+                    }.labelsHidden().frame(maxWidth: .infinity)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Destination speaker").font(.caption).foregroundStyle(.secondary)
+                    Picker("Destination speaker", selection: route.destination) {
+                        if !routingEndpoints.contains(where: { $0.id == route.wrappedValue.destination }) {
+                            Text("Unavailable output \(route.wrappedValue.destination.channelIndex + 1)").tag(route.wrappedValue.destination)
+                        }
+                        ForEach(routingEndpoints) { Text($0.displayName).tag($0.id) }
+                    }.labelsHidden().frame(maxWidth: .infinity)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack(spacing: 12) {
+                Text("Gain").font(.callout)
+                SteppedValueSlider(value: route.gainDB, in: -120...24, step: 0.5)
+                    .accessibilityLabel("Route gain")
+                numeric("Route gain dB", value: route.gainDB)
+                Text("dB").font(.callout).foregroundStyle(.secondary)
+            }
+            WrappingControlLayout {
+                Toggle("Mute route", isOn: route.muted)
+                Toggle("Invert route", isOn: route.inverted)
+            }.toggleStyle(.checkbox).font(.callout)
+        }
+    }
+
+    private func routeBinding(_ snapshot: SpeakerRoute) -> Binding<SpeakerRoute> {
+        Binding(get: { draft.routing.routes.first { $0.id == snapshot.id } ?? snapshot }, set: { value in
+            guard let index = draft.routing.routes.firstIndex(where: { $0.id == snapshot.id }) else { return }
+            draft.routing.routes[index] = value
+        })
+    }
+
     private var crossoverControls: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Active Crossovers & Protection").font(.headline)
+                Spacer()
+                Toggle("Enable active crossovers", isOn: $draft.crossover.enabled)
+                    .toggleStyle(.switch).labelsHidden()
+            }
+            Text("For speakers whose individual drivers connect to separate amplifier outputs.")
+                .font(.caption).foregroundStyle(.secondary)
             Menu("Prepare active stereo setup") {
                 ForEach(ActiveSpeakerPreset.allCases) { preset in
                     Button(preset.title) {
-                        do { let prepared = try preset.applying(to: candidate); topologyDraft = prepared.speakerTopology; draft = prepared.multichannel; message = "Starting crossover values are 300 Hz and/or 2,000 Hz. Adjust them for the connected drivers, then confirm the hardware map. Valid changes save automatically." }
-                        catch { message = error.localizedDescription }
+                        finishEditing()
+                        do {
+                            let prepared = try preset.applying(to: candidate)
+                            topologyDraft = prepared.speakerTopology
+                            draft = prepared.multichannel
+                            selectedDriverID = nil
+                            message = "Starting crossover values are 300 Hz and/or 2,000 Hz. Adjust them for the connected drivers, then confirm the hardware map. Valid changes save automatically."
+                        } catch { message = error.localizedDescription }
                     }.disabled((topologyDraft?.endpoints.count ?? 0) < preset.rawValue * 2)
                 }
             }.fixedSize()
-            Toggle("Enable active crossovers", isOn: $draft.crossover.enabled)
-                .toggleStyle(.switch)
-            Text("For speakers whose individual drivers connect to separate amplifier outputs.")
-                .font(.caption).foregroundStyle(.secondary)
-            if draft.crossover.enabled {
+            if drivers.isEmpty {
+                Text("Choose an active stereo setup above, or assign Woofer, Midrange or Tweeter speaker functions in Device Configuration.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                driverControls.disabled(!draft.crossover.enabled)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var driverControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !draft.crossover.enabled {
+                Text("Enable crossovers to edit driver filters and protection.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let driver = selectedDriver {
                 Text("Choose crossover frequencies and protection limits for each driver, then confirm the hardware map. Valid changes save automatically.")
                     .font(.caption).foregroundStyle(.secondary)
-                ForEach(drivers) { driver in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("\(driver.displayName) · \(driver.function.displayName)").font(.headline)
-                        if let index = draft.crossover.endpoints.firstIndex(where: { $0.endpointID == driver.id }) {
-                            crossoverRow(index, driver: driver)
-                        } else {
-                            Button("Configure \(driver.displayName)") {
-                                draft.crossover.endpoints.append(.init(endpointID: driver.id))
-                                draft.crossover.protection[driver.id] = .init()
-                            }
+                Picker("Driver", selection: Binding(get: { driver.id }, set: { value in
+                    finishEditing()
+                    selectedDriverID = value
+                })) {
+                    ForEach(drivers) { Text("\($0.displayName) · \($0.function.displayName)").tag($0.id) }
+                }.frame(maxWidth: 420)
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("\(driver.displayName) · \(driver.function.displayName)").font(.headline)
+                    if draft.crossover.endpoints.contains(where: { $0.endpointID == driver.id }) {
+                        crossoverRow(driver)
+                    } else {
+                        Button("Configure \(driver.displayName)") {
+                            draft.crossover.endpoints.append(.init(endpointID: driver.id))
+                            draft.crossover.protection[driver.id] = .init()
                         }
                     }
                 }
+                .padding(12)
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.18), lineWidth: 0.5))
+                .id(driver.id)
+                .focusSection()
+                Divider()
+                Label(hardwareMapConfirmed
+                      ? "Hardware map confirmed; hardware changes block activation."
+                      : "Hardware map needs confirmation.",
+                      systemImage: hardwareMapConfirmed ? "checkmark.circle" : "info.circle")
+                    .font(.caption).foregroundStyle(.secondary)
                 Button("Confirm this hardware map") {
+                    finishEditing()
                     do {
                         guard let topology = topologyDraft else { throw SpeakerTopologyError.invalidDeviceUID }
                         draft.crossover.reviewedHardware = try .init(topology: topology)
                         message = "Hardware map confirmed. Changes save automatically once every driver's protection is valid."
                     } catch { message = error.localizedDescription }
-                }
-                Text(draft.crossover.reviewedHardware == nil ? "Hardware map needs confirmation." : "Hardware map confirmed; hardware changes block activation.")
-                    .font(.caption).foregroundStyle(.secondary)
+                }.disabled(hardwareMapConfirmed || topologyDraft == nil)
             }
         }
     }
 
-    private func crossoverRow(_ index: Int, driver: SpeakerEndpoint) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Toggle("High-pass", isOn: optionalEnabled($draft.crossover.endpoints[index].highPassHz, defaultValue: 2000))
-                if draft.crossover.endpoints[index].highPassHz != nil { numeric("Driver high-pass Hz", value: optionalValue($draft.crossover.endpoints[index].highPassHz, fallback: 2000)); Text("Hz") }
-                Toggle("Low-pass", isOn: optionalEnabled($draft.crossover.endpoints[index].lowPassHz, defaultValue: 2000))
-                if draft.crossover.endpoints[index].lowPassHz != nil { numeric("Driver low-pass Hz", value: optionalValue($draft.crossover.endpoints[index].lowPassHz, fallback: 2000)); Text("Hz") }
+    private func crossoverRow(_ driver: SpeakerEndpoint) -> some View {
+        let crossover = crossoverBinding(driver.id)
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("Crossover filters").font(.subheadline.weight(.semibold))
+            ResponsiveStackLayout(minimumHorizontalWidth: 600, horizontalSpacing: 24, verticalSpacing: 10) {
+                optionalControl("High-pass", fieldTitle: "Driver high-pass Hz", value: crossover.highPassHz, defaultValue: 2000, unit: "Hz")
+                optionalControl("Low-pass", fieldTitle: "Driver low-pass Hz", value: crossover.lowPassHz, defaultValue: 2000, unit: "Hz")
             }
-            Picker("Crossover slope", selection: $draft.crossover.endpoints[index].slope) {
+            Picker("Crossover slope", selection: crossover.slope) {
                 ForEach(CrossoverSlope.allCases, id: \.self) { Text($0.title).tag($0) }
-            }.frame(maxWidth: 350)
-            HStack {
-                Toggle("Require high-pass", isOn: optionalEnabled(protectionBinding(driver.id, \.requiredHighPassHz), defaultValue: 2000))
-                if draft.crossover.protection[driver.id]?.requiredHighPassHz != nil {
-                    numeric("Minimum protection Hz", value: optionalValue(protectionBinding(driver.id, \.requiredHighPassHz), fallback: 2000)); Text("Hz")
-                }
-                Toggle("Require limiter", isOn: protectionBinding(driver.id, \.limiterRequired))
+            }.frame(maxWidth: 420)
+            Divider()
+            Text("Driver protection").font(.subheadline.weight(.semibold))
+            ResponsiveStackLayout(minimumHorizontalWidth: 600, horizontalSpacing: 24, verticalSpacing: 10) {
+                optionalControl("Require high-pass", fieldTitle: "Minimum protection Hz",
+                    value: protectionBinding(driver.id, \.requiredHighPassHz), defaultValue: 2000, unit: "Hz")
+                optionalControl("Limit gain", fieldTitle: "Maximum gain dB",
+                    value: protectionBinding(driver.id, \.maximumGainDB), defaultValue: 0, unit: "dB")
             }
             if draft.crossover.protection[driver.id]?.requiredHighPassHz != nil {
                 Picker("Minimum protection slope", selection: protectionBinding(driver.id, \.requiredHighPassSlope)) {
                     ForEach(CrossoverSlope.allCases, id: \.self) { Text($0.title).tag($0) }
                 }.frame(maxWidth: 420)
             }
-            HStack {
-                Toggle("Limit gain", isOn: optionalEnabled(protectionBinding(driver.id, \.maximumGainDB), defaultValue: 0))
-                if draft.crossover.protection[driver.id]?.maximumGainDB != nil {
-                    numeric("Maximum gain dB", value: optionalValue(protectionBinding(driver.id, \.maximumGainDB), fallback: 0)); Text("dB")
-                }
-            }
+            Toggle("Require limiter", isOn: protectionBinding(driver.id, \.limiterRequired))
+                .toggleStyle(.checkbox)
             Text("Required limiters run last at −3 dBFS. Tweeters and midrange drivers require high-pass and limiter protection. Positive global preamp is blocked by the default 0 dB gain limit.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
 
+    private func crossoverBinding(_ id: PhysicalOutputID) -> Binding<EndpointCrossover> {
+        Binding(get: { draft.crossover.endpoints.first { $0.endpointID == id } ?? .init(endpointID: id) }, set: { value in
+            guard let index = draft.crossover.endpoints.firstIndex(where: { $0.endpointID == id }) else { return }
+            draft.crossover.endpoints[index] = value
+        })
+    }
+
+    private func optionalControl(_ title: String, fieldTitle: String, value: Binding<Double?>,
+                                 defaultValue: Double, unit: String) -> some View {
+        HStack(spacing: 8) {
+            Toggle(title, isOn: optionalEnabled(value, defaultValue: defaultValue)).toggleStyle(.checkbox)
+            Spacer(minLength: 8)
+            numeric(fieldTitle, value: optionalValue(value, fallback: defaultValue))
+                .disabled(value.wrappedValue == nil)
+            Text(unit).font(.callout).foregroundStyle(.secondary).frame(width: 22, alignment: .leading)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func numeric(_ title: String, value: Binding<Double>) -> some View {
         TextField(title, value: value, format: .number.precision(.fractionLength(0...2)))
-            .textFieldStyle(.roundedBorder).frame(width: 78).accessibilityLabel(title)
+            .textFieldStyle(.roundedBorder).monospacedDigit().multilineTextAlignment(.trailing)
+            .frame(width: 78).accessibilityLabel(title)
     }
+    private func finishEditing() { NSApp.keyWindow?.makeFirstResponder(nil) }
     private func protectionBinding<T>(_ id: PhysicalOutputID, _ key: WritableKeyPath<EndpointProtection, T>) -> Binding<T> {
         Binding(get: { (draft.crossover.protection[id] ?? .init())[keyPath: key] }, set: {
             var protection = draft.crossover.protection[id] ?? .init(); protection[keyPath: key] = $0; draft.crossover.protection[id] = protection
@@ -270,10 +397,16 @@ struct MultichannelProcessingView: View {
         return role == .unknown ? "Source \(index + 1)" : role.displayName
     }
     private func load(useDraft: Bool = true) {
+        let changedProfile = loadedID != profile.id
         if !useDraft { state.multichannelEditSessions[profile.id] = nil }
         let savedDraft = useDraft ? state.multichannelEditSessions[profile.id] : nil
         draft = savedDraft?.settings ?? profile.multichannel
         topologyDraft = savedDraft?.topology ?? profile.speakerTopology
+        if changedProfile {
+            selectedEditor = draft.crossover.enabled && !draft.routing.enabled ? .crossovers : .routing
+            selectedDriverID = nil
+            collapsedRouteIDs.removeAll()
+        }
         loadedID = profile.id; message = nil
         // SwiftUI retains a numeric field's editing text across external binding
         // resets. Recreate the controls on Revert/Undo so stale text cannot claim
