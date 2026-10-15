@@ -854,7 +854,7 @@ final class AppState: NSObject, ObservableObject {
         let candidate = try draft.candidate()
         _ = try await prepareRuntimePlan(profile: candidate)
         guard !isSavingProfileSettings, !transitionInProgress,
-              await coreAudioService.resolveDeviceWithoutBlockingUI(uid: candidate.outputDeviceUID) != nil else {
+              await runtimeServices.resolveOutput(candidate.outputDeviceUID) != nil else {
             throw ProfileSettingsError.runtime("The audio device changed. Check its connection and try again.")
         }
         let generation = runtimeCoordinator.desiredRuntime.generation
@@ -1351,6 +1351,7 @@ extension AppState {
             publishedProfileUIDs: { [coreAudioService] in
                 Set(coreAudioService.outputDevices.lazy.map(\.id).filter(ProfileRoutingDescriptor.isProfileRoutingUID))
             },
+            physicalOutputs: { [coreAudioService] in coreAudioService.physicalOutputDevices },
             cancelReadiness: { [coreAudioService] in coreAudioService.cancelReadiness() },
             resolveBinding: { [coreAudioService] in try await coreAudioService.resolveRuntimeBinding(routingUID: $0, physicalUID: $1) },
             rebindVolume: { [volumeBridge] in try await volumeBridge.rebind($0, binding: $1) },

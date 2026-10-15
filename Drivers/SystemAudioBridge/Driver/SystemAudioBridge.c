@@ -1113,7 +1113,12 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
             { kAudioObjectPropertyName, kAudioObjectPropertyScopeInput, kAudioObjectPropertyElementMain },
             { kAudioObjectPropertyName, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain },
         };
-        if(deviceListChanged)
+        bool namesChanged = false;
+        for(UInt32 slot = 0; slot < kProfileDevice_Count; ++slot) { namesChanged |= changedNames[slot]; }
+        // An identical publication is an explicit discovery retry from the app.
+        // Reannounce the existing list without retiring devices or their controls.
+        // A rename, however, only changes labels and must not rebuild the graph.
+        if(deviceListChanged || !namesChanged)
         {
             // The plug-in device list is the creation/destruction boundary. Never
             // notify a new object before HAL discovers it or a dead object after removal.
@@ -1139,8 +1144,10 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
                 kAudioObjectPropertyScopeGlobal,
                 kAudioObjectPropertyElementMain
             };
-            gPlugIn_Host->PropertiesChanged(gPlugIn_Host, kObjectID_Device, 1, &relatedAddress);
-            notify_profile_devices(1, &relatedAddress);
+            if(deviceListChanged) {
+                gPlugIn_Host->PropertiesChanged(gPlugIn_Host, kObjectID_Device, 1, &relatedAddress);
+                notify_profile_devices(1, &relatedAddress);
+            }
         }
         for(UInt32 slot = 0; slot < kProfileDevice_Count; ++slot)
         {
@@ -1154,11 +1161,12 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
                 );
                 // HAL maps this output selector to the device's data source.
                 // Its single item keeps its identity; only its display name
-                // changes. Refresh both the name and current-source cache so
-                // Sound menu clients re-read the label without restarting IO.
+                // changes. Do not announce a CurrentItem change: that describes
+                // a source switch and can make HAL clients rebuild their volume
+                // control state even though the source did not change.
                 AudioObjectPropertyAddress sourceAddresses[] = {
+                    { kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain },
                     { kAudioSelectorControlPropertyItemName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain },
-                    { kAudioSelectorControlPropertyCurrentItem, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain },
                 };
                 gPlugIn_Host->PropertiesChanged(gPlugIn_Host, profile_source_id(slot),
                     sizeof(sourceAddresses) / sizeof(sourceAddresses[0]), sourceAddresses);
@@ -4011,18 +4019,24 @@ static OSStatus	SystemAudioBridge_SetDevicePropertyData(AudioServerPlugInDriverR
 					FailWithAction(replacement == NULL, theAnswer = kAudioHardwareUnspecifiedError, Done, "SystemAudioBridge_SetDevicePropertyData: could not copy presentation name");
 					pthread_mutex_lock(&gPlugIn_StateMutex);
 					CFStringRef previous = gDevice_DisplayName;
+					const bool nameChanged = previous == NULL || !CFEqual(previous, replacement);
+					const bool hidden = !CFBooleanGetValue((CFBooleanRef)visible);
+					const bool visibilityChanged = gDevice_IsHidden != hidden;
 					gDevice_DisplayName = replacement;
-					gDevice_IsHidden = !CFBooleanGetValue((CFBooleanRef)visible);
+					gDevice_IsHidden = hidden;
 					pthread_mutex_unlock(&gPlugIn_StateMutex);
 					if(previous != NULL) { CFRelease(previous); }
 
-					*outNumberPropertiesChanged = 2;
-					outChangedAddresses[0].mSelector = kAudioObjectPropertyName;
-					outChangedAddresses[0].mScope = kAudioObjectPropertyScopeGlobal;
-					outChangedAddresses[0].mElement = kAudioObjectPropertyElementMain;
-					outChangedAddresses[1].mSelector = kAudioDevicePropertyIsHidden;
-					outChangedAddresses[1].mScope = kAudioObjectPropertyScopeGlobal;
-					outChangedAddresses[1].mElement = kAudioObjectPropertyElementMain;
+					if(nameChanged) {
+                        outChangedAddresses[(*outNumberPropertiesChanged)++] = (AudioObjectPropertyAddress) {
+                            kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain
+                        };
+                    }
+                    if(visibilityChanged) {
+                        outChangedAddresses[(*outNumberPropertiesChanged)++] = (AudioObjectPropertyAddress) {
+                            kAudioDevicePropertyIsHidden, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain
+                        };
+                    }
 					break;
 				}
 				if(command != NULL &&

@@ -379,18 +379,11 @@ private struct PerApplicationEQControls: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("\(displayedName) Equalizer")
+                Text("Equalizer")
                     .font(.headline)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
-                Toggle("EQ", isOn: Binding(
-                    get: { !settings.eqBypassed },
-                    set: { controller.setEQBypassed(!$0, for: applicationID) }
-                ))
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .accessibilityLabel("Enable per-application equalizer")
                 JoinedSegmentedControl(
                     options: EqualizerPresentation.allCases,
                     selection: Binding(get: { presentation }, set: {
@@ -400,10 +393,17 @@ private struct PerApplicationEQControls: View, Equatable {
                 )
                 .accessibilityLabel("Equalizer controls")
                 .frame(width: 260)
+                Toggle("Enable equalizer for \(displayedName)", isOn: Binding(
+                    get: { !settings.eqBypassed },
+                    set: { controller.setEQBypassed(!$0, for: applicationID) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
             }
             Group {
                 if let headroom = automaticSystemHeadroomDB {
-                    Text("Automatic System Headroom: \(headroom, format: .number.precision(.fractionLength(2))) dB")
+                    Text("Automatic Headroom: \(headroom, format: .number.precision(.fractionLength(2))) dB")
                         .font(.caption.monospacedDigit().weight(.medium))
                 } else {
                     Text("Calculating headroom…").font(.caption).foregroundStyle(.secondary)
@@ -411,7 +411,6 @@ private struct PerApplicationEQControls: View, Equatable {
             }
             if presentation != .bands {
                 HStack {
-                    Text("Simple").font(.subheadline.weight(.medium))
                     Spacer()
                     SectionResetButton("Reset Tone") {
                         simpleTone = SimpleToneSettings()
@@ -430,7 +429,7 @@ private struct PerApplicationEQControls: View, Equatable {
             if presentation == .both { Divider() }
             if presentation != .simpleTone {
                 HStack(spacing: 8) {
-                    Text("PEQ bands")
+                    Text("Bands")
                     Picker("PEQ bands", selection: Binding(get: { bands.count }, set: {
                         setBands(EQEditorSupport.resizedBands(bands, count: $0))
                     })) {
@@ -440,7 +439,7 @@ private struct PerApplicationEQControls: View, Equatable {
                     SectionResetButton("Reset Bands") { setBands(EQDefaults.bands) }
                 }
                 if bands.isEmpty {
-                    Text("No PEQ bands. Simple still applies.")
+                    Text("0 PEQ bands.")
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
                 } else {

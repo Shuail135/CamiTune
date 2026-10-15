@@ -64,6 +64,7 @@ protocol ProfileEndpointPublicationBackend {
     func checkSupport() throws
     func current() throws -> [ProfileEndpointState]
     func apply(_ endpoints: [ProfileEndpointState]) throws
+    func endpointsAreReady(_ uids: Set<String>) -> Bool
     func waitForVisibility(_ uids: Set<String>, present: Bool) throws
     func defaultOutputUID() throws -> String?
     func restoreDefaultOutput(_ uid: String) throws
@@ -82,9 +83,17 @@ enum ProfileEndpointPublication {
         }
         try backend.checkSupport()
         let previous = try backend.current()
-        // Display names are metadata. HAL clients may retain old labels after
-        // the driver has acknowledged a rename; that must not block activation.
-        if equivalent(previous, desired) { return }
+        // Driver metadata can lead HAL's device/control graph. A matching
+        // descriptor alone does not acknowledge publication after startup or
+        // a lost device-list notification. Never wait for cached display names.
+        let desiredUIDs = Set(desired.map(\.uid))
+        if equivalent(previous, desired) {
+            if !backend.endpointsAreReady(desiredUIDs) {
+                try backend.apply(desired)
+                try backend.waitForVisibility(desiredUIDs, present: true)
+            }
+            return
+        }
         let defaultUID = try backend.defaultOutputUID()
         do {
             try apply(from: previous, to: desired, using: backend)
@@ -154,12 +163,30 @@ struct NativeProfileEndpointBackend: ProfileEndpointPublicationBackend {
 
     func waitForVisibility(_ uids: Set<String>, present: Bool) throws {
         let result = CoreAudioConditionWaiter.waitSynchronously(backend: .live, event: .devices, timeout: .seconds(3)) {
-            uids.allSatisfy { (Self.resolve($0) != kAudioObjectUnknown) == present }
+            present ? endpointsAreReady(uids) : uids.allSatisfy { Self.resolve($0) == kAudioObjectUnknown }
         }
         waitObserver(result)
         if result.source == .cancelled { throw CancellationError() }
         guard result.source != .timedOut else {
-            throw ProfileSettingsError.runtime("macOS did not finish updating the profile audio devices.")
+            throw ProfileSettingsError.runtime("macOS did not finish preparing the profile audio devices and their volume controls.")
+        }
+    }
+
+    func endpointsAreReady(_ uids: Set<String>) -> Bool {
+        uids.allSatisfy { uid in
+            let id = Self.resolve(uid)
+            guard id != kAudioObjectUnknown else { return false }
+            // These are the device-level properties used by Sound Settings
+            // and media keys, not just the driver's private control objects.
+            for selector in [kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyMute] {
+                var address = AudioObjectPropertyAddress(mSelector: selector,
+                    mScope: kAudioObjectPropertyScopeOutput, mElement: kAudioObjectPropertyElementMain)
+                var settable: DarwinBoolean = false
+                guard AudioObjectHasProperty(id, &address),
+                      AudioObjectIsPropertySettable(id, &address, &settable) == noErr,
+                      settable.boolValue else { return false }
+            }
+            return true
         }
     }
 

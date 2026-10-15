@@ -76,7 +76,7 @@ package struct EqualizerAPOParser {
                     result.importedDirectiveCount += 1
                 } else {
                     result.warnings.append(
-                        "Line \(lineNumber): Preamp is ignored; use CamiTune's User Preamp and automatic system headroom controls."
+                        "Line \(lineNumber): Preamp is ignored."
                     )
                 }
                 validDirectiveCount += 1

@@ -4,6 +4,17 @@ import Foundation
 import SystemAudioBridgeC
 
 @MainActor
+private final class PhysicalConnectionWorld {
+    var outputs: [AudioDeviceInfo] = []
+    let headphones = AudioDeviceInfo(id: "diagnostic.headphones", objectID: 200, name: "Headphones")
+    var readGate: DiagnosticManualGate?
+    var retirementGate: DiagnosticManualGate?
+    func profile() -> DeviceProfile {
+        DeviceProfile(name: "Headphone profile", outputDeviceUID: headphones.id, outputDeviceName: headphones.name)
+    }
+}
+
+@MainActor
 private final class CoordinatorFixture {
     let box: DiagnosticSandbox
     let fake: DiagnosticRuntimeFakes
@@ -58,7 +69,155 @@ extension DeveloperSelfTests {
                 _ = try await test.execute()
             }
         }
+        func connection(_ id: String, _ name: String,
+                        _ body: @escaping @MainActor (CoordinatorFixture, PhysicalConnectionWorld) async throws -> Void) -> DiagnosticCase {
+            check(id, name) {
+                let world = PhysicalConnectionWorld()
+                let f = try CoordinatorFixture { services, fake in
+                    world.outputs = [fake.output]
+                    services.physicalOutputs = { world.outputs }
+                    services.cachedDevice = { uid in world.outputs.first { $0.id == uid } }
+                    services.resolveOutput = { uid in world.outputs.first { $0.id == uid } }
+                    services.playbackDevices = { world.outputs.map(\.id) }
+                    services.freshDefaultOutput = { try? await world.readGate?.enter(); return fake.defaultUID }
+                    services.stopTransport = { try? await world.retirementGate?.enter(); fake.stop("transport") }
+                    services.setDefaultOutput = { uid in fake.defaultUID = uid; fake.record("select " + uid) }
+                }
+                do {
+                    try await body(f, world)
+                    world.readGate?.release(); world.retirementGate?.release()
+                    await f.cleanUp()
+                    try diagnosticRequire(f.fake.resources.isEmpty, "Physical handoff leaked resources")
+                } catch {
+                    world.readGate?.release(); world.retirementGate?.release()
+                    await f.cleanUp(); throw error
+                }
+            }
+        }
         return [
+            connection("C63", "Unplugging before selection preserves the current profile and its intent") { f, world in
+                await f.state.activate(profile: f.profile)
+                let owner = f.owner.currentOwnershipID
+                let gate = DiagnosticManualGate(); world.readGate = gate; defer { gate.release() }
+                world.outputs.append(world.headphones)
+                let handoff = Task { await f.state.monitorRouting() }
+                try await gate.waitUntilEntered()
+                world.outputs.removeAll { $0.id == world.headphones.id }
+                gate.release(); await handoff.value
+                try diagnosticRequire(f.owner.currentOwnershipID == owner
+                    && f.owner.desiredRuntime.profileID == f.profile.id
+                    && f.fake.defaultUID == ProfileRoutingDescriptor.uid(for: f.profile.id)
+                    && !f.fake.events.contains("select " + world.headphones.id), "A vanished connection stranded the original route")
+            },
+            connection("C61", "A second connection during retirement wins over the first profile") { f, world in
+                let next = world.profile(); f.box.profiles.profiles.append(next)
+                f.box.profiles.setAutomaticProfile(physicalDevice: .init(uid: world.headphones.id, name: world.headphones.name), profileID: next.id)
+                await f.state.activate(profile: f.profile)
+                let gate = DiagnosticManualGate(); world.retirementGate = gate; defer { gate.release() }
+                world.outputs.append(world.headphones)
+                let handoff = Task { await f.state.monitorRouting() }
+                try await gate.waitUntilEntered()
+                let latest = AudioDeviceInfo(id: "diagnostic.latest", objectID: 201, name: "Latest output")
+                world.outputs.append(latest)
+                await f.owner.monitorRouting()
+                gate.release(); await handoff.value
+                try diagnosticRequire(!f.state.isActive && f.fake.defaultUID == latest.id
+                    && f.fake.events.filter { $0 == "notify activation" }.count == 1,
+                    "The earlier connection displaced the latest output")
+            },
+            connection("C62", "Failed automatic activation leaves the newly connected native output selected") { f, world in
+                let next = world.profile(); f.box.profiles.profiles.append(next)
+                f.box.profiles.setAutomaticProfile(physicalDevice: .init(uid: world.headphones.id, name: world.headphones.name), profileID: next.id)
+                await f.state.activate(profile: f.profile)
+                f.fake.scenario.graphFails = true
+                world.outputs.append(world.headphones)
+                await f.state.monitorRouting()
+                try diagnosticRequire(!f.state.isActive && f.fake.defaultUID == world.headphones.id
+                    && f.fake.resources.isEmpty, "Failed profile restored the old hardware")
+            },
+            connection("C53", "Connecting hardware activates its physical-output profile in one pass") { f, world in
+                let next = world.profile(); f.box.profiles.profiles.append(next)
+                f.box.profiles.setAutomaticProfile(physicalDevice: .init(uid: world.headphones.id, name: world.headphones.name), profileID: next.id)
+                await f.state.activate(profile: f.profile)
+                world.outputs.append(world.headphones)
+                await f.state.monitorRouting()
+                try diagnosticRequire(f.state.activeProfileID == next.id
+                    && f.fake.defaultUID == ProfileRoutingDescriptor.uid(for: next.id), "Connection stayed on the old profile")
+                let selection = f.fake.events.firstIndex(of: "select " + world.headphones.id)
+                let retirement = f.fake.events.firstIndex(of: "stop transport")
+                try diagnosticRequire(selection != nil && retirement != nil && selection! < retirement!
+                    && f.owner.maximumWorkerCount == 1, "Connection bypassed coordinated retirement")
+            },
+            connection("C54", "Profile-device mode leaves a newly connected output in native playback") { f, world in
+                var next = world.profile(); next.autoActivateWhenProfileDeviceSelected = true
+                f.box.profiles.profiles.append(next)
+                await f.state.activate(profile: f.profile)
+                world.outputs.append(world.headphones)
+                await f.state.monitorRouting(); await f.state.monitorRouting()
+                try diagnosticRequire(!f.state.isActive && f.fake.defaultUID == world.headphones.id
+                    && f.fake.resources.isEmpty, "A profile-device-only profile captured the new native output")
+            },
+            connection("C55", "Disabled automatic profiles leave newly connected hardware selected") { f, world in
+                var next = world.profile(); next.isEnabled = false
+                f.box.profiles.profiles.append(next)
+                f.box.profiles.setAutomaticProfile(physicalDevice: .init(uid: world.headphones.id, name: world.headphones.name), profileID: next.id)
+                await f.state.activate(profile: f.profile)
+                world.outputs.append(world.headphones)
+                await f.state.monitorRouting()
+                try diagnosticRequire(!f.state.isActive && f.fake.defaultUID == world.headphones.id, "Disabled profile auto-activated")
+            },
+            connection("C56", "Initial inventory, rename and virtual-device publication do not steal playback") { f, world in
+                world.outputs.append(world.headphones)
+                await f.state.monitorRouting()
+                try diagnosticRequire(f.fake.defaultUID == f.fake.output.id && !f.state.isActive, "Startup selected an arbitrary connected output")
+                await f.state.activate(profile: f.profile)
+                let owner = f.owner.currentOwnershipID
+                world.outputs[1] = .init(id: world.headphones.id, objectID: 999, name: "Renamed headphones")
+                world.outputs.append(.init(id: ProfileRoutingDescriptor.uid(for: UUID()), objectID: 333, name: "New virtual profile"))
+                await f.state.monitorRouting()
+                try diagnosticRequire(f.owner.currentOwnershipID == owner && f.state.activeProfileID == f.profile.id,
+                    "A presentation change was mistaken for a hardware connection")
+            },
+            connection("C57", "Selecting an existing physical output activates its mapped profile immediately") { f, world in
+                world.outputs.append(world.headphones)
+                let next = world.profile(); f.box.profiles.profiles.append(next)
+                f.box.profiles.setAutomaticProfile(physicalDevice: .init(uid: world.headphones.id, name: world.headphones.name), profileID: next.id)
+                await f.state.activate(profile: f.profile)
+                f.fake.defaultUID = world.headphones.id
+                await f.state.monitorRouting()
+                try diagnosticRequire(f.state.activeProfileID == next.id, "Physical selection needed another monitor tick")
+            },
+            connection("C58", "A newer macOS output choice supersedes a pending connection") { f, world in
+                await f.state.activate(profile: f.profile)
+                let gate = DiagnosticManualGate(); world.readGate = gate; defer { gate.release() }
+                world.outputs.append(world.headphones)
+                let handoff = Task { await f.state.monitorRouting() }
+                try await gate.waitUntilEntered()
+                f.fake.defaultUID = f.fake.output.id
+                gate.release(); await handoff.value
+                try diagnosticRequire(f.fake.defaultUID == f.fake.output.id
+                    && !f.fake.events.contains("select " + world.headphones.id), "Delayed connection overwrote a later output choice")
+            },
+            connection("C59", "Stop during a physical handoff prevents automatic profile activation") { f, world in
+                let next = world.profile(); f.box.profiles.profiles.append(next)
+                f.box.profiles.setAutomaticProfile(physicalDevice: .init(uid: world.headphones.id, name: world.headphones.name), profileID: next.id)
+                await f.state.activate(profile: f.profile)
+                let gate = DiagnosticManualGate(); world.retirementGate = gate; defer { gate.release() }
+                world.outputs.append(world.headphones)
+                let handoff = Task { await f.state.monitorRouting() }
+                try await gate.waitUntilEntered()
+                await f.state.deactivate()
+                gate.release(); await handoff.value
+                try diagnosticRequire(!f.state.isActive && f.fake.events.filter { $0 == "notify activation" }.count == 1,
+                    "A superseded connection activated its profile after Stop")
+            },
+            connection("C60", "Connecting an unconfigured output while idle selects native playback") { f, world in
+                await f.state.monitorRouting()
+                world.outputs.append(world.headphones)
+                await f.state.monitorRouting()
+                try diagnosticRequire(f.fake.defaultUID == world.headphones.id && !f.state.isActive
+                    && !f.fake.events.contains("start engine"), "Idle connection required a profile or manual selection")
+            },
             fixture("C01", "Ownership extraction preserves activation/failure/retry contracts") { f in
                 f.fake.scenario.transportResults = [false, false, true]
                 await f.state.activate(profile: f.profile)
@@ -508,6 +667,20 @@ extension DeveloperSelfTests {
                 try diagnosticRequire(!f.state.isActive && f.fake.resources.isEmpty
                     && f.fake.defaultUID == "external.choice" && f.state.errorMessage == nil,
                     "A retiring session overwrote the user's output choice")
+            },
+            check("C52", "Startup publishes selectable endpoints before base-device presentation") {
+                var published = false
+                let f = try CoordinatorFixture { services, fake in
+                    services.synchronizeRouting = { _, _, _, _ in published = true }
+                    services.hideBridge = {
+                        try diagnosticRequire(published, "Base-device presentation blocked profile publication")
+                        throw fake.fail("Base-device presentation is temporarily unavailable")
+                    }
+                }
+                f.owner.requestStartupPresentation(publishProfiles: true)
+                await f.owner.waitUntilSettled()
+                try diagnosticRequire(published && !f.state.isActive, "Startup required activation to publish endpoints")
+                await f.cleanUp()
             },
             check("C50", "Startup and device-list recovery publish mode 2 endpoints without activation") {
                 var endpoints: [ProfileEndpointState] = [], attempts = 0

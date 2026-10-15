@@ -131,12 +131,25 @@ final class CoreAudioService {
     deinit { timer?.invalidate(); observationTokens.forEach { $0.cancel() } }
 
     private func installHardwareListeners() {
-        if let token = backend.subscribe(.devices, { [weak self] in
-            Task { @MainActor [weak self] in self?.deviceGraphChanged() }
-        }) { observationTokens.append(token) }
-        if let token = backend.subscribe(.defaultOutput, { [weak self] in
-            Task { @MainActor [weak self] in await self?.refreshDefaultOutput() }
-        }) { observationTokens.append(token) }
+        let backend = backend
+        // Registering the first listener can initialize HAL and wait for
+        // coreaudiod. It must not block AppState construction or the first frame.
+        Task { [weak self] in
+            let tokens = await Task.detached(priority: .utility) { [weak self] in
+                var tokens: [CoreAudioListenerToken] = []
+                if let token = backend.subscribe(.devices, { [weak self] in
+                    Task { @MainActor [weak self] in self?.deviceGraphChanged() }
+                }) { tokens.append(token) }
+                if let token = backend.subscribe(.defaultOutput, { [weak self] in
+                    Task { @MainActor [weak self] in await self?.refreshDefaultOutput() }
+                }) { tokens.append(token) }
+                return tokens
+            }.value
+            guard let self else { return }
+            observationTokens.append(contentsOf: tokens)
+            // Close the gap between the initial snapshot and registration.
+            schedulePeriodicRefresh()
+        }
     }
 
     private func deviceGraphChanged() {

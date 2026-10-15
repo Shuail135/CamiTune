@@ -59,7 +59,7 @@ struct GlobalEqualizerEditorView: View {
                 )
                 .accessibilityLabel("Equalizer controls")
                 .frame(width: 260)
-                Text("Automatic system headroom: \(automaticSystemHeadroomDB, format: .number.precision(.fractionLength(2))) dB")
+                Text("Automatic Global Headroom: \(automaticSystemHeadroomDB, format: .number.precision(.fractionLength(2))) dB")
                     .font(.caption.monospacedDigit().weight(.medium))
 
                 if presentation != .simpleTone {

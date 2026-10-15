@@ -90,6 +90,22 @@ extension DeveloperSelfTests {
             }
         }
         return [
+            check("K39", "Slow HAL listener registration never blocks the main actor") {
+                let world = DiagnosticCoreAudioWorld(), gate = DispatchSemaphore(value: 0)
+                let registration = HandoffMasterRecorder()
+                defer { gate.signal() }
+                world.update { $0.onSubscribe = {
+                    registration.set(1, Thread.isMainThread)
+                    _ = gate.wait(timeout: .now() + 2)
+                } }
+                let service = CoreAudioService(backend: world.backend)
+                try await coreAudioWaitUntil { registration.value.0 == 1 }
+                try diagnosticRequire(!registration.value.1, "Listener registration entered HAL on the UI thread")
+                gate.signal()
+                try await coreAudioWaitUntil { world.update { $0.listeners.count == 2 } }
+                await service.refreshWithoutBlockingUI()
+                try diagnosticRequire(service.hasCompletedInitialRefresh, "Listener installation lost the initial snapshot")
+            },
             check("K34", "Cancelling native visibility immediately removes the listener") {
                 let world = DiagnosticCoreAudioWorld(), cancellation = CoreAudioPublicationCancellation()
                 let backend = world.backend
@@ -127,16 +143,16 @@ extension DeveloperSelfTests {
                 let world = DiagnosticCoreAudioWorld(), gate = DispatchSemaphore(value: 0)
                 world.update { $0.blockEnumeration = gate }; defer { gate.signal() }
                 let service = CoreAudioService(backend: world.backend)
-                try await coreAudioWaitUntil { world.update { $0.enumerations == 1 } }
+                try await coreAudioWaitUntil { world.update { $0.enumerations == 1 && $0.listeners.count == 2 } }
                 world.update { $0.defaultUID = "changed" }; world.emit(.defaultOutput)
                 try await coreAudioWaitUntil { service.snapshots.defaultOutputUID == "changed" }
                 try diagnosticRequire(!service.snapshots.hasCompletedInitialRefresh, "Full enumeration unexpectedly completed")
             },
             check("K03", "Device event bursts retain only one trailing refresh") {
                 let world = DiagnosticCoreAudioWorld(), gate = DispatchSemaphore(value: 0)
-                world.update { $0.blockEnumeration = gate }
+                world.update { $0.blockEnumeration = gate }; defer { gate.signal() }
                 let service = CoreAudioService(backend: world.backend)
-                try await coreAudioWaitUntil { world.update { $0.enumerations == 1 } }
+                try await coreAudioWaitUntil { world.update { $0.enumerations == 1 && $0.listeners.count == 2 } }
                 for _ in 0..<100 { world.emit(.devices) }
                 try await coreAudioWaitUntil { service.deviceGraphGeneration >= 100 }
                 gate.signal(); await service.refreshWithoutBlockingUI()
@@ -291,14 +307,20 @@ private final class CoreAudioCoordinatorFixture {
     var replaceOnPublish = false
     var replaceBridge = false
     var failPublication = false
+    var graphGeneration: UInt64 = 1
+    var publishedUIDs: Set<String> = []
     var controlID: UInt32 = 102
     var held = 0
     var permitted = 0
     var rebound = 0
     var incomingGate: DiagnosticManualGate?
+    var publicationGate: DiagnosticManualGate?
+    var bindingGate: DiagnosticManualGate?
     init() throws {
         box = try DiagnosticSandbox(); box.profiles.profiles = [profile]
         var services = fake.services()
+        services.bindingGeneration = { [unowned self] in graphGeneration }
+        services.publishedProfileUIDs = { [unowned self] in publishedUIDs }
         services.resolveOutput = { [unowned self] uid in uid == fake.output.id ? fake.output : nil }
         services.prepareIncoming = { [unowned self] in try await incomingGate?.enter(); fake.record("prepare volume") }
         let start = services.startVolume
@@ -316,21 +338,47 @@ private final class CoreAudioCoordinatorFixture {
             guard let value, value === lease else { return }; permitted += 1; value.controlSession.permitAudibility(); fake.record("permit audibility")
         }
         services.resolveBinding = { [unowned self] routing, _ in
-            .init(bridge: .init(id: fake.bridge.id, objectID: bridgeID, name: fake.bridge.name),
-                  routing: .init(id: routing, objectID: routingID, name: "Routing"), physical: fake.output, graphGeneration: UInt64(routingID))
+            try await bindingGate?.enter()
+            return .init(bridge: .init(id: fake.bridge.id, objectID: bridgeID, name: fake.bridge.name),
+                  routing: .init(id: routing, objectID: routingID, name: "Routing"), physical: fake.output, graphGeneration: graphGeneration)
         }
-        services.synchronizeRouting = { [unowned self] _, _, _, _ in
+        services.synchronizeRouting = { [unowned self] profiles, active, visible, descriptors in
             fake.record("synchronize routing")
+            try await publicationGate?.enter()
             if failPublication { throw fake.fail("Endpoint is still in use") }
+            let request = try ProfileEndpointPublicationRequest(profiles: profiles, activeProfileID: active,
+                defaultOutputUID: fake.defaultUID, connectedOutputUIDs: [fake.output.id],
+                additionallyVisible: visible, preparedDescriptors: descriptors)
+            publishedUIDs = Set(request.endpoints.map(\.uid))
+            graphGeneration += 1
             if replaceOnPublish { routingID += 1; if replaceBridge { bridgeID += 1 } }
         }
         services.rebindVolume = { [unowned self] value, _ in
-            guard value === lease else { throw CancellationError() }; rebound += 1; _ = value.controlSession.beginBinding()
+            guard value === lease else { throw CancellationError() }
+            try diagnosticRequire(value.controlSession.snapshot().audibility == .held, "Rebinding an audible route")
+            rebound += 1; _ = value.controlSession.beginBinding()
         }
         services.updateTransportControl = { [unowned self] id, _ in controlID = id }
         let stop = services.stopVolume
         services.stopVolume = { [unowned self] in lease?.controlSession.invalidate(); lease = nil; await stop() }
         state = AppState(profiles: box.profiles, perAppAudio: box.perApp, runtimeServices: services)
+    }
+    func requireUninterruptedPlayback(during action: () async throws -> Void) async throws {
+        let owner = state.runtimeCoordinator.currentOwnershipID, session = state.activeSession?.id
+        let originalLease = lease, volume = lease?.controlSession.snapshot(), output = fake.defaultUID
+        let eventCount = fake.events.count, holds = held, permits = permitted, rebinds = rebound
+        try await action()
+        try diagnosticRequire(state.isActive && state.runtimeCoordinator.currentOwnershipID == owner
+            && state.activeSession?.id == session && lease === originalLease && fake.defaultUID == output,
+            "Profile maintenance replaced the playing session or selected output")
+        try diagnosticRequire(held == holds && permitted == permits && rebound == rebinds
+            && lease?.controlSession.snapshot() == volume && volume?.audibility == .permitted,
+            "Profile maintenance interrupted audibility or volume control")
+        let disruptive = fake.events.dropFirst(eventCount).filter {
+            $0.hasPrefix("start ") || $0.hasPrefix("stop ") || $0 == "prepare volume"
+                || $0 == "apply graph" || $0 == "select routing" || $0 == "restore output" || $0 == "begin handoff"
+        }
+        try diagnosticRequire(disruptive.isEmpty, "Unexpected playback work: \(disruptive)")
     }
     func cleanUp() async { await state.deactivate(); await state.runtimeCoordinator.waitUntilSettled(); box.cleanUp() }
 }
@@ -366,6 +414,112 @@ extension DeveloperSelfTests {
             }
         }
         return [
+            fixture("K40", "Adding a profile preserves playback throughout slow endpoint publication") { f in
+                await f.state.activate(profile: f.profile)
+                let gate = DiagnosticManualGate(); f.publicationGate = gate
+                defer { gate.release() }
+                try await f.requireUninterruptedPlayback {
+                    guard let added = f.state.addProfile(for: f.fake.output) else {
+                        throw DiagnosticFailure(message: "Profile creation failed")
+                    }
+                    try await gate.waitUntilEntered()
+                    try diagnosticRequire(f.lease?.controlSession.snapshot().audibility == .permitted,
+                        "Waiting for the new endpoint muted the playing profile")
+                    gate.release(); await f.state.runtimeCoordinator.waitUntilSettled()
+                    await f.state.monitorRouting()
+                    try diagnosticRequire(f.publishedUIDs.contains(ProfileRoutingDescriptor.uid(for: added)),
+                        "New profile endpoint was not published")
+                }
+            },
+            fixture("K45", "The Add Profile dialog saves and publishes without interrupting playback") { f in
+                await f.state.activate(profile: f.profile)
+                let gate = DiagnosticManualGate(); f.publicationGate = gate
+                defer { gate.release() }
+                try await f.requireUninterruptedPlayback {
+                    var draft = AddOutputDraft()
+                    draft.selectDevice(f.fake.output, name: "Configured profile")
+                    draft.deviceType = .headphones
+                    let added = try await f.state.addProfile(from: draft)
+                    try await gate.waitUntilEntered()
+                    try diagnosticRequire(f.lease?.controlSession.snapshot().audibility == .permitted,
+                        "Publishing the saved profile muted the current output")
+                    gate.release(); await f.state.runtimeCoordinator.waitUntilSettled()
+                    await f.state.monitorRouting()
+                    try diagnosticRequire(f.box.profiles.profiles.contains(where: { $0.id == added })
+                        && f.publishedUIDs.contains(ProfileRoutingDescriptor.uid(for: added)),
+                        "Configured profile was not saved and published")
+                }
+            },
+            fixture("K41", "Quick activation-mode edits preserve the active profile and its volume session") { f in
+                let other = DeviceProfile(name: "Other", outputDeviceUID: f.profile.outputDeviceUID,
+                    outputDeviceName: f.profile.outputDeviceName)
+                f.box.profiles.profiles.append(other)
+                await f.state.activate(profile: f.profile)
+                for id in [f.profile.id, other.id] {
+                    for mode in [ProfileActivationMode.profileAudioDevice, .physicalOutput, .manual, .profileAudioDevice] {
+                        try await f.requireUninterruptedPlayback {
+                            await f.state.setActivationMode(profileID: id, mode: mode)
+                            await f.state.monitorRouting()
+                            guard let saved = f.box.profiles.profiles.first(where: { $0.id == id }) else {
+                                throw DiagnosticFailure(message: "Edited profile disappeared")
+                            }
+                            try diagnosticRequire(f.box.profiles.activationMode(for: saved) == mode,
+                                "Activation policy did not change")
+                            try diagnosticRequire(f.publishedUIDs.contains(ProfileRoutingDescriptor.uid(for: f.profile.id)),
+                                "Activation policy removed the playing endpoint")
+                            if id == other.id {
+                                try diagnosticRequire(f.publishedUIDs.contains(ProfileRoutingDescriptor.uid(for: id)) == (mode == .profileAudioDevice),
+                                    "Inactive endpoint visibility did not follow its activation mode")
+                            }
+                        }
+                    }
+                }
+            },
+            fixture("K42", "Saving activation modes for active and inactive profiles preserves playback") { f in
+                let other = DeviceProfile(name: "Other", outputDeviceUID: f.profile.outputDeviceUID,
+                    outputDeviceName: f.profile.outputDeviceName)
+                f.box.profiles.profiles.append(other)
+                await f.state.activate(profile: f.profile)
+                for id in [f.profile.id, other.id] {
+                    for mode in [ProfileActivationMode.profileAudioDevice, .physicalOutput, .manual] {
+                        try await f.requireUninterruptedPlayback {
+                            let original = f.box.profiles.profiles.first { $0.id == id }!
+                            var draft = ProfileSettingsDraft(profile: original, activation: f.box.profiles.activationMode(for: original))
+                            draft.activation = mode
+                            try await f.state.saveProfileSettings(draft)
+                            await f.state.monitorRouting()
+                            let saved = f.box.profiles.profiles.first { $0.id == id }!
+                            try diagnosticRequire(f.box.profiles.activationMode(for: saved) == mode,
+                                "Saved activation policy did not change")
+                            try diagnosticRequire(f.publishedUIDs.contains(ProfileRoutingDescriptor.uid(for: f.profile.id)),
+                                "Saving policy removed the playing endpoint")
+                        }
+                    }
+                }
+            },
+            fixture("K43", "Device graph notifications preserve playback when active objects are unchanged") { f in
+                await f.state.activate(profile: f.profile)
+                let gate = DiagnosticManualGate(); f.bindingGate = gate; f.graphGeneration += 1
+                defer { gate.release() }
+                try await f.requireUninterruptedPlayback {
+                    let monitor = Task { await f.state.monitorRouting() }
+                    try await gate.waitUntilEntered()
+                    try diagnosticRequire(f.lease?.controlSession.snapshot().audibility == .permitted,
+                        "Resolving unchanged device objects muted playback")
+                    gate.release(); await monitor.value
+                    try diagnosticRequire(f.state.runtimeCoordinator.lastBindingAction == "Bindings unchanged",
+                        "Unrelated graph notification caused a rebind")
+                }
+            },
+            fixture("K44", "Renaming an unchanged active endpoint preserves continuous audibility") { f in
+                await f.state.activate(profile: f.profile)
+                try await f.requireUninterruptedPlayback {
+                    var renamed = f.profile; renamed.name += " renamed"
+                    await f.state.apply(profile: renamed)
+                    try diagnosticRequire(f.state.runtimeCoordinator.appliedProfile?.name == renamed.name,
+                        "Rename did not reach the active plan")
+                }
+            },
             check("K38", "Driver readiness follows live capabilities across a replacement") {
                 let world = DiagnosticCoreAudioWorld()
                 let service = CoreAudioService(observesHardware: false, backend: world.backend)
@@ -390,7 +544,9 @@ extension DeveloperSelfTests {
                 defer { gate.release() }
                 do {
                     await f.state.activate(profile: f.profile)
-                    f.failPublication = true; f.incomingGate = gate
+                    // A partially failed publication may have replaced the
+                    // route. Recovery must then wait for volume readiness.
+                    f.routingID += 1; f.failPublication = true; f.incomingGate = gate
                     let maintenance = Task { try? await f.state.runtimeCoordinator.synchronizeProfileEndpoints() }
                     try await gate.waitUntilEntered()
                     let generation = f.state.runtimeCoordinator.desiredRuntime.generation
@@ -425,19 +581,17 @@ extension DeveloperSelfTests {
                 _ = try await service.publishProfileEndpoints(request)
                 try diagnosticRequire(world.update { $0.writes } == [10], "Fallback was missing or repeated")
             },
-            fixture("K36", "Failed endpoint maintenance restores audibility without retiring the active route") { f in
+            fixture("K36", "Failed unrelated endpoint maintenance never interrupts the active route") { f in
                 await f.state.activate(profile: f.profile)
-                let ownership = f.state.runtimeCoordinator.currentOwnershipID
                 f.failPublication = true
-                do {
-                    try await f.state.runtimeCoordinator.synchronizeProfileEndpoints()
-                    throw DiagnosticFailure(message: "Injected publication failure was ignored")
-                } catch let failure as DiagnosticFailure {
-                    try diagnosticRequire(failure.message == "Endpoint is still in use", "Unexpected maintenance failure")
+                try await f.requireUninterruptedPlayback {
+                    do {
+                        try await f.state.runtimeCoordinator.synchronizeProfileEndpoints()
+                        throw DiagnosticFailure(message: "Injected publication failure was ignored")
+                    } catch let failure as DiagnosticFailure {
+                        try diagnosticRequire(failure.message == "Endpoint is still in use", "Unexpected maintenance failure")
+                    }
                 }
-                try diagnosticRequire(f.state.isActive && f.state.runtimeCoordinator.currentOwnershipID == ownership
-                    && f.lease?.controlSession.snapshot().audibility == .permitted,
-                    "Retryable maintenance left the current route muted or retired")
                 f.failPublication = false
             },
             binding("K14", "Endpoint publication invalidates routing object identity", bridge: false),

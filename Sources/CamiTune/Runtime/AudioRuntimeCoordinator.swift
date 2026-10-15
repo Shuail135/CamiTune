@@ -44,6 +44,13 @@ final class AudioRuntimeCoordinator: ObservableObject {
     private var manualStopBarrier: RuntimeIntentGeneration?
     private var automaticActivationRetry: AutomaticActivationRetryState?
     private var routingMonitorInFlight = false
+    private var observedPhysicalOutputUIDs: Set<String>?
+    private struct PhysicalOutputConnection {
+        let uid: String
+        let generation: RuntimeIntentGeneration
+        let defaultUID: String?
+    }
+    private var pendingPhysicalOutputConnection: PhysicalOutputConnection?
     private var operations: [RuntimeIntentGeneration: PerformanceOperation] = [:]
     private var outcomes: [RuntimeIntentGeneration: RuntimeCommandResult] = [:]
     private struct EndpointRequest {
@@ -103,6 +110,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
         switch desiredRuntime.target {
         case .inactive: target = "Inactive"
         case .active(let profile): target = "Active: " + profile.name
+        case .physicalOutput(let uid, _): target = "Physical output: " + uid
         }
         coordinatorSummary = [
             "Desired: \(target)", "Intent generation: \(desiredRuntime.generation.rawValue)",
@@ -207,6 +215,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
                   performanceReason: String? = nil,
                   parentOperation: PerformanceOperationID? = nil, preparedPlan: AudioRuntimePlan? = nil) async {
         guard !terminated else { return }
+        observePhysicalOutputConnections()
         if automatic {
             guard activeTransaction == nil, !callbacks.settingsBusy(), let current = runtimeServices.defaultOutput() else { return }
             if suppressedAutoUID == current || suppressedAutoUID == profile.outputDeviceUID { return }
@@ -294,9 +303,11 @@ final class AudioRuntimeCoordinator: ObservableObject {
                 }
                 try checkCurrent(request.generation)
             }
-            if let owner = ownedSession { runtimeServices.holdAudibility(owner.volumeLease) }
-            if request.hideBridge { try await runtimeServices.hideBridge(); try checkCurrent(request.generation) }
             if request.publish { try await runtimeServices.synchronizeRouting(callbacks.profiles(), activeProfileID, [], [:]) }
+            try checkCurrent(request.generation)
+            // Cosmetic base-device presentation must not prevent publishing
+            // selectable profile endpoints when HAL is still starting.
+            if request.hideBridge { try await runtimeServices.hideBridge(); try checkCurrent(request.generation) }
             if let owner = ownedSession { try await refreshBinding(owner, permit: true); try checkCurrent(request.generation) }
             request.continuation?.resume()
         } catch {
@@ -367,6 +378,8 @@ final class AudioRuntimeCoordinator: ObservableObject {
                 case .inactive(let restore):
                     await executeDeactivation(restoreOutput: restore, reason: intent.reason, parent: intent.parentOperation)
                     if let barrier = manualStopBarrier, barrier <= intent.generation { manualStopBarrier = nil }
+                case .physicalOutput(let uid, let expectedDefault):
+                    try await executePhysicalOutputSelection(uid: uid, expectedDefault: expectedDefault, intent: intent)
                 case .active(let profile):
                     guard profile.isEnabled else { throw AppState.AppError.profileDisabled(profile.name) }
                     if let owner = ownedSession, owner.publicSession.profileID == profile.id {
@@ -384,6 +397,13 @@ final class AudioRuntimeCoordinator: ObservableObject {
                        suppressedAutoUID == nil {
                         automaticActivationRetry = .recordingFailure(for: profile.outputDeviceUID, previous: automaticActivationRetry)
                     }
+                }
+                if desiredRuntime.generation == intent.generation, case .physicalOutput = intent.target,
+                   let owner = ownedSession, runtimeServices.defaultOutput() == owner.restoration.routingUID {
+                    // The new device vanished or rejected selection before the
+                    // old route was retired. Keep that route editable/audible.
+                    _ = submit(target: .active(owner.appliedPlan.intent), source: .recovery,
+                        reportErrors: false, reason: "physicalOutputUnavailable")
                 }
             }
             operations.removeValue(forKey: intent.generation)?.finish(outcomes[intent.generation] == .satisfied ? "success" : "superseded or failed")
@@ -446,7 +466,6 @@ final class AudioRuntimeCoordinator: ObservableObject {
 
     private func publishPlanEndpoint(_ plan: AudioRuntimePlan) async throws {
         let owner = ownedSession ?? provisionalSession?.owner
-        if let owner { runtimeServices.holdAudibility(owner.volumeLease) }
         try await runtimeServices.synchronizeRouting(
             callbacks.profiles().map { $0.id == plan.revision.profileID ? plan.intent : $0 }, activeProfileID, [],
             [plan.revision.profileID: plan.profileRoutingDescriptor])
@@ -461,13 +480,17 @@ final class AudioRuntimeCoordinator: ObservableObject {
     }
     private func refreshBinding(_ owner: OwnedRuntimeSession, permit: Bool) async throws {
         guard owns(owner.ownershipID), let resolve = runtimeServices.resolveBinding else { return }
-        runtimeServices.holdAudibility(owner.volumeLease)
         let operation = performanceRecorder.begin("CoreAudio runtime binding")
         defer { operation?.finish("binding checked") }
         let fresh = try await resolve(owner.restoration.routingUID, owner.restoration.physicalOutputUID)
         guard owns(owner.ownershipID) else { throw CancellationError() }
         let previous = owner.binding
-        if previous?.hasSameObjects(as: fresh) != true {
+        let bindingChanged = previous?.hasSameObjects(as: fresh) != true
+        if bindingChanged {
+            // Publishing another profile or changing activation policy can
+            // advance the device graph without replacing our audio objects.
+            // Hold playback only when those objects actually need rebinding.
+            runtimeServices.holdAudibility(owner.volumeLease)
             let restart = owner.resources.contains(.transport) && previous?.bridge.objectID != fresh.bridge.objectID
             if restart {
                 lastBindingAction = "Transport rebound"
@@ -491,12 +514,21 @@ final class AudioRuntimeCoordinator: ObservableObject {
         } else { lastBindingAction = "Bindings unchanged" }
         guard owns(owner.ownershipID) else { throw CancellationError() }
         owner.binding = fresh
-        try await runtimeServices.prepareIncoming()
-        guard owns(owner.ownershipID) else { throw CancellationError() }
+        // A returning route still needs readiness even if its object IDs are
+        // unchanged. An already audible route needs no volume handoff.
+        let needsReadiness = bindingChanged || owner.volumeLease?.controlSession.snapshot().audibility == .held
+        if needsReadiness {
+            try await runtimeServices.prepareIncoming()
+            guard owns(owner.ownershipID) else { throw CancellationError() }
+        }
         var actualDefault = runtimeServices.defaultOutput()
         if let read = runtimeServices.freshDefaultOutput { actualDefault = await read() }
         guard owns(owner.ownershipID) else { throw CancellationError() }
-        if permit, actualDefault == owner.restoration.routingUID,
+        guard actualDefault == owner.restoration.routingUID else {
+            runtimeServices.holdAudibility(owner.volumeLease)
+            return
+        }
+        if permit, needsReadiness,
            case .active(let desired) = desiredRuntime.target, desired.id == owner.publicSession.profileID {
             runtimeServices.permitAudibility(owner.volumeLease)
         }
@@ -693,8 +725,11 @@ final class AudioRuntimeCoordinator: ObservableObject {
             var actualDefault = runtimeServices.defaultOutput()
             if !terminated, let read = runtimeServices.freshDefaultOutput { actualDefault = await read() }
             let restore: Bool
-            if case .inactive(let requestedRestore) = desiredRuntime.target { restore = requestedRestore }
-            else { restore = !owner.restoration.defaultOutputWasRedirected || actualDefault == owner.restoration.routingUID }
+            switch desiredRuntime.target {
+            case .inactive(let requestedRestore): restore = requestedRestore
+            case .physicalOutput: restore = false
+            case .active: restore = !owner.restoration.defaultOutputWasRedirected || actualDefault == owner.restoration.routingUID
+            }
             await retire(owner, restoreOutput: restore, operation: operation)
             operation?.mark("cleanup complete")
             if provisionalSession?.owner.ownershipID == owner.ownershipID { provisionalSession = nil }
@@ -1075,11 +1110,86 @@ final class AudioRuntimeCoordinator: ObservableObject {
         try? sync.hideBridge()
     }
     func monitorRouting() async {
-        guard !terminated, !callbacks.settingsBusy(), !transitionInProgress, !routingMonitorInFlight else { return }
+        guard !terminated else { return }
+        // Observe even during a transition so a connection is not lost while
+        // the worker is busy. A later user intent invalidates the pending event.
+        observePhysicalOutputConnections()
+        guard !callbacks.settingsBusy(), !transitionInProgress, !routingMonitorInFlight else { return }
         routingMonitorInFlight = true
         defer { routingMonitorInFlight = false }
-        await monitorSelectedRoute()
+        if let connection = pendingPhysicalOutputConnection {
+            pendingPhysicalOutputConnection = nil
+            if connection.generation == desiredRuntime.generation,
+               runtimeServices.cachedDevice(connection.uid)?.isRoutingDevice == false {
+                await selectPhysicalOutput(connection.uid, expectedDefault: connection.defaultUID, reason: "deviceConnected")
+            } else { await monitorSelectedRoute() }
+        } else { await monitorSelectedRoute() }
         await reconcileEndpointVisibility()
+    }
+
+    private func observePhysicalOutputConnections() {
+        guard runtimeServices.hasSnapshot(), let outputs = runtimeServices.physicalOutputs() else { return }
+        let current = Set(outputs.filter { !$0.isRoutingDevice }.map(\.id))
+        let previous = observedPhysicalOutputUIDs
+        observedPhysicalOutputUIDs = current
+        if let pending = pendingPhysicalOutputConnection, !current.contains(pending.uid) {
+            pendingPhysicalOutputConnection = nil
+        }
+        // The initial inventory is a baseline, not a connection event. UIDs
+        // also prevent renames, HAL renumbering and virtual publication from
+        // being mistaken for newly plugged-in hardware.
+        guard let previous else { return }
+        let added = current.subtracting(previous)
+        let selected = runtimeServices.defaultOutput()
+        guard let uid = selected.flatMap({ added.contains($0) ? $0 : nil }) ?? added.sorted().first,
+              uid != activePhysicalOutputUID else { return }
+        pendingPhysicalOutputConnection = .init(uid: uid, generation: desiredRuntime.generation, defaultUID: selected)
+    }
+
+    private func selectPhysicalOutput(_ uid: String, expectedDefault: String?, reason: String) async {
+        _ = submit(target: .physicalOutput(uid: uid, expectedDefaultUID: expectedDefault),
+            source: .automaticRouting, reason: reason)
+        await reconciliationWorker?.value
+    }
+
+    private func executePhysicalOutputSelection(uid: String, expectedDefault: String?, intent: DesiredRuntimeIntent) async throws {
+        try checkCurrent(intent.generation)
+        guard let output = await runtimeServices.resolveOutput(uid), !output.isRoutingDevice else { throw CancellationError() }
+        try checkCurrent(intent.generation)
+        var selected = runtimeServices.defaultOutput()
+        if let read = runtimeServices.freshDefaultOutput { selected = await read() }
+        try checkCurrent(intent.generation)
+        guard selected == expectedDefault || selected == uid else { throw CancellationError() }
+        guard runtimeServices.cachedDevice(uid)?.isRoutingDevice == false else { throw CancellationError() }
+        if selected != uid {
+            try await runtimeServices.setDefaultOutput(uid)
+            try checkCurrent(intent.generation)
+        }
+        // Select the new hardware before retiring EQ, so cleanup cannot restore
+        // the previous profile's physical output over this connection.
+        if ownedSession != nil {
+            await executeDeactivation(restoreOutput: false, reason: intent.reason, parent: intent.parentOperation)
+            try checkCurrent(intent.generation)
+        }
+        selected = runtimeServices.defaultOutput()
+        if let read = runtimeServices.freshDefaultOutput { selected = await read() }
+        try checkCurrent(intent.generation)
+        guard selected == uid, runtimeServices.cachedDevice(uid)?.isRoutingDevice == false else { return }
+        suppressedAutoUID = nil; automaticActivationRetry = nil
+        if let barrier = manualStopBarrier, barrier <= intent.generation { manualStopBarrier = nil }
+        if let connection = pendingPhysicalOutputConnection, connection.generation == intent.generation {
+            pendingPhysicalOutputConnection = nil
+            // Another output arrived during retirement. Carry that newer
+            // connection forward before starting an already obsolete profile.
+            _ = submit(target: .physicalOutput(uid: connection.uid, expectedDefaultUID: uid),
+                source: .automaticRouting, reason: "deviceConnected")
+            return
+        }
+        // Only the physical-output activation mode opts into this handoff.
+        // Other profiles leave macOS playing through the native device.
+        if let profile = callbacks.automaticProfile(uid) {
+            _ = submit(target: .active(profile), source: .automaticRouting, reportErrors: true, reason: intent.reason)
+        }
     }
 
     private func reconcileEndpointVisibility() async {
@@ -1108,6 +1218,8 @@ final class AudioRuntimeCoordinator: ObservableObject {
             if let activeRoutingUID, let selected = runtimeServices.defaultOutput(), selected != activeRoutingUID {
                 if let profile = selectableProfile(for: selected) {
                     await activate(profile: profile, reportErrors: true, automatic: true)
+                } else if runtimeServices.cachedDevice(selected)?.isRoutingDevice == false {
+                    await selectPhysicalOutput(selected, expectedDefault: selected, reason: "physicalOutputSelected")
                 } else {
                     await deactivate(manual: false, restoreOutput: false)
                 }
@@ -1122,7 +1234,6 @@ final class AudioRuntimeCoordinator: ObservableObject {
             }
             if let owner = ownedSession, let generation = runtimeServices.bindingGeneration(),
                owner.binding?.graphGeneration != generation {
-                runtimeServices.holdAudibility(owner.volumeLease)
                 endpointRequests.append(.init(generation: desiredRuntime.generation, restoreProfile: nil,
                     publish: false, hideBridge: false, continuation: nil))
                 ensureWorker()

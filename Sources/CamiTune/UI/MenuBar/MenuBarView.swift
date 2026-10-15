@@ -363,6 +363,8 @@ struct MenuBarRootView: View {
                 .menuIndicator(.hidden)
                 .accessibilityLabel("Output profile: \(title)")
             }
+        // Keep the row's spare width outside the menu's hit area.
+        .frame(maxWidth: 238, alignment: .leading)
         .disabled(model.actionInFlight || model.state.transitionInProgress
             || model.state.spatialCalibrationContext != nil)
     }
@@ -378,7 +380,7 @@ struct MenuBarRootView: View {
                 .fixedSize()
                 .layoutPriority(1)
         }
-        .frame(maxWidth: 238, minHeight: 24, alignment: .leading)
+        .frame(minHeight: 24)
     }
 
     private func outputProfileOption(_ profile: DeviceProfile) -> some View {

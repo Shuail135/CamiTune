@@ -12,6 +12,7 @@ struct AudioRuntimeServices {
     var bindingGeneration: () -> UInt64? = { nil }
     /// nil means no device-list observation is available in this composition.
     var publishedProfileUIDs: () -> Set<String>? = { nil }
+    var physicalOutputs: () -> [AudioDeviceInfo]? = { nil }
     var cancelReadiness: () -> Void = {}
     var resolveBinding: ((String, String) async throws -> CoreAudioRuntimeBinding)?
     var rebindVolume: (VolumeHandoffLease, CoreAudioRuntimeBinding) async throws -> Void = { _, _ in }

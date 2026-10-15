@@ -24,16 +24,17 @@ struct AdaptiveEditorLayout<Sidebar: View, CompactSelector: View, Content: View>
             }
             content()
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .overlay(alignment: .leading) {
-                    if !compact {
-                        Rectangle().fill(Color(nsColor: .separatorColor))
-                            .frame(width: 1)
-                            .offset(x: -17)
-                            .allowsHitTesting(false)
-                    }
-                }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .leading) {
+            if !compact {
+                // Span both columns, even when the editor is shorter than the sidebar.
+                Rectangle().fill(Color(nsColor: .separatorColor))
+                    .frame(width: 1)
+                    .offset(x: sidebarWidth + 16)
+                    .allowsHitTesting(false)
+            }
+        }
         .background {
             GeometryReader { geometry in
                 Color.clear

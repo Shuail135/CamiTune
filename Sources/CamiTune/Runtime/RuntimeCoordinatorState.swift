@@ -31,7 +31,10 @@ enum RuntimeIntentSource: Sendable {
     }
 }
 struct DesiredRuntimeIntent: Sendable {
-    enum Target: Sendable { case inactive(restoreOutput: Bool), active(DeviceProfile) }
+    enum Target: Sendable {
+        case inactive(restoreOutput: Bool), active(DeviceProfile)
+        case physicalOutput(uid: String, expectedDefaultUID: String?)
+    }
     let generation: RuntimeIntentGeneration
     let target: Target
     let source: RuntimeIntentSource
