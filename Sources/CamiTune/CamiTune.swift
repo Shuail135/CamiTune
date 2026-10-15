@@ -363,15 +363,7 @@ final class CamiTunePresentationCoordinator {
             // intrinsic layout whenever a meter or field changes.
             controller.sizingOptions = []
             let created = CamiTuneMainWindow(contentViewController: controller)
-            created.title = "CamiTune"
-            created.styleMask = [
-                .titled,
-                .closable,
-                .miniaturizable,
-                .resizable,
-                .fullSizeContentView
-            ]
-            created.minSize = NSSize(width: 800, height: 620)
+            created.configureContentLayout()
             created.setContentSize(NSSize(width: 1_000, height: 700))
             created.isReleasedWhenClosed = false
             created.tabbingMode = .disallowed
@@ -436,6 +428,26 @@ final class CamiTunePresentationCoordinator {
 
 @MainActor
 final class CamiTuneMainWindow: NSWindow {
+    static let minimumContentSize = NSSize(width: 800, height: 620)
+
+    func configureContentLayout() {
+        title = "CamiTune"
+        // Let AppKit reserve the title/toolbar area, including its traffic-light
+        // buttons. A full-size hosting view can outgrow its safe area when the
+        // window is shortened and SwiftUI enforces a larger minimum frame.
+        styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        contentMinSize = Self.minimumContentSize
+        if let contentView {
+            // AppKit ignores contentMinSize for Auto Layout windows. These two
+            // constant constraints enforce the same content minimum without
+            // asking SwiftUI to measure every offscreen editor on each update.
+            NSLayoutConstraint.activate([
+                contentView.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.minimumContentSize.width),
+                contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.minimumContentSize.height)
+            ])
+        }
+    }
+
     override func fieldEditor(_ createFlag: Bool, for object: Any?) -> NSText? {
         let editor = super.fieldEditor(createFlag, for: object)
         TextEditingCompatibility.prepare(editor)

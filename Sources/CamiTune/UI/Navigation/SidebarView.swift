@@ -186,10 +186,11 @@ struct SidebarView: View {
             .padding(.vertical, 5)
             .accessibilityLabel("Settings")
         }
+        .frame(minWidth: SidebarLayout.minimumWidth)
         .navigationTitle("CamiTune")
         .navigationSplitViewColumnWidth(
-            min: minimumSidebarWidth,
-            ideal: minimumSidebarWidth + 15,
+            min: SidebarLayout.minimumWidth,
+            ideal: SidebarLayout.minimumWidth + 15,
             max: 260
         )
         .background {
@@ -326,10 +327,14 @@ private struct NativeProfileSidebar: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
+        scroll.contentView = SidebarClipView()
         scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.horizontalScrollElasticity = .none
         scroll.drawsBackground = false
         let table = SidebarTable()
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("sidebar"))
+        column.resizingMask = .autoresizingMask
         table.addTableColumn(column)
         table.headerView = nil
         table.style = .sourceList
@@ -706,6 +711,17 @@ private struct NativeProfileSidebar: NSViewRepresentable {
 }
 
 @MainActor
+final class SidebarClipView: NSClipView {
+    override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        var constrained = super.constrainBoundsRect(proposedBounds)
+        // This is a single-column vertical list. Resizing and trackpad gestures
+        // must never scroll its icons and the beginning of names off the left.
+        constrained.origin.x = 0
+        return constrained
+    }
+}
+
+@MainActor
 private final class SidebarTable: NSTableView {
     weak var sidebarCoordinator: NativeProfileSidebar.Coordinator?
     override func mouseDown(with event: NSEvent) {
@@ -864,32 +880,33 @@ private final class SidebarCell: NSTableCellView {
     }
 }
 
-private var minimumSidebarWidth: CGFloat {
-    let appAudioFont = NSFont.systemFont(ofSize: NSFont.systemFontSize)
-    let outputProfilesFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
-    let appAudioText = NSTextField(labelWithString: "App Audio")
-    appAudioText.font = appAudioFont
-    appAudioText.sizeToFit()
-    let outputProfilesText = NSTextField(labelWithString: "Output Profiles")
-    outputProfilesText.font = outputProfilesFont
-    outputProfilesText.sizeToFit()
+@MainActor
+private enum SidebarLayout {
+    // Measure the fixed labels once, not twice on every sidebar publication.
+    static let minimumWidth: CGFloat = {
+        let appAudioFont = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let outputProfilesFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        let appAudioText = NSTextField(labelWithString: "App Audio")
+        appAudioText.font = appAudioFont
+        appAudioText.sizeToFit()
+        let outputProfilesText = NSTextField(labelWithString: "Output Profiles")
+        outputProfilesText.font = outputProfilesFont
+        outputProfilesText.sizeToFit()
 
-    /*
-     Calculation:
-     icon width          = 16
-     icon -> title gap   = 6
-     heading add button  = 20
-     title -> plus gap   = 6
-     plus trailing       = 2
-     icon leading        = 2
-    */
-    let appAudioWidth = 2 + 16 + 6 + appAudioText.fittingSize.width + 12
-    let outputProfilesWidth = 2 + 16 + 6 + outputProfilesText.fittingSize.width + 6 + 20 + 2 + 5
-    let tableAllowance: CGFloat = 16
-    return ceil(
-        max(appAudioWidth, outputProfilesWidth)
-        + tableAllowance
-    )
+        /*
+         Calculation:
+         icon width          = 16
+         icon -> title gap   = 6
+         heading add button  = 20
+         title -> plus gap   = 6
+         plus trailing       = 2
+         icon leading        = 2
+        */
+        let appAudioWidth = 2 + 16 + 6 + appAudioText.fittingSize.width + 12
+        let outputProfilesWidth = 2 + 16 + 6 + outputProfilesText.fittingSize.width + 6 + 20 + 2 + 5
+        let tableAllowance: CGFloat = 16
+        return ceil(max(appAudioWidth, outputProfilesWidth) + tableAllowance)
+    }()
 }
 
 @MainActor

@@ -66,6 +66,7 @@ struct ContentView: View {
                 selection: selection
             )
         }
+        .navigationSplitViewStyle(.balanced)
         .disclosureGroupStyle(SectionDisclosureStyle())
         .environmentObject(commands)
         .environment(\.undoCommandRouter, state.undoCommands)
@@ -87,7 +88,6 @@ struct ContentView: View {
             commands.consume(request.id)
         }
         .onChange(of: showingOutputPicker) { if !$0 { commands.modalReservation = false } }
-        .frame(minWidth: 800, minHeight: 620)
         .onChange(of: selection) { newSelection in
             commands.selection = newSelection
             preferences.set(newSelection.storageValue, forKey: "lastSidebarSelection")

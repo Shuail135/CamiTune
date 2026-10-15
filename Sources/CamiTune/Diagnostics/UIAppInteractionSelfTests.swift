@@ -7,6 +7,9 @@ import SwiftUI
 @MainActor
 extension UIInteractionSelfTests {
     static func runWholeWindow(artifacts: URL) async throws {
+        guard !NSScreen.screens.isEmpty else {
+            throw DiagnosticFailure(message: "Whole-window interaction checks require a connected macOS display")
+        }
         try FileManager.default.createDirectory(at: artifacts, withIntermediateDirectories: true)
         let box = try DiagnosticSandbox(); defer { box.cleanUp() }
         let editOnly = ProcessInfo.processInfo.environment["CAMITUNE_UI_EDIT_ONLY"] == "1"
@@ -89,8 +92,8 @@ extension UIInteractionSelfTests {
         let controller = NSHostingController(rootView: ContentView(state: state, commands: commands, preferences: box.defaults)
             .background(Color(nsColor: .windowBackgroundColor)))
         controller.sizingOptions = []
-        let window = NSWindow(contentViewController: controller)
-        window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
+        let window = CamiTuneMainWindow(contentViewController: controller)
+        window.configureContentLayout()
         window.setContentSize(.init(width: 1000, height: 700))
         window.setFrameOrigin(.init(x: -10000, y: -10000))
         window.isReleasedWhenClosed = false
@@ -140,6 +143,10 @@ extension UIInteractionSelfTests {
         await idle("Initial profile", milliseconds: 2500)
         guard let table = descendants(controller.view).compactMap({ $0 as? NSTableView }).first else {
             throw DiagnosticFailure(message: "Missing full-window sidebar")
+        }
+        if ProcessInfo.processInfo.environment["CAMITUNE_UI_RESIZE_ONLY"] == "1" {
+            try await mainWindowResizing(window: window, root: controller.view, table: table, artifacts: artifacts)
+            return
         }
         for row in 0..<table.numberOfRows {
             let view = table.view(atColumn: 0, row: row, makeIfNecessary: true)
@@ -407,10 +414,7 @@ extension UIInteractionSelfTests {
             await idle("Close profile settings", milliseconds: 500)
             try diagnosticRequire(window.attachedSheet == nil, "Profile settings did not close")
         }
-        window.setContentSize(.init(width: 800, height: 620))
-        await idle("Resize complete window to minimum size", milliseconds: 600)
-        try diagnosticRequire((page.documentView?.frame.width ?? 0) <= page.contentSize.width + 1,
-            "The complete profile forced horizontal page overflow at minimum window size")
+        try await mainWindowResizing(window: window, root: controller.view, table: table, artifacts: artifacts)
         window.setContentSize(.init(width: 1000, height: 700))
         await idle("Restore complete window size", milliseconds: 600)
         if let bitmap = controller.view.bitmapImageRepForCachingDisplay(in: controller.view.bounds) {
@@ -440,6 +444,64 @@ extension UIInteractionSelfTests {
         try JSONSerialization.data(withJSONObject: measurements, options: [.prettyPrinted, .sortedKeys])
             .write(to: artifacts.appendingPathComponent("whole-window-performance.json"))
         try diagnosticRequire(worstNavigationGap < navigationBudget, "Profile navigation blocked the main loop for \(Int(worstNavigationGap))ms")
+    }
+
+    private static func mainWindowResizing(window: NSWindow, root: NSView, table: NSTableView, artifacts: URL) async throws {
+        guard let sidebar = table.enclosingScrollView else {
+            throw DiagnosticFailure(message: "Missing sidebar scroll view")
+        }
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let minimum = window.frameRect(forContentRect: .init(origin: .zero, size: CamiTuneMainWindow.minimumContentSize)).size
+        let originalRows = table.numberOfRows
+        let originalSelection = table.selectedRowIndexes
+        let sizes: [NSSize] = [
+            .init(width: 1000, height: 750), minimum,
+            .init(width: 800, height: 950), .init(width: 1300, height: minimum.height),
+            .init(width: 1000, height: 750), minimum
+        ]
+        for (index, size) in sizes.enumerated() {
+            window.setContentSize(window.contentRect(forFrameRect: .init(origin: .zero, size: size)).size)
+            try? await Task.sleep(for: .milliseconds(250))
+            root.layoutSubtreeIfNeeded()
+            let available = window.contentLayoutRect
+            let sidebarRect = sidebar.convert(sidebar.bounds, to: nil)
+            try diagnosticRequire(table.numberOfRows == originalRows && table.selectedRowIndexes == originalSelection,
+                "Resizing replaced the sidebar's rows or selection")
+            if let frameView = window.contentView?.superview,
+               let bitmap = frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds) {
+                window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    frameView.cacheDisplay(in: frameView.bounds, to: bitmap)
+                }
+                try bitmap.representation(using: .png, properties: [:])?.write(to: artifacts.appendingPathComponent("resize-\(index).png"))
+            }
+            try diagnosticRequire(available.insetBy(dx: -1, dy: -1).contains(sidebarRect),
+                "Sidebar is clipped by the window or overlaps its title bar after resizing to \(size)")
+            try diagnosticRequire(abs(sidebar.contentView.bounds.minX) < 1,
+                "Sidebar retained a horizontal scroll offset after resizing")
+            for row in 0..<min(table.numberOfRows, 3) {
+                guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView,
+                      let icon = cell.imageView, let title = cell.textField else {
+                    throw DiagnosticFailure(message: "Sidebar row disappeared after resizing")
+                }
+                for item in [icon, title] {
+                    let rect = item.convert(item.bounds, to: sidebar.contentView)
+                    try diagnosticRequire(rect.minX >= sidebar.contentView.bounds.minX && rect.maxX <= sidebar.contentView.bounds.maxX,
+                        "Sidebar row's leading content was clipped after resizing")
+                }
+            }
+            let pages = descendants(root).compactMap { $0 as? NSScrollView }.filter {
+                $0 !== sidebar && $0.hasVerticalScroller && $0.frame.width > sidebar.frame.width
+                    && !($0.superview is NSClipView)
+            }
+            guard let page = pages.max(by: { $0.frame.height < $1.frame.height }) else {
+                throw DiagnosticFailure(message: "Missing profile page after resizing")
+            }
+            try diagnosticRequire(available.insetBy(dx: -1, dy: -1).contains(page.convert(page.bounds, to: nil)),
+                "Profile page overlaps the title bar after resizing")
+            try diagnosticRequire((page.documentView?.frame.width ?? 0) <= page.contentSize.width + 1,
+                "Profile page overflowed horizontally after resizing")
+        }
+        print("Window resize checks passed: sidebar leading content and title-bar clearance")
     }
 
     private static func memoryMB() -> Int {

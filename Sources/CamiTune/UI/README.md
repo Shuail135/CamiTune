@@ -8,6 +8,7 @@ When adding an editor:
 - Supply a revision containing every input used to construct a section. Let SwiftUI inherit appearance and text size and calculate dynamic height. Never return infinite sizes from custom layouts; treat infinite-width probes as requests for an ideal size.
 - Keep native focus groups at the profile-section and EQ-band boundaries. Without these boundaries, macOS AutoFill's next/previous key-view discovery can scan the entire editor when a numeric field receives focus. Verify that Tab still crosses band groups after changing focus structure.
 - Observe audio telemetry only in the smallest drawing view. Text fields, buttons, menus, and their containing layout should not subscribe to FFT or meter publications. Keep the publication cadence unchanged during scrolling.
+- Let `CamiTuneMainWindow` own the content minimum and title-bar clearance. Keep the root flexible and the sidebar vertically scrollable; do not introduce resize observers that rebuild editors.
 - Use `ResponsiveStackLayout`, `AdaptiveEditorLayout`, or `WrappingControlLayout` to reposition the same controls. Avoid constructing multiple copies of an editor to measure which copy fits.
 - Use `EqualizerBandScrollView` for EQ strips and `OverflowAwareHorizontalScrollView` for other horizontal content. A fitting strip must reject horizontal scrolling and discard stale offsets after resizing.
 - Use `SectionDisclosureStyle` for disclosures. Reflow text and native controls together; animate only the chevron or meter artwork and honor Reduce Motion. Animated layout frames can move AppKit controls and SwiftUI labels at different times.
@@ -28,6 +29,7 @@ The full-window test uses simulated audio services and temporary profiles. Optio
 - `CAMITUNE_UI_SOAK_SECONDS`: sustained scrolling and telemetry duration.
 - `CAMITUNE_UI_MAX_NAVIGATION_GAP_MS`: navigation regression budget (500 ms by default for unoptimized Debug builds).
 - `CAMITUNE_UI_EDIT_ONLY=1`: isolate the real channel-gain field edit, with a five-second pause before editing to attach a sampler. The edit must save and meet the interaction budget.
+- `CAMITUNE_UI_RESIZE_ONLY=1`: check narrow, short, and restored window sizes, sidebar leading content/selection, and title-bar clearance. Uses the production window configuration and requires a connected macOS display.
 
 Performance artifacts report main-loop scheduling gaps and process memory. These are regression measurements, not display-frame-rate guarantees. Compare the same configuration and fixtures without concurrent builds. For optimized measurements with diagnostic entry points enabled, use `swift build -c release -Xswiftc -DDEBUG`.
 
