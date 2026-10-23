@@ -10,6 +10,8 @@ package struct RenderConfiguration: Codable, Hashable, Sendable {
     package var spatialContentMode: SpatialContentMode
     package var virtualSurroundLayout: VirtualSurroundLayout
     package var referenceCorrection: DeviceCorrectionProfile?
+    package var pluginRack: PluginRack? = nil
+    package var crossfeed: CrossfeedProcessor? = nil
 
     package init(profile: DeviceProfile, revision: RuntimeIntentRevision) {
         self.revision = revision
@@ -21,6 +23,10 @@ package struct RenderConfiguration: Codable, Hashable, Sendable {
         spatialContentMode = profile.spatialContentMode
         virtualSurroundLayout = profile.virtualSurroundLayout
         referenceCorrection = profile.personalReferenceCorrection
+        pluginRack = profile.pluginRack
+        if profile.supportsCrossfeed, let stage = profile.processing.crossfeed, stage.isEnabled {
+            crossfeed = stage.processor
+        }
     }
 
 }
@@ -173,6 +179,7 @@ package struct AudioRuntimePlanCompiler {
             }
         }
         let route = try ActiveAudioRoute(profile: profile)
+        try profile.pluginRack.validate()
         var graph = try route.buildGraph(profile: profile, assets: input.assets)
         let delivery = input.deliveryConfiguration
             ?? .standard(sampleRate: Double(graph.sampleRate), chunkSize: graph.chunkSize)

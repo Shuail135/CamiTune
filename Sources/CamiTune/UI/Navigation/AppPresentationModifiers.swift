@@ -29,46 +29,10 @@ struct AppUpdatePresentationModifier: ViewModifier {
     @ObservedObject var updateChecker: AppUpdateChecker
 
     func body(content: Content) -> some View {
-        content
-            .alert("Update Available", isPresented: Binding(
-                get: { updateChecker.availableUpdate != nil },
-                set: { isPresented in
-                    if !isPresented, updateChecker.availableUpdate != nil {
-                        updateChecker.remindLater()
-                    }
-                }
-            )) {
-                Button("Skip This Version") {
-                    updateChecker.skipAvailableVersion()
-                }
-                Button("Remind Me Later", role: .cancel) {
-                    updateChecker.remindLater()
-                }
-                Button("Update") {
-                    updateChecker.beginUpdate()
-                }
-                .keyboardShortcut(.defaultAction)
-            } message: {
-                if let update = updateChecker.availableUpdate {
-                    Text("CamiTune \(update.version) is available. You are currently using version \(updateChecker.installedVersion).")
-                }
-            }
-            .alert(item: $updateChecker.notice) { notice in
-                Alert(
-                    title: Text(notice.title),
-                    message: Text(notice.message),
-                    dismissButton: .default(Text("OK"))
-                )
-            }
-            .sheet(isPresented: Binding(get: { updateChecker.isDownloadingUpdate }, set: { _ in })) {
-                VStack(alignment: .leading, spacing: 14) {
-                    ProgressView("Downloading Update…")
-                    Text("CamiTune will validate the download, then close. Reopen it to use the update.")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-                .padding(24).frame(width: 420)
+        content.sheet(isPresented: Binding(get: { updateChecker.isPresentingUpdate }, set: { _ in })) {
+            AppUpdateProgressView(checker: updateChecker)
                 .interactiveDismissDisabled(true)
-            }
+        }
     }
 }
 

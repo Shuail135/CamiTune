@@ -9,13 +9,11 @@ final class GlobalEQEditorRuntime: ObservableObject {
     var historyBaseline: GlobalEQHistoryState?
     var suppressChanges = false
     var liveApplyTask: Task<Void, Never>?
-    var headroomCalculationTask: Task<Void, Never>?
     var loadedProfileID: UUID?
     var continuousEditDepth = 0
     var commitPendingAfterContinuousEdit = false
 
     deinit {
         liveApplyTask?.cancel()
-        headroomCalculationTask?.cancel()
     }
 }

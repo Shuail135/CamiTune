@@ -11,6 +11,8 @@ struct CamillaDSPDiagnostics: Sendable {
     var clippedSamples: UInt64
     var lastGraphUpdate: GraphUpdateKind?
     var patchedFilterCount: Int
+    var sampleRate: Double? = nil
+    var blockFrames: Int? = nil
 
     enum GraphUpdateKind: String, Sendable {
         case fullConfiguration
@@ -126,6 +128,7 @@ final class CamillaDSPController {
     func fetchDiagnostics() async throws -> CamillaDSPDiagnostics {
         // These remain individual protocol reads so older/newer CamillaDSP
         // telemetry fields cannot become coupled to graph patching semantics.
+        let graph = activeGraph
         let engineState = try await manager.rpc.state()
         let stopReason = try await manager.rpc.stopReason()
         let processingLoad = try await manager.rpc.processingLoad()
@@ -133,6 +136,8 @@ final class CamillaDSPController {
         let bufferLevel = try await manager.rpc.bufferLevel()
         let rateAdjustment = try await manager.rpc.rateAdjust()
         let clippedSamples = try await manager.rpc.clippedSamples()
+        // Never publish observations from a graph replaced during these awaits.
+        guard !Task.isCancelled, graph == activeGraph else { throw CancellationError() }
         return CamillaDSPDiagnostics(
             engineState: engineState,
             stopReason: stopReason,
@@ -142,7 +147,9 @@ final class CamillaDSPController {
             rateAdjustment: rateAdjustment,
             clippedSamples: clippedSamples,
             lastGraphUpdate: lastGraphUpdate,
-            patchedFilterCount: patchedFilterCount
+            patchedFilterCount: patchedFilterCount,
+            sampleRate: graph.map { Double($0.sampleRate) },
+            blockFrames: graph?.chunkSize
         )
     }
 }

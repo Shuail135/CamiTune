@@ -22,6 +22,9 @@ CAMILLADSP_STAMP="$CAMILLADSP_BUILD_ROOT/build-key"
 
 mkdir -p "$RESOURCE_DIR/Drivers" "$RESOURCE_DIR/CamillaDSP"
 
+# Native AU/VST3 host is built offline in both configurations and always bundled.
+/bin/zsh "$ROOT/Scripts/build-plugin-host.sh" "$RESOURCE_DIR"
+
 has_required_camilla_capability() {
     local camitune_capability
     camitune_capability="$("$1" --cami-tune-capabilities 2>/dev/null)" || return 1

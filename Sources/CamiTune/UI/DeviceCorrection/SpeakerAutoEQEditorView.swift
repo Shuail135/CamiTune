@@ -91,7 +91,7 @@ final class SpeakerAutoEQEditorModel: ObservableObject {
         guard let source = correction.speakerProvenance else { return "Choose a speaker measurement and generate Auto EQ first." }
         guard source.sampleRate == sampleRate else { return "Recalculate Auto EQ for the current sample rate." }
         do {
-            try SpeakerCorrectionValidator().validate(correction.filters, settings: source.settings, sampleRate: sampleRate, allowDisabledBands: true)
+            try SpeakerCorrectionValidator().validateManualFilters(correction.filters, sampleRate: sampleRate)
             return nil
         } catch { return error.localizedDescription }
     }
@@ -229,6 +229,9 @@ struct SpeakerAutoEQEditorView: View {
                                 model.speakerID = speaker.id; model.search = speaker.name
                                 model.selectSpeaker()
                             }
+                            AutoEQDeviceInfoIcon(message: model.selectedVersion.map {
+                                "\(model.speakerID) · \($0.sourceDisplayName) · via Spinorama"
+                            } ?? "Choose a search result")
                             Button { Task { await model.loadCatalog(refresh: true) } } label: {
                                 Image(systemName: "arrow.clockwise").frame(width: 22, height: 22)
                             }
@@ -241,12 +244,6 @@ struct SpeakerAutoEQEditorView: View {
                                 ProgressView().controlSize(.small)
                                 Text("Loading device catalog…").font(.caption).foregroundStyle(.secondary)
                             }
-                        }
-                        if let source = model.selectedVersion {
-                            Text("\(model.speakerID) · \(source.sourceDisplayName) · via Spinorama")
-                                .font(.caption).foregroundStyle(.secondary)
-                        } else {
-                            Text("Choose a search result").font(.caption).foregroundStyle(.secondary)
                         }
                         if model.isLoading {
                             HStack(spacing: 8) {
@@ -300,10 +297,6 @@ struct SpeakerAutoEQEditorView: View {
                 if let displayed {
                     AutoEQResultCard(isExpanded: $presentation.resultsExpanded) {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text(displayed.speakerProvenance?.listeningMode == .nearField
-                                 ? "Original and corrected Listening Window · flat reference"
-                                 : "Original and corrected predicted in-room response · model-based")
-                                .font(.caption).foregroundStyle(.secondary)
                             if ReferenceCorrection.validFilters(displayed.filters, sampleRate: Double(profile.sampleRate)) {
                                 CorrectionResponseGraph(profile: displayed, sampleRate: Double(profile.sampleRate), onEdit: { band in
                                     model.editBand(band, in: displayed)
@@ -314,7 +307,7 @@ struct SpeakerAutoEQEditorView: View {
                             }
                             Divider()
                             Text("Equalizer values").font(.headline)
-                            Text("Automatic headroom \(model.headroomDB, specifier: "%.2f") dB")
+                            Text("Pre-amp: \(model.headroomDB, specifier: "%.2f") dB")
                                 .font(.caption.monospacedDigit().weight(.medium))
                             OverflowAwareHorizontalScrollView {
                                 CorrectionFilterTable(filters: Binding(get: { self.displayed?.filters ?? [] }, set: { filters in

@@ -1525,6 +1525,41 @@ static AudioChannelLayoutTag device_channel_layout_tag(void)
 #endif
 }
 
+// AudioUnit clients need explicit labels, even when the HAL accepts a compact
+// layout tag. Keep the driver independent of AudioToolbox; factory tests compare
+// these orders against AudioFormatGetProperty(ChannelLayoutForTag).
+static AudioChannelLabel channel_label(AudioChannelLayoutTag tag, UInt32 index)
+{
+    enum {
+        L = kAudioChannelLabel_Left, R = kAudioChannelLabel_Right,
+        C = kAudioChannelLabel_Center, LFE = kAudioChannelLabel_LFEScreen,
+        LS = kAudioChannelLabel_LeftSurround, RS = kAudioChannelLabel_RightSurround,
+        LR = kAudioChannelLabel_RearSurroundLeft, RR = kAudioChannelLabel_RearSurroundRight,
+        LW = kAudioChannelLabel_LeftWide, RW = kAudioChannelLabel_RightWide,
+        TF_L = kAudioChannelLabel_LeftTopFront, TF_R = kAudioChannelLabel_RightTopFront,
+        TM_L = kAudioChannelLabel_LeftTopMiddle, TM_R = kAudioChannelLabel_RightTopMiddle,
+        TR_L = kAudioChannelLabel_LeftTopRear, TR_R = kAudioChannelLabel_RightTopRear
+    };
+    static const struct { AudioChannelLayoutTag tag; AudioChannelLabel labels[16]; } layouts[] = {
+        {kAudioChannelLayoutTag_Mono, {kAudioChannelLabel_Mono}},
+        {kAudioChannelLayoutTag_Stereo, {L, R}},
+        {kAudioChannelLayoutTag_Quadraphonic, {L, R, LS, RS}},
+        {kAudioChannelLayoutTag_MPEG_5_1_A, {L, R, C, LFE, LS, RS}},
+        {kAudioChannelLayoutTag_MPEG_7_1_C, {L, R, C, LFE, LS, RS, LR, RR}},
+        {kAudioChannelLayoutTag_Atmos_5_1_2, {L, R, C, LFE, LS, RS, TM_L, TM_R}},
+        {kAudioChannelLayoutTag_Atmos_5_1_4, {L, R, C, LFE, LS, RS, TF_L, TF_R, TR_L, TR_R}},
+        {kAudioChannelLayoutTag_Atmos_7_1_2, {L, R, C, LFE, LS, RS, LR, RR, TM_L, TM_R}},
+        {kAudioChannelLayoutTag_Atmos_7_1_4, {L, R, C, LFE, LS, RS, LR, RR, TF_L, TF_R, TR_L, TR_R}},
+        {kAudioChannelLayoutTag_Atmos_9_1_6, {L, R, C, LFE, LS, RS, LR, RR, LW, RW, TF_L, TF_R, TM_L, TM_R, TR_L, TR_R}}
+    };
+    if (index >= (tag & 0xffff)) return kAudioChannelLabel_Unknown;
+    if ((tag & 0xffff0000) == kAudioChannelLayoutTag_DiscreteInOrder)
+        return kAudioChannelLabel_Discrete_0 + index;
+    for (unsigned i = 0; i < sizeof(layouts) / sizeof(layouts[0]); ++i)
+        if (layouts[i].tag == tag) return layouts[i].labels[index];
+    return kAudioChannelLabel_Unknown;
+}
+
 #pragma mark Factory
 
 void*	SystemAudioBridge_Create(CFAllocatorRef inAllocator, CFUUIDRef inRequestedTypeUUID)
@@ -3465,7 +3500,8 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyDataSize(AudioServerPlugInDri
 			break;
 
 		case kAudioDevicePropertyPreferredChannelLayout:
-			*outDataSize = offsetof(AudioChannelLayout, mChannelDescriptions);
+			*outDataSize = offsetof(AudioChannelLayout, mChannelDescriptions) +
+				endpoint_channel_count(inObjectID) * sizeof(AudioChannelDescription);
 			break;
 
 		case kAudioDevicePropertyZeroTimeStampPeriod:
@@ -3853,16 +3889,19 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			break;
 
 		case kAudioDevicePropertyPreferredChannelLayout:
-			//	This property returns the semantic order for the device's
-			//	compiled 2.0, 5.1, or 7.1 LPCM layout.
+			// Return a complete, explicitly labeled layout. A tag-only response
+			// can look correct through AudioObjectGetPropertyData while AudioUnit
+			// reports only left/right and unknown surround channels to players.
 			{
-				// A tag-only layout is fixed-size and survives the HAL's out-of-process
-				// property proxy without a variable trailing-description payload.
-				UInt32 theACLSize = offsetof(AudioChannelLayout, mChannelDescriptions);
+				UInt32 channels = endpoint_channel_count(inObjectID);
+				UInt32 theACLSize = offsetof(AudioChannelLayout, mChannelDescriptions) + channels * sizeof(AudioChannelDescription);
 				FailWithAction(inDataSize < theACLSize, theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetDevicePropertyData: not enough space for the return value of kAudioDevicePropertyPreferredChannelLayout for the device");
-				((AudioChannelLayout*)outData)->mChannelLayoutTag = endpoint_layout_tag(inObjectID);
-				((AudioChannelLayout*)outData)->mChannelBitmap = 0;
-				((AudioChannelLayout*)outData)->mNumberChannelDescriptions = 0;
+				memset(outData, 0, theACLSize);
+				AudioChannelLayout* layout = outData;
+				layout->mChannelLayoutTag = kAudioChannelLayoutTag_UseChannelDescriptions;
+				layout->mNumberChannelDescriptions = channels;
+				AudioChannelLayoutTag tag = endpoint_layout_tag(inObjectID);
+				for (UInt32 i = 0; i < channels; ++i) layout->mChannelDescriptions[i].mChannelLabel = channel_label(tag, i);
 				*outDataSize = theACLSize;
 			}
 			break;

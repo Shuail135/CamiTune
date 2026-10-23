@@ -5,6 +5,8 @@ import Foundation
 /// Every field is required so simulated compositions cannot silently fall back to HAL.
 @MainActor
 struct AudioRuntimeServices {
+    var preparePluginRack: (AudioRuntimePlan) async throws -> Void = { _ in }
+    var commitPluginRack: (AudioRuntimePlan) -> Void = { _ in }
     /// Optional pure configuration injection for controlled developer comparisons.
     var deliveryConfiguration: ((DeviceProfile) -> PCMDeliveryConfiguration)? = nil
     var currentVolumeLease: () -> VolumeHandoffLease? = { nil }
@@ -18,6 +20,12 @@ struct AudioRuntimeServices {
     var rebindVolume: (VolumeHandoffLease, CoreAudioRuntimeBinding) async throws -> Void = { _, _ in }
     var volumeMasterControl: () -> MasterControl? = { nil }
     var updateTransportControl: (UInt32, @escaping MasterControl) -> Void = { _, _ in }
+    var automaticBufferSize: (DeviceProfile) -> Int = { AutomaticAudioBufferPolicy.startingFrames(sampleRate: $0.sampleRate) }
+    var automaticBufferIsQuiet: () async -> Bool = { false }
+    var automaticBufferWillChange: () -> Void = {}
+    var prepareAutomaticBuffer: (AudioRuntimePlan) async throws -> Void = { _ in }
+    var commitAutomaticBuffer: (AudioRuntimePlan) -> Bool = { _ in false }
+    var discardAutomaticBuffer: () async -> Void = {}
     var synchronous: SynchronousRuntimeServices
     var holdAudibility: (VolumeHandoffLease?) -> Void = { _ in }
     var permitAudibility: (VolumeHandoffLease?) -> Void = { _ in }

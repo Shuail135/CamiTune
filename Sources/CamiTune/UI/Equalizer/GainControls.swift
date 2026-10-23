@@ -4,6 +4,7 @@ import SwiftUI
 
 struct PreampGainControl: View {
     @ScaledMetric(relativeTo: .body) private var valueWidth: CGFloat = 58
+    @ScaledMetric(relativeTo: .body) private var delayValueWidth: CGFloat = 76
     @ScaledMetric(relativeTo: .caption) private var statusWidth: CGFloat = 38
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var gainDB: Double
@@ -14,15 +15,32 @@ struct PreampGainControl: View {
     var channelIndex: Int?
     var channelIndices: [Int]?
     var visualEffectsEnabled = true
+    var delayMilliseconds: Binding<Double>? = nil
     var onEditingChanged: @MainActor (Bool) -> Void = { _ in }
 
     var body: some View {
         GainControlLayout {
             Text(title).fixedSize()
             slider
+                .uiInteractionAnchor("gain-slider-\(title)")
             valueField
             limiterControl
             limiterStatus
+            if let delayMilliseconds {
+                Text("Channel delay").fixedSize()
+                ChannelDelaySlider(value: delayMilliseconds, onEditingChanged: onEditingChanged)
+                    .uiInteractionAnchor("channel-delay-slider")
+                HStack(spacing: 10) {
+                    TextField("Channel delay", value: delayMilliseconds,
+                        format: .number.precision(.fractionLength(2)))
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.trailing)
+                        .monospacedDigit()
+                        .frame(width: delayValueWidth)
+                        .accessibilityLabel("Channel delay in milliseconds")
+                    Text("ms").foregroundStyle(.secondary).fixedSize()
+                }
+            }
         }
         .padding(.vertical, 4)
     }
@@ -48,7 +66,8 @@ struct PreampGainControl: View {
             ), format: .number.precision(.fractionLength(1)))
             .textFieldStyle(.roundedBorder)
             .multilineTextAlignment(.trailing)
-            .frame(width: valueWidth)
+            .monospacedDigit()
+            .frame(width: delayMilliseconds == nil ? valueWidth : delayValueWidth)
             Text("dB").foregroundStyle(.secondary).fixedSize()
         }
     }
@@ -112,8 +131,8 @@ private struct LiveGainPresentation<Content: View>: View {
     var body: some View { content(context.reading(from: meters, limiterEnabled: limiterEnabled)) }
 }
 
-/// Repositions the same five controls instead of building three copies of
-/// native text fields and toggles to discover which arrangement fits.
+/// Repositions the same controls without rebuilding native fields. An optional
+/// delay row shares the gain row's label, slider, and value columns.
 private struct GainControlLayout: Layout {
     struct Cache { var sizes: [CGSize] }
     func makeCache(subviews: Subviews) -> Cache {
@@ -132,6 +151,27 @@ private struct GainControlLayout: Layout {
         }
     }
     private func arrangement(width proposedWidth: CGFloat?, sizes: [CGSize]) -> (size: CGSize, frames: [CGRect]) {
+        if sizes.count == 8 {
+            var columns = Array(sizes.prefix(5))
+            columns[0].width = max(columns[0].width, sizes[5].width)
+            columns[2].width = max(columns[2].width, sizes[7].width)
+            let gain = arrangement(width: proposedWidth, sizes: columns)
+            let top = gain.size.height + 12
+            let inline = gain.frames[1].minY < gain.frames[0].maxY
+            let labelHeight = max(sizes[5].height, sizes[7].height)
+            let rowHeight = inline ? max(PreampSliderLayout.totalHeight, labelHeight) : labelHeight
+            let sliderY = inline ? top + (rowHeight - PreampSliderLayout.totalHeight) / 2 : top + rowHeight + 6
+            let delayFrames = [
+                CGRect(x: gain.frames[0].minX, y: top + (rowHeight - sizes[5].height) / 2,
+                    width: columns[0].width, height: sizes[5].height),
+                CGRect(x: gain.frames[1].minX, y: sliderY,
+                    width: gain.frames[1].width, height: PreampSliderLayout.totalHeight),
+                CGRect(x: gain.frames[2].minX, y: top + (rowHeight - sizes[7].height) / 2,
+                    width: columns[2].width, height: sizes[7].height)
+            ]
+            return (CGSize(width: gain.size.width, height: max(top + rowHeight, sliderY + PreampSliderLayout.totalHeight)),
+                    gain.frames + delayFrames)
+        }
         guard sizes.count == 5 else { return (.zero, []) }
         let labels = [0, 2, 3, 4]
         let labelWidth = labels.reduce(CGFloat.zero) { $0 + sizes[$1].width }
@@ -165,13 +205,6 @@ private struct GainControlLayout: Layout {
     }
 }
 
-private enum PreampSliderLayout {
-    static let horizontalInset: CGFloat = 9
-    static let controlHeight: CGFloat = 20
-    static let totalHeight: CGFloat = 32
-    static let labelY: CGFloat = 27
-}
-
 private struct MeteredGainSlider: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var gainDB: Double
@@ -186,9 +219,9 @@ private struct MeteredGainSlider: View {
         GeometryReader { geometry in
             let track = CGRect(
                 x: PreampSliderLayout.horizontalInset,
-                y: (PreampSliderLayout.controlHeight - 7) / 2,
+                y: (PreampSliderLayout.totalHeight - PreampSliderLayout.trackHeight) / 2,
                 width: max(1, geometry.size.width - 2 * PreampSliderLayout.horizontalInset),
-                height: 7
+                height: PreampSliderLayout.trackHeight
             )
             let levelAmount = min(1, max(0, (totalPeakDB + 72) / 72))
             let thumbX = track.minX + track.width * ((gainDB + 12) / 24)
@@ -209,11 +242,7 @@ private struct MeteredGainSlider: View {
                     .fill(isClipping ? Color.red : Color.secondary.opacity(0.55))
                     .frame(width: 2, height: 11)
                     .position(x: track.midX, y: track.midY)
-                Circle()
-                    .fill(Color(nsColor: .controlBackgroundColor))
-                    .overlay(Circle().stroke(Color.primary.opacity(0.75), lineWidth: 1.5))
-                    .frame(width: 17, height: 17)
-                    .shadow(color: .black.opacity(0.2), radius: 1.5, y: 1)
+                SliderThumb(isPressed: isDragging)
                     .position(x: thumbX, y: track.midY)
                 Group {
                     Text("−12")
@@ -323,5 +352,92 @@ struct GainControl: View {
             Spacer()
         }
         .padding(.vertical, 4)
+    }
+}
+
+/// Pure SwiftUI delay control. The native macOS Slider inherited system accent
+/// rendering (which can produce the black track seen in the screenshot) and its
+/// AppKit tracking could compete with the page ScrollView. This control owns its
+/// hit-testing and uses a high-priority horizontal drag instead.
+private struct ChannelDelaySlider: View {
+    @Binding var value: Double
+    let onEditingChanged: @MainActor (Bool) -> Void
+    @State private var isDragging = false
+
+    private let range = 0.0...100.0
+    private let step = 0.01
+    private let inset = PreampSliderLayout.horizontalInset
+
+    var body: some View {
+        GeometryReader { geometry in
+            let track = CGRect(
+                x: inset,
+                y: (geometry.size.height - PreampSliderLayout.trackHeight) / 2,
+                width: max(1, geometry.size.width - 2 * inset),
+                height: PreampSliderLayout.trackHeight
+            )
+            let amount = normalized(value)
+            let thumbX = track.minX + track.width * amount
+
+            ZStack {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.18))
+                    .frame(width: track.width, height: track.height)
+                    .position(x: track.midX, y: track.midY)
+
+                Capsule()
+                    .fill(Color.blue.opacity(0.9))
+                    .frame(width: track.width, height: track.height)
+                    .scaleEffect(x: amount, y: 1, anchor: .leading)
+                    .position(x: track.midX, y: track.midY)
+
+                SliderThumb(isPressed: isDragging)
+                    .position(x: thumbX, y: track.midY)
+            }
+            .contentShape(Rectangle())
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        if !isDragging {
+                            isDragging = true
+                            onEditingChanged(true)
+                        }
+                        setValue(forX: gesture.location.x, track: track)
+                    }
+                    .onEnded { _ in
+                        guard isDragging else { return }
+                        isDragging = false
+                        onEditingChanged(false)
+                    }
+            )
+        }
+        .frame(height: PreampSliderLayout.totalHeight)
+        .accessibilityElement()
+        .accessibilityLabel("Channel delay")
+        .accessibilityValue("\(value.formatted(.number.precision(.fractionLength(2)))) milliseconds")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: value = quantized(min(range.upperBound, value + step))
+            case .decrement: value = quantized(max(range.lowerBound, value - step))
+            @unknown default: break
+            }
+        }
+    }
+
+    private func normalized(_ current: Double) -> Double {
+        let clamped = min(range.upperBound, max(range.lowerBound, current))
+        return (clamped - range.lowerBound) / (range.upperBound - range.lowerBound)
+    }
+
+    private func setValue(forX x: CGFloat, track: CGRect) {
+        let ratio = min(1, max(0, (x - track.minX) / track.width))
+        let raw = range.lowerBound + Double(ratio) * (range.upperBound - range.lowerBound)
+        let next = quantized(raw)
+        guard next != value else { return }
+        value = next
+    }
+
+    private func quantized(_ raw: Double) -> Double {
+        (raw / step).rounded() * step
     }
 }

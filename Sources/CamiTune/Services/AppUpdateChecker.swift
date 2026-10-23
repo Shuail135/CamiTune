@@ -6,22 +6,26 @@ struct AvailableAppUpdate: Equatable {
     let archiveURL: URL
 }
 
-struct AppUpdateNotice: Identifiable, Equatable {
-    let id = UUID()
-    let title: String
-    let message: String
+enum AppUpdatePhase: Equatable {
+    case idle, downloading, verifying, ready, restarting, failed, completed
 }
 
 @MainActor
 final class AppUpdateChecker: ObservableObject {
     @Published private(set) var availableUpdate: AvailableAppUpdate?
-    @Published private(set) var isDownloadingUpdate = false
-    @Published var notice: AppUpdateNotice?
+    @Published private(set) var phase: AppUpdatePhase = .idle
+    @Published private(set) var downloadProgress: Double?
+    @Published private(set) var downloadedBytes: Int64 = 0
+    @Published private(set) var expectedBytes: Int64 = 0
+    @Published private(set) var updateVersion: String?
+    @Published private(set) var failureMessage = ""
     @Published var automaticallyChecksForUpdates: Bool {
         didSet { defaults.set(automaticallyChecksForUpdates, forKey: Keys.automaticallyChecksForUpdates) }
     }
 
     var installedVersion: String { Self.currentVersion }
+    var isPresentingUpdate: Bool { availableUpdate != nil || phase != .idle }
+    var canRetry: Bool { currentUpdate != nil }
 
     private enum Keys {
         static let automaticallyChecksForUpdates = "appUpdate.automaticallyChecksForUpdates"
@@ -55,10 +59,12 @@ final class AppUpdateChecker: ObservableObject {
 
     private struct PreparedUpdate {
         let appURL: URL
+        let directory: URL
     }
 
     private enum UpdateError: LocalizedError {
         case appIsNotWritable
+        case unsupportedLocation
         case downloadFailed
         case archiveMissing
         case invalidBundle
@@ -69,6 +75,8 @@ final class AppUpdateChecker: ObservableObject {
             switch self {
             case .appIsNotWritable:
                 return "CamiTune cannot replace the copy at its current location. Move it to a folder where your account can install applications, then try again."
+            case .unsupportedLocation:
+                return "Open the installed CamiTune.app to update it. This copy is not running from an application bundle."
             case .downloadFailed:
                 return "The application archive could not be downloaded from GitHub."
             case .archiveMissing:
@@ -93,6 +101,9 @@ final class AppUpdateChecker: ObservableObject {
     private let session: URLSession
     private var isChecking = false
     private var preparedUpdate: PreparedUpdate?
+    private var currentUpdate: AvailableAppUpdate?
+    private var updateTask: Task<Void, Never>?
+    private var downloadID: UUID?
 
     init(defaults: UserDefaults = .standard, session: URLSession = .shared) {
         self.defaults = defaults
@@ -103,8 +114,20 @@ final class AppUpdateChecker: ObservableObject {
     func start() {
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled else { return }
-            await self?.checkOnLaunch()
+            guard !Task.isCancelled, let self else { return }
+            if let result = AppUpdateInstaller.consumeResult(for: Bundle.main.bundleURL) {
+                self.updateVersion = result.version
+                if result.succeeded, Self.versionsAreEqual(result.version, Self.currentVersion) {
+                    self.phase = .completed
+                } else {
+                    self.failureMessage = result.succeeded
+                        ? "The update did not finish. You are still using CamiTune \(Self.currentVersion). Please try the update again."
+                        : result.message
+                    self.phase = .failed
+                }
+                return
+            }
+            await self.checkOnLaunch()
         }
     }
 
@@ -136,41 +159,63 @@ final class AppUpdateChecker: ObservableObject {
     }
 
     func beginUpdate() {
-        guard let update = availableUpdate, !isDownloadingUpdate else { return }
+        guard let update = availableUpdate, phase == .idle else { return }
+        currentUpdate = update
+        updateVersion = update.version
         availableUpdate = nil
-        isDownloadingUpdate = true
+        download(update)
+    }
 
-        Task { [weak self] in
+    private func download(_ update: AvailableAppUpdate) {
+        let id = UUID()
+        downloadID = id
+        downloadProgress = nil
+        downloadedBytes = 0
+        expectedBytes = 0
+        phase = .downloading
+        updateTask = Task { [weak self] in
             guard let self else { return }
-            await self.downloadAndPrepare(update)
+            await self.downloadAndPrepare(update, id: id)
         }
     }
 
-    func installPreparedUpdateAfterExit() {
-        guard let preparedUpdate else { return }
-        let currentAppURL = Bundle.main.bundleURL.standardizedFileURL
-        guard currentAppURL.pathExtension == "app",
-              ["CamiTune.app", "CamillaApp.app"].contains(currentAppURL.lastPathComponent),
-              currentAppURL.path != "/" else { return }
+    func dismissUpdate() {
+        guard [.downloading, .ready, .failed, .completed].contains(phase) else { return }
+        updateTask?.cancel()
+        updateTask = nil
+        downloadID = nil
+        if let preparedUpdate { try? FileManager.default.removeItem(at: preparedUpdate.directory) }
+        preparedUpdate = nil
+        currentUpdate = nil
+        phase = .idle
+        remindLater()
+    }
 
-        let installer = Process()
-        installer.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        installer.arguments = [
-            "-c",
-            Self.installerScript,
-            "camilla-updater",
-            String(ProcessInfo.processInfo.processIdentifier),
-            currentAppURL.path,
-            preparedUpdate.appURL.path
-        ]
-        installer.standardOutput = FileHandle.nullDevice
-        installer.standardError = FileHandle.nullDevice
-        try? installer.run()
-        self.preparedUpdate = nil
+    func retryUpdate() {
+        guard phase == .failed, let currentUpdate else { return }
+        if preparedUpdate != nil { installAndRestart() }
+        else { download(currentUpdate) }
+    }
+
+    func installAndRestart() {
+        guard [.ready, .failed].contains(phase), let preparedUpdate, let updateVersion else { return }
+        phase = .restarting
+        updateTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                // The helper must be visible and ready before this process quits.
+                // A normal Quit never installs a merely downloaded update.
+                try await AppUpdateInstaller.handoff(appURL: preparedUpdate.appURL,
+                    directory: preparedUpdate.directory, version: updateVersion)
+            } catch {
+                self.failureMessage = error.localizedDescription
+                self.phase = .failed
+            }
+        }
     }
 
     private func fetchLatestRelease() async {
-        guard !isChecking, availableUpdate == nil, !isDownloadingUpdate else { return }
+        guard !isChecking, availableUpdate == nil, phase == .idle else { return }
         isChecking = true
         defer { isChecking = false }
 
@@ -210,9 +255,12 @@ final class AppUpdateChecker: ObservableObject {
         }
     }
 
-    private func downloadAndPrepare(_ update: AvailableAppUpdate) async {
+    private func downloadAndPrepare(_ update: AvailableAppUpdate, id: UUID) async {
         do {
             let currentAppURL = Bundle.main.bundleURL.standardizedFileURL
+            guard currentAppURL.pathExtension == "app", Bundle.main.bundleIdentifier == Self.bundleIdentifier else {
+                throw UpdateError.unsupportedLocation
+            }
             guard FileManager.default.isWritableFile(
                 atPath: currentAppURL.deletingLastPathComponent().path
             ) else {
@@ -225,49 +273,55 @@ final class AppUpdateChecker: ObservableObject {
                 "CamiTune/\(Self.currentVersion)",
                 forHTTPHeaderField: "User-Agent"
             )
-            let (temporaryArchive, response) = try await session.download(for: request)
+            let progress = AppUpdateDownloadProgress { [weak self] written, expected in
+                Task { @MainActor in
+                    guard let self, self.phase == .downloading, self.downloadID == id else { return }
+                    self.downloadedBytes = written
+                    self.expectedBytes = expected
+                    self.downloadProgress = expected > 0 ? min(1, Double(written) / Double(expected)) : nil
+                }
+            }
+            let (temporaryArchive, response) = try await session.download(for: request, delegate: progress)
+            try Task.checkCancellation()
             guard let response = response as? HTTPURLResponse,
                   (200..<300).contains(response.statusCode) else {
                 throw UpdateError.downloadFailed
             }
 
+            phase = .verifying
+            let directory = CamiTunePaths.supportDirectory
+                .appendingPathComponent("PreparedUpdates/\(UUID().uuidString)", isDirectory: true)
             let prepared = try await Task.detached {
                 try Self.prepareArchive(
                     temporaryArchive,
-                    expectedVersion: update.version
+                    expectedVersion: update.version,
+                    updateRoot: directory
                 )
             }.value
             preparedUpdate = PreparedUpdate(
-                appURL: prepared
+                appURL: prepared, directory: directory
             )
             defaults.removeObject(forKey: Keys.remindAfter)
-            isDownloadingUpdate = false
-            NSApp.terminate(nil)
-            return
+            phase = .ready
         } catch {
-            availableUpdate = update
-            notice = AppUpdateNotice(
-                title: "Update Failed",
-                message: error.localizedDescription
-            )
+            guard !Task.isCancelled else { return }
+            failureMessage = error.localizedDescription
+            phase = .failed
         }
-        isDownloadingUpdate = false
     }
 
     nonisolated private static func prepareArchive(
         _ temporaryArchive: URL,
-        expectedVersion: String
+        expectedVersion: String,
+        updateRoot: URL
     ) throws -> URL {
         let fileManager = FileManager.default
-        let updateRoot = CamiTunePaths.supportDirectory
-            .appendingPathComponent("PreparedUpdate", isDirectory: true)
         let archiveURL = updateRoot.appendingPathComponent("update.zip")
         let unpackedURL = updateRoot.appendingPathComponent("Unpacked", isDirectory: true)
         let appURL = unpackedURL.appendingPathComponent("CamiTune.app", isDirectory: true)
 
-        if fileManager.fileExists(atPath: updateRoot.path) {
-            try fileManager.removeItem(at: updateRoot)
-        }
+        var succeeded = false
+        defer { if !succeeded { try? fileManager.removeItem(at: updateRoot) } }
         try fileManager.createDirectory(at: updateRoot, withIntermediateDirectories: true)
         try fileManager.moveItem(at: temporaryArchive, to: archiveURL)
         try fileManager.createDirectory(at: unpackedURL, withIntermediateDirectories: true)
@@ -307,35 +361,9 @@ final class AppUpdateChecker: ObservableObject {
         }
 
         try? fileManager.removeItem(at: archiveURL)
+        succeeded = true
         return appURL
     }
-
-    nonisolated static let installerScript = #"""
-attempts=0
-while /bin/kill -0 "$1" 2>/dev/null; do
-    attempts=$((attempts + 1))
-    if [[ "$attempts" -ge 120 ]]; then exit 1; fi
-    /bin/sleep 1
-done
-target="$2"
-staged="$3"
-backup="${target}.previous-update.$1"
-if [[ -e "$backup" ]]; then exit 1; fi
-if ! /bin/mv "$target" "$backup"; then
-    exit 1
-fi
-if /bin/mv "$staged" "$target"; then
-    /bin/rm -rf "$backup"
-    exit 0
-else
-    # The original app is known to be in backup before target can be
-    # removed. If installation fails, restore it and retain the backup if
-    # restoration itself cannot complete.
-    if [[ -e "$target" ]]; then /bin/rm -rf "$target"; fi
-    /bin/mv "$backup" "$target"
-    exit 1
-fi
-"""#
 
     private static var currentVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
@@ -384,4 +412,16 @@ fi
         let values = components.compactMap { Int($0) }
         return values.count == components.count ? values : []
     }
+}
+
+private final class AppUpdateDownloadProgress: NSObject, URLSessionDownloadDelegate {
+    private let progress: (Int64, Int64) -> Void
+    init(progress: @escaping (Int64, Int64) -> Void) { self.progress = progress }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        progress(totalBytesWritten, totalBytesExpectedToWrite)
+    }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {}
 }

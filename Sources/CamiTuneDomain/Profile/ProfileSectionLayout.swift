@@ -3,9 +3,9 @@ import Foundation
 package enum ProfileSection: String, Codable, CaseIterable, Identifiable, Sendable {
     case deviceSetup, meters, spectrum, mode, equalizer, perChannel, deviceCorrection, crossfeed, multichannel, subwooferControl
     // Retain the old identifiers so saved layouts can migrate without losing settings.
-    case convolution
+    case convolution, plugins
     package static let allCases: [ProfileSection] = [
-        .deviceSetup, .meters, .spectrum, .mode, .deviceCorrection, .equalizer, .subwooferControl, .perChannel, .multichannel
+        .deviceSetup, .meters, .spectrum, .mode, .deviceCorrection, .equalizer, .plugins, .subwooferControl, .perChannel, .multichannel
     ]
     package static let defaultLayoutSections = allCases
     package var consolidated: Self {
@@ -23,6 +23,7 @@ package enum ProfileSection: String, Codable, CaseIterable, Identifiable, Sendab
         case .mode: return "Mode"
         case .deviceCorrection: return "Device Correction"
         case .equalizer: return "Equalizer"
+        case .plugins: return "Plug-ins"
         case .convolution: return "FIR / Convolution"
         case .crossfeed: return "Crossfeed"
         case .perChannel: return "Channel Processing"

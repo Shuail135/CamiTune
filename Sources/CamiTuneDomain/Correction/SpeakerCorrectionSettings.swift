@@ -62,6 +62,25 @@ package enum SpeakerCorrectionError: LocalizedError {
 
 package struct SpeakerCorrectionValidator {
     package init() {}
+    /// Optimizer bounds describe generated filters, not subsequent manual edits.
+    package func validateManualFilters(_ bands: [EQBand], sampleRate: Double) throws {
+        guard sampleRate.isFinite, sampleRate > 0, !bands.isEmpty,
+              bands.allSatisfy({ band in
+                  guard band.frequency.isFinite, band.frequency > 0, band.frequency < sampleRate / 2,
+                        band.gain.map({ $0.isFinite && $0 <= 12 }) ?? true,
+                        band.q.map({ $0.isFinite && $0 > 0 }) ?? true,
+                        band.bandwidth.map({ $0.isFinite && $0 > 0 }) ?? true else { return false }
+                  switch band.kind {
+                  case .peaking: return band.gain != nil && (band.q != nil || band.bandwidth != nil)
+                  case .lowShelf, .highShelf: return band.gain != nil
+                  case .allPass: return band.q != nil || band.bandwidth != nil
+                  case .lowPass, .highPass, .notch: return true
+                  }
+              }) else {
+            throw SpeakerCorrectionError.invalid("Use finite filter values, gain no higher than +12 dB, positive Q, and frequencies below Nyquist.")
+        }
+    }
+
     package func validate(_ bands: [EQBand], settings: SpeakerCorrectionSettings, sampleRate: Double, allowDisabledBands: Bool = false) throws {
         try settings.validate(sampleRate: sampleRate)
         guard !bands.isEmpty, bands.count <= settings.filterCount else { throw SpeakerCorrectionError.invalid("Use between 1 and \(settings.filterCount) speaker correction filters.") }

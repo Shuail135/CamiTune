@@ -329,19 +329,22 @@ struct MenuBarRootView: View {
     }
 
     private func outputProfileMenu(title: String) -> some View {
-        outputProfileLabel(title: title)
+        let availableProfiles = model.state.profiles.profiles.filter {
+            $0.isEnabled && model.state.coreAudio.cachedDevice(uid: $0.outputDeviceUID) != nil
+        }
+        return outputProfileLabel(title: title)
             .overlay {
                 Menu {
                     ForEach(model.state.profiles.effectiveRootOrder, id: \.self) { item in
                         switch item {
                         case .profile(let id):
-                            if let profile = model.state.profiles.profiles.first(where: { $0.id == id && $0.isEnabled }) {
+                            if let profile = availableProfiles.first(where: { $0.id == id }) {
                                 outputProfileOption(profile)
                             }
                         case .folder(let id):
                             if let folder = model.state.profiles.folders.first(where: { $0.id == id }) {
                                 let profiles = folder.profileIDs.compactMap { id in
-                                    model.state.profiles.profiles.first { $0.id == id && $0.isEnabled }
+                                    availableProfiles.first { $0.id == id }
                                 }
                                 if !profiles.isEmpty {
                                     Menu(folder.name) {
@@ -351,8 +354,8 @@ struct MenuBarRootView: View {
                             }
                         }
                     }
-                    if !model.state.profiles.profiles.contains(where: \.isEnabled) {
-                        Text("No enabled profiles")
+                    if availableProfiles.isEmpty {
+                        Text("No connected profiles")
                     }
                 } label: {
                     Color.clear
@@ -675,9 +678,8 @@ private struct HorizontalMeteredVolumeSlider: View {
                     .frame(width: width, height: 5)
                     .scaleEffect(x: displayedLevel, y: 1, anchor: .leading)
                     .animation(reduceMotion ? nil : .easeOut(duration: levelTransitionDuration), value: displayedLevel)
-                Circle().fill(Color(nsColor: .controlBackgroundColor))
-                    .overlay(Circle().stroke(Color.secondary, lineWidth: 0.75))
-                    .frame(width: 13, height: 13).offset(x: width * amount - 6.5)
+                SliderThumb(scale: 0.8, isPressed: interactionVolume != nil)
+                    .offset(x: width * CGFloat(amount) - SliderThumbMetrics.thickness * 0.4)
             }
             .frame(width: width, height: geometry.size.height)
             .padding(.horizontal, 7)

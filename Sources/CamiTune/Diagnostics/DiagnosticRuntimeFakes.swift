@@ -116,6 +116,9 @@ final class DiagnosticRuntimeFakes {
         var engineGate: DiagnosticManualGate?
         var graphGate: DiagnosticManualGate?
         var transportGate: DiagnosticManualGate?
+        var bufferPreparationGate: DiagnosticManualGate?
+        var bufferPreparationFails = false
+        var bufferCommitSucceeds = true
     }
     var scenario: Scenario
     private(set) var events: [String] = []
@@ -142,6 +145,20 @@ final class DiagnosticRuntimeFakes {
 
     func services() -> AudioRuntimeServices {
         AudioRuntimeServices(
+            prepareAutomaticBuffer: { _ in
+                self.record("prepare buffer engine")
+                try await self.scenario.bufferPreparationGate?.enter()
+                if self.scenario.bufferPreparationFails { throw self.fail("Standby engine failed") }
+            },
+            commitAutomaticBuffer: { plan in
+                self.record("commit buffer engine")
+                guard self.scenario.bufferCommitSucceeds else { return false }
+                self.backendGraph = plan.processingGraph
+                self.graphs.append(plan.processingGraph)
+                self.graphUpdate = "prepared handoff"
+                return true
+            },
+            discardAutomaticBuffer: { self.record("discard buffer preparation") },
             synchronous: .init(stopTransport: { self.stop("transport") }, stopPCM: { self.stop("PCM") },
                 closeEngineInput: { self.record("close engine input") }, stopSpectrum: { self.stop("spectrum") },
                 stopEngine: { self.stop("engine") }, stopVolume: { self.stop("volume") },

@@ -64,9 +64,7 @@ final class RoomCorrectionEditorState: ObservableObject {
     private var loadedSeatID: UUID?
     private weak var app: AppState?
     private var profileID: UUID?
-    private var volume: SystemVolumeControlSession.Snapshot?
     private var drafts: [RoomMeasurementSource.Kind: RoomMeasurementSession] = [:]
-    private var draftVolumes: [RoomMeasurementSource.Kind: SystemVolumeControlSession.Snapshot] = [:]
     private var measurementChannels: [Int] = []
     private var issuedTokens: Set<UInt32> = []
     private let playbackClockID = UUID()
@@ -122,7 +120,7 @@ final class RoomCorrectionEditorState: ObservableObject {
     }
     func selectPosition(_ index: Int) {
         guard !busy, session?.positions.indices.contains(index) == true else { return }
-        positionIndex = index; status = ""; error = nil
+        positionIndex = index; status = restoredMeasurementStatus; error = nil
     }
     func setSourceKind(_ kind: RoomMeasurementSource.Kind, profile: DeviceProfile) {
         guard !busy, source.kind != kind else { return }
@@ -130,7 +128,6 @@ final class RoomCorrectionEditorState: ObservableObject {
         let started = session != nil
         if let session {
             drafts[session.source.kind] = session
-            draftVolumes[session.source.kind] = volume
         }
         source = drafts[kind]?.source ?? .init()
         source.kind = kind
@@ -139,13 +136,15 @@ final class RoomCorrectionEditorState: ObservableObject {
         if let draft = drafts[kind], draft.context == (try? profile.roomMeasurementContext()) {
             session = draft
             positionIndex = kind == .recorder ? (draft.positions.indices.first { !hasPlayed(draft.positions[$0], in: draft) } ?? 0) : 0
-            volume = draftVolumes[kind]; status = ""; error = nil
-            recorderPositionCount = RoomRecorderPositionCount(rawValue: draft.positions.count) ?? .five
+            status = restoredMeasurementStatus; error = nil
+            if kind == .recorder { recorderPositionCount = RoomRecorderPositionCount(rawValue: draft.positions.count) ?? .five }
+            else { microphonePositionCount = RoomRecorderPositionCount(rawValue: draft.positions.count) ?? .nine }
             revision += 1
+            persistSession()
         } else { beginSession(profile: profile) }
     }
     func setRecorderPositionCount(_ count: RoomRecorderPositionCount, profile: DeviceProfile) {
-        guard !busy, recorderPositionCount != count else { return }
+        guard !busy, session?.recordings.isEmpty != false, recorderPositionCount != count else { return }
         recorderPositionCount = count
         guard var session, session.source.kind == .recorder else { return }
         calculatedResult = nil
@@ -162,7 +161,7 @@ final class RoomCorrectionEditorState: ObservableObject {
         positionIndex = session.positions.firstIndex { $0.id == selectedID } ?? 0
         if hasPlayed(session.positions[positionIndex], in: session),
            let next = session.positions.indices.first(where: { !hasPlayed(session.positions[$0], in: session) }) { positionIndex = next }
-        status = ""; error = nil; revision += 1
+        status = restoredMeasurementStatus; error = nil; revision += 1
         if wasRecorded { persistSession() }
     }
     /// Each attempt gets fresh acoustic IDs, including attempts cancelled before completion.
@@ -215,6 +214,13 @@ final class RoomCorrectionEditorState: ObservableObject {
     }
     var position: RoomMeasurementPosition? { session?.positions.indices.contains(positionIndex) == true ? session?.positions[positionIndex] : nil }
     var hasMeasurements: Bool { (session?.usablePositionCount ?? 0) > 0 }
+    private var restoredMeasurementStatus: String {
+        guard let session else { return "" }
+        if !session.recordings.isEmpty || hasMeasurements { return validationMessage }
+        guard session.source.kind == .recorder, !session.blocks.isEmpty else { return "" }
+        return recorderPlaybackComplete ? "Stop the phone recording, then import that one audio file."
+            : "Keep recording. Move the phone to the blue marker, then press Next."
+    }
     var validationMessage: String {
         guard let session else { return "" }
         if session.source.kind == .microphone {
@@ -265,7 +271,7 @@ final class RoomCorrectionEditorState: ObservableObject {
             session.positions[index].skipped = false
         }
         self.session = session
-        positionIndex = 0; volume = nil; calculatedResult = nil
+        positionIndex = 0; calculatedResult = nil
         let restarted = session, store = measurementStore
         do {
             // Finish after any in-flight save. Cleanup must survive cancellation,
@@ -277,10 +283,14 @@ final class RoomCorrectionEditorState: ObservableObject {
             }.value
         } catch { self.error = error.localizedDescription }
     }
-    private func worker<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+    private func worker<T: Sendable>(committing: Bool = false, _ work: @escaping @Sendable () throws -> T) async throws -> T {
         let task = Task.detached(priority: .userInitiated, operation: work)
         let value = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
-        try Task.checkCancellation()
+        // Once a manifest is committed, publish that exact result to the editor
+        // even if Cancel arrived during the atomic write. The worker checks
+        // cancellation before committing; discarding its return would split UI
+        // and saved state until the next launch.
+        if !committing { try Task.checkCancellation() }
         return value
     }
     func selectSeat(profile: DeviceProfile, app: AppState) {
@@ -291,8 +301,8 @@ final class RoomCorrectionEditorState: ObservableObject {
             await previous?.value
             guard let self, let latest = app.profiles.profiles.first(where: { $0.id == profile.id }),
                   latest.effectiveSpatialSettings.seating?.id == profile.effectiveSpatialSettings.seating?.id else { return }
-            self.loadedProfile = nil; self.session = nil; self.comparison = nil; self.volume = nil
-            self.source = Self.defaultSource; self.drafts = [:]; self.draftVolumes = [:]; self.positionIndex = 0; self.status = ""
+            self.loadedProfile = nil; self.session = nil; self.comparison = nil
+            self.source = Self.defaultSource; self.drafts = [:]; self.positionIndex = 0; self.status = ""
             self.load(profile: latest, app: app)
         }
     }
@@ -303,13 +313,22 @@ final class RoomCorrectionEditorState: ObservableObject {
             throw CancellationError()
         }
     }
+    private func publishRoomProfile(_ profile: DeviceProfile, app: AppState) {
+        var updated = profile
+        if let latest = app.profiles.profiles.first(where: { $0.id == profile.id }) {
+            updated.outputVolumeScalar = latest.outputVolumeScalar
+        }
+        app.profiles.update(updated)
+    }
     func load(profile: DeviceProfile, app: AppState) {
         guard loadedProfile != profile.id else { return }
         self.app = app; profileID = profile.id; loadedProfile = profile.id
         measurementOpen = false
-        runtimeObservation = app.runtimeSnapshots.map { $0.session?.profileID == profile.id }
-            .removeDuplicates().sink { [weak self] active in
+        runtimeObservation = app.runtimeSnapshots.sink { [weak self] snapshot in
                 guard let self else { return }
+                self.clearComparisonForRuntimeChange()
+                let active = snapshot.session?.profileID == profile.id
+                guard self.profileIsActive != active else { return }
                 self.profileIsActive = active
                 // Applying the measurement baseline may briefly restart the
                 // route. The operation validates its owner after that apply.
@@ -336,13 +355,6 @@ final class RoomCorrectionEditorState: ObservableObject {
                 (try id.map { try store.load($0) }, SpatialMicrophoneCapture.microphones)
             }
             microphones = loaded.1; session = loaded.0
-            if let previous = session, !previous.recordings.isEmpty,
-               previous.measurementAnalysisVersion < RoomRecordingAnalyzer.currentAnalysisVersion {
-                status = "Updating recording analysis…"
-                session = try await worker { try store.updatingSource(previous.source, in: previous) }
-                calculatedResult = nil
-                status = validationMessage
-            }
             if let session {
                 source = session.source
                 if source.kind == .recorder {
@@ -354,8 +366,16 @@ final class RoomCorrectionEditorState: ObservableObject {
                 }
                 recorderPositionCount = RoomRecorderPositionCount(rawValue: session.positions.count) ?? .five
                 microphonePositionCount = RoomRecorderPositionCount(rawValue: session.positions.count) ?? .nine
+                status = restoredMeasurementStatus
             }
             else { source = Self.defaultSource; source.deviceID = microphones.first?.id }
+            if let previous = session, !previous.recordings.isEmpty,
+               previous.measurementAnalysisVersion < RoomRecordingAnalyzer.currentAnalysisVersion {
+                status = "Updating recording analysis…"
+                session = try await worker(committing: true) { try store.updatingSource(previous.source, in: previous) }
+                calculatedResult = nil
+                status = validationMessage
+            }
         }
     }
     var measurementActionTitle: String { session == nil ? "Start Measurement" : "Continue Measurement" }
@@ -395,7 +415,7 @@ final class RoomCorrectionEditorState: ObservableObject {
                 for _ in 1..<microphonePositionCount.rawValue { positions.append(.init(coordinate: RoomMeasurementGeometry.suggestion(center: center, radius: radius, existing: positions.map(\.coordinate)))) }
             }
             measurementChannels = profile.configuredProcessingChannels.map(\.index)
-            volume = nil; error = nil
+            error = nil
             if source.kind == .recorder { source.calibration = nil }
             session = .init(context: context, source: source, positions: positions)
             calculatedResult = nil; importedContext = nil; importedMeasurementContext = nil
@@ -416,14 +436,14 @@ final class RoomCorrectionEditorState: ObservableObject {
         session.retireMicrophoneTakes(positionID: movedID, channels: Set(measurementChannels))
         session.positions[positionIndex].coordinate = coordinate
         session.positions[positionIndex].observations = []
-        self.session = session; error = nil; revision += 1
+        self.session = session; status = restoredMeasurementStatus; error = nil; revision += 1
     }
     func addPosition(profile: DeviceProfile) {
         guard !busy, var session, session.source.kind == .microphone, session.positions.count < 32 else { return }
         calculatedResult = nil
         session.positions.append(.init(coordinate: RoomMeasurementGeometry.suggestion(center: session.context.listener,
             radius: RoomMeasurementGeometry.radius(for: profile.effectiveSpatialSettings.seating), existing: session.positions.map(\.coordinate))))
-        positionIndex = session.positions.count - 1; self.session = session; revision += 1; persistSession()
+        positionIndex = session.positions.count - 1; self.session = session; status = restoredMeasurementStatus; revision += 1; persistSession()
     }
     var canRemovePosition: Bool {
         guard !busy, let session, session.source.kind == .microphone,
@@ -437,6 +457,7 @@ final class RoomCorrectionEditorState: ObservableObject {
         session.retireMicrophoneTakes(positionID: id, channels: Set(measurementChannels))
         session.positions.remove(at: positionIndex)
         self.session = session; positionIndex = max(0, min(positionIndex, session.positions.count - 1)); revision += 1
+        status = restoredMeasurementStatus
         persistSession()
     }
     func skipPosition() {
@@ -446,7 +467,7 @@ final class RoomCorrectionEditorState: ObservableObject {
         calculatedResult = nil
         session.positions[positionIndex].skipped.toggle(); self.session = session
         if session.positions[positionIndex].skipped { positionIndex = min(positionIndex + 1, session.positions.count - 1) }
-        revision += 1; persistSession()
+        status = restoredMeasurementStatus; revision += 1; persistSession()
     }
     func persistSession(preservingSetupOnClose: Bool = false) {
         guard !busy, var session else { return }
@@ -459,7 +480,7 @@ final class RoomCorrectionEditorState: ObservableObject {
         savingSessionSetup = preservingSetupOnClose
         run { [self] in
             defer { savingSessionSetup = false }
-            try await worker { try store.save(snapshot) }
+            try await worker(committing: true) { try Task.checkCancellation(); try store.save(snapshot) }
             saveReference(snapshot)
         }
     }
@@ -483,7 +504,30 @@ final class RoomCorrectionEditorState: ObservableObject {
         return recorder
     }
     func measure(profile: DeviceProfile, selectedChannel: Int?, preview: Bool = false) {
-        guard !busy, let initial = session, let position else { return }
+        guard !busy else { return }
+        // An unused setup has no acoustic evidence to invalidate. Keep its
+        // position offsets when the listener or output changes before a take.
+        do {
+            if var setup = session, setup.blocks.isEmpty, setup.recordings.isEmpty,
+               setup.positions.allSatisfy({ $0.observations.isEmpty }),
+               let app, let saved = app.profiles.profiles.first(where: { $0.id == profile.id }),
+               saved.effectiveSpatialSettings.seating?.id == loadedSeatID {
+                let current = try app.applyingSessionEQDrafts(to: saved)
+                let updated = try current.roomMeasurementContext()
+                if setup.context != updated {
+                    let old = setup.context.listener, new = updated.listener
+                    for index in setup.positions.indices {
+                        let point = setup.positions[index].coordinate
+                        setup.positions[index].coordinate = .init(x: point.x + new.x - old.x,
+                            y: point.y + new.y - old.y, z: point.z + new.z - old.z)
+                    }
+                    setup.context = updated
+                    session = setup; calculatedResult = nil; revision += 1
+                }
+                measurementChannels = current.configuredProcessingChannels.map(\.index)
+            }
+        } catch { self.error = error.localizedDescription; return }
+        guard let initial = session, let position else { return }
         let planned = preview ? [] : plannedBlocks(selectedChannel: selectedChannel)
         let channels = measurementChannels.filter { initial.source.kind == .recorder || selectedChannel == nil || $0 == selectedChannel }
         let requestedGain = testVolumeDB
@@ -500,20 +544,21 @@ final class RoomCorrectionEditorState: ObservableObject {
                 }
                 try calibration.validateForRoomMeasurement()
             }
-            let initial = try await worker { preview ? initial : try store.updatingSource(selectedSource, in: initial) }
+            let initial = try await worker(committing: true) { preview ? initial : try store.updatingSource(selectedSource, in: initial) }
+            self.session = initial
             guard let app else { throw RoomCorrectionError.routeUnavailable }
             await app.runtimeCoordinator.waitUntilSettled()
             try Task.checkCancellation()
             guard app.isActive, app.activeProfileID == profile.id else { throw RoomCorrectionError.routeUnavailable }
-            guard initial.context == (try profile.roomMeasurementContext()) else { throw RoomCorrectionError.stale }
-            guard let volume = app.acousticVolumeSnapshot else { throw RoomCorrectionError.routeUnavailable }
-            guard !volume.muted, volume.scalar > 0 else { throw RoomCorrectionError.outputMuted }
-            if !preview {
-                calculatedResult = nil
-                if let previous = self.volume, previous != volume { throw RoomCorrectionError.stale }
-                self.volume = volume
-            }
-            let measuringProfile = try profile.roomMeasurementProfile()
+            guard let savedProfile = app.profiles.profiles.first(where: { $0.id == profile.id }),
+                  savedProfile.effectiveSpatialSettings.seating?.id == loadedSeatID else { throw RoomCorrectionError.stale }
+            let currentProfile = try app.applyingSessionEQDrafts(to: savedProfile)
+            guard initial.context == (try currentProfile.roomMeasurementContext()) else { throw RoomCorrectionError.stale }
+            guard let startingVolume = app.acousticVolumeSnapshot else { throw RoomCorrectionError.routeUnavailable }
+            guard !startingVolume.muted, startingVolume.scalar > 0 else { throw RoomCorrectionError.outputMuted }
+            if !preview { calculatedResult = nil }
+            let measuringProfile = try currentProfile.roomMeasurementProfile()
+            let startingRuntimeID = app.activeSession?.id
             // The existing runtime prepares assets and validates the candidate before committing.
             app.clearTransientError()
             await app.apply(profile: measuringProfile)
@@ -525,11 +570,15 @@ final class RoomCorrectionEditorState: ObservableObject {
                     throw RoomCorrectionError.routeUnavailable
                 }
             } catch {
-                if let latest = app.profiles.profiles.first(where: { $0.id == profile.id }) { await app.apply(profile: latest) }
+                let baselineApplied = (try? await Task { @MainActor in
+                    try await app.runtimeCoordinator.hasAppliedConfiguration(for: measuringProfile)
+                }.value) == true
+                await restoreMeasurementProfile(profileID: profile.id,
+                    runtimeID: baselineApplied ? app.activeSession?.id : startingRuntimeID, app: app)
                 throw error
             }
             guard let context = app.beginSpatialCalibration(profileID: profile.id, roomMeasurement: true) else {
-                await app.apply(profile: profile)
+                await restoreMeasurementProfile(profileID: profile.id, runtimeID: app.activeSession?.id, app: app)
                 throw RoomCorrectionError.routeUnavailable
             }
             self.context = context
@@ -542,10 +591,34 @@ final class RoomCorrectionEditorState: ObservableObject {
                     let measured = Set(planned.map(\.channel))
                     session.retireMicrophoneTakes(positionID: position.id, channels: measured)
                     let retired = session
-                    try await worker { try store.save(retired) }
+                    try await worker(committing: true) { try Task.checkCancellation(); try store.save(retired) }
                     self.session = session; saveReference(session)
                 }
                 guard let graph = app.runtimeCoordinator.appliedProcessingGraph else { throw RoomCorrectionError.routeUnavailable }
+                // The baseline apply can replace the volume lease. Freeze only
+                // this position's take, after that apply, not the whole editor.
+                // Analysis normalizes broadband level across positions.
+                guard let volume = app.acousticVolumeSnapshot else { throw RoomCorrectionError.playbackInterrupted }
+                guard !volume.muted, volume.scalar > 0 else { throw RoomCorrectionError.outputMuted }
+                @MainActor func validatePlayback() throws {
+                    try Task.checkCancellation()
+                    guard app.isActive, app.activeProfileID == profile.id,
+                          app.activeSession?.id == context.runtimeSessionID,
+                          app.spatialCalibrationContext == context,
+                          app.runtimeCoordinator.activePhysicalOutputUID == context.outputDeviceUID,
+                          Double(app.runtimeCoordinator.activeSampleRate ?? 0) == context.sampleRate,
+                          app.coreAudio.defaultOutputUID == app.runtimeCoordinator.activeRoutingUID else { throw RoomCorrectionError.playbackInterrupted }
+                    guard let saved = app.profiles.profiles.first(where: { $0.id == profile.id }),
+                          saved.effectiveSpatialSettings.seating?.id == self.loadedSeatID,
+                          try app.applyingSessionEQDrafts(to: saved).roomMeasurementContext() == initial.context,
+                          app.runtimeCoordinator.appliedProcessingGraph == graph else { throw RoomCorrectionError.stale }
+                    if !preview {
+                        guard let current = app.acousticVolumeSnapshot else { throw RoomCorrectionError.playbackInterrupted }
+                        guard current.scalar == volume.scalar, current.muted == volume.muted,
+                              current.revision == volume.revision else { throw RoomCorrectionError.volumeChanged }
+                        guard current.audibility == .permitted, current.physicalReady else { throw RoomCorrectionError.playbackInterrupted }
+                    }
+                }
                 let ceiling = try await worker { try RoomMeasurementSignal.boundedGainDB(RoomMeasurementSignal.volumeRangeDB.upperBound, graph: graph) }
                 testVolumeMaximumDB = floor(ceiling)
                 let gain = min(preview ? testVolumeDB : requestedGain, testVolumeMaximumDB)
@@ -566,13 +639,14 @@ final class RoomCorrectionEditorState: ObservableObject {
                     // changes and a start/stop fade for each channel transition.
                     while true {
                         for channel in channels {
-                            try Task.checkCancellation()
+                            try validatePlayback()
                             let clip = try await worker {
                                 try RoomMeasurementSignal.levelCheckClip(topology: initial.context.topology, channel: channel, gainDB: ceiling)
                             }
                             let initialGain = Float(pow(10, (testVolumeDB - ceiling) / 20))
                             status = "Playing sound · \(positionLabel)"
                             let playback = RoomMeasurementPlaybackCompletion()
+                            try validatePlayback()
                             guard app.playSpatialCalibration(context: context, clip: clip, levelCheckGain: initialGain,
                                 started: { playback.start(at: $0) }, completion: { playback.finish() }) else {
                                 throw RoomCorrectionError.routeUnavailable
@@ -583,15 +657,13 @@ final class RoomCorrectionEditorState: ObservableObject {
                                 if playingOutput != output { playingOutput = output }
                                 microphoneLevel = capture?.inputLevel
                                 if capture?.hasDiscontinuity == true { throw AcousticMeasurementError.captureFailed }
-                                guard app.acousticVolumeSnapshot == volume, app.isActive,
-                                      app.runtimeCoordinator.appliedProfile?.id == profile.id,
-                                      app.runtimeCoordinator.appliedProcessingGraph == graph,
-                                      (try app.profiles.profiles.first(where: { $0.id == profile.id })?.roomMeasurementContext()) == initial.context else { throw RoomCorrectionError.stale }
+                                try validatePlayback()
                                 if channels.count > 1, let started = playback.startedAt,
                                    ProcessInfo.processInfo.systemUptime - started >= 2 {
                                     app.pcmRouter.stopSpatialCalibrationSample(id: context.id)
                                 }
                             }
+                            try validatePlayback()
                             playingOutput = nil
                         }
                     }
@@ -599,10 +671,7 @@ final class RoomCorrectionEditorState: ObservableObject {
                 if !preview && blocks.isEmpty { throw RoomCorrectionError.routeUnavailable }
                 for index in blocks.indices {
                     let plannedBlock = blocks[index]
-                    try Task.checkCancellation()
-                    guard app.acousticVolumeSnapshot == volume,
-                          app.runtimeCoordinator.appliedProcessingGraph == graph,
-                          (try app.profiles.profiles.first(where: { $0.id == profile.id })?.roomMeasurementContext()) == initial.context else { throw RoomCorrectionError.stale }
+                    try validatePlayback()
                     let clip = try await worker { () -> SpatialCalibrationClip in
                         let signal = try RoomMeasurementSignal(block: plannedBlock, sampleRate: context.sampleRate)
                         guard let clip = signal.clip(topology: initial.context.topology) else { throw RoomCorrectionError.routeUnavailable }
@@ -617,6 +686,7 @@ final class RoomCorrectionEditorState: ObservableObject {
                     } else { recorder = nil }
                     status = "Playing sound · \(positionLabel)"
                     let playback = RoomMeasurementPlaybackCompletion()
+                    try validatePlayback()
                     guard app.playSpatialCalibration(context: context, clip: clip,
                         started: { playback.start(at: $0) }, completion: { playback.finish() }) else { throw RoomCorrectionError.routeUnavailable }
                     var tail = 0
@@ -629,15 +699,12 @@ final class RoomCorrectionEditorState: ObservableObject {
                             if microphoneLevel?.clipped == true { throw RoomCorrectionError.inputClipped }
                             if recorder.hasDiscontinuity { throw AcousticMeasurementError.captureFailed }
                         }
-                        guard app.acousticVolumeSnapshot == volume, app.isActive,
-                              app.runtimeCoordinator.appliedProfile?.id == profile.id else { throw RoomCorrectionError.routeUnavailable }
-                        // A live apply must not reintroduce bypassed DSP midway
-                        // through a take whose context still matches the EQ.
-                        guard app.runtimeCoordinator.appliedProcessingGraph == graph else { throw RoomCorrectionError.stale }
+                        try validatePlayback()
                         if playback.isFinished { tail += 1 }
                         if tail >= 8 { break }
                     }
-                    guard tail >= 8 else { throw RoomCorrectionError.routeUnavailable }
+                    try validatePlayback()
+                    guard tail >= 8, playback.startedAt != nil else { throw RoomCorrectionError.playbackInterrupted }
                     block.playbackStartTime = playback.startedAt; block.playbackClockID = playbackClockID
                     blocks[index] = block
                     if let recorder {
@@ -647,26 +714,26 @@ final class RoomCorrectionEditorState: ObservableObject {
                         guard !recording.discontinuity else { throw AcousticMeasurementError.captureFailed }
                         let snapshot = session
                         let measuredBlock = block
-                        session = try await worker {
+                        session = try await worker(committing: true) {
                             var analyzed = try RoomMeasurementStore.analyze((recording.samples, recording.sampleRate, "wav", false), blocks: [measuredBlock], session: snapshot)
                             let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("capture-\(UUID()).wav")
                             defer { try? FileManager.default.removeItem(at: temporary) }
                             try RoomMeasurementStore.writeWAV(samples: recording.samples, sampleRate: recording.sampleRate, to: temporary)
                             let reference = try store.retain(temporary, sessionID: snapshot.id, blocks: [measuredBlock], format: "wav", isLossy: false)
                             analyzed.recordings.append(reference)
-                            try store.save(analyzed)
+                            try Task.checkCancellation(); try store.save(analyzed)
                             return analyzed
                         }
                         self.session = session
                         saveReference(session)
                     }
                 }
-                try Task.checkCancellation()
+                try validatePlayback()
                 if !preview {
                     if initial.source.kind == .recorder { session = try completedRecorderPosition(blocks, in: initial) }
                     if let i = session.positions.firstIndex(where: { $0.id == position.id }) { session.positions[i].skipped = false }
                     let saved = session
-                    try await worker { try store.save(saved) }
+                    try await worker(committing: true) { try Task.checkCancellation(); try store.save(saved) }
                     self.session = session; saveReference(session)
                     advanceAfterPlayback()
                 } else { status = "" }
@@ -674,13 +741,20 @@ final class RoomCorrectionEditorState: ObservableObject {
                 playingOutput = nil
                 if let capture { _ = await capture.stop(); self.capture = nil }
                 app.endSpatialCalibration(id: context.id); self.context = nil
-                if let latest = app.profiles.profiles.first(where: { $0.id == profile.id }) { await app.apply(profile: latest) }
+                await restoreMeasurementProfile(profileID: profile.id, runtimeID: context.runtimeSessionID, app: app)
                 throw error
             }
             if let capture { _ = await capture.stop(); self.capture = nil }
             app.endSpatialCalibration(id: context.id); self.context = nil
-            if let latest = app.profiles.profiles.first(where: { $0.id == profile.id }) { await app.apply(profile: latest) }
+            await restoreMeasurementProfile(profileID: profile.id, runtimeID: context.runtimeSessionID, app: app)
         }
+    }
+    private func restoreMeasurementProfile(profileID: UUID, runtimeID: UUID?, app: AppState) async {
+        await app.runtimeCoordinator.waitUntilSettled()
+        guard app.isActive, app.activeProfileID == profileID, app.activeSession?.id == runtimeID,
+              let latest = app.profiles.profiles.first(where: { $0.id == profileID }),
+              let current = try? app.applyingSessionEQDrafts(to: latest) else { return }
+        await app.apply(profile: current)
     }
     func importRecording(_ url: URL) {
         guard !busy else { return }
@@ -689,16 +763,17 @@ final class RoomCorrectionEditorState: ObservableObject {
         importingRecording = true
         status = "Analyzing recording…"
         run { [self] in
-            session = try await worker {
+            session = try await worker(committing: true) {
                 let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
                 let decoded = try RoomMeasurementStore.read(url)
                 var clean = snapshot
                 for i in clean.positions.indices { clean.positions[i].observations = [] }
+                clean.recordings = []; clean.analysisIssues = nil
                 var result = try RoomMeasurementStore.analyze(decoded, blocks: snapshot.blocks, session: clean)
                 var recording = try store.retain(url, sessionID: result.id, blocks: snapshot.blocks, format: decoded.format, isLossy: decoded.isLossy)
                 recording.originalFileName = url.lastPathComponent
                 result.recordings.append(recording)
-                try store.save(result); return result
+                try Task.checkCancellation(); try store.save(result); return result
             }
             if let session { saveReference(session) }; status = validationMessage; tab = .analysis
             calculatedResult = nil
@@ -715,10 +790,10 @@ final class RoomCorrectionEditorState: ObservableObject {
             let detached = updated
             // Keep the audio files and playback blocks so another file can be
             // imported without repeating playback or changing applied correction.
-            try await worker { try store.save(detached) }
+            try await worker(committing: true) { try Task.checkCancellation(); try store.save(detached) }
             session = detached; saveReference(detached)
             calculatedResult = nil
-            status = ""; tab = .measure
+            status = restoredMeasurementStatus; tab = .measure
         }
     }
     func reanalyze() {
@@ -727,7 +802,7 @@ final class RoomCorrectionEditorState: ObservableObject {
         let store = measurementStore
         run { [self] in
             status = "Reanalyzing saved recordings…"
-            session = try await worker { try store.updatingSource(selectedSource, in: snapshot, force: true) }
+            session = try await worker(committing: true) { try store.updatingSource(selectedSource, in: snapshot, force: true) }
             if let session { saveReference(session) }
             calculatedResult = nil; status = validationMessage
         }
@@ -740,8 +815,9 @@ final class RoomCorrectionEditorState: ObservableObject {
         correctionInProgress = true
         status = "Calculating correction…"
         run { [self] in
-            let snapshot = try await worker { try store.updatingSource(selectedSource, in: snapshot) }
+            let snapshot = try await worker(committing: true) { try store.updatingSource(selectedSource, in: snapshot) }
             self.session = snapshot
+            try Task.checkCancellation()
             if snapshot.source.kind == .microphone && !snapshot.microphoneMeasurementsComplete {
                 throw RoomCorrectionError.incompleteMicrophoneMeasurement
             }
@@ -787,10 +863,17 @@ final class RoomCorrectionEditorState: ObservableObject {
             let saved = try app.historyProfile(profile.id)
             let current = try app.applyingSessionEQDrafts(to: saved)
             let plan = try RoomCorrectionImportPlan(result: result, profile: current)
-            let candidate = try plan.applying(to: current)
-            _ = try await worker { try AudioRuntimePlanPreparer.prepareForStorage(profile: candidate, revision: .init(profileID: candidate.id, generation: 0)) }
-            guard try app.historyProfile(profile.id) == saved,
-                  (try app.applyingSessionEQDrafts(to: saved)) == current else { throw RoomCorrectionError.stale }
+            var candidate = try plan.applying(to: current)
+            @MainActor func latestUnchangedProfile() throws -> DeviceProfile {
+                let latest = try app.applyingSessionEQDrafts(to: app.historyProfile(profile.id))
+                var normalized = latest
+                normalized.outputVolumeScalar = current.outputVolumeScalar
+                guard normalized == current else { throw RoomCorrectionError.stale }
+                return latest
+            }
+            let prepared = candidate
+            _ = try await worker { try AudioRuntimePlanPreparer.prepareForStorage(profile: prepared, revision: .init(profileID: prepared.id, generation: 0)) }
+            candidate.outputVolumeScalar = try latestUnchangedProfile().outputVolumeScalar
             try await validateCommit(candidate, app: app)
             let before = try app.roomCorrectionImportSnapshot(profile: current)
             let after = try app.roomCorrectionImportSnapshot(profile: candidate)
@@ -806,8 +889,7 @@ final class RoomCorrectionEditorState: ObservableObject {
                         throw RoomCorrectionError.routeUnavailable
                     }
                     try await validateCommit(candidate, app: app)
-                    guard try app.historyProfile(profile.id) == saved,
-                          (try app.applyingSessionEQDrafts(to: saved)) == current else { throw RoomCorrectionError.stale }
+                    candidate.outputVolumeScalar = try latestUnchangedProfile().outputVolumeScalar
                 } catch {
                     if app.isActive, app.activeProfileID == profile.id,
                        let latest = try? app.applyingSessionEQDrafts(to: app.historyProfile(profile.id)) {
@@ -816,7 +898,7 @@ final class RoomCorrectionEditorState: ObservableObject {
                     throw error
                 }
             }
-            app.profiles.update(candidate)
+            publishRoomProfile(candidate, app: app)
             for channel in after.channels.keys { app.clearChannelEQDraft(for: profile.id, channelIndex: channel) }
             app.history.record(actionName: "Import Room Correction", contextName: current.name,
                 target: .profile(profile.id), before: .roomCorrectionImport(before), after: .roomCorrectionImport(after))
@@ -840,7 +922,7 @@ final class RoomCorrectionEditorState: ObservableObject {
                 guard app.runtimeCoordinator.appliedProfile?.effectiveSpatialSettings.seating?.roomCorrectionEnabled == enabled else { throw RoomCorrectionError.routeUnavailable }
             }
             try await validateCommit(current, app: app)
-            app.profiles.update(current); comparing = false
+            publishRoomProfile(current, app: app); comparing = false
             status = enabled ? "Room Correction ON" : "Room Correction OFF"
         }
     }
@@ -858,14 +940,14 @@ final class RoomCorrectionEditorState: ObservableObject {
                           applied.effectiveSpatialSettings.seating?.roomCorrectionBands.isEmpty != false else { throw RoomCorrectionError.routeUnavailable }
                 }
                 try await validateCommit(current, app: app)
-                app.profiles.update(current)
+                publishRoomProfile(current, app: app)
                 loadedSeatID = current.effectiveSpatialSettings.seating?.id
             }
             // Detach saved bundles instead of deleting files that another seat
             // or profile may reference. Nothing from this session reloads here.
-            session = nil; comparison = nil; drafts = [:]; draftVolumes = [:]
+            session = nil; comparison = nil; drafts = [:]
             calculatedResult = nil; importedContext = nil; importedMeasurementContext = nil
-            volume = nil; context = nil; issuedTokens = []
+            context = nil; issuedTokens = []
             source = Self.defaultSource; source.deviceID = microphones.first?.id
             settings = .init(); positionIndex = 0; recorderPositionCount = .five; microphonePositionCount = .nine
             microphoneLevel = nil
@@ -887,15 +969,89 @@ final class RoomCorrectionEditorState: ObservableObject {
                 guard app.runtimeCoordinator.appliedProfile?.effectiveSpatialSettings.seating?.roomCorrectionEnabled == false else { throw RoomCorrectionError.routeUnavailable }
             }
             try await validateCommit(current, app: app)
-            app.profiles.update(current); comparing = false
+            publishRoomProfile(current, app: app); comparing = false
             status = "Correction removed. Measurements retained."
         }
     }
+    private struct ComparisonPlayback {
+        let id = UUID()
+        let profileID: UUID
+        let sessionID: UUID
+        let graph: ProcessingGraph
+    }
+    private var comparisonPlayback: ComparisonPlayback?
+    private var comparisonRestoreTask: Task<Void, Never>?
+    private static let comparisonRestoreFailure = "The saved room correction could not be restored. Reactivate this profile to restore its saved processing."
+
+    /// Runtime changes can restore saved correction without another button press.
+    /// Keep the displayed comparison attached to the bypass that actually plays.
+    func clearComparisonForRuntimeChange() {
+        guard let playback = comparisonPlayback else { return }
+        guard let app, app.activeSession?.id == playback.sessionID,
+              app.activeProfileID == playback.profileID,
+              app.runtimeCoordinator.appliedProcessingGraph == playback.graph else {
+            comparisonPlayback = nil; comparing = false
+            return
+        }
+    }
+
+    private func comparisonInputsMatch(_ original: DeviceProfile, _ current: DeviceProfile) throws -> Bool {
+        let before = original.effectiveSpatialSettings.seating
+        let after = current.effectiveSpatialSettings.seating
+        guard original.id == current.id, current.isEnabled,
+              before?.id == after?.id,
+              before?.roomCorrectionEnabled == after?.roomCorrectionEnabled,
+              before?.roomCorrectionResult == after?.roomCorrectionResult else { return false }
+        // Include user channel processing while ignoring persisted volume,
+        // profile names and EQ editor metadata that cannot change the comparison.
+        var a = try original.roomMeasurementContext(), b = try current.roomMeasurementContext()
+        a.processing = try original.resolvedProcessing()
+        b.processing = try current.resolvedProcessing()
+        return a == b
+    }
+
+    private func comparisonConfigurationIsApplied(_ profile: DeviceProfile, app: AppState) async throws -> Bool {
+        // Cleanup still has to determine what reached the audio engine after
+        // navigation cancelled the editor task during an apply.
+        try await Task { @MainActor in
+            try await app.runtimeCoordinator.hasAppliedConfiguration(for: profile)
+        }.value
+    }
+
+    private func restoreComparison(_ playback: ComparisonPlayback, app: AppState) async throws {
+        await app.runtimeCoordinator.waitUntilSettled()
+        clearComparisonForRuntimeChange()
+        guard comparisonPlayback?.id == playback.id,
+              let current = app.profiles.profiles.first(where: { $0.id == playback.profileID }) else { return }
+        await app.apply(profile: current)
+        guard app.activeProfileID == playback.profileID else {
+            clearComparisonForRuntimeChange(); return
+        }
+        guard try await comparisonConfigurationIsApplied(current, app: app) else {
+            clearComparisonForRuntimeChange()
+            throw ProfileSettingsError.runtime(Self.comparisonRestoreFailure)
+        }
+        if comparisonPlayback?.id == playback.id { comparisonPlayback = nil; comparing = false }
+        if error == Self.comparisonRestoreFailure { error = nil }
+    }
+
     func compare(profile: DeviceProfile) {
         run { [self] in
-            guard let app, app.activeProfileID == profile.id, !profile.roomCorrectionIsStale,
-                  let result = profile.effectiveSpatialSettings.seating?.roomCorrectionResult else { throw RoomCorrectionError.routeUnavailable }
-            if comparing { await app.apply(profile: profile); comparing = false; return }
+            guard let app else { throw RoomCorrectionError.routeUnavailable }
+            await app.runtimeCoordinator.waitUntilSettled()
+            try Task.checkCancellation()
+            clearComparisonForRuntimeChange()
+            if let playback = comparisonPlayback {
+                try await restoreComparison(playback, app: app)
+                return
+            }
+            guard app.activeProfileID == profile.id, let runtimeSession = app.activeSession,
+                  let current = app.profiles.profiles.first(where: { $0.id == profile.id }),
+                  current.effectiveSpatialSettings.seating?.id == profile.effectiveSpatialSettings.seating?.id,
+                  current.effectiveSpatialSettings.seating?.roomCorrectionEnabled == true,
+                  !current.roomCorrectionIsStale,
+                  let result = current.effectiveSpatialSettings.seating?.roomCorrectionResult else { throw RoomCorrectionError.routeUnavailable }
+            let profile = current
             var bypass = profile
             bypass.spatialSettings.seating?.roomCorrectionEnabled = false
             bypass.synchronizeListeningPositionCorrection()
@@ -933,13 +1089,29 @@ final class RoomCorrectionEditorState: ObservableObject {
             }
             // The bypass may only attenuate. Positive compensation could defeat headroom.
             let gain = min(0, plans.0 - plans.1 + level)
+            guard app.activeSession?.id == runtimeSession.id else { throw RoomCorrectionError.routeUnavailable }
+            guard let latest = app.profiles.profiles.first(where: { $0.id == profile.id }),
+                  try comparisonInputsMatch(profile, latest) else { throw RoomCorrectionError.stale }
+            bypass = latest
+            bypass.spatialSettings.seating?.roomCorrectionEnabled = false
+            bypass.synchronizeListeningPositionCorrection()
             bypass.processing.global.stages.insert(.init(id: UUID(uuidString: "CA117B72-0000-4000-0003-000000000000")!, processor: .gain(.init(gainDB: gain))), at: 0)
-            guard app.profiles.profiles.first(where: { $0.id == profile.id }) == profile else { throw RoomCorrectionError.stale }
             try Task.checkCancellation()
             await app.apply(profile: bypass)
-            guard app.runtimeCoordinator.appliedProfile?.effectiveSpatialSettings.seating?.roomCorrectionEnabled == false else { throw RoomCorrectionError.routeUnavailable }
-            try await validateCommit(bypass, app: app)
+            guard try await comparisonConfigurationIsApplied(bypass, app: app),
+                  let appliedSession = app.activeSession, appliedSession.profileID == profile.id,
+                  let graph = app.runtimeCoordinator.appliedProcessingGraph else { throw RoomCorrectionError.routeUnavailable }
+            let playback = ComparisonPlayback(profileID: profile.id, sessionID: appliedSession.id, graph: graph)
+            comparisonPlayback = playback
             comparing = true
+            do {
+                try Task.checkCancellation()
+                guard let latest = app.profiles.profiles.first(where: { $0.id == profile.id }),
+                      try comparisonInputsMatch(profile, latest) else { throw RoomCorrectionError.stale }
+            } catch {
+                try await restoreComparison(playback, app: app)
+                throw error
+            }
         }
     }
 
@@ -955,8 +1127,16 @@ final class RoomCorrectionEditorState: ObservableObject {
         endCompare()
     }
     func endCompare() {
-        if comparing, let app, let current = app.profiles.profiles.first(where: { $0.id == profileID }) {
-            comparing = false; Task { await app.apply(profile: current) }
+        clearComparisonForRuntimeChange()
+        guard let playback = comparisonPlayback, let app, comparisonRestoreTask == nil else { return }
+        if error == Self.comparisonRestoreFailure { error = nil }
+        comparisonRestoreTask = Task { [self] in
+            defer { comparisonRestoreTask = nil }
+            do { try await restoreComparison(playback, app: app) }
+            catch {
+                self.error = error.localizedDescription
+                if app.errorMessage == nil { app.errorMessage = error.localizedDescription }
+            }
         }
     }
     deinit { task?.cancel() }

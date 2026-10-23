@@ -22,8 +22,7 @@ final class DiagnosticsController: ObservableObject {
         // Keep the other area’s latest results when one suite is rerun.
         let ids = Set(safeCases.map(\.id))
         currentRunIDs = ids
-        results.removeAll { ids.contains($0.id) }
-        results += safeCases.map(\.pendingResult)
+        results = results.filter { !ids.contains($0.id) } + safeCases.map(\.pendingResult)
         isRunning = true
         runMessage = "Running checks…"
         task = Task { [weak self] in
@@ -31,31 +30,39 @@ final class DiagnosticsController: ObservableObject {
             for test in safeCases {
                 guard !Task.isCancelled else { break }
                 guard let index = results.firstIndex(where: { $0.id == test.id }) else { continue }
-                results[index].status = .running
-                results[index].startedAt = Date()
+                var result = results[index]
+                result.status = .running
+                result.startedAt = Date()
+                results[index] = result
                 let start = ContinuousClock.now
                 await Task.yield()
                 do {
                     try Task.checkCancellation()
                     let observation = try await test.execute()
                     try Task.checkCancellation()
-                    results[index].status = observation.status
-                    results[index].summary = observation.summary
-                    results[index].evidence = observation.evidence
-                    results[index].details = observation.details
+                    result.status = observation.status
+                    result.summary = observation.summary
+                    result.evidence = observation.evidence
+                    result.details = observation.details
                 } catch is CancellationError {
-                    results[index].status = .skipped
-                    results[index].summary = "Cancelled"
+                    result.status = .skipped
+                    result.summary = "Cancelled"
                 } catch {
-                    results[index].status = Task.isCancelled ? .skipped : .failed
-                    results[index].summary = Task.isCancelled ? "Cancelled" : error.localizedDescription
+                    result.status = Task.isCancelled ? .skipped : .failed
+                    result.summary = Task.isCancelled ? "Cancelled" : error.localizedDescription
                 }
-                results[index].duration = start.duration(to: .now)
+                result.duration = start.duration(to: .now)
+                // Publish a complete row once, rather than invalidating SwiftUI
+                // separately for every field of the same result.
+                results[index] = result
             }
-            for index in results.indices where [.pending, .running].contains(results[index].status) {
-                results[index].status = .skipped
-                results[index].summary = "Cancelled before completion"
+            var finished = results
+            for index in finished.indices where currentRunIDs.contains(finished[index].id)
+                && [.pending, .running].contains(finished[index].status) {
+                finished[index].status = .skipped
+                finished[index].summary = "Cancelled before completion"
             }
+            results = finished
             runMessage = Task.isCancelled ? "Run cancelled" : "Run complete"
             lastCompletedRun = Date()
             isRunning = false

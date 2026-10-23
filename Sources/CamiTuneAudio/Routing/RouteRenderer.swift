@@ -16,6 +16,9 @@ package final class RouteRenderer {
     private var busSafetyGain: Float = 1
     private var lastSourceFormat: SpatialSourceFormat?
     private var renderedModeBuses: Set<PlaybackMode> = []
+    private let directCrossfeed = HeadphoneCrossfeed()
+    private let referenceCrossfeed = HeadphoneCrossfeed()
+    private var lastSingleMode: PlaybackMode?
     private let referenceTopology: SpeakerTopology?
     package let expectedOutputChannelCount: Int
 
@@ -49,7 +52,8 @@ package final class RouteRenderer {
     package func render(_ frame: PCMFrame, mode: PlaybackMode, settings: SpatialRenderSettings,
                         output: SpatialOutputKind, correction: DeviceCorrectionProfile?,
                         physicalOutput: PhysicalOutputID?, analyzeContent: Bool,
-                        resetContent: Bool, resetPCM: Bool, resetSpatial: Bool) -> PCMFrame? {
+                        resetContent: Bool, resetPCM: Bool, resetSpatial: Bool,
+                        crossfeed: CrossfeedProcessor? = nil, bypassCrossfeed: Bool = false) -> PCMFrame? {
         if resetContent || resetPCM || resetSpatial || lastSourceFormat != frame.sourceFormat {
             contentAnalyzer.reset()
         }
@@ -58,6 +62,10 @@ package final class RouteRenderer {
         if resetPCM {
             spatialEngine.reset(); physicalModeRenderer?.reset(); correctionBank = PerAppFilterBank()
             renderedModeBuses.removeAll()
+        }
+        if resetPCM || resetSpatial || bypassCrossfeed || lastSourceFormat != frame.sourceFormat {
+            directCrossfeed.reset(); referenceCrossfeed.reset()
+            lastSingleMode = nil
         }
         if resetSpatial {
             spatialEngine.reset(); physicalModeRenderer?.reset()
@@ -73,7 +81,8 @@ package final class RouteRenderer {
                 else { rendered = frame }
             } else { rendered = nil }
         } else {
-            rendered = renderModeBuses(frame, mode: mode, settings: settings, output: output, correction: correction)
+            rendered = renderModeBuses(frame, mode: mode, settings: settings, output: output,
+                                      correction: correction, crossfeed: crossfeed, bypassCrossfeed: bypassCrossfeed)
         }
         guard let rendered, rendered.channelCount == expectedOutputChannelCount else { return nil }
         if let activeRoute, (try? activeRoute.validateDSPFrame(rendered)) == nil { return nil }
@@ -81,11 +90,20 @@ package final class RouteRenderer {
     }
 
     private func renderModeBuses(_ frame: PCMFrame, mode: PlaybackMode, settings: SpatialRenderSettings,
-                                 output: SpatialOutputKind, correction: DeviceCorrectionProfile?) -> PCMFrame? {
+                                 output: SpatialOutputKind, correction: DeviceCorrectionProfile?,
+                                 crossfeed: CrossfeedProcessor?, bypassCrossfeed: Bool) -> PCMFrame? {
         let modes: [PlaybackMode]
         if frame.playbackModeSamples.isEmpty {
+            if lastSingleMode != mode {
+                directCrossfeed.reset(); referenceCrossfeed.reset()
+            }
+            lastSingleMode = mode
             modes = [mode]
         } else {
+            if lastSingleMode != nil {
+                directCrossfeed.reset(); referenceCrossfeed.reset()
+                lastSingleMode = nil
+            }
             // Continue previously used buses for filter/reverb tails, but do
             // not run unused Reference/Spatial renderers for Direct playback.
             renderedModeBuses.formUnion(frame.playbackModeSamples.keys)
@@ -128,6 +146,13 @@ package final class RouteRenderer {
                         sampleRate: rendered.sampleRate, bands: correction.filters, settingsRevision: 0)
                     for i in rendered.interleaved.indices { rendered.interleaved[i] *= correctionGain }
                 }
+            }
+            // Apply only to personal stereo buses, before summing them with
+            // HRTF output. Each bus owns its history, including during bypass.
+            if !bypassCrossfeed, rendered.channelCount == 2, physicalModeRenderer == nil,
+               activeRoute?.usesPhysicalSpeakerBus != true, busMode != .spatialRender {
+                let processor = busMode == .referencePlayback ? referenceCrossfeed : directCrossfeed
+                processor.process(&rendered.interleaved, sampleRate: rendered.sampleRate, settings: crossfeed)
             }
             if sum == nil { sum = rendered }
             else {

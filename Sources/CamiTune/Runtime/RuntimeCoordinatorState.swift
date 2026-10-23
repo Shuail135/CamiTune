@@ -17,13 +17,14 @@ enum RuntimeStopReason: String, Sendable {
     case transportFailure, profileDisabled, dependencyRepair, applicationTermination
 }
 enum RuntimeIntentSource: Sendable {
-    case manualActivation, automaticRouting, liveEdit, settingsTransaction(RuntimeTransactionID), recovery
+    case manualActivation, automaticRouting, liveEdit, automaticBuffer, settingsTransaction(RuntimeTransactionID), recovery
     case stop(RuntimeStopReason)
     var description: String {
         switch self {
         case .manualActivation: return "Manual activation"
         case .automaticRouting: return "Automatic routing"
         case .liveEdit: return "Live edit"
+        case .automaticBuffer: return "Automatic buffer at silence"
         case .settingsTransaction(let id): return "Settings transaction \(id.rawValue)"
         case .recovery: return "Recovery"
         case .stop(let reason): return "Stop: \(reason.rawValue)"

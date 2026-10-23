@@ -95,6 +95,21 @@ package struct AudioClockDrift {
         if output.observe(value) { warmingSince = value.received }
     }
 
+    /// A prepared engine uses the same hardware clock, but owns a separate
+    /// epoch/sample origin. Seed its measured rate without resetting the source
+    /// clock or the resampler's sample/history state.
+    package mutating func replaceOutput(with observations: [AudioClockObservation], now: PerformanceTick) -> Bool {
+        var replacement = Track()
+        for observation in observations { _ = replacement.observe(observation) }
+        guard replacement.fault == nil, replacement.framesPerHostTick != nil,
+              let latest = replacement.latest, now >= latest.received,
+              now < latest.received.advanced(seconds: 0.25),
+              source.latest.map({ $0.nominalRate == latest.nominalRate }) ?? true else { return false }
+        output = replacement
+        warmingSince = now
+        return true
+    }
+
     package func state(at now: PerformanceTick) -> AudioClockDriftState {
         if let fault = source.fault ?? output.fault { return .unavailable(fault) }
         let warming = warmingSince.map { now >= $0 && now < $0.advanced(seconds: Self.warmUpSeconds) } ?? true

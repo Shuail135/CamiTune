@@ -14,7 +14,10 @@ extension AppState {
 
     func loadAutoEQCorrectionDraft(_ correction: DeviceCorrectionProfile, for profile: DeviceProfile) throws {
         if let source = correction.speakerProvenance {
-            try SpeakerCorrectionValidator().validate(correction.filters, settings: source.settings, sampleRate: Double(profile.sampleRate), allowDisabledBands: true)
+            guard source.sampleRate == Double(profile.sampleRate) else {
+                throw SpeakerCorrectionError.invalid("Recalculate Auto EQ for the current sample rate.")
+            }
+            try SpeakerCorrectionValidator().validateManualFilters(correction.filters, sampleRate: Double(profile.sampleRate))
         }
         var before = try globalEQHistoryState(for: profile)
         var after = before

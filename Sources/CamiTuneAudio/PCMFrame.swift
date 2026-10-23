@@ -2,6 +2,8 @@ import CamiTuneDomain
 import Foundation
 
 package struct PCMFrame: Sendable {
+    /// Observation only: oldest source receipt contributing to this mixed block.
+    package var sourceReceivedAt: PerformanceTick?
     package var performanceTrace: AudioIntervalTraceContext?
     package var writerTrace: PCMWriterTraceContext?
     package var interleaved: [Float]

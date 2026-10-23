@@ -8,9 +8,23 @@ struct LineGraph: View {
     var zeroLine: Bool = false
     var lineColor: Color = .primary
     var fillsArea: Bool = false
+    var usesSpectrumLayout = false
     @ScaledMetric(relativeTo: .caption2) private var axisScale: CGFloat = 1
 
     var body: some View {
+        if usesSpectrumLayout {
+            SpectrumGraphLayout(range: yRange, scale: axisScale) { plot }
+        } else {
+            HStack(spacing: 6 * axisScale) {
+                GraphDecibelAxis(range: yRange, scale: axisScale)
+                    .offset(x: 16 * axisScale)
+                plot
+                    .padding(.vertical, 16 * axisScale)
+            }
+        }
+    }
+
+    private var plot: some View {
         Canvas(rendersAsynchronously: true) { context, size in
             let rect = CGRect(origin: .zero, size: size)
             drawGrid(context: &context, rect: rect)
@@ -39,19 +53,6 @@ struct LineGraph: View {
                 .frame(height: 16 * axisScale)
                 .offset(y: 16 * axisScale)
         }
-        .overlay(alignment: .leading) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(dbLabel(yRange.upperBound))
-                Spacer()
-                Text(dbLabel((yRange.lowerBound + yRange.upperBound) / 2))
-                Spacer()
-                Text(dbLabel(yRange.lowerBound))
-            }
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(.secondary)
-            .padding(.leading, 4)
-        }
-        .padding(.bottom, 16 * axisScale)
     }
 
     private func x(_ value: Double, width: Double) -> Double {
@@ -89,14 +90,12 @@ struct LineGraph: View {
         if zeroLine, yRange.contains(0) {
             var p = Path()
             let yy = y(0, height: rect.height)
-            p.move(to: CGPoint(x: 0, y: yy)); p.addLine(to: CGPoint(x: rect.width, y: yy))
+            p.move(to: CGPoint(x: x(xRange.lowerBound, width: rect.width), y: yy))
+            p.addLine(to: CGPoint(x: x(xRange.upperBound, width: rect.width), y: yy))
             context.stroke(p, with: .color(Color.primary.opacity(0.25)), lineWidth: 1)
         }
     }
 
-    private func dbLabel(_ value: Double) -> String {
-        "\(Int(value.rounded())) dB"
-    }
 }
 
 struct OverlayLineGraph: View {
@@ -122,6 +121,12 @@ struct SpectrumWithResponseGraph: View {
     @ScaledMetric(relativeTo: .caption2) private var axisScale: CGFloat = 1
 
     var body: some View {
+        SpectrumGraphLayout(range: spectrumRange, responseRange: responseRange, scale: axisScale) {
+            plot
+        }
+    }
+
+    private var plot: some View {
         Canvas(rendersAsynchronously: true) { context, size in
             drawGrid(context: &context, size: size)
             drawLine(
@@ -148,28 +153,6 @@ struct SpectrumWithResponseGraph: View {
                 .frame(height: 16 * axisScale)
                 .offset(y: 16 * axisScale)
         }
-        .overlay(alignment: .leading) {
-            axisLabels(range: spectrumRange)
-                .padding(.leading, 4)
-        }
-        .overlay(alignment: .trailing) {
-            axisLabels(range: responseRange, signed: true)
-                .foregroundStyle(CorrectionGraphPresentation.equalizerColor)
-                .padding(.trailing, 4)
-        }
-        .padding(.bottom, 16 * axisScale)
-    }
-
-    private func axisLabels(range: ClosedRange<Double>, signed: Bool = false) -> some View {
-        VStack(spacing: 0) {
-            Text(dbLabel(range.upperBound, signed: signed))
-            Spacer()
-            Text(dbLabel((range.lowerBound + range.upperBound) / 2, signed: signed))
-            Spacer()
-            Text(dbLabel(range.lowerBound, signed: signed))
-        }
-        .font(.caption2.monospacedDigit())
-        .foregroundStyle(.secondary)
     }
 
     private func drawGrid(context: inout GraphicsContext, size: CGSize) {
@@ -183,8 +166,8 @@ struct SpectrumWithResponseGraph: View {
         if responseRange.contains(0) {
             var zero = Path()
             let yy = y(0, range: responseRange, height: size.height)
-            zero.move(to: CGPoint(x: 0, y: yy))
-            zero.addLine(to: CGPoint(x: size.width, y: yy))
+            zero.move(to: CGPoint(x: x(xRange.lowerBound, width: size.width), y: yy))
+            zero.addLine(to: CGPoint(x: x(xRange.upperBound, width: size.width), y: yy))
             context.stroke(zero, with: .color(CorrectionGraphPresentation.equalizerColor.opacity(0.3)), lineWidth: 1)
         }
     }
@@ -239,9 +222,62 @@ struct SpectrumWithResponseGraph: View {
         return height - (clamped - range.lowerBound) / (range.upperBound - range.lowerBound) * height
     }
 
-    private func dbLabel(_ value: Double, signed: Bool) -> String {
-        let rounded = Int(value.rounded())
-        return signed && rounded > 0 ? "+\(rounded) dB" : "\(rounded) dB"
+}
+
+/// Both spectrum panels use identical plot bounds. The response scale fits in
+/// the existing right margin instead of narrowing the post-EQ graph.
+private struct SpectrumGraphLayout<Plot: View>: View {
+    let range: ClosedRange<Double>
+    var responseRange: ClosedRange<Double>? = nil
+    let scale: CGFloat
+    @ViewBuilder var plot: () -> Plot
+
+    var body: some View {
+        HStack(spacing: 6 * scale) {
+            GraphDecibelAxis(range: range, scale: scale)
+            plot()
+                // Use part of the plot's 24 pt inset for the label column.
+                .padding(.leading, -16 * scale)
+                .padding(.vertical, 16 * scale)
+        }
+        .overlay(alignment: .trailing) {
+            if let responseRange {
+                GraphDecibelAxis(range: responseRange, scale: scale, signed: true, alignment: .leading,
+                    color: CorrectionGraphPresentation.equalizerColor)
+            }
+        }
+    }
+}
+
+/// Give level labels their own column so even wide values stay outside the grid.
+private struct GraphDecibelAxis: View {
+    let range: ClosedRange<Double>
+    let scale: CGFloat
+    var signed = false
+    var alignment: HorizontalAlignment = .trailing
+    var color: Color = .secondary
+
+    var body: some View {
+        VStack(alignment: alignment, spacing: 0) {
+            Text("dB")
+                .frame(height: 16 * scale, alignment: .top)
+            VStack(alignment: alignment, spacing: 0) {
+                Text(label(range.upperBound))
+                Spacer(minLength: 0)
+                Text(label((range.lowerBound + range.upperBound) / 2))
+                Spacer(minLength: 0)
+                Text(label(range.lowerBound))
+            }
+            .padding(.bottom, 16 * scale)
+        }
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(color)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func label(_ value: Double) -> String {
+        let number = value.formatted(.number.precision(.fractionLength(0...2)))
+        return signed && value > 0 ? "+\(number)" : number
     }
 }
 
@@ -267,7 +303,7 @@ private enum SpectrumFrequencyTicks {
         var result = 10 * scale
         for (left, right) in zip(frequencies, frequencies.dropFirst()) {
             let distance = x(right, in: range, width: width, scale: scale) - x(left, in: range, width: width, scale: scale)
-            let characters = label(left).count + label(right).count + (right == frequencies.last ? 3 : 0)
+            let characters = label(left).count + label(right).count
             // Conservative character widths leave a gap between adjacent labels
             // while keeping all eight labels on the same baseline at any width.
             result = min(result, max(1, distance - 3 * scale) / (CGFloat(characters) * 0.65 / 2))
@@ -288,8 +324,16 @@ private struct SpectrumFrequencyAxis: View {
             let frequencies = SpectrumFrequencyTicks.values(in: xRange)
             let fontSize = SpectrumFrequencyTicks.fontSize(in: xRange, width: geometry.size.width, scale: scale)
             ForEach(frequencies, id: \.self) { frequency in
-                let label = SpectrumFrequencyTicks.label(frequency) + (frequency == frequencies.last ? " Hz" : "")
-                Text(label)
+                Text(SpectrumFrequencyTicks.label(frequency))
+                    .overlay {
+                        GeometryReader { label in
+                            if frequency == frequencies.last {
+                                Text("Hz")
+                                    .fixedSize()
+                                    .offset(x: label.size.width + 3 * scale)
+                            }
+                        }
+                    }
                     .font(.system(size: fontSize).monospacedDigit())
                     .fixedSize()
                     .position(x: SpectrumFrequencyTicks.x(frequency, in: xRange, width: geometry.size.width, scale: scale), y: 8 * scale)

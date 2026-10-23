@@ -84,6 +84,7 @@ struct PerAppAudioPacket: Sendable {
 /// PerAppSettingsStore owns settings; PerAppDSPRuntime owns stream DSP history;
 /// PerAppTimelineMixer owns timeline policy and pending PCM storage.
 final class PerAppAudioController: ObservableObject, @unchecked Sendable {
+    let pluginSidechains = PluginSidechainHub()
     @Published private(set) var applications: [PerAppAudioApplication] = []
     private var playbackContext: PerAppPlaybackContext?
 
@@ -660,6 +661,11 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             playbackMode: playbackMode)
         let preparation = timelineMixer.preparePacket(descriptor)
         guard preparation.isValid else { audioLock.unlock(); return nil }
+        processed.withUnsafeBufferPointer {
+            pluginSidechains.offer(kind: .application, id: applicationID, samples: $0,
+                channels: packet.channelCount, rate: packet.sampleRate, sampleTime: packet.sampleTime,
+                stream: (UInt64(packet.deviceObjectID) << 32) | UInt64(packet.clientID))
+        }
         if preparation.requiresClientDSPReset {
             dspRuntime.reset(deviceObjectID: packet.deviceObjectID)
         }
@@ -777,7 +783,9 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             _ = ingest(packet, performance: performance)
         }
         audioLock.lock(); defer { audioLock.unlock() }
-        return try timelineMixer.finishCompletedInterval(interval)
+        var frame = try timelineMixer.finishCompletedInterval(interval)
+        frame.sourceReceivedAt = interval.contributions.lazy.map(\.received).min()
+        return frame
     }
 
     /// Developer harness calls this after deactivation; no PCM callback can own the trace.

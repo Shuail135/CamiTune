@@ -17,7 +17,7 @@ struct EQBandColumn: View {
     @FocusState private var frequencyFieldFocused: Bool
     private var fieldWidth: CGFloat { 68 * metrics.scale }
     private static let frequencyFormat = FloatingPointFormatStyle<Double>.number
-        .precision(.fractionLength(0...1))
+        .precision(.fractionLength(0))
 
     init(
         band: Binding<EQBand>,
@@ -83,7 +83,7 @@ struct EQBandColumn: View {
                     .foregroundStyle(.secondary)
                 TextField("Gain", value: Binding(
                     get: { band.gain ?? 0 },
-                    set: { band.gain = min(12, max(-12, $0)) }
+                    set: { if $0.isFinite { band.gain = min(12, $0) } }
                 ), format: .number.precision(.fractionLength(1)))
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.trailing)
@@ -98,7 +98,7 @@ struct EQBandColumn: View {
                     .foregroundStyle(.secondary)
                 TextField("Q", value: Binding(
                     get: { band.q ?? 0.707 },
-                    set: { band.q = max(0.05, $0) }
+                    set: { if $0.isFinite && $0 > 0 { band.q = $0; band.bandwidth = nil } }
                 ), format: .number.precision(.fractionLength(2)))
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.trailing)
@@ -148,6 +148,8 @@ struct EQBandColumn: View {
 
     @MainActor
     private func commitDraftFrequency() {
+        // Focusing an unchanged rounded display must preserve the stored precision.
+        guard frequencyDraft != band.frequency.formatted(Self.frequencyFormat) else { return }
         guard let frequency = try? Self.frequencyFormat.parseStrategy.parse(frequencyDraft),
               frequency.isFinite, frequency > 0 else {
             frequencyDraft = band.frequency.formatted(Self.frequencyFormat)

@@ -80,7 +80,7 @@ extension AppState: HistoryRestoring {
 
     private func persistHistoryChanges(for snapshot: HistoryState) async throws {
         switch snapshot {
-        case .deviceCorrection, .globalEQ, .channel, .crossfeed, .convolution, .convolutionBatch, .roomCorrectionImport, .profileName, .profileOrganization, .deletion, .referenceTransfer:
+        case .deviceCorrection, .globalEQ, .channel, .crossfeed, .convolution, .convolutionBatch, .roomCorrectionImport, .profileName, .profileOrganization, .deletion, .referenceTransfer, .pluginRack, .pluginOrder, .pluginMIDI, .audioBuffer:
             try await profiles.persistHistoryChanges()
         case .perAppAudio, .perAppBatch: try perAppAudio.persistHistoryChanges()
         case .appAlias, .appPlacement: try perAppAudio.presentationStore.persistHistoryChanges()
@@ -90,6 +90,10 @@ extension AppState: HistoryRestoring {
 
     private func currentHistoryState(matching snapshot: HistoryState, target: HistoryTarget) throws -> HistoryState {
         switch (snapshot, target) {
+        case (.pluginOrder, .profile(let id)): return .pluginOrder(try historyProfile(id).pluginRack.slots.map(\.id))
+        case (.pluginRack, .profile(let id)): return .pluginRack(try historyProfile(id).pluginRack)
+        case (.pluginMIDI, .profile(let id)): return .pluginMIDI(try historyProfile(id).pluginRack.midi)
+        case (.audioBuffer, .profile(let id)): return .audioBuffer(try historyProfile(id).audioBufferOverride)
         case (.roomCorrectionImport, .profile(let id)):
             return .roomCorrectionImport(try roomCorrectionImportSnapshot(profile: applyingSessionEQDrafts(to: historyProfile(id))))
         case (.multichannel, .profile(let id)):
@@ -154,6 +158,29 @@ extension AppState: HistoryRestoring {
     private func restoreHistoryValue(_ snapshot: HistoryState, target: HistoryTarget) async throws {
         var applyID: UUID?
         switch (snapshot, target) {
+        case let (.pluginOrder(order), .profile(id)):
+            try storePluginOrder(order, profileID: id)
+            pluginReorderApplies.schedule(id)
+        case let (.pluginMIDI(midi), .profile(id)):
+            try midi.validate()
+            var profile = try historyProfile(id)
+            profile.pluginRack.midi = midi
+            profiles.update(profile)
+            pluginRackManager.updateMIDI(profileID: id, rack: profile.pluginRack)
+            applyID = id
+        case let (.pluginRack(rack), .profile(id)):
+            try rack.validate()
+            var profile = try historyProfile(id)
+            profile.pluginRack = rack
+            profiles.update(profile)
+            pluginRackManager.updateMIDI(profileID: id, rack: rack)
+            applyID = id
+        case let (.audioBuffer(frames), .profile(id)):
+            if let frames, frames.fixedFrames.map({ $0 <= 0 }) == true { throw HistoryRestoreError.invalidStateForTarget }
+            var profile = try historyProfile(id)
+            profile.audioBufferOverride = frames
+            profiles.update(profile)
+            applyID = id
         case let (.roomCorrectionImport(value), .profile(id)):
             try storeRoomCorrectionImport(value, profileID: id)
             applyID = id

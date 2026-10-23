@@ -56,6 +56,57 @@ extension DeveloperSelfTests {
                 let saved = await next.loadWithoutBlockingUI()
                 try diagnosticRequire(saved?.value == 7 && next.errorMessage == nil, "Async round trip lost the saved draft")
                 return .init(summary: "Restoration runs off-main and retains unreadable originals before saving")
+            },
+            DiagnosticCase(id: "UID01", suite: "UI interactions", name: "Diagnostics distinguish incomplete checks from success", safety: .simulated) {
+                let testIDs = DeveloperSelfTests.cases().map(\.id)
+                try diagnosticRequire(Set(testIDs).count == testIDs.count, "Duplicate test IDs can overwrite or mix diagnostic results")
+                func result(_ status: DiagnosticStatus) -> DiagnosticResult {
+                    .init(id: status.rawValue, suite: "Fixture", name: "Fixture", safety: .readOnly, status: status, summary: "Fixture")
+                }
+                for status in [DiagnosticStatus.pending, .running, .skipped, .warning, .failed] {
+                    let summary = DiagnosticResultsSummary(results: [result(.passed), result(status)])
+                    try diagnosticRequire(summary.title != "All system checks passed", "An incomplete or unhealthy check was shown as success")
+                }
+                let mixed = DiagnosticResultsSummary(results: [.passed, .warning, .failed, .skipped, .pending, .running].map(result))
+                try diagnosticRequire(mixed.needsAttention == 2 && mixed.remaining == 2 && mixed.skipped == 1 && mixed.passed == 1,
+                    "Mixed diagnostic results were counted incorrectly")
+                try diagnosticRequire(DiagnosticResultsSummary(results: []).title == "Ready to check"
+                    && DiagnosticResultsSummary(results: [result(.passed)]).title == "All system checks passed", "Empty and successful runs were confused")
+                return .init(summary: "Skipped, cancelled, running, and failed checks never produce an all-clear")
+            },
+            DiagnosticCase(id: "UID02", suite: "UI interactions", name: "Diagnostic cancellation preserves results and publishes complete rows", safety: .simulated) {
+                let controller = DiagnosticsController()
+                let success = DiagnosticCase(id: "fixture-system", suite: "Fixture", name: "System", safety: .readOnly) {
+                    .init(summary: "Complete", evidence: [.init(name: "Evidence", value: "Present")])
+                }
+                var publications = 0
+                let subscription = controller.$results.dropFirst().sink { _ in publications += 1 }
+                controller.run([success])
+                await controller.waitForCompletion()
+                try diagnosticRequire(publications <= 4, "A result published separately for each field")
+                try diagnosticRequire(controller.results.first?.evidence.first?.value == "Present", "The completed row lost its evidence")
+                let gate = DiagnosticManualGate()
+                let slow = DiagnosticCase(id: "fixture-slow", suite: "Fixture", name: "Slow", safety: .simulated) {
+                    try await gate.enter()
+                    return .init(summary: "Done")
+                }
+                let pending = DiagnosticCase(id: "fixture-pending", suite: "Fixture", name: "Pending", safety: .simulated) { .init(summary: "Done") }
+                controller.run([slow, pending])
+                try await gate.waitUntilEntered()
+                controller.cancel()
+                await controller.waitForCompletion()
+                try diagnosticRequire(!controller.isRunning && controller.completedCount == 2 && controller.totalCount == 2,
+                    "Cancelled diagnostics did not finish their progress")
+                try diagnosticRequire(controller.results.first { $0.id == success.id }?.status == .passed
+                    && controller.results.filter { $0.status == .skipped }.count == 2,
+                    "Cancellation lost the system result or left checks running")
+                try diagnosticRequire(controller.report().contains("Run cancelled"), "The report concealed cancellation")
+                controller.run([success]); await controller.waitForCompletion()
+                try diagnosticRequire(controller.results.filter { $0.id == success.id }.count == 1, "Rerunning duplicated a result")
+                controller.clear()
+                try diagnosticRequire(controller.results.isEmpty && controller.lastCompletedRun == nil, "Clear left stale results")
+                withExtendedLifetime(subscription) {}
+                return .init(summary: "Cancellation, reruns, reports, and batched row publication remain consistent")
             }
         ]
     }
@@ -73,6 +124,40 @@ private struct UIWorkFixture: PersistedAutoEQWork {
 enum UIInteractionSelfTests {
     static func run(artifacts: URL) async throws {
         try FileManager.default.createDirectory(at: artifacts, withIntermediateDirectories: true)
+        if ProcessInfo.processInfo.environment["CAMITUNE_UI_SPECTRUM_ONLY"] == "1" {
+            try await spectrumPresentation(artifacts: artifacts)
+            return
+        }
+        if ProcessInfo.processInfo.environment["CAMITUNE_UI_SLIDER_PRECISION_ONLY"] == "1" {
+            try await steppedSliderPrecision()
+            return
+        }
+        if ProcessInfo.processInfo.environment["CAMITUNE_UI_GAIN_LAYOUT_ONLY"] == "1" {
+            try await responsiveLayouts(artifacts: artifacts)
+            return
+        }
+        if ProcessInfo.processInfo.environment["CAMITUNE_UI_SLIDERS_ONLY"] == "1" {
+            try await steppedSliderPrecision()
+            try await spectrumPresentation(artifacts: artifacts)
+            try await crossfeedInteractions(artifacts: artifacts)
+            return
+        }
+        if ProcessInfo.processInfo.environment["CAMITUNE_UI_DIAGNOSTICS_ONLY"] == "1" {
+            for test in DeveloperSelfTests.uiStateCases().filter({ $0.id.hasPrefix("UID") }) {
+                let result = try await test.execute()
+                print("\(test.id): \(result.summary)")
+            }
+            try await diagnosticsInteractions(artifacts: artifacts)
+            return
+        }
+        if ProcessInfo.processInfo.environment["CAMITUNE_UI_PLUGINS_ONLY"] == "1" {
+            try await pluginInteractions(artifacts: artifacts)
+            return
+        }
+        if ProcessInfo.processInfo.environment["CAMITUNE_UI_CROSSFEED_ONLY"] == "1" {
+            try await crossfeedInteractions(artifacts: artifacts)
+            return
+        }
         if ProcessInfo.processInfo.environment["CAMITUNE_UI_ROUTING_ONLY"] == "1" {
             try await routingToggleInteractions()
             return
@@ -115,6 +200,7 @@ enum UIInteractionSelfTests {
             print("\(test.id): \(result.summary)")
         }
         try await overflowAndResize(artifacts: artifacts)
+        try await pluginInteractions(artifacts: artifacts)
         try await channelSwitching(artifacts: artifacts)
         try await routingToggleInteractions()
         try await disclosureLayout()
@@ -123,8 +209,230 @@ enum UIInteractionSelfTests {
         try await nativeDisclosureAlignment()
         try await steppedSliderPrecision()
         try await scrollingCadence()
+        try await diagnosticsInteractions(artifacts: artifacts)
         try await correctionInteractions(artifacts: artifacts)
+        try await crossfeedInteractions(artifacts: artifacts)
         try await spectrumPresentation(artifacts: artifacts)
+    }
+
+    private static func crossfeedInteractions(artifacts: URL) async throws {
+        let box = try DiagnosticSandbox(); defer { box.cleanUp() }
+        var profile = DiagnosticSandbox.profile()
+        profile.endpointKind = .headphones
+        profile.processing.setCrossfeed(.standard)
+        box.profiles.profiles = [profile]
+        let state = AppState(profiles: box.profiles, perAppAudio: box.perApp, runtimeServices: DiagnosticRuntimeFakes().services())
+        let binding = Binding(get: { box.profiles.profiles[0] }, set: { box.profiles.update($0) })
+        let fixture = WindowFixture(CrossfeedEditorView(state: state, profile: binding).padding(20),
+            size: .init(width: 560, height: 500))
+        defer { fixture.close() }
+        fixture.host.autoresizingMask = []
+        fixture.host.setFrameSize(.init(width: 560, height: 500))
+        await fixture.settle()
+        try diagnosticRequire(fixture.views.compactMap { $0 as? NSSlider }.count == 3
+            && fixture.textFields.filter { $0.placeholderString == "Delay" }.first?.isEnabled == true
+            && !fixture.views.contains { $0.identifier?.rawValue == "crossfeed-model" },
+            "Crossfeed must keep Delay editable without a Model row")
+        func selectSegment(_ identifier: String, fraction: CGFloat) async throws {
+            await fixture.settle()
+            guard let control = fixture.views.first(where: { $0.identifier?.rawValue == identifier }) else {
+                throw DiagnosticFailure(message: "Missing Crossfeed selector \(identifier)")
+            }
+            fixture.click(in: control, at: .init(x: control.bounds.width * fraction, y: control.bounds.midY))
+            await fixture.settle()
+        }
+        try await selectSegment("crossfeed-preset", fraction: 0.125)
+        try diagnosticRequire(box.profiles.profiles[0].processing.crossfeed?.processor.preset == .gentle,
+            "Selecting Gentle did not save the preset")
+        try fixture.snapshot(to: artifacts.appendingPathComponent("crossfeed-presets.png"))
+        guard let slider = fixture.views.compactMap({ $0 as? SteppedValueSlider.Control }).first else {
+            throw DiagnosticFailure(message: "Crossfeed amount slider is unavailable")
+        }
+        let undoCount = state.history.undoStack.count
+        slider.editingChanged(true)
+        for amount in [35.0, 40, 45] {
+            slider.doubleValue = amount
+            slider.sendAction(slider.action, to: slider.target)
+        }
+        slider.editingChanged(false)
+        await fixture.settle()
+        try diagnosticRequire(box.profiles.profiles[0].processing.crossfeed?.processor.amountPercent == 45
+            && state.history.undoStack.count == undoCount + 1, "A crossfeed drag did not save as one undo step")
+        await state.history.undo(); await fixture.settle()
+        try diagnosticRequire(box.profiles.profiles[0].processing.crossfeed?.processor.preset == .gentle,
+            "Undo did not restore the crossfeed preset")
+        func field(_ title: String) throws -> NSTextField {
+            guard let field = fixture.textFields.first(where: { $0.isEditable && $0.placeholderString == title }) else {
+                throw DiagnosticFailure(message: "Crossfeed \(title) value field is unavailable")
+            }
+            return field
+        }
+        let beforeTyping = state.history.undoStack.count
+        try await fixture.edit(field("Amount"), text: 42.375.formatted(.number.grouping(.never)))
+        try diagnosticRequire(box.profiles.profiles[0].processing.crossfeed?.processor.preset == .gentle,
+            "Uncommitted typing changed crossfeed")
+        fixture.window.makeFirstResponder(nil)
+        await fixture.settle()
+        try diagnosticRequire(box.profiles.profiles[0].processing.crossfeed?.processor.amountPercent == 42.375
+            && state.history.undoStack.count == beforeTyping + 1, "An exact amount edit did not save as one undo step")
+        await state.history.undo(); await fixture.settle()
+        try diagnosticRequire(box.profiles.profiles[0].processing.crossfeed?.processor.preset == .gentle,
+            "Undo did not restore the preset after typing")
+        try await fixture.edit(field("Amount"), text: "invalid")
+        fixture.window.makeFirstResponder(nil)
+        await fixture.settle()
+        try diagnosticRequire(box.profiles.profiles[0].processing.crossfeed?.processor.preset == .gentle,
+            "Invalid numeric text changed crossfeed")
+        try await fixture.edit(field("Frequency"), text: 712.5.formatted(.number.grouping(.never)))
+        fixture.window.makeFirstResponder(nil)
+        await fixture.settle()
+        try diagnosticRequire(box.profiles.profiles[0].processing.crossfeed?.processor.cutoffFrequency == 712.5,
+            "An exact frequency edit was rounded to the slider step")
+        try fixture.snapshot(to: artifacts.appendingPathComponent("crossfeed-natural.png"))
+        let delayField = try field("Delay")
+        try diagnosticRequire(box.profiles.profiles[0].processing.crossfeed?.processor.model == .natural
+            && delayField.isEnabled,
+            "Natural processing must keep Delay available for editing")
+        try await fixture.edit(field("Delay"), text: 0.325.formatted(.number.grouping(.never)))
+        fixture.window.makeFirstResponder(nil)
+        await fixture.settle()
+        try diagnosticRequire(box.profiles.profiles[0].processing.crossfeed?.processor.delayMilliseconds == 0.325
+            && box.profiles.profiles[0].processing.crossfeed?.processor.model == .classic
+            && box.profiles.profiles[0].processing.crossfeed?.processor.preset == nil,
+            "Editing Delay must retain its precision and activate delay-capable Custom processing")
+        let beforeCustom = box.profiles.profiles[0].processing.crossfeed?.processor
+        try await selectSegment("crossfeed-preset", fraction: 0.875)
+        try diagnosticRequire(box.profiles.profiles[0].processing.crossfeed?.processor == beforeCustom,
+            "Selecting Custom must not change the current audio settings")
+        let customSettings = box.profiles.profiles[0].processing.crossfeed?.processor
+        guard let toggle = fixture.views.compactMap({ $0 as? NSSwitch }).first else {
+            throw DiagnosticFailure(message: "Crossfeed switch is unavailable")
+        }
+        for enabled in [false, true] {
+            toggle.state = enabled ? .on : .off
+            toggle.sendAction(toggle.action, to: toggle.target)
+            await fixture.settle()
+            try diagnosticRequire(box.profiles.profiles[0].processing.crossfeed?.isEnabled == enabled
+                && box.profiles.profiles[0].processing.crossfeed?.processor == customSettings,
+                "Crossfeed bypass did not save or lost custom settings")
+        }
+        try await fixture.edit(field("Frequency"), text: "800")
+        try await selectSegment("crossfeed-preset", fraction: 0.375)
+        var expectedStandard = CrossfeedProcessor.standard
+        expectedStandard.delayMilliseconds = 0.325
+        try fixture.snapshot(to: artifacts.appendingPathComponent("crossfeed-after-preset.png"))
+        try diagnosticRequire(box.profiles.profiles[0].processing.crossfeed?.processor == expectedStandard,
+            "Choosing a preset must finish the focused edit and preserve the saved Delay value: \(String(describing: box.profiles.profiles[0].processing.crossfeed?.processor))")
+        await state.history.undo(); await fixture.settle()
+        try diagnosticRequire(box.profiles.profiles[0].processing.crossfeed?.processor.cutoffFrequency == 800
+            && box.profiles.profiles[0].processing.crossfeed?.processor.model == .classic,
+            "Choosing a preset did not preserve the finished custom edit for undo")
+        try diagnosticRequire(state.errorMessage == nil, "Crossfeed editing left an error")
+        for (index, preset) in CrossfeedPreset.allCases.enumerated() {
+            try await selectSegment("crossfeed-preset", fraction: (CGFloat(index) + 0.5) / 4)
+            let saved = box.profiles.profiles[0].processing.crossfeed?.processor
+            try diagnosticRequire(saved?.preset == preset && saved?.model == .natural && saved?.delayMilliseconds == 0.325,
+                "\(preset.title) changed the saved Delay or failed to select Natural processing")
+        }
+        fixture.window.makeFirstResponder(nil)
+        fixture.resize(width: 380, height: 560)
+        fixture.host.setFrameSize(.init(width: 380, height: 560))
+        await fixture.settle()
+        for slider in fixture.views.compactMap({ $0 as? NSSlider }) {
+            let frame = slider.convert(slider.bounds, to: fixture.host)
+            try diagnosticRequire(frame.minX >= 0 && frame.maxX <= fixture.host.bounds.width && frame.width > 40,
+                "Crossfeed controls do not fit a narrow editor")
+        }
+        let narrowSettings = box.profiles.profiles[0].processing.crossfeed?.processor
+        try await selectSegment("crossfeed-preset", fraction: 0.875)
+        try diagnosticRequire(box.profiles.profiles[0].processing.crossfeed?.processor == narrowSettings,
+            "The permanent Custom segment changed values in a narrow editor")
+        try fixture.snapshot(to: artifacts.appendingPathComponent("crossfeed-fixed-presets.png"))
+        print("Crossfeed: fixed preset segments, automatic delay processing, precise edits, delay preservation, undo, bypass, and narrow layout passed")
+    }
+
+    private static func diagnosticsInteractions(artifacts: URL) async throws {
+        let box = try DiagnosticSandbox(); defer { box.cleanUp() }
+        let runtime = DiagnosticRuntimeFakes(output: AudioDeviceInfo(id: "fixture", objectID: 100, name: "Simulated output"))
+        let state = AppState(profiles: box.profiles, perAppAudio: box.perApp, runtimeServices: runtime.services())
+        let commands = MainWindowCommandCoordinator()
+        commands.settingsCategory = "Diagnostics"
+        let fixture = WindowFixture(SettingsView(state: state).environmentObject(commands).preferredColorScheme(.light), size: .init(width: 900, height: 650))
+        defer { fixture.close() }
+        // Match the hosting view to each tested size and keep the window on
+        // screen so AppKit prepares native controls and mouse hit regions.
+        fixture.host.autoresizingMask = []
+        fixture.host.setFrameSize(.init(width: 900, height: 650))
+        fixture.window.setFrameOrigin(.init(x: 100, y: 100))
+        await fixture.settle()
+        try diagnosticRequire(!fixture.views.contains { $0 is NSPopUpButton }, "Collapsed diagnostic tools created pickers")
+        try fixture.snapshot(to: artifacts.appendingPathComponent("diagnostics-ready.png"))
+        let checks: [DiagnosticCase] = [
+            .init(id: "UI01", suite: "UI interactions", name: "Unchanged profiles do not invalidate editors", safety: .simulated) {
+                .init(status: .failed, summary: "Simulated failure for the diagnostics UI fixture")
+            },
+            .init(id: "UI02", suite: "UI interactions", name: "Band edits preserve control identity", safety: .simulated) {
+                .init(summary: "Simulated passing result")
+            },
+            .init(id: "UI03", suite: "UI interactions", name: "Async editor restoration preserves recoverable work", safety: .simulated) {
+                .init(status: .skipped, summary: "Cancelled")
+            }
+        ]
+        state.diagnostics.run(checks); await state.diagnostics.waitForCompletion()
+        await fixture.settle()
+        try fixture.snapshot(to: artifacts.appendingPathComponent("diagnostics-results.png"))
+        fixture.resize(width: 650, height: 520)
+        fixture.host.setFrameSize(.init(width: 650, height: 520)); await fixture.settle()
+        try fixture.snapshot(to: artifacts.appendingPathComponent("diagnostics-narrow.png"))
+        fixture.resize(width: 900, height: 650)
+        fixture.host.setFrameSize(.init(width: 900, height: 650)); await fixture.settle()
+        func press(_ identifier: String) async throws {
+            guard let anchor = fixture.views.first(where: { $0.identifier?.rawValue == identifier }) else {
+                throw DiagnosticFailure(message: "Missing diagnostics disclosure: \(identifier)")
+            }
+            anchor.scrollToVisible(anchor.bounds)
+            await fixture.settle()
+            guard let visible = fixture.views.first(where: { $0.identifier?.rawValue == identifier }), !visible.visibleRect.isEmpty else {
+                throw DiagnosticFailure(message: "Diagnostics disclosure did not scroll into view")
+            }
+            fixture.click(in: visible, at: .init(x: visible.visibleRect.midX, y: visible.visibleRect.midY))
+            await fixture.settle()
+        }
+        try await press("diagnostics-runtime")
+        try diagnosticRequire(fixture.views.contains { $0 is NSPopUpButton }, "Runtime details did not open")
+        try fixture.snapshot(to: artifacts.appendingPathComponent("diagnostics-runtime.png"))
+        try await press("diagnostics-runtime")
+        try diagnosticRequire(!fixture.views.contains { $0 is NSPopUpButton }, "Collapsed runtime details retained their controls")
+        try await press("diagnostics-self-tests")
+        try fixture.snapshot(to: artifacts.appendingPathComponent("diagnostics-tests.png"))
+        try await press("diagnostics-self-tests")
+        try await press("diagnostics-performance")
+        try fixture.snapshot(to: artifacts.appendingPathComponent("diagnostics-performance.png"))
+        try diagnosticRequire(fixture.views.contains { $0 is NSPopUpButton }, "Performance recording did not open")
+        state.performanceRecorder.start(options: .init(duration: 10, warmUp: 0), environment: { state.performanceEnvironment() })
+        await fixture.settle()
+        try await press("diagnostics-performance")
+        try diagnosticRequire(!fixture.views.contains { $0 is NSPopUpButton }, "Collapsed performance tools retained their controls")
+        try diagnosticRequire(state.performanceRecorder.isCapturing, "Closing performance tools cancelled the recording")
+        try await press("diagnostics-performance")
+        await state.performanceRecorder.stop()
+        await fixture.settle()
+        try diagnosticRequire(state.performanceRecorder.baseline != nil, "Reopening performance tools lost the recording")
+        try await press("diagnostics-performance")
+        var gaps: [Double] = []
+        for tick in 0..<60 {
+            let start = ProcessInfo.processInfo.systemUptime
+            state.meters.setPreviewLevels(.init(capturePeak: [-24 + Double(tick % 12)], captureRMS: [-30],
+                playbackPeak: [-20], playbackRMS: [-26]), profileID: UUID())
+            try await Task.sleep(for: .milliseconds(16))
+            gaps.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+        }
+        let maxGap = gaps.max() ?? 0
+        try diagnosticRequire(maxGap < 250, "Idle diagnostics stalled the main loop for \(maxGap) ms")
+        try JSONSerialization.data(withJSONObject: ["maximumMainLoopGapMS": maxGap, "samples": gaps.count], options: .prettyPrinted)
+            .write(to: artifacts.appendingPathComponent("diagnostics-performance.json"))
+        print("Diagnostics idle main-loop maximum gap: \(Int(maxGap)) ms")
+        print("UID03: Diagnostics resize and disclose tools without mounting hidden pickers")
     }
 
     private static func routingToggleInteractions() async throws {
@@ -366,6 +674,9 @@ enum UIInteractionSelfTests {
                 VStack(alignment: .leading, spacing: 18) {
                     PreampGainControl(gainDB: .constant(0), limiterEnabled: .constant(true),
                         meters: AudioRuntimeMonitor(), profileID: UUID())
+                    PreampGainControl(gainDB: .constant(0), limiterEnabled: .constant(true),
+                        meters: AudioRuntimeMonitor(), profileID: UUID(), title: "Channel gain",
+                        delayMilliseconds: .constant(7.25))
                     SimpleEQControlsView(settings: .constant(.init()))
                     EqualizerBandScrollView(bandCount: bands.count) { columnWidth in
                         GraphicEqualizerBands(bands: .constant(bands), profileID: UUID(), responsePoints: [],
@@ -381,6 +692,23 @@ enum UIInteractionSelfTests {
                 guard let scroll = fixture.scrollViews.first else { throw DiagnosticFailure(message: "Missing responsive scroll view") }
                 try diagnosticRequire((scroll.documentView?.frame.width ?? 0) <= scroll.contentSize.width + 1,
                     "Text size \(textSize) caused page overflow at \(width) points")
+                guard let gain = fixture.views.first(where: { $0.identifier?.rawValue == "gain-slider-Channel gain" }),
+                      let delay = fixture.views.first(where: { $0.identifier?.rawValue == "channel-delay-slider" }),
+                      let gainField = fixture.textFields.first(where: { $0.placeholderString == "Channel gain" }),
+                      let delayField = fixture.textFields.first(where: { $0.placeholderString == "Channel delay" }) else {
+                    throw DiagnosticFailure(message: "Missing paired channel gain/delay controls")
+                }
+                let gainFrame = gain.convert(gain.bounds, to: fixture.host)
+                let delayFrame = delay.convert(delay.bounds, to: fixture.host)
+                let gainFieldX = gainField.convert(gainField.bounds, to: fixture.host).minX
+                let delayFieldX = delayField.convert(delayField.bounds, to: fixture.host).minX
+                try diagnosticRequire(abs(gainFrame.minX - delayFrame.minX) < 1
+                    && abs(gainFrame.maxX - delayFrame.maxX) < 1 && abs(gainFieldX - delayFieldX) < 1,
+                    "Channel gain/delay columns drifted at \(width) points with \(textSize) text")
+                try diagnosticRequire(abs(gainField.bounds.width - delayField.bounds.width) < 1
+                    && abs(gainField.bounds.height - delayField.bounds.height) < 1,
+                    "Channel gain/delay value fields differ in size at \(width) points with \(textSize) text")
+                try fixture.snapshot(to: artifacts.appendingPathComponent("responsive-\(textSize)-\(Int(width)).png"))
             }
             fixture.window.appearance = NSAppearance(named: .darkAqua)
             fixture.resize(width: 480, height: 800)
@@ -1336,8 +1664,9 @@ enum UIInteractionSelfTests {
         let spectrum = SpectrumAnalyzer()
         let profileID = UUID()
         let model = ProfileEditorGraphModel()
-        let bands = [EQBand(kind: .peaking, frequency: 100, gain: 6, q: 1),
-                     EQBand(kind: .peaking, frequency: 1000, gain: -6, q: 1)]
+        let bands = [EQBand(kind: .peaking, frequency: 100.4, gain: 6, q: 1),
+                     EQBand(kind: .peaking, frequency: 999.7, gain: -6, q: 1)]
+        var frequencyWriteCount = 0
         model.calculate(parsed: ParsedEQ(preampDB: 0, bands: bands, warnings: []), sampleRate: 48000)
         spectrum.setPreviewPoints([SpectrumPoint(frequency: 100, db: -30), SpectrumPoint(frequency: 1000, db: -30)], profileID: profileID)
         let fixture = WindowFixture(ScrollView {
@@ -1345,7 +1674,9 @@ enum UIInteractionSelfTests {
                 LiveSpectrumPanels(spectrum: spectrum, profileID: profileID, graphModel: model)
                 StableEditorSection(revision: 0) {
                 EqualizerBandScrollView(bandCount: bands.count) { width in
-                    GraphicEqualizerBands(bands: .constant(bands), spectrum: spectrum, profileID: profileID,
+                    GraphicEqualizerBands(bands: Binding(get: { bands }, set: { updated in
+                        if updated.map(\.frequency) != bands.map(\.frequency) { frequencyWriteCount += 1 }
+                    }), spectrum: spectrum, profileID: profileID,
                         responsePoints: [.init(frequency: 100, gainDB: 6), .init(frequency: 1000, gainDB: -6)],
                         setKind: EQEditorSupport.setKind, columnWidth: width)
                 }
@@ -1357,6 +1688,8 @@ enum UIInteractionSelfTests {
         let fields = fixture.textFields.filter { $0.placeholderString == "Hz" }
         try diagnosticRequire(fields.count == 2 && fields.allSatisfy { !$0.stringValue.isEmpty && $0.bounds.width >= 60 && $0.bounds.height >= 18 },
             "EQ frequency digits are missing or clipped")
+        try diagnosticRequire(fields.map(\.stringValue) == bands.map { $0.frequency.formatted(.number.precision(.fractionLength(0))) },
+            "EQ frequencies must display rounded whole Hz values")
         guard let pre = fixture.views.first(where: { $0.identifier?.rawValue == "spectrum-pre-card" }),
               let post = fixture.views.first(where: { $0.identifier?.rawValue == "spectrum-post-card" }) else {
             throw DiagnosticFailure(message: "Missing spectrum cards")
@@ -1374,6 +1707,7 @@ enum UIInteractionSelfTests {
         await fixture.settle()
         try diagnosticRequire((fixture.scrollViews[0].documentView?.frame.width ?? 0) <= 481,
             "Spectrum cards overflow a narrow window")
+        try fixture.snapshot(to: artifacts.appendingPathComponent("live-spectrum-and-eq-narrow.png"))
         print("UI13: Live spectrum, boost/cut meters, and populated frequency fields rendered")
         let focusFields = fixture.textFields.filter { $0.placeholderString == "Hz" }
         try diagnosticRequire(focusFields.count == 2, "Resizing lost a frequency control")
@@ -1393,6 +1727,9 @@ enum UIInteractionSelfTests {
         try diagnosticRequire(focusFields.allSatisfy { visited.contains(ObjectIdentifier($0)) },
             "Keyboard navigation cannot leave an EQ band's focus group")
         fixture.window.makeFirstResponder(nil)
+        await fixture.settle()
+        try diagnosticRequire(frequencyWriteCount == 0,
+            "Focusing an unchanged whole-Hz field modified the stored frequency precision")
         print("UI16: Tab navigation crosses EQ-band focus groups in a narrow window")
     }
 
@@ -1429,13 +1766,41 @@ enum UIInteractionSelfTests {
     }
 
     private static func steppedSliderPrecision() async throws {
+        try await steppedSliderPrecision(style: .standard)
+        try await steppedSliderPrecision(style: .preamp)
+    }
+
+    private static func steppedSliderPrecision(style: SteppedValueSlider.Style) async throws {
         var value = 0.0
         let fixture = WindowFixture(SteppedValueSlider(value: Binding(get: { value }, set: { value = $0 }),
-            in: 0...2, step: 0.01).padding(20), size: .init(width: 400, height: 100))
+            in: 0...2, step: 0.01, style: style).padding(20), size: .init(width: 400, height: 100))
         defer { fixture.close() }
         await fixture.settle()
         guard let slider = fixture.views.compactMap({ $0 as? NSSlider }).first,
               let action = slider.action else { throw DiagnosticFailure(message: "Missing native stepped slider") }
+        if let cell = slider.cell as? NSSliderCell {
+            slider.doubleValue = (slider.minValue + slider.maxValue) / 2
+            let knob = cell.knobRect(flipped: slider.isFlipped)
+            try diagnosticRequire(knob.width >= 12 && knob.height >= 22 && slider.bounds.contains(knob),
+                "The enlarged slider handle must fit inside its control and hit area")
+        }
+        if style == .preamp, let cell = slider.cell as? NSSliderCell {
+            try diagnosticRequire(abs(slider.bounds.height - PreampSliderLayout.totalHeight) < 0.5,
+                "Device correction slider does not match the preamp height: \(slider.bounds), insets: \(slider.alignmentRectInsets)")
+            let track = cell.barRect(flipped: slider.isFlipped)
+            for endpoint in [slider.minValue, slider.maxValue] {
+                slider.doubleValue = endpoint
+                let knob = cell.knobRect(flipped: slider.isFlipped)
+                let expectedX = endpoint == slider.minValue ? track.minX : track.maxX
+                try diagnosticRequire(abs(knob.midX - expectedX) < 0.5 && slider.bounds.contains(knob),
+                    "Device correction slider thumb clips or misses a range endpoint")
+                slider.doubleValue = (slider.minValue + slider.maxValue) / 2
+                fixture.click(in: slider, at: NSPoint(x: expectedX, y: track.midY))
+                await fixture.settle()
+                try diagnosticRequire(abs(value - endpoint) < 0.000001,
+                    "Clicking a device correction slider endpoint selected the wrong value: \(value)")
+            }
+        }
         try diagnosticRequire(slider.numberOfTickMarks == 0, "Fine-grained slider created hundreds of native tick marks")
         slider.doubleValue = slider.minValue + (slider.maxValue - slider.minValue) * (0.337 / 2)
         NSApp.sendAction(action, to: slider.target, from: slider)
@@ -1447,7 +1812,9 @@ enum UIInteractionSelfTests {
         fixture.window.sendEvent(arrow)
         await fixture.settle()
         try diagnosticRequire(abs(value - 0.35) < 0.000001, "Keyboard adjustment did not use the numeric step: \(value)")
-        print("UI15: Native slider and keyboard retain 0.01 precision without generating tick marks")
+        try diagnosticRequire(slider.accessibilityPerformIncrement() && abs(value - 0.36) < 0.000001,
+            "Accessibility adjustment did not use the numeric step")
+        print("UI15: \(style) slider, keyboard and accessibility retain 0.01 precision without generating tick marks")
     }
 
     private static func scrollingCadence() async throws {

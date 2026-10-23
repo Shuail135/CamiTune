@@ -5,7 +5,7 @@ import Foundation
 @MainActor
 enum DeveloperSelfTests {
     static func cases() -> [DiagnosticCase] {
-        profileCases() + planningCases() + pcmCases() + lifecycleCases() + healthCases() + performanceCases() + presentationCases() + runtimePlanCases() + runtimePlanDifferCases() + runtimeCoordinatorCases() + coreAudioHandoffCases() + profileRepositoryCases() + profilePersistenceCases() + timelineStorageCases() + timelineMixerCases() + timelineIntegrationCases() + timelineBenchmarkCases() + reorderPolicyCases() + reorderMatrixCases() + pcmDeliveryCases() + producerCompletionCases() + pcmSinkCases() + audioClockCases() + architectureOwnerCases() + uiStateCases() + roomRecordingCases()
+        profileCases() + audioBufferCases() + automaticBufferCases() + preparedBufferHandoffCases() + planningCases() + pcmCases() + lifecycleCases() + healthCases() + performanceCases() + presentationCases() + runtimePlanCases() + runtimePlanDifferCases() + runtimeCoordinatorCases() + coreAudioHandoffCases() + profileRepositoryCases() + profilePersistenceCases() + timelineStorageCases() + timelineMixerCases() + timelineIntegrationCases() + timelineBenchmarkCases() + reorderPolicyCases() + reorderMatrixCases() + pcmDeliveryCases() + producerCompletionCases() + pcmSinkCases() + audioClockCases() + architectureOwnerCases() + uiStateCases() + roomRecordingCases() + pluginCases()
     }
 
     static func roomRecordingCases() -> [DiagnosticCase] {
@@ -156,6 +156,407 @@ enum DeveloperSelfTests {
             defer { sandbox.cleanUp() }
             return try await body(sandbox)
         }
+    }
+
+    private static func audioBufferCases() -> [DiagnosticCase] {
+        [
+            test("AB01", "Audio Buffer", "Global inheritance, local overrides and persistence") { box in
+                let inherited = DiagnosticSandbox.profile()
+                var local = DiagnosticSandbox.profile(); local.name = "Local"; local.audioBufferOverride = 512
+                box.profiles.profiles = [inherited, local]
+                try await box.profiles.commitAudioBufferDefault(256)
+                try diagnosticRequire(box.profiles.profiles.map(\.chunkSize) == [256, 512], "Global change replaced a local buffer")
+                var pinned = box.profiles.profiles[0]; pinned.audioBufferOverride = 256
+                box.profiles.update(pinned)
+                try await box.profiles.commitAudioBufferDefault(128)
+                try diagnosticRequire(box.profiles.profiles[0].chunkSize == 256, "Explicit matching size failed to pin an override")
+                try await box.profiles.commitAudioBufferDefault(128, inheritingProfileIDs: [inherited.id])
+                var new = DiagnosticSandbox.profile(); new.name = "New"
+                _ = try await box.profiles.insertConfiguredProfile(new)
+                let restored = ProfileStore(storageURL: box.directory.appendingPathComponent("profiles.json"), userDefaults: box.defaults)
+                try diagnosticRequire(restored.audioBufferDefault == 128 && restored.profiles.map(\.chunkSize) == [128, 512, 128]
+                    && restored.profiles.map(\.usesGlobalAudioBuffer) == [true, false, true], "Inheritance or global default did not survive reload")
+                return .init(summary: "Local overrides stay pinned, reset resumes inheritance, and new profiles inherit")
+            },
+            test("AB02", "Audio Buffer", "Legacy custom sizes and open settings drafts remain valid") { box in
+                for frames in [256, 1024] {
+                    var old = DiagnosticSandbox.profile(); old.chunkSize = frames
+                    var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as! [String: Any]
+                    json.removeValue(forKey: "usesGlobalAudioBuffer")
+                    let restored = try JSONDecoder().decode(DeviceProfile.self, from: JSONSerialization.data(withJSONObject: json))
+                    try diagnosticRequire(restored.usesGlobalAudioBuffer == (frames == 1024) && restored.chunkSize == frames,
+                        "Legacy custom buffer was lost")
+                }
+                let original = DiagnosticSandbox.profile()
+                var draft = ProfileSettingsDraft(profile: original, activation: .manual)
+                draft.name = "Edited name"
+                var fresh = original; fresh.resolveAudioBuffer(default: 128)
+                let candidate = try draft.candidate(applyingTo: fresh)
+                try diagnosticRequire(candidate.chunkSize == 128 && candidate.usesGlobalAudioBuffer, "Open draft restored an outdated global buffer")
+                draft.audioBufferOverride = 256
+                fresh.audioBufferOverride = 512
+                do { _ = try draft.candidate(applyingTo: fresh); throw DiagnosticFailure(message: "Conflicting local edits accepted") }
+                catch ProfileSettingsError.staleDraft { }
+                return .init(summary: "Legacy custom sizes survive and drafts merge only their own edits")
+            },
+            test("AB03", "Audio Buffer", "Settings update the active engine and reset local inheritance") { box in
+                let profile = DiagnosticSandbox.profile(); box.profiles.profiles = [profile]
+                let fake = DiagnosticRuntimeFakes(.init(transportResults: Array(repeating: true, count: 20)))
+                let state = AppState(profiles: box.profiles, perAppAudio: box.perApp, runtimeServices: fake.services())
+                defer { state.shutdownSynchronously() }
+                await state.activate(profile: profile)
+                try await state.saveGlobalAudioBuffer(256)
+                try diagnosticRequire(state.runtimeCoordinator.appliedProfile?.chunkSize == 256, "Global buffer did not reach the engine")
+                var draft = ProfileSettingsDraft(profile: box.profiles.profiles[0], activation: box.profiles.activationMode(for: box.profiles.profiles[0]))
+                draft.audioBufferOverride = 128
+                try await state.saveProfileSettings(draft)
+                try await state.saveGlobalAudioBuffer(512)
+                try diagnosticRequire(state.runtimeCoordinator.appliedProfile?.chunkSize == 128, "Global change replaced active local override")
+                draft = ProfileSettingsDraft(profile: box.profiles.profiles[0], activation: box.profiles.activationMode(for: box.profiles.profiles[0]))
+                draft.audioBufferOverride = nil
+                try await state.saveProfileSettings(draft)
+                try diagnosticRequire(state.runtimeCoordinator.appliedProfile?.chunkSize == 512 && box.profiles.profiles[0].usesGlobalAudioBuffer,
+                    "Reset did not apply the current global value")
+                return .init(summary: "Global and local settings reconfigure the live engine; reset restores inheritance")
+            },
+            test("AB04", "Audio Buffer", "Failed global save restores buffer and live engine") { _ in
+                let f = try ProfileRepositoryFixture(); defer { f.cleanUp() }
+                try await f.prepareStore()
+                await f.state.activate(profile: f.profile)
+                f.io.arm()
+                let saving = Task { try await f.state.saveGlobalAudioBuffer(256) }
+                await f.io.waitUntilEntered()
+                let publishedEarly = f.store.audioBufferDefault != 1024
+                f.io.release(failing: true)
+                if case .success = await saving.result { throw DiagnosticFailure(message: "Failed save succeeded") }
+                try diagnosticRequire(!publishedEarly && f.store.audioBufferDefault == 1024
+                    && f.store.profiles.allSatisfy { $0.chunkSize == 1024 && $0.usesGlobalAudioBuffer }
+                    && f.state.runtimeCoordinator.appliedProfile?.chunkSize == 1024,
+                    "Failed buffer save left runtime or preferences changed")
+                return .init(summary: "Persistence failure rolls back the live engine without publishing the global value")
+            },
+            test("AB05", "Audio Buffer", "Global save follows a newer profile switch and preserves Stop") { _ in
+                for stop in [false, true] {
+                    let f = try ProfileRepositoryFixture(); defer { f.cleanUp() }
+                    try await f.prepareStore()
+                    await f.state.activate(profile: f.profile)
+                    f.io.arm()
+                    let saving = Task { try await f.state.saveGlobalAudioBuffer(256) }
+                    await f.io.waitUntilEntered()
+                    if stop { await f.state.deactivate(manual: true) }
+                    else { await f.state.activate(profile: f.other) }
+                    f.io.release(); try await saving.value
+                    try diagnosticRequire(f.store.audioBufferDefault == 256 && f.state.activeProfileID == (stop ? nil : f.other.id),
+                        "Global save replaced newer lifecycle intent")
+                    if !stop {
+                        try diagnosticRequire(f.state.runtimeCoordinator.appliedProfile?.chunkSize == 256,
+                            "Newly active inherited profile retained the old global buffer")
+                    }
+                }
+                return .init(summary: "A concurrent switch gets the saved default; Stop stays stopped")
+            },
+            test("AB06", "Audio Buffer", "Disabled plug-in racks use no processor or additional buffer") { _ in
+                for empty in [false, true] {
+                    var profile = diffProfile(); profile.chunkSize = 128
+                    profile.pluginRack.slots = empty ? [] : [.init(plugin: pluginTestDescriptor())]
+                    profile.pluginRack.isEnabled = false
+                    let plan = try diffPlan(profile)
+                    let manager = PluginRackManager(); defer { manager.stop() }
+                    try await manager.prepare(plan)
+                    let processor = manager.commit(plan)
+                    try diagnosticRequire(processor == nil && manager.statuses[profile.id]?.latencyMilliseconds == 0
+                        && plan.processingGraph.chunkSize == 128, "Disabled rack retained buffering or a live processor")
+                }
+                return .init(summary: "Disabled and empty racks bypass the host while retaining only CamiTune's engine buffer")
+            }
+        ]
+    }
+
+    private static func automaticBufferCases() -> [DiagnosticCase] {
+        [
+            test("AB07", "Automatic Buffer", "Automatic preference inherits and survives persistence") { box in
+                let profile = DiagnosticSandbox.profile(); box.profiles.profiles = [profile]
+                try await box.profiles.commitAudioBufferDefault(.automatic)
+                var local = box.profiles.profiles[0]; local.audioBufferOverride = 256
+                box.profiles.update(local)
+                var other = DiagnosticSandbox.profile(); other.name = "Automatic local"; other.audioBufferOverride = .automatic
+                _ = try await box.profiles.insertConfiguredProfile(other)
+                let restored = ProfileStore(storageURL: box.directory.appendingPathComponent("profiles.json"), userDefaults: box.defaults)
+                try diagnosticRequire(restored.audioBufferDefault == .automatic
+                    && restored.profiles.map(\.audioBufferOverride) == [256, .automatic]
+                    && restored.profiles.allSatisfy { $0.chunkSize > 0 }, "Automatic mode or local overrides changed on reload")
+                try await box.profiles.commitAudioBufferDefault(.automatic, inheritingProfileIDs: [profile.id])
+                try diagnosticRequire(box.profiles.profiles[0].usesGlobalAudioBuffer
+                    && box.profiles.profiles[0].audioBufferSetting == .automatic, "Reset failed to inherit Automatic")
+                return .init(summary: "Automatic is a preference, never a zero-sized block; local/global choices round-trip")
+            },
+            test("AB08", "Automatic Buffer", "Only sustained complete evidence lowers the recommendation") { _ in
+                var policy = AutomaticAudioBufferPolicy(frames: 1024)
+                for _ in 0..<90 {
+                    policy.observe(.init(audioSeconds: 0, dspLoad: 0, writerLoad: 0, pluginLoad: 0, underruns: 0), currentFrames: 1024)
+                    policy.observe(.init(audioSeconds: 1, dspLoad: nil, writerLoad: 0, pluginLoad: 0, underruns: nil), currentFrames: 1024)
+                }
+                try diagnosticRequire(policy.recommendedFrames == 1024, "Silence or missing telemetry authorized a reduction")
+                for _ in 0..<59 { policy.observe(.init(audioSeconds: 1, dspLoad: 0.05, writerLoad: 0.05, pluginLoad: 0.02, underruns: 0), currentFrames: 1024) }
+                try diagnosticRequire(policy.recommendedFrames == 1024, "Short clean sample authorized a reduction")
+                for _ in 0..<100 { policy.observe(.init(audioSeconds: 1, dspLoad: 0.05, writerLoad: 0.05, pluginLoad: 0.02, underruns: 0), currentFrames: 1024) }
+                try diagnosticRequire(policy.recommendedFrames == 512, "Recommendation skipped an untested size or failed to learn")
+                return .init(summary: "Sixty seconds of clean active audio permit one step down; silence and unknown evidence do not")
+            },
+            test("AB09", "Automatic Buffer", "Underruns and plug-in pressure establish a remembered safety floor") { _ in
+                for failure in 0..<3 {
+                    var policy = AutomaticAudioBufferPolicy(frames: 256)
+                    for _ in 0..<3 {
+                        policy.observe(.init(audioSeconds: 1, dspLoad: 0.1, writerLoad: failure == 2 ? 0.7 : 0.05,
+                            pluginLoad: failure == 2 ? 0.6 : 0.02, underruns: failure == 0 ? 1 : 0,
+                            pluginFailed: failure == 1), currentFrames: 256)
+                    }
+                    try diagnosticRequire(policy.recommendedFrames == 512 && policy.minimumFrames == 512, "Fault did not raise the safety floor")
+                    for _ in 0..<180 { policy.observe(.init(audioSeconds: 1, dspLoad: 0.01, writerLoad: 0.01, pluginLoad: 0, underruns: 0), currentFrames: 512) }
+                    try diagnosticRequire(policy.recommendedFrames == 512, "Controller retried a size already known to fail")
+                }
+                var interrupted = AutomaticAudioBufferPolicy(frames: 256)
+                for _ in 0..<4 {
+                    interrupted.observe(.init(audioSeconds: 1, dspLoad: 0.8, writerLoad: 0.1, pluginLoad: 0, underruns: 0), currentFrames: 256)
+                    interrupted.observe(.init(audioSeconds: 0, dspLoad: nil, writerLoad: 0, pluginLoad: 0, underruns: nil), currentFrames: 256)
+                }
+                try diagnosticRequire(interrupted.recommendedFrames == 256, "Interrupted observations counted as sustained overload")
+                try diagnosticRequire(AutomaticAudioBufferPolicy.startingFrames(sampleRate: 192000) == 4096,
+                    "High sample rates lost the initial safety margin")
+                return .init(summary: "DSP underruns, plug-in faults and sustained processing pressure recommend more headroom without oscillation")
+            },
+            test("AB10", "Automatic Buffer", "Live sessions pin their buffer across settings and processing edits") { box in
+                var profile = DiagnosticSandbox.profile(); profile.audioBufferOverride = .automatic
+                box.profiles.profiles = [profile]
+                let fake = DiagnosticRuntimeFakes(.init(transportResults: Array(repeating: true, count: 30)))
+                var recommendation = 512
+                var services = fake.services(); services.automaticBufferSize = { _ in recommendation }
+                var simulatedRate = 48000.0
+                let setRate = services.setRate
+                services.setRate = { uid, rate in try await setRate(uid, rate); simulatedRate = rate }
+                services.nominalRate = { _ in simulatedRate }
+                let state = AppState(profiles: box.profiles, perAppAudio: box.perApp, runtimeServices: services)
+                defer { state.shutdownSynchronously() }
+                await state.activate(profile: profile)
+                try diagnosticRequire(state.runtimeCoordinator.appliedProfile?.chunkSize == 512, "Activation ignored recommendation")
+                let starts = fake.events.filter { $0 == "start engine" }.count
+                recommendation = 128
+                var draft = ProfileSettingsDraft(profile: box.profiles.profiles[0], activation: box.profiles.activationMode(for: profile))
+                draft.name = "Updated name"
+                try await state.saveProfileSettings(draft)
+                let saved = box.profiles.profiles[0]
+                await state.apply(profile: saved)
+                try diagnosticRequire(state.runtimeCoordinator.appliedProfile?.chunkSize == 512
+                    && fake.events.filter { $0 == "start engine" }.count == starts, "Recommendation restarted a live engine")
+                await state.deactivate(manual: true)
+                let nextSessionProfile = box.profiles.profiles[0]
+                await state.activate(profile: nextSessionProfile)
+                try diagnosticRequire(state.runtimeCoordinator.appliedProfile?.chunkSize == 128, "Next session did not apply learned size")
+                var newRate = ProfileSettingsDraft(profile: nextSessionProfile, activation: box.profiles.activationMode(for: nextSessionProfile))
+                newRate.sampleRate = 96000; recommendation = 2048
+                try await state.saveProfileSettings(newRate)
+                try diagnosticRequire(state.runtimeCoordinator.appliedProfile?.chunkSize == 2048,
+                    "A new sample-rate session borrowed the old setup's buffer")
+                return .init(summary: "New sessions use learned sizes; ordinary live edits keep the buffer fixed")
+            },
+            test("AB11", "Automatic Buffer", "Learning keys isolate hardware, processing and active plug-ins") { _ in
+                var profile = DiagnosticSandbox.profile()
+                let original = AutomaticAudioBufferController.setupKey(for: profile)
+                profile.name = "Renamed"; profile.chunkSize = 128; profile.audioBufferOverride = .automatic
+                try diagnosticRequire(AutomaticAudioBufferController.setupKey(for: profile) == original, "Presentation or buffer choice invalidated processing evidence")
+                profile.pluginRack.slots = [.init(plugin: pluginTestDescriptor())]
+                profile.pluginRack.isEnabled = false
+                try diagnosticRequire(AutomaticAudioBufferController.setupKey(for: profile) == original, "Bypassed effects affected buffer learning")
+                profile.pluginRack.isEnabled = true
+                let withPlugins = AutomaticAudioBufferController.setupKey(for: profile)
+                try diagnosticRequire(withPlugins != original, "Active effects borrowed bypass evidence")
+                profile.sampleRate = 96000
+                try diagnosticRequire(AutomaticAudioBufferController.setupKey(for: profile) != withPlugins, "Sample rates shared learned settings")
+                return .init(summary: "Evidence is specific to the setup; disabled plug-ins do not contribute")
+            },
+            test("AB12", "Automatic Buffer", "Recommendations persist without changing user preferences or samples") { _ in
+                var profile = DiagnosticSandbox.profile(); profile.audioBufferOverride = .automatic
+                var data: Data?
+                let controller = AutomaticAudioBufferController(persist: { data = $0 })
+                let start = Date().addingTimeInterval(-120)
+                controller.begin(profile: profile, now: start)
+                var work = AudioBufferWorkObservation(); work.audioSeconds = 1; work.writerLoad = 0.02
+                for second in 1...65 {
+                    controller.observe(work: work, dspLoadPercent: 3, clockEpoch: 7, underrunFrames: 0,
+                        droppedFrames: 0, now: start.addingTimeInterval(Double(second)))
+                }
+                try diagnosticRequire(controller.statuses[profile.id]?.nextFrames == 512 && data != nil
+                    && profile.chunkSize == 1024 && profile.audioBufferSetting == .automatic, "Learning mutated the active profile or failed to persist")
+                let restored = AutomaticAudioBufferController(cache: data)
+                try diagnosticRequire(restored.recommendedFrames(for: profile) == 512, "Learned recommendation did not survive restart")
+                let now = Date()
+                try diagnosticRequire(controller.hasPendingChange(profileID: profile.id, now: now), "Learned change was not pending")
+                controller.noteChangeAttempt(now: now)
+                try diagnosticRequire(!controller.hasPendingChange(profileID: profile.id, now: now.addingTimeInterval(29))
+                    && controller.hasPendingChange(profileID: profile.id, now: now.addingTimeInterval(30)),
+                    "Automatic retries did not respect their cooldown")
+                controller.end()
+                try diagnosticRequire(controller.statuses[profile.id] == nil, "Stopped session retained a live buffer status")
+                return .init(summary: "Only recommendations are cached; the active profile and audio remain unchanged")
+            },
+            test("AB13", "Automatic Buffer", "Silence requires exact zero on every channel and a fresh output clock") { _ in
+                let graph = try diffPlan(diffProfile()).processingGraph
+                let zero = SignalLevels(capturePeak: Array(repeating: -1000, count: graph.channelCount), captureRMS: [],
+                    playbackPeak: Array(repeating: -1000, count: graph.outputFormat.channelCount), playbackRMS: [])
+                let clock = CamillaPlaybackClock(epoch: 1, sampleTime: 48000, hostTime: 1_000_000,
+                    nominalRate: Double(graph.sampleRate), timestampFlags: 3, demandFrames: 48000, underrunFrames: 0,
+                    callbackFrames: 256, bufferedFrames: 512)
+                func accepts(_ levels: SignalLevels, now: UInt64 = 1_000_000) -> Bool {
+                    AutomaticAudioBufferController.confirmsSilentOutput(levels, clock: clock, graph: graph, nowHostTime: now)
+                }
+                try diagnosticRequire(accepts(zero), "Verified digital silence was rejected")
+                for peak in [-150.0, -300, -.infinity, .nan, 0] {
+                    var levels = zero; levels.playbackPeak[0] = peak
+                    try diagnosticRequire(!accepts(levels), "Quiet music or invalid output counted as exact silence")
+                    levels = zero; levels.capturePeak[0] = peak
+                    try diagnosticRequire(!accepts(levels), "Nonzero engine input counted as silence")
+                }
+                var missing = zero; missing.playbackPeak = []
+                try diagnosticRequire(!accepts(missing) && !accepts(zero, now: 999_999)
+                    && !accepts(zero, now: 1_000_000_000_000_000), "Missing/stale/future telemetry authorized a change")
+                return .init(summary: "All channels must report digital zero; meter floors and stale/missing clocks fail closed")
+            },
+            test("AB14", "Automatic Buffer", "Pending sizes apply only after the final silence check") { box in
+                var profile = DiagnosticSandbox.profile(); profile.audioBufferOverride = .automatic
+                box.profiles.profiles = [profile]
+                let fake = DiagnosticRuntimeFakes(.init(transportResults: Array(repeating: true, count: 10)))
+                var frames = 1024, quietReads = 0
+                var quiet: [Bool] = []
+                var services = fake.services()
+                services.automaticBufferSize = { _ in frames }
+                services.automaticBufferIsQuiet = { quietReads += 1; return quiet.isEmpty ? false : quiet.removeFirst() }
+                let state = AppState(profiles: box.profiles, perAppAudio: box.perApp, runtimeServices: services)
+                defer { state.shutdownSynchronously() }
+                await state.activate(profile: profile)
+                let starts = fake.events.filter { $0 == "start engine" }.count
+                let session = state.activeSession?.id
+                frames = 512
+                quiet = [false]
+                await state.runtimeCoordinator.applyAutomaticBufferIfQuiet()
+                quiet = [true, false] // Playback resumes during preparation.
+                await state.runtimeCoordinator.applyAutomaticBufferIfQuiet()
+                try diagnosticRequire(state.runtimeCoordinator.appliedProfile?.chunkSize == 1024
+                    && fake.events.filter { $0 == "start engine" }.count == starts, "Resumed audio was restarted")
+                quiet = [true, true]
+                await state.runtimeCoordinator.applyAutomaticBufferIfQuiet()
+                try diagnosticRequire(state.runtimeCoordinator.appliedProfile?.chunkSize == 512
+                    && box.profiles.profiles[0].audioBufferOverride == .automatic && quietReads == 5,
+                    "Silence did not apply the learned size, or Automatic was replaced by a manual preference")
+                try diagnosticRequire(state.activeSession?.id == session
+                    && fake.events.filter { $0 == "start engine" }.count == starts
+                    && !fake.events.contains("stop PCM") && !fake.events.contains("stop transport")
+                    && !fake.events.contains("begin handoff"), "Automatic tuning interrupted the live signal path")
+                let reads = quietReads
+                frames = 256; var manual = box.profiles.profiles[0]; manual.audioBufferOverride = 1024
+                box.profiles.update(manual)
+                await state.runtimeCoordinator.applyAutomaticBufferIfQuiet()
+                try diagnosticRequire(quietReads == reads, "Automatic tuning ignored a newer manual choice")
+                return .init(summary: "Pending tuning respects resumed playback and manual choices; verified silence applies without changing preferences")
+            },
+            test("AB15", "Automatic Buffer", "Failed preparation leaves the live engine and size untouched") { box in
+                var profile = DiagnosticSandbox.profile(); profile.audioBufferOverride = .automatic
+                box.profiles.profiles = [profile]
+                let fake = DiagnosticRuntimeFakes(.init(transportResults: Array(repeating: true, count: 10)))
+                var frames = 1024
+                var services = fake.services(); services.automaticBufferSize = { _ in frames }
+                services.automaticBufferIsQuiet = { true }
+                services.prepareAutomaticBuffer = { _ in throw DiagnosticFailure(message: "Rejected smaller buffer") }
+                let state = AppState(profiles: box.profiles, perAppAudio: box.perApp, runtimeServices: services)
+                defer { state.shutdownSynchronously() }
+                await state.activate(profile: profile); frames = 512
+                await state.runtimeCoordinator.applyAutomaticBufferIfQuiet()
+                try diagnosticRequire(state.isActive && state.runtimeCoordinator.appliedProfile?.chunkSize == 1024
+                    && !fake.events.contains("stop engine") && !fake.events.contains("stop PCM")
+                    && !fake.events.contains("commit buffer engine"),
+                    "Optional tuning failure abandoned the working audio setup")
+                return .init(summary: "A rejected standby never replaces or restarts the active audio path")
+            },
+            test("AB16", "Automatic Buffer", "Source silence ignores mute and includes alternate PCM buses") { box in
+                let path = box.directory.appendingPathComponent("silence.pcm")
+                FileManager.default.createFile(atPath: path.path, contents: nil)
+                let file = try FileHandle(forWritingTo: path), router = PCMRouter()
+                defer { router.stop(); try? file.close() }
+                await router.start(camillaSink: file, renderConfiguration: .init(),
+                    deliveryConfiguration: .legacy(sampleRate: 48000, chunkSize: 128), backendChunkFrames: 128)
+                let afterQuietWindow = PerformanceClock.now().advanced(seconds: 3)
+                router.route(.init(interleaved: Array(repeating: 0, count: 512), channelCount: 2, sampleRate: 48000))
+                router.finishProducerEpoch()
+                let deadline = PerformanceClock.now().advanced(seconds: 2)
+                while !router.isQuietForBufferChange(now: afterQuietWindow), PerformanceClock.now() < deadline {
+                    try await Task.sleep(for: .milliseconds(5))
+                }
+                try diagnosticRequire(router.isQuietForBufferChange(now: afterQuietWindow), "Drained digital silence never became eligible")
+                router.setSystemMaster(linearGain: 0, muted: true)
+                var frame = PCMFrame(interleaved: Array(repeating: 0, count: 512), channelCount: 2, sampleRate: 48000)
+                frame.playbackModeSamples[.spatialRender] = Array(repeating: Float.leastNonzeroMagnitude, count: 512)
+                router.route(frame)
+                try diagnosticRequire(!router.isQuietForBufferChange(now: afterQuietWindow), "Muted/alternate-bus signal did not invalidate silence")
+                router.stop()
+                try diagnosticRequire(!router.isQuietForBufferChange(now: afterQuietWindow), "Stopped writer was treated as verified silence")
+                return .init(summary: "Only exact zero qualifies; system mute and alternate routing cannot hide activity")
+            },
+            test("AB17", "Automatic Buffer", "Stop supersedes a silent buffer plan still being prepared") { box in
+                var profile = DiagnosticSandbox.profile(); profile.audioBufferOverride = .automatic
+                box.profiles.profiles = [profile]
+                let fake = DiagnosticRuntimeFakes(.init(transportResults: Array(repeating: true, count: 10)))
+                let gate = DiagnosticManualGate()
+                var frames = 1024, pausePreparation = false
+                var services = fake.services(); services.automaticBufferSize = { _ in frames }
+                services.automaticBufferIsQuiet = { true }
+                services.prepareAssets = { _ in
+                    if pausePreparation { try await gate.enter() }
+                    return .empty
+                }
+                let state = AppState(profiles: box.profiles, perAppAudio: box.perApp, runtimeServices: services)
+                defer { gate.release(); state.shutdownSynchronously() }
+                await state.activate(profile: profile)
+                let starts = fake.events.filter { $0 == "start engine" }.count
+                frames = 512; pausePreparation = true
+                let adjustment = Task { await state.runtimeCoordinator.applyAutomaticBufferIfQuiet() }
+                try await gate.waitUntilEntered()
+                await state.deactivate(manual: true)
+                gate.release(); await adjustment.value
+                try diagnosticRequire(!state.isActive && fake.events.filter { $0 == "start engine" }.count == starts,
+                    "Background buffer tuning resurrected a stopped session")
+                return .init(summary: "A newer Stop cancels prepared background tuning before any restart")
+            },
+            test("AB18", "Automatic Buffer", "Elapsed quiet time cannot erase a pending effect history") { box in
+                final class DelayedSilentProcessor: PluginAudioProcessor, @unchecked Sendable {
+                    let tailFrames = 0
+                    func bufferChangeTailSeconds(sampleRate: Double) -> Double { 2 }
+                    func process(_ samples: inout [Float], sampleRate: Double, reset: Bool) -> Bool { true }
+                }
+                let path = box.directory.appendingPathComponent("silent-tail.pcm")
+                FileManager.default.createFile(atPath: path.path, contents: nil)
+                let file = try FileHandle(forWritingTo: path), router = PCMRouter()
+                defer { router.stop(); try? file.close() }
+                await router.start(camillaSink: file, renderConfiguration: .init(),
+                    deliveryConfiguration: .legacy(sampleRate: 48000, chunkSize: 128), backendChunkFrames: 128,
+                    pluginProcessor: DelayedSilentProcessor())
+                let later = PerformanceClock.now().advanced(seconds: 15)
+                func drain(_ samples: Int, count: UInt64) async throws {
+                    router.route(.init(interleaved: Array(repeating: 0, count: samples), channelCount: 2, sampleRate: 48000))
+                    router.finishProducerEpoch()
+                    let deadline = PerformanceClock.now().advanced(seconds: 2)
+                    while router.statistics.producerDrains.completedDrains < count, PerformanceClock.now() < deadline {
+                        try await Task.sleep(for: .milliseconds(5))
+                    }
+                    try diagnosticRequire(router.statistics.producerDrains.completedDrains == count, "Silent fixture did not drain")
+                }
+                try await drain(512, count: 1)
+                try diagnosticRequire(!router.isQuietForBufferChange(now: later), "Wall time alone authorized discarding delayed audio")
+                try await drain(240_000, count: 2)
+                try diagnosticRequire(router.isQuietForBufferChange(now: later), "Fully flushed silent history never became eligible")
+                let bytes = try Data(contentsOf: path)
+                try diagnosticRequire(!bytes.isEmpty && bytes.allSatisfy { $0 == 0 }, "Silence observation altered PCM")
+                return .init(summary: "Effect history must receive enough silent samples; waiting while paused is insufficient")
+            }
+        ]
     }
 
     private static func profileCases() -> [DiagnosticCase] {
@@ -577,6 +978,100 @@ enum DeveloperSelfTests {
                 monitor.stop()
                 try diagnosticRequire(monitor.status.pipelineAssessment().reasons == [.runtimeInactive] && monitor.status.telemetryAssessment().reasons == [.runtimeInactive], "Stopped runtime retained active health")
                 return .init(summary: "Presentation suspension preserves runtime activity; Stop clears both assessments")
+            },
+            test("H07", "Runtime Health", "Added delay excludes shared output latency and duplicate queues") { _ in
+                let tick = PerformanceTick(rawValue: 1_000_000_000)
+                var status = AudioRuntimeStatus(isActive: true, telemetryPollingActive: true)
+                var diagnostic = healthyDSP
+                diagnostic.sampleRate = 48_000; diagnostic.blockFrames = 480
+                diagnostic.bufferLevelFrames = 960
+                status.recordTelemetry(diagnostic, at: now)
+                status.route.sampleRate = 48_000
+                status.route.transit = .init(receivedAt: tick, completedAt: tick.advanced(seconds: 0.012))
+                // Both queues are already reflected by the source-to-write timer.
+                // Bridge storage can also contain overlapping audio from many apps.
+                status.route.bridgeBufferedFrames = 96_000
+                status.route.rateMatchBufferedFrames = 48_000
+                let estimate = status.addedDelayEstimate(at: now, tick: tick.advanced(seconds: 0.02))
+                try diagnosticRequire(estimate?.milliseconds == 42 && estimate?.appMilliseconds == 12,
+                    "Delay double-counted queues or converted frames incorrectly")
+                diagnostic.sampleRate = 96_000; status.route.sampleRate = 96_000
+                status.recordTelemetry(diagnostic, at: now)
+                try diagnosticRequire(status.addedDelayEstimate(at: now, tick: tick.advanced(seconds: 0.02))?.milliseconds == 27,
+                    "Delay ignored the active sample rate")
+                // A 3.4 ms transit, 128-frame DSP block and ~6.8 ms
+                // playback queue must show ~12.9 ms, without the speakers' 33.5 ms.
+                diagnostic.sampleRate = 48_000; diagnostic.blockFrames = 128
+                diagnostic.bufferLevelFrames = 326; status.route.sampleRate = 48_000
+                status.recordTelemetry(diagnostic, at: now)
+                status.route.transit = .init(receivedAt: tick, completedAt: tick.advanced(seconds: 0.0034))
+                let added = status.addedDelayEstimate(at: now, tick: tick.advanced(seconds: 0.02))
+                try diagnosticRequire(abs((added?.milliseconds ?? 0) - 12.8583333333) < 0.001,
+                    "Added delay must exclude the output latency shared with direct playback")
+                return .init(summary: "Added transit and buffering exclude shared device delay and duplicate queues")
+            },
+            test("H08", "Runtime Health", "Delay hides missing, stale and invalid timing") { _ in
+                let tick = PerformanceTick(rawValue: 1_000_000_000)
+                var status = AudioRuntimeStatus(isActive: true, telemetryPollingActive: true)
+                var diagnostic = healthyDSP
+                diagnostic.sampleRate = 48_000; diagnostic.blockFrames = 480
+                diagnostic.bufferLevelFrames = 0
+                status.recordTelemetry(diagnostic, at: now)
+                status.route.sampleRate = 48_000
+                status.route.transit = .init(receivedAt: tick, completedAt: tick)
+                func missing(_ changed: AudioRuntimeStatus) throws {
+                    try diagnosticRequire(changed.addedDelayEstimate(at: now, tick: tick) == nil,
+                        "Missing or invalid evidence produced a delay")
+                }
+                try diagnosticRequire(status.addedDelayEstimate(at: now, tick: tick)?.milliseconds == 10,
+                    "Added delay should be available without any hardware-latency observation")
+                var changed = status; changed.route.transit = nil; try missing(changed)
+                changed = status; changed.dspSampleRate = 0; try missing(changed)
+                changed = status; changed.dspSampleRate = .infinity; try missing(changed)
+                changed = status; changed.route.sampleRate = 96_000; try missing(changed)
+                changed = status; changed.dspBlockFrames = 0; try missing(changed)
+                changed = status; changed.isActive = false; try missing(changed)
+                changed = status; changed.telemetryPollingActive = false; try missing(changed)
+                changed = status; changed.engineState = "Stalled"; try missing(changed)
+                changed = status; changed.route.deliveryError = "Disconnected"; try missing(changed)
+                changed = status; changed.lastTelemetryUpdatedAt = now.addingTimeInterval(-3); try missing(changed)
+                try diagnosticRequire(status.addedDelayEstimate(at: now, tick: tick.advanced(seconds: 3)) == nil,
+                    "An idle source retained an old delay")
+                try diagnosticRequire(status.addedDelayEstimate(at: now, tick: .init(rawValue: 0)) == nil,
+                    "A future observation produced a delay")
+                return .init(summary: "Inactive, idle, stale, unavailable and invalid observations show no delay")
+            },
+            test("H09", "Runtime Health", "Live transit survives mixing and writing without detailed tracing") { box in
+                let received = PerformanceClock.now()
+                let source = ProducerCompletionRecord(generation: 1, sequence: 0, epoch: 1, kind: .pcm,
+                    device: 100, client: 1, process: 0, cycle: 1, start: 0, frames: 256,
+                    channels: 2, layout: .stereo, rate: 48_000, received: received,
+                    samples: Array(repeating: 0.125, count: 512))
+                let interval = ProducerCompletedInterval(device: 100, epoch: 1, start: 0, end: 256,
+                    channels: 2, layout: .stereo, rate: 48_000, contributions: [source],
+                    terminal: false, beginsEpoch: true)
+                let frame = try box.perApp.ingestCompletedInterval(interval)
+                try diagnosticRequire(frame.sourceReceivedAt == received && frame.performanceTrace == nil,
+                    "Mixing lost the receipt timestamp or enabled detailed tracing")
+                let url = box.directory.appendingPathComponent("delay.pcm")
+                FileManager.default.createFile(atPath: url.path, contents: nil)
+                let handle = try FileHandle(forWritingTo: url)
+                let router = PCMRouter()
+                defer { router.stop(); try? handle.close() }
+                await router.startFixture(camillaSink: handle)
+                try await Task.sleep(for: .milliseconds(20))
+                router.route(frame)
+                let deadline = PerformanceClock.now().advanced(seconds: 2)
+                while router.statistics.transit == nil && PerformanceClock.now() < deadline {
+                    try await Task.sleep(for: .milliseconds(5))
+                }
+                try diagnosticRequire((router.statistics.transit?.milliseconds ?? 0) >= 20,
+                    "Writer failed to publish source-to-write time")
+                await router.stopWithoutBlockingUI()
+                await router.startFixture(camillaSink: handle)
+                try diagnosticRequire(router.statistics.transit == nil,
+                    "A replacement route inherited the old delay")
+                return .init(summary: "Live receipt-to-write timing works independently of tracing and resets with the route")
             }
         ]
     }

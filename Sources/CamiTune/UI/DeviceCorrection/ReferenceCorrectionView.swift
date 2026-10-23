@@ -63,7 +63,7 @@ struct ReferenceCorrectionView: View {
                     }
                     Button("Import to Equalizer") { requestTransfer() }.disabled(dirty)
                 }.buttonStyle(.bordered)
-                if dirty { Text("Save your correction edits before transferring to Equalizer.").font(.caption).foregroundStyle(.secondary) }
+                if dirty { Label("Save your correction edits before transferring to Equalizer.", systemImage: "info.circle").font(.caption).foregroundStyle(.secondary) }
             }
             if draft == nil, dirty {
                 HStack {

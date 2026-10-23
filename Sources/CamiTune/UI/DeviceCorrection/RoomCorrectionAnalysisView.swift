@@ -99,7 +99,11 @@ struct RoomCorrectionAnalysisView: View {
         .uiInteractionAnchor("room-analysis-channel-\(channel)")
     }
     private func refresh() {
-        guard let session = editor.session else { series = []; return }
+        guard let session = editor.session else {
+            operation.cancel()
+            series = []; timingAvailable = false
+            return
+        }
         let view = view, hiddenChannels = hiddenChannels, smoothed = smoothed, smoothing = smoothing, hidden = hidden, reliability = reliability
         let comparison = comparingSessions ? editor.comparison : nil
         timingAvailable = session.positions.first(where: \.isMain)?.observations

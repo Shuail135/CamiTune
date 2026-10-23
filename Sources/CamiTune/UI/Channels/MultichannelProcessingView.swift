@@ -166,7 +166,7 @@ struct MultichannelProcessingView: View {
                     }
                 }
                 if draft.routing.routes.isEmpty {
-                    Text("No routes yet. Add a connection or start from speaker assignments.")
+                    Label("Press + to add route.", systemImage: "info.circle")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 ForEach(draft.routing.routes) { route in
@@ -570,7 +570,7 @@ struct BassManagementControlsView: View {
                 }
             }.fixedSize().disabled(availableBassGroups.isEmpty)
             if bass.groups.isEmpty {
-                Text("No speaker bass is redirected. Subwoofers receive only the source's LFE channel, when present.")
+                Label("No speaker bass is redirected. Subwoofers receive only the source's LFE channel, when present.", systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Divider()
@@ -632,7 +632,7 @@ struct SubwooferControlView: View {
                     Text("Bass management settings remain unchanged.")
                         .font(.caption).foregroundStyle(.secondary)
                 } else if settings.subwooferControl.mode == .mute {
-                    Text("Bass management is off.")
+                    Label("Bass management is off.", systemImage: "info.circle")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if settings.subwooferControl.mode == .reduce {
@@ -646,7 +646,7 @@ struct SubwooferControlView: View {
                     }.disabled(!hasSubwoofer || state.isSavingProfileSettings)
                 }
                 if !hasSubwoofer {
-                    Text("Assign a Subwoofer in Device Configuration to use these controls.")
+                    Label("Assign a Subwoofer in Device Configuration to use these controls.", systemImage: "info.circle")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if let error = state.multichannelAutosaveErrors[profile.id] {
@@ -672,18 +672,13 @@ struct SubwooferControlView: View {
 enum MultichannelRoutingEditor {
     static func enablingRouting(in profile: DeviceProfile) -> AdvancedRoutingSettings {
         var routing = profile.multichannel.routing
-        // Seed only untouched settings; preserve configurations edited while off.
+        // Initialize only the source layout; routes are added explicitly by the user.
         if routing == AdvancedRoutingSettings() {
             let source = ProfileRoutingDescriptor.sourceLayout(for: profile)
             routing.sourceLayout = RoutingSourceLayout.allCases.first {
                 $0.layout(channelCount: source.channelCount) == source
             } ?? .discrete
             routing.discreteChannelCount = source.channelCount
-            if let format = try? AudioFormatDescriptor.source(sampleRate: profile.sampleRate, layout: source) {
-                routing.routes = profile.defaultSpeakerRoutes(source: format).filter {
-                    !profile.multichannel.bass.enabled || !profile.multichannel.bass.subwooferEndpointIDs.contains($0.destination)
-                }
-            }
         }
         routing.enabled = true
         return routing

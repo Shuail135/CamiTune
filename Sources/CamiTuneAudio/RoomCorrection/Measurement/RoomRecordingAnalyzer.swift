@@ -3,7 +3,7 @@ import Foundation
 
 /// Analyzes identified blocks, independent of file storage, profiles and UI.
 package enum RoomRecordingAnalyzer {
-    package static let currentAnalysisVersion = 5
+    package static let currentAnalysisVersion = 6
     package static func analyze(_ recording: (samples: [Float], rate: Double, format: String, isLossy: Bool),
                         blocks: [RoomMeasurementBlock], session: RoomMeasurementSession) throws -> RoomMeasurementSession {
         try session.validate()

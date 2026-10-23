@@ -562,7 +562,7 @@ extension DeveloperSelfTests {
                     await f.cleanUp()
                 } catch { gate.release(); await f.cleanUp(); throw error }
             },
-            check("K35", "A disconnected selected profile releases the system output before removal") {
+            check("K46", "A disconnected selected profile releases the system output before removal") {
                 let world = DiagnosticCoreAudioWorld()
                 let profile = DeviceProfile(name: "Unplugged", outputDeviceUID: "unplugged", outputDeviceName: "Unplugged")
                 let uid = ProfileRoutingDescriptor.uid(for: profile.id)

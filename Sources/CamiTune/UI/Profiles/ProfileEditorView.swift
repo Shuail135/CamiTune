@@ -52,34 +52,39 @@ struct ProfileEditorView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .firstTextBaseline) {
-                    if isRenamingProfile {
-                        TextField("Profile name", text: $profileNameDraft)
-                            .font(.largeTitle.bold())
-                            .textFieldStyle(.plain)
-                            .frame(minWidth: 180, maxWidth: 480)
-                            .focused($profileNameFocused)
-                            .onSubmit { commitProfileRename() }
-                            .onExitCommand { cancelProfileRename() }
-                    } else {
-                        Button { beginProfileRename() } label: {
-                            HStack(spacing: 8) {
-                                Text(profile.name).font(.largeTitle.bold())
-                                Image(systemName: "pencil")
-                                    .font(.body).foregroundStyle(.secondary)
-                                    .opacity(titleHovered || titleFocused ? 1 : 0)
-                            }
-                            .contentShape(Rectangle())
+                    Button { beginProfileRename() } label: {
+                        HStack(spacing: 8) {
+                            Text(profile.name)
+                                .font(.largeTitle.bold())
+                                .lineLimit(1)
+                                .alignmentGuide(.profileNameTrailing) { $0[.trailing] }
+                            Image(systemName: "pencil")
+                                .font(.body).foregroundStyle(.secondary)
+                                .opacity(titleHovered || titleFocused ? 1 : 0)
                         }
-                        .buttonStyle(.plain)
-                        .focused($titleFocused)
-                        .onHover { titleHovered = $0 }
-                        .accessibilityLabel("Rename \(profile.name)")
+                        .contentShape(Rectangle())
                     }
-                    ProfileConnectionStatusView(
-                        coreAudio: coreAudio,
-                        outputDeviceUID: profile.outputDeviceUID
-                    )
-                    Spacer()
+                    .buttonStyle(.plain)
+                    .focused($titleFocused)
+                    .onHover { titleHovered = $0 }
+                    .accessibilityLabel("Rename \(profile.name)")
+                    .disabled(isRenamingProfile)
+                    .accessibilityHidden(isRenamingProfile)
+                    .opacity(isRenamingProfile ? 0 : 1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // Retain the title's size and baseline while editing.
+                    .overlay(alignment: .leadingFirstTextBaseline) {
+                        if isRenamingProfile {
+                            TextField("Profile name", text: $profileNameDraft)
+                                .font(.largeTitle.bold())
+                                .textFieldStyle(.plain)
+                                .frame(maxWidth: 480)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .focused($profileNameFocused)
+                                .onSubmit { commitProfileRename() }
+                                .onExitCommand { cancelProfileRename() }
+                        }
+                    }
                     Button { settingsDestination = .general } label: {
                         Image(systemName: "gearshape")
                             .font(.system(size: 20, weight: .regular))
@@ -99,6 +104,16 @@ struct ProfileEditorView: View {
                     .toggleStyle(.switch)
                     .labelsHidden()
                     .accessibilityLabel("Enable Profile")
+                }
+                .overlay(alignment: Alignment(horizontal: .profileNameTrailing, vertical: .bottom)) {
+                    ProfileConnectionStatusView(
+                        coreAudio: coreAudio,
+                        outputDeviceUID: profile.outputDeviceUID
+                    )
+                    .fixedSize()
+                    .alignmentGuide(.profileNameTrailing) { $0[.trailing] }
+                    // Use the existing header gap without changing layout size.
+                    .alignmentGuide(.bottom) { $0[.top] - 4 }
                 }
 
                 ForEach(Array(sections.prefix(preparedSectionCount))) { section in
@@ -178,10 +193,10 @@ struct ProfileEditorView: View {
         case .meters:
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Meters & Status").font(.title3.bold())
+                    Text(ProfileSection.meters.title).font(.title3.bold())
                     SignalMetersView(meters: state.meters, profile: profile)
                     Divider()
-                    AudioRuntimeStatusView(monitor: state.meters, profileID: profile.id)
+                    MeterStatusDisclosure(monitor: state.meters, profileID: profile.id)
                 }.padding(6)
             }
         case .spectrum:
@@ -190,6 +205,8 @@ struct ProfileEditorView: View {
             SpatialAudioEditorView(state: state, profile: $profile)
         case .deviceCorrection:
             DeviceCorrectionSectionView(state: state, profile: $profile)
+        case .plugins:
+            PluginRackView(state: state, profile: $profile)
         case .equalizer:
             // Keep the callback independent of the page's view state.
             let profileBinding = $profile
@@ -293,6 +310,16 @@ struct ProfileEditorView: View {
 
 }
 
+
+private extension HorizontalAlignment {
+    private enum ProfileNameTrailing: AlignmentID {
+        static func defaultValue(in context: ViewDimensions) -> CGFloat {
+            context[.trailing]
+        }
+    }
+
+    static let profileNameTrailing = HorizontalAlignment(ProfileNameTrailing.self)
+}
 
 private struct ProfileEditorSectionRevision: Equatable {
     let profile: DeviceProfile

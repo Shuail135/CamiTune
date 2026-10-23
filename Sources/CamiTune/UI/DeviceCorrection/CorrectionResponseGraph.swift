@@ -12,6 +12,7 @@ struct CorrectionResponseGraph: View {
     @StateObject private var responseCache = CorrectionGraphResponseCache()
     @State private var editingBand: EQBand?
     @State private var dragOrigin: EQBand?
+    @State private var dragRange: ClosedRange<Double>?
     let profile: DeviceCorrectionProfile
     let sampleRate: Double
     var onEdit: ((EQBand) -> Void)? = nil
@@ -51,7 +52,8 @@ struct CorrectionResponseGraph: View {
             let corrected = series.corrected
             let equalizer = series.equalizer
             let error = series.error
-            let levelRange: ClosedRange<Double> = onEdit == nil ? levelRange(for: [measurement, target, corrected, equalizer, error]) : -24...24
+            let desired = presentation.speakerMode == .nearField ? series.desired : profile.curve.points.map { ($0.frequency, $0.gainDB) }
+            let levelRange = dragRange ?? CorrectionGraphDisplay.levelRange(for: [measurement, target, corrected, equalizer, error, desired])
             let levelTicks = ticks(for: levelRange)
             let frequencyLabels = CorrectionGraphFrequencyAxis.labels(plotWidth: plot.width)
             ZStack {
@@ -84,7 +86,7 @@ struct CorrectionResponseGraph: View {
                         (.corrected, corrected, .green, responseStroke(lineWidth: 2)),
                         (.equalizer, equalizer, .orange, responseStroke(lineWidth: 1.4)),
                         (.residual, error, .red, responseStroke(lineWidth: 1.3, dash: [3, 3])),
-                        (.desired, presentation.speakerMode == .nearField ? series.desired : profile.curve.points.map { ($0.frequency, $0.gainDB) }, .purple, responseStroke(lineWidth: 1.3, dash: [4, 3]))
+                        (.desired, desired, .purple, responseStroke(lineWidth: 1.3, dash: [4, 3]))
                     ]
                     for (curve, points, color, stroke) in curves where presentation.curves.contains(curve) && visibility.wrappedValue.contains(curve) {
                         context.stroke(responsePath(points, plot: plot, range: levelRange), with: .color(color), style: stroke)
@@ -109,7 +111,7 @@ struct CorrectionResponseGraph: View {
                 if onEdit != nil && controlPointVisibility.wrappedValue {
                     ForEach(filters) { band in
                         if let level = series.handleLevel(at: band.frequency, visibleCurves: visibility.wrappedValue) {
-                            let center = CGPoint(x: x(band.frequency, plot: plot), y: y(level, plot: plot, range: levelRange))
+                            let center = CorrectionGraphDisplay.controlPosition(x: x(band.frequency, plot: plot), y: y(level, plot: plot, range: levelRange), plot: plot)
                             Circle().fill(band.enabled ? Color.accentColor : Color.secondary)
                                 .frame(width: selection == band.id ? 13 : 10, height: selection == band.id ? 13 : 10)
                                 .overlay(Circle().stroke(.background, lineWidth: 2))
@@ -128,7 +130,7 @@ struct CorrectionResponseGraph: View {
                                 ForEach([-1.0, 1.0], id: \.self) { side in
                                     let frequency = min(20_000, max(20, band.frequency * pow(2, side * width / 2)))
                                     Rectangle().fill(Color.accentColor).frame(width: 5, height: 20)
-                                        .position(x: x(frequency, plot: plot), y: center.y)
+                                        .position(CorrectionGraphDisplay.controlPosition(x: x(frequency, plot: plot), y: center.y, plot: plot))
                                         .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("correctionPlot"))
                                             .onChanged { value in
                                                 updateDrag(band, translation: value.translation, plot: plot, range: levelRange, bandwidthSide: side)
@@ -182,10 +184,9 @@ struct CorrectionResponseGraph: View {
 
     private func updateDrag(_ band: EQBand, translation: CGSize, plot: CGRect, range: ClosedRange<Double>, bandwidthSide: Double? = nil) {
         let origin = dragOrigin ?? band
-        if dragOrigin == nil { dragOrigin = origin }
+        if dragOrigin == nil { dragOrigin = origin; dragRange = range }
         editingBand = CorrectionGraphDrag.band(from: origin, translation: translation, plot: plot,
-            range: range, sampleRate: sampleRate, bandwidthSide: bandwidthSide,
-            speakerSettings: profile.speakerProvenance?.settings)
+            range: dragRange ?? range, sampleRate: sampleRate, bandwidthSide: bandwidthSide)
     }
 
     private func finishDrag() {
@@ -195,6 +196,7 @@ struct CorrectionResponseGraph: View {
         }
         editingBand = nil
         dragOrigin = nil
+        dragRange = nil
     }
 
     private func overlayToggle(_ curve: CorrectionGraphCurve, color: Color) -> some View {
@@ -264,16 +266,6 @@ struct CorrectionResponseGraph: View {
         plot.minX + min(plot.width, max(0, log(frequency / 20) / log(1_000) * plot.width))
     }
 
-    private func levelRange(
-        for series: [[(Double, Double)]]
-    ) -> ClosedRange<Double> {
-        let maximumMagnitude = series.lazy.flatMap { $0 }.map {
-            abs($0.1)
-        }.filter(\.isFinite).max() ?? 18
-        let extent = max(18, ceil(maximumMagnitude * 1.08 / 6) * 6)
-        return -extent...extent
-    }
-
     private func ticks(for range: ClosedRange<Double>) -> [Double] {
         let extent = range.upperBound
         return [-extent, -extent / 2, 0, extent / 2, extent]
@@ -295,6 +287,20 @@ struct CorrectionResponseGraph: View {
         return rounded > 0 ? "+\(rounded)" : "\(rounded)"
     }
 
+}
+
+enum CorrectionGraphDisplay {
+    static func levelRange(for series: [[(Double, Double)]]) -> ClosedRange<Double> {
+        let magnitude = series.lazy.flatMap { $0 }.map { abs($0.1) }.filter(\.isFinite).max() ?? 0
+        let extent = max(24, ceil(magnitude * 1.08 / 6) * 6)
+        return -extent...extent
+    }
+
+    static func controlPosition(x: Double, y: Double, plot: CGRect) -> CGPoint {
+        // Include the entire circle or bandwidth handle inside the plot.
+        let inset = plot.insetBy(dx: min(8, plot.width / 2), dy: min(10, plot.height / 2))
+        return CGPoint(x: min(inset.maxX, max(inset.minX, x)), y: min(inset.maxY, max(inset.minY, y)))
+    }
 }
 
 /// Speaker graphs share drawing/interaction, with only physically meaningful
@@ -472,29 +478,28 @@ final class CorrectionGraphResponseCache: ObservableObject {
 /// change the filter, and even a one-pixel movement updates the response.
 enum CorrectionGraphDrag {
     static func band(from origin: EQBand, translation: CGSize, plot: CGRect,
-                     range: ClosedRange<Double>, sampleRate: Double, bandwidthSide: Double? = nil,
-                     speakerSettings: SpeakerCorrectionSettings? = nil) -> EQBand {
+                     range: ClosedRange<Double>, sampleRate: Double, bandwidthSide: Double? = nil) -> EQBand {
         guard translation != .zero else { return origin }
         var edited = origin
         if let side = bandwidthSide {
+            guard translation.width != 0 else { return origin }
             let q = origin.q ?? 0.707
             let width = 2 * asinh(1 / (2 * q)) / log(2)
             let edge = min(20_000, max(20, origin.frequency * pow(2, side * width / 2)))
             let position = min(1, max(0, log(edge / 20) / log(1_000) + translation.width / plot.width))
             let movedEdge = 20 * pow(1_000, position)
             let octaves = max(0.02, 2 * abs(log2(movedEdge / origin.frequency)))
-            edited.q = min(12, max(0.1, 1 / (2 * sinh(log(2) * octaves / 2))))
+            edited.q = 1 / (2 * sinh(log(2) * octaves / 2))
             edited.bandwidth = nil
         } else {
             let position = min(1, max(0, log(origin.frequency / 20) / log(1_000) + translation.width / plot.width))
-            edited.frequency = min(sampleRate * 0.49, 20 * pow(1_000, position))
+            if translation.width != 0 {
+                edited.frequency = min(sampleRate * 0.49, 20 * pow(1_000, position))
+            }
             let gain = (origin.gain ?? 0) - translation.height / plot.height * (range.upperBound - range.lowerBound)
-            edited.gain = min(12, max(-24, gain))
-        }
-        if let bounds = speakerSettings {
-            edited.frequency = min(min(bounds.maxFrequency, sampleRate * 0.49), max(bounds.minFrequency, edited.frequency))
-            edited.gain = min(bounds.maximumGainDB, max(bounds.minimumGainDB, edited.gain ?? 0))
-            edited.q = min(bounds.maximumQ, max(bounds.minimumQ, edited.q ?? 1))
+            if translation.height != 0 {
+                edited.gain = min(12, min(range.upperBound, max(range.lowerBound, gain)))
+            }
         }
         return edited
     }

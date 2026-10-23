@@ -57,6 +57,10 @@ struct ProfileDeletionSnapshot: Equatable, Sendable {
     var selectedProfileID: UUID?
 }
 enum HistoryState: Equatable, Sendable {
+    case pluginOrder([UUID])
+    case pluginRack(PluginRack)
+    case pluginMIDI(PluginMIDIConfiguration)
+    case audioBuffer(AudioBufferSetting?)
     case deviceCorrection(DeviceCorrectionProfile?)
     case globalEQ(GlobalEQHistoryState), channel(PerChannelEditorSnapshot)
     case crossfeed(CrossfeedHistoryState), convolution(ConvolutionHistoryState)

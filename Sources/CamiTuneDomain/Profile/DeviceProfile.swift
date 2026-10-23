@@ -37,7 +37,38 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     package var lockOutputVolume: Bool = false
     package var outputVolumeScalar: Double = 0.0625
     package var sampleRate: Int = 48_000
-    package var chunkSize: Int = 1024
+    package static let audioBufferSizes = [128, 256, 512, 1024, 2048]
+    /// The preference is separate from the positive, resolved engine size.
+    package var chunkSize: Int = 1024 {
+        didSet { usesGlobalAudioBuffer = false; audioBufferSetting = .fixed(chunkSize) }
+    }
+    package private(set) var usesGlobalAudioBuffer = true
+    package private(set) var audioBufferSetting: AudioBufferSetting = .fixed(1024)
+    package var audioBufferOverride: AudioBufferSetting? {
+        get { usesGlobalAudioBuffer ? nil : audioBufferSetting }
+        set {
+            if let newValue {
+                if let frames = newValue.fixedFrames { chunkSize = frames }
+                audioBufferSetting = newValue
+            }
+            usesGlobalAudioBuffer = newValue == nil
+        }
+    }
+    package mutating func resolveAudioBuffer(default setting: AudioBufferSetting) {
+        let inherited = usesGlobalAudioBuffer
+        let resolved = inherited ? setting : audioBufferSetting
+        chunkSize = resolved.fixedFrames ?? AutomaticAudioBufferPolicy.startingFrames(sampleRate: sampleRate)
+        audioBufferSetting = resolved
+        usesGlobalAudioBuffer = inherited
+    }
+    package mutating func resolveAutomaticAudioBuffer(frames: Int) {
+        guard audioBufferSetting == .automatic, AutomaticAudioBufferPolicy.sizes.contains(frames) else { return }
+        let inherited = usesGlobalAudioBuffer
+        chunkSize = frames
+        audioBufferSetting = .automatic
+        usesGlobalAudioBuffer = inherited
+    }
+    package var pluginRack = PluginRack()
     package var playbackMode: PlaybackMode = .direct
     package var spatialRenderingMode: SpatialRenderingMode = .standard
     package var spatialSettings = SpatialRenderSettings()
@@ -229,6 +260,8 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         self.outputVolumeScalar = outputVolumeScalar
         self.sampleRate = sampleRate
         self.chunkSize = chunkSize
+        self.usesGlobalAudioBuffer = chunkSize == 1024
+        self.audioBufferSetting = .fixed(chunkSize)
         self.spatialRenderingMode = spatialRenderingMode
         self.spatialSettings = .migrated(from: spatialRenderingMode)
         self.playbackMode = spatialRenderingMode == .standard ? .direct : .spatialRender
@@ -358,7 +391,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
     private enum CodingKeys: String, CodingKey {
         case id, name, outputDevice, outputDeviceUID, outputDeviceName, isEnabled, endpointKind, deviceTypeConfigurations
         case autoActivateWhenProfileDeviceSelected, playbackModesByEndpoint, sectionLayout, audioInterface, personalReferenceCorrections, physicalChannelProcessing, speakerTopologyNeedsReview
-        case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize, playbackMode
+        case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize, usesGlobalAudioBuffer, audioBufferSetting, playbackMode, pluginRack
         case spatialRenderingMode, spatialContentMode, spatialListenerProfile, spatialAcousticProfile, equalizerAPOText, processing
         case virtualSurroundLayout, spatialSettings, speakerTopology, usesReferenceSpeakers, multichannel, speakerVerification
     }
@@ -404,6 +437,10 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         outputVolumeScalar = try values.decodeIfPresent(Double.self, forKey: .outputVolumeScalar) ?? 0.0625
         sampleRate = try values.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 48_000
         chunkSize = try values.decodeIfPresent(Int.self, forKey: .chunkSize) ?? 1024
+        audioBufferSetting = try values.decodeIfPresent(AudioBufferSetting.self, forKey: .audioBufferSetting) ?? .fixed(chunkSize)
+        // Preserve existing custom sizes; legacy defaults start inheriting.
+        usesGlobalAudioBuffer = try values.decodeIfPresent(Bool.self, forKey: .usesGlobalAudioBuffer) ?? (chunkSize == 1024)
+        pluginRack = try values.decodeIfPresent(PluginRack.self, forKey: .pluginRack) ?? PluginRack()
         spatialRenderingMode = try values.decodeIfPresent(
             SpatialRenderingMode.self,
             forKey: .spatialRenderingMode
@@ -486,6 +523,9 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         try values.encode(outputVolumeScalar, forKey: .outputVolumeScalar)
         try values.encode(sampleRate, forKey: .sampleRate)
         try values.encode(chunkSize, forKey: .chunkSize)
+        try values.encode(usesGlobalAudioBuffer, forKey: .usesGlobalAudioBuffer)
+        try values.encode(audioBufferSetting, forKey: .audioBufferSetting)
+        try values.encode(pluginRack, forKey: .pluginRack)
         try values.encode(playbackMode, forKey: .playbackMode)
         try values.encode(spatialRenderingMode, forKey: .spatialRenderingMode)
         try values.encode(spatialSettings, forKey: .spatialSettings)

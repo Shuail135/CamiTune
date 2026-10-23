@@ -64,8 +64,8 @@ protocol ProfileEndpointPublicationBackend {
     func checkSupport() throws
     func current() throws -> [ProfileEndpointState]
     func apply(_ endpoints: [ProfileEndpointState]) throws
-    func endpointsAreReady(_ uids: Set<String>) -> Bool
-    func waitForVisibility(_ uids: Set<String>, present: Bool) throws
+    func endpointsAreReady(_ endpoints: [ProfileEndpointState]) -> Bool
+    func waitForVisibility(_ endpoints: [ProfileEndpointState], present: Bool) throws
     func defaultOutputUID() throws -> String?
     func restoreDefaultOutput(_ uid: String) throws
 }
@@ -83,14 +83,13 @@ enum ProfileEndpointPublication {
         }
         try backend.checkSupport()
         let previous = try backend.current()
-        // Driver metadata can lead HAL's device/control graph. A matching
+        // Driver metadata can lead HAL's device/control/format graph. A matching
         // descriptor alone does not acknowledge publication after startup or
         // a lost device-list notification. Never wait for cached display names.
-        let desiredUIDs = Set(desired.map(\.uid))
         if equivalent(previous, desired) {
-            if !backend.endpointsAreReady(desiredUIDs) {
+            if !backend.endpointsAreReady(desired) {
                 try backend.apply(desired)
-                try backend.waitForVisibility(desiredUIDs, present: true)
+                try backend.waitForVisibility(desired, present: true)
             }
             return
         }
@@ -120,7 +119,7 @@ enum ProfileEndpointPublication {
     private static func apply(from current: [ProfileEndpointState], to desired: [ProfileEndpointState],
                               using backend: ProfileEndpointPublicationBackend) throws {
         let retained = current.filter { old in desired.contains { $0.uid == old.uid && $0.format == old.format } }
-        let removed = Set(current.map(\.uid)).subtracting(retained.map(\.uid))
+        let removed = current.filter { old in !retained.contains { $0.uid == old.uid } }
         if !removed.isEmpty {
             // The driver rejects removal while client IO runs. No partial change
             // occurs in that case; callers can report it and retain the old route.
@@ -128,7 +127,7 @@ enum ProfileEndpointPublication {
             try backend.waitForVisibility(removed, present: false)
         }
         try backend.apply(desired)
-        try backend.waitForVisibility(Set(desired.map(\.uid)), present: true)
+        try backend.waitForVisibility(desired, present: true)
         guard equivalent(try backend.current(), desired) else {
             throw ProfileSettingsError.runtime("The driver did not retain the requested profile formats.")
         }
@@ -161,21 +160,25 @@ struct NativeProfileEndpointBackend: ProfileEndpointPublicationBackend {
         }
     }
 
-    func waitForVisibility(_ uids: Set<String>, present: Bool) throws {
+    func waitForVisibility(_ endpoints: [ProfileEndpointState], present: Bool) throws {
         let result = CoreAudioConditionWaiter.waitSynchronously(backend: .live, event: .devices, timeout: .seconds(3)) {
-            present ? endpointsAreReady(uids) : uids.allSatisfy { Self.resolve($0) == kAudioObjectUnknown }
+            present ? endpointsAreReady(endpoints) : endpoints.allSatisfy { Self.resolve($0.uid) == kAudioObjectUnknown }
         }
         waitObserver(result)
         if result.source == .cancelled { throw CancellationError() }
         guard result.source != .timedOut else {
-            throw ProfileSettingsError.runtime("macOS did not finish preparing the profile audio devices and their volume controls.")
+            throw ProfileSettingsError.runtime("macOS did not finish preparing the profile audio devices with the requested channel layouts, sample rates and volume controls.")
         }
     }
 
-    func endpointsAreReady(_ uids: Set<String>) -> Bool {
-        uids.allSatisfy { uid in
-            let id = Self.resolve(uid)
+    func endpointsAreReady(_ endpoints: [ProfileEndpointState]) -> Bool {
+        endpoints.allSatisfy { endpoint in
+            let id = Self.resolve(endpoint.uid)
             guard id != kAudioObjectUnknown else { return false }
+            // Read the public HAL properties that players negotiate against,
+            // not just the driver's private publication acknowledgement.
+            if let format = endpoint.format,
+               !CoreAudioProfileFormat().matches(deviceID: id, expected: format) { return false }
             // These are the device-level properties used by Sound Settings
             // and media keys, not just the driver's private control objects.
             for selector in [kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyMute] {

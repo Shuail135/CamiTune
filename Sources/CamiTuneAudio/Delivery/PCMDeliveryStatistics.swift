@@ -1,5 +1,12 @@
 import Foundation
 
+/// A silent writer generation. Any source/effect activity invalidates a pending
+/// backend handoff, even if that activity ends before preparation completes.
+package struct AudioBufferHandoffToken: Equatable, Sendable {
+    let pipelineID: UUID
+    let activity: UInt64
+}
+
 package struct PCMProducerDrainStatistics: Sendable, Codable, Equatable {
     package init(completedDrains: UInt64 = 0, resamplerTailFrames: UInt64 = 0, backendPaddingFrames: UInt64 = 0) {
         self.completedDrains = completedDrains
@@ -10,6 +17,17 @@ package struct PCMProducerDrainStatistics: Sendable, Codable, Equatable {
     package var completedDrains: UInt64 = 0
     package var resamplerTailFrames: UInt64 = 0
     package var backendPaddingFrames: UInt64 = 0
+}
+
+/// Lightweight live observation; independent of opt-in performance captures.
+package struct PCMTransitObservation: Sendable, Equatable {
+    package let milliseconds: Double
+    package let completedAt: PerformanceTick
+
+    package init(receivedAt: PerformanceTick, completedAt: PerformanceTick) {
+        milliseconds = PerformanceClock.milliseconds(receivedAt, completedAt)
+        self.completedAt = completedAt
+    }
 }
 
 package struct PCMDeliveryStatistics: Sendable {
@@ -23,6 +41,7 @@ package struct PCMDeliveryStatistics: Sendable {
         self.drains = drains
     }
 
+    package var transit: PCMTransitObservation?
     package var droppedFrames: UInt64 = 0
     package var recoveries: UInt64 = 0
     package var writeFailures: UInt64 = 0
@@ -32,4 +51,13 @@ package struct PCMDeliveryStatistics: Sendable {
     package var drains = PCMProducerDrainStatistics()
 
 
+}
+
+/// Read-only work measurements. This never queues, edits, or resamples audio.
+package struct AudioBufferWorkObservation: Sendable {
+    package var audioSeconds = 0.0
+    package var writerLoad = 0.0
+    package var pluginLoad = 0.0
+    package var pluginFailed = false
+    package init() {}
 }

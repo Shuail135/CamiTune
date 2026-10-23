@@ -35,7 +35,7 @@ if ["1", "room"].contains(ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TE
         exclude: ["Fixtures", "README.md"]))
 }
 
-if ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] == "1" {
+if ["1", "correction"].contains(ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] ?? "") {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     let path = "Tests/DeviceCorrectionRegression"
     if FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path) {

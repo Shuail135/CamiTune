@@ -530,11 +530,7 @@ struct MeteredApplicationVolumeSlider: View {
                     .scaleEffect(x: meterAmount, y: 1, anchor: .leading)
                     .position(x: track.midX, y: track.midY)
                     .animation(reduceMotion ? nil : .linear(duration: UIRenderPerformance.animatedLevelTransitionDuration), value: meterAmount)
-                Circle()
-                    .fill(Color(nsColor: .controlBackgroundColor))
-                    .overlay(Circle().stroke(Color.primary.opacity(0.75), lineWidth: 1.5))
-                    .frame(width: 17, height: 17)
-                    .shadow(color: .black.opacity(0.2), radius: 1.5, y: 1)
+                SliderThumb(isPressed: interactionVolume != nil)
                     .position(x: thumbX, y: track.midY)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)

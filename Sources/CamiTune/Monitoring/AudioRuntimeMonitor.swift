@@ -50,6 +50,7 @@ struct PCMLevelSnapshot: Equatable, Sendable {
 }
 
 struct AudioRouteDiagnostics: Equatable, Sendable {
+    var transit: PCMTransitObservation?
     var pcmQueue = PCMQueueSnapshot()
     var bridgePacketCount: UInt64 = 0
     var bridgeLatestPacketFrames: UInt32 = 0
@@ -81,6 +82,7 @@ struct AudioRouteDiagnostics: Equatable, Sendable {
         transport: SystemAudioBridgeTransport.Statistics,
         router: PCMRouter.Statistics
     ) {
+        transit = router.transit
         pcmQueue = router.camillaQueue
         bridgePacketCount = transport.packetCount
         bridgeLatestPacketFrames = transport.latestPacketFrames
@@ -265,6 +267,16 @@ private final class RuntimePresentationGate: @unchecked Sendable {
     }
 }
 
+struct AudioAddedDelayEstimate: Equatable, Sendable {
+    let appMilliseconds: Double
+    let processingMilliseconds: Double
+    let playbackMilliseconds: Double
+
+    var milliseconds: Double {
+        appMilliseconds + processingMilliseconds + playbackMilliseconds
+    }
+}
+
 struct AudioRuntimeStatus: Equatable, Sendable {
     var isActive = false
     var engineIsRunning: Bool?
@@ -274,6 +286,8 @@ struct AudioRuntimeStatus: Equatable, Sendable {
     var processingLoadPercent = 0.0
     var resamplerLoadPercent = 0.0
     var dspBufferLevelFrames: UInt64 = 0
+    var dspSampleRate: Double?
+    var dspBlockFrames: Int?
     var camillaRateAdjustment = 1.0
     var dspClippedSamples: UInt64 = 0
     var sourceClippedSamples: UInt64 = 0
@@ -286,6 +300,29 @@ struct AudioRuntimeStatus: Equatable, Sendable {
     var lastUpdated: Date?
 
     static let inactive = AudioRuntimeStatus()
+
+    /// Estimated extra transit and buffering versus direct playback through the
+    /// same output device at the same rate and I/O buffer size. Shared device,
+    /// stream, safety and hardware-buffer delay cancels out of that comparison.
+    /// This is not a measured bypass comparison and does not account for every
+    /// effect's algorithmic delay. Transit already includes
+    /// producer completion, per-app processing, the writer queue and rendering:
+    /// adding queue occupancy here would count those stages twice. The raw
+    /// bridge ring stores overlapping client blocks and is not timeline delay.
+    func addedDelayEstimate(at now: Date = Date(), tick: PerformanceTick = PerformanceClock.now()) -> AudioAddedDelayEstimate? {
+        guard isActive, hasFreshTelemetry(at: now), engineState == "Running",
+              engineIsRunning != false, transportError == nil,
+              route.deliveryError == nil, route.sourceFormatError == nil,
+              let transit = route.transit, tick >= transit.completedAt,
+              PerformanceClock.milliseconds(transit.completedAt, tick) <= 2_500,
+              transit.milliseconds.isFinite, transit.milliseconds >= 0,
+              let rate = dspSampleRate, rate.isFinite, rate > 0,
+              route.sampleRate.isFinite, abs(route.sampleRate - rate) < 0.5,
+              let block = dspBlockFrames, block > 0 else { return nil }
+        return .init(appMilliseconds: transit.milliseconds,
+                     processingMilliseconds: Double(block) * 1_000 / rate,
+                     playbackMilliseconds: Double(dspBufferLevelFrames) * 1_000 / rate)
+    }
 
     var effectiveRateAdjustmentPPM: Double {
         if abs(route.rateAdjustmentPPM) >= 0.005 { return route.rateAdjustmentPPM }
@@ -358,6 +395,8 @@ struct AudioRuntimeStatus: Equatable, Sendable {
         processingLoadPercent = diagnostics.processingLoadPercent
         resamplerLoadPercent = diagnostics.resamplerLoadPercent
         dspBufferLevelFrames = diagnostics.bufferLevelFrames
+        dspSampleRate = diagnostics.sampleRate
+        dspBlockFrames = diagnostics.blockFrames
         camillaRateAdjustment = diagnostics.rateAdjustment
         dspClippedSamples = diagnostics.clippedSamples
         telemetryAvailable = true

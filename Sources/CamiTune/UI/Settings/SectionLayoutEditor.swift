@@ -12,7 +12,7 @@ struct SectionLayoutEditor: View {
             Picker("Default Equalizer", selection: $layout.equalizer) {
                 ForEach(EqualizerPresentation.allCases) { Text($0.title).tag($0) }
             }
-            Text("Drag the reorder symbol to arrange sections. Hidden sections keep their processing settings.")
+            Label("Drag the reorder symbol to arrange sections. Hidden sections keep their processing settings.", systemImage: "info.circle")
                 .font(.caption).foregroundStyle(.secondary)
             SectionLayoutList(type: type, layout: $layout)
                 .frame(minHeight: 280)
@@ -109,9 +109,11 @@ final class SectionLayoutTableView: NSTableView, NSTableViewDataSource, NSTableV
             self.onChange(self.sectionLayout)
         }
         if section == .subwooferControl {
-            cell.configureAutomaticVisibility(sectionLayout.subwooferVisibility) { [weak self] mode in
+            let mode: SectionVisibility = sectionLayout.explicitlyShown.contains(.subwooferControl) ? .shown : .automatic
+            cell.configureAutomaticVisibility(mode) { [weak self] mode in
                 guard let self else { return }
-                self.sectionLayout.subwooferVisibility = mode
+                if mode == .shown { self.sectionLayout.explicitlyShown.insert(.subwooferControl) }
+                else { self.sectionLayout.explicitlyShown.remove(.subwooferControl) }
                 self.onChange(self.sectionLayout)
             }
         }
@@ -173,7 +175,12 @@ final class SectionLayoutCellView: NSTableCellView {
     let handle = NSImageView()
     let label = NSTextField(labelWithString: "")
     let visibility = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private static let automaticVisibilityModes: [SectionVisibility] = [.automatic, .shown]
     private let automaticVisibility = NSPopUpButton()
+    private lazy var automaticVisibilityConstraints = [
+        automaticVisibility.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 10),
+        automaticVisibility.trailingAnchor.constraint(lessThanOrEqualTo: visibility.leadingAnchor, constant: -10)
+    ]
     private var onAutomaticVisibilityChange: (SectionVisibility) -> Void = { _ in }
     private var onVisibilityChange: (Bool) -> Void = { _ in }
 
@@ -185,7 +192,7 @@ final class SectionLayoutCellView: NSTableCellView {
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         visibility.target = self
         visibility.action = #selector(toggleVisibility)
-        automaticVisibility.addItems(withTitles: SectionVisibility.allCases.map(\.title))
+        automaticVisibility.addItems(withTitles: Self.automaticVisibilityModes.map(\.title))
         automaticVisibility.controlSize = .small
         automaticVisibility.target = self
         automaticVisibility.action = #selector(changeAutomaticVisibility)
@@ -200,9 +207,7 @@ final class SectionLayoutCellView: NSTableCellView {
             handle.heightAnchor.constraint(equalToConstant: 24),
             label.leadingAnchor.constraint(equalTo: handle.trailingAnchor, constant: 10),
             label.trailingAnchor.constraint(lessThanOrEqualTo: visibility.leadingAnchor, constant: -10),
-            visibility.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            automaticVisibility.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: automaticVisibility.leadingAnchor, constant: -10)
+            visibility.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8)
         ])
         imageView = handle
         textField = label
@@ -212,6 +217,7 @@ final class SectionLayoutCellView: NSTableCellView {
 
     func configure(section: ProfileSection, shown: Bool, onChange: @escaping (Bool) -> Void) {
         automaticVisibility.isHidden = true
+        NSLayoutConstraint.deactivate(automaticVisibilityConstraints)
         let locked = section == .deviceSetup
         label.stringValue = section.title
         handle.image = NSImage(systemSymbolName: locked ? "lock.fill" : "line.3.horizontal",
@@ -224,12 +230,16 @@ final class SectionLayoutCellView: NSTableCellView {
         onVisibilityChange = onChange
     }
 
-    @objc private func toggleVisibility() { onVisibilityChange(visibility.state == .on) }
+    @objc private func toggleVisibility() {
+        automaticVisibility.isEnabled = visibility.state == .on
+        onVisibilityChange(visibility.state == .on)
+    }
 
     func configureAutomaticVisibility(_ mode: SectionVisibility, onChange: @escaping (SectionVisibility) -> Void) {
-        visibility.isHidden = true
         automaticVisibility.isHidden = false
-        automaticVisibility.selectItem(at: SectionVisibility.allCases.firstIndex(of: mode) ?? 0)
+        automaticVisibility.isEnabled = visibility.state == .on
+        NSLayoutConstraint.activate(automaticVisibilityConstraints)
+        automaticVisibility.selectItem(at: Self.automaticVisibilityModes.firstIndex(of: mode) ?? 0)
         automaticVisibility.setAccessibilityLabel("Subwoofer Control visibility")
         automaticVisibility.setAccessibilityHelp("Automatic shows this section when speakers and a subwoofer are configured.")
         onAutomaticVisibilityChange = onChange
@@ -237,8 +247,8 @@ final class SectionLayoutCellView: NSTableCellView {
 
     @objc private func changeAutomaticVisibility() {
         let index = automaticVisibility.indexOfSelectedItem
-        guard SectionVisibility.allCases.indices.contains(index) else { return }
-        onAutomaticVisibilityChange(SectionVisibility.allCases[index])
+        guard Self.automaticVisibilityModes.indices.contains(index) else { return }
+        onAutomaticVisibilityChange(Self.automaticVisibilityModes[index])
     }
 
     override var draggingImageComponents: [NSDraggingImageComponent] {

@@ -38,7 +38,7 @@ package struct RoomMeasurementAnalyzer {
         let endTemplate = RoomMeasurementSignal.marker(token: block.token, end: true, rate: detectionRate)
         let startQuadrature = RoomMeasurementSignal.marker(token: block.token, end: false, rate: detectionRate, phase: .pi / 2)
         let endQuadrature = RoomMeasurementSignal.marker(token: block.token, end: true, rate: detectionRate, phase: .pi / 2)
-        var located: (Double, Double, Double)?
+        var located: (time: Double, ratio: Double, quality: Double, agreement: Double)?
         var searchRanges: [Range<Int>] = []
         if let expectedMarkerTime, expectedMarkerTime.isFinite {
             let lo = Int(min(Double(detection.count), max(0, expectedMarkerTime - 1) * detectionRate))
@@ -51,39 +51,62 @@ package struct RoomMeasurementAnalyzer {
         for range in searchRanges {
             let starts = try correlations(Array(detection[range]), template: startTemplate, quadrature: startQuadrature)
                 .map { (offset: $0.offset + range.lowerBound, score: $0.score) }
-            // Prefer the strongest complete code pair. A later weak cross-match to
-            // another token must not replace the correct take. For equal evidence,
-            // reversed order keeps the latest replay.
+            // Prefer the strongest shared acoustic response. Independent codes
+            // can peak on different reflections, even in the same room.
+            // For equal evidence, reversed order keeps the latest replay.
             for start in starts.reversed() {
-                if let located, start.score <= located.2 * 1.05 { continue }
                 let expected = start.offset + Int(5.1 * detectionRate)
-                let lo = max(0, expected - 500), hi = min(detection.count, expected + 2500)
-                guard hi > lo + endTemplate.count,
+                // Allow different echoes to supply the coarse candidates. Only
+                // the shared response below may establish the recorder clock.
+                let echoAllowance = Int(0.03 * detectionRate)
+                let clockAllowance = Int(0.005 * 5.1 * detectionRate)
+                let radius = echoAllowance + clockAllowance
+                let lo = max(0, expected - radius), hi = min(detection.count, expected + radius + endTemplate.count)
+                guard hi >= lo + endTemplate.count,
                       let end = try correlations(Array(detection[lo..<hi]), template: endTemplate, quadrature: endQuadrature)
-                        .filter({ (0.995...1.005).contains(Double(lo + $0.offset - start.offset) / (5.1 * detectionRate)) })
                         .max(by: { $0.score < $1.score }) else { continue }
-                let ratio = Double(lo + end.offset - start.offset) / (5.1 * detectionRate)
                 let quality = min(start.score, end.score)
-                // A room reflection can weaken one code without losing the sweep.
-                // Accept that pair only with a strong second identity, adequate
-                // joint evidence and a tighter clock agreement. A timestamp hint
-                // alone can never supply either missing marker.
-                let balancedPair = quality >= 0.35
-                let unevenPair = quality >= 0.30 && max(start.score, end.score) >= 0.45
-                    && start.score * end.score >= 0.15 && abs(ratio - 1) <= 0.001
-                guard balancedPair || unevenPair else { continue }
-                if let located, quality <= located.2 * 1.05 { continue }
+                // Validate both identities through the SAME room response. This
+                // supplies independent evidence for weak reflected markers and
+                // measures clock drift without subtracting unrelated echo peaks.
+                var pair = try markerPair(detection, start: start.offset,
+                    startTemplate: startTemplate, endTemplate: endTemplate)
+                // Clock drift stretches the codes themselves as well as their
+                // separation. Recheck with the measured stretch before judging
+                // their shared response, especially for independent recorders.
+                let coarseRatio = Double(lo + end.offset - start.offset) / (5.1 * detectionRate)
+                let candidates = [pair?.ratio, coarseRatio].compactMap { $0 }
+                var tried: [Double] = []
+                for candidateRatio in candidates where (0.995...1.005).contains(candidateRatio)
+                    && abs(candidateRatio - 1) > 0.0002 && !tried.contains(where: { abs($0 - candidateRatio) < 0.0001 }) {
+                    tried.append(candidateRatio)
+                    let stretched = try markerPair(detection, start: start.offset,
+                        startTemplate: RoomMeasurementSignal.marker(token: block.token, end: false, rate: detectionRate * candidateRatio),
+                        endTemplate: RoomMeasurementSignal.marker(token: block.token, end: true, rate: detectionRate * candidateRatio))
+                    if let stretched, stretched.agreement * stretched.phaseAgreement > (pair.map { $0.agreement * $0.phaseAgreement } ?? 0) {
+                        pair = stretched
+                    }
+                }
+                guard let pair else { continue }
+                let reflectedPair = pair.agreement >= 0.45 && pair.phaseAgreement >= 0.30
+                // Independent background noise compounds when two recordings
+                // are compared. Preserve strong direct code evidence only when
+                // the shared response corroborates its clock and modulation.
+                let directIdentity = quality >= 0.35 || (quality >= 0.30 && max(start.score, end.score) >= 0.45
+                    && start.score * end.score >= 0.15 && abs(coarseRatio - 1) <= 0.001)
+                let noisyPair = directIdentity && abs(pair.ratio - coarseRatio) <= 0.0001
+                    && pair.agreement >= 0.30 && pair.phaseAgreement >= 0.20
+                guard reflectedPair || noisyPair else { continue }
+                if let located, pair.agreement <= located.agreement * 1.05 { continue }
                 let refinedStart = refineMarker(samples, sampleRate: sampleRate, token: block.token,
                     end: false, time: Double(start.offset) / detectionRate)
-                let refinedEnd = refineMarker(samples, sampleRate: sampleRate, token: block.token,
-                    end: true, time: Double(lo + end.offset) / detectionRate)
-                let refinedRatio = (refinedEnd - refinedStart) / 5.1
-                guard (0.995...1.005).contains(refinedRatio), balancedPair || abs(refinedRatio - 1) <= 0.001 else { continue }
-                located = (refinedStart, refinedRatio, quality)
+                guard (refinedStart + (5.1 + 0.127) * pair.ratio) * sampleRate <= Double(samples.count) + sampleRate * 0.001 else { continue }
+                located = (refinedStart, pair.ratio, quality, pair.agreement)
             }
-            if let located, located.2 >= 0.5 { break }
+            if let located, located.agreement >= 0.75 { break }
         }
-        guard let (markerTime, ratio, markerQuality) = located else { throw RoomCorrectionError.missingBlocks }
+        guard let located else { throw RoomCorrectionError.missingBlocks }
+        let markerTime = located.time, ratio = located.ratio, markerQuality = located.quality
         try Task.checkCancellation()
         let rate = min(48000, sampleRate, playbackRate)
         let emittedSweep = try RoomMeasurementSignal(block: block, sampleRate: playbackRate).sweep
@@ -198,6 +221,72 @@ package struct RoomMeasurementAnalyzer {
         result.captureEvidence?.sweepBlockID = block.id
         return result
     }
+    /// If the room response is h, the two recorded codes are h * a and h * b.
+    /// Cross-convolution makes (h * a) * b and (h * b) * a comparable without
+    /// estimating h or choosing its strongest reflection separately for each code.
+    /// Gain changes cancel in normalization; their relative lag measures the clock.
+    private func markerPair(_ samples: [Float], start: Int, startTemplate: [Float],
+                            endTemplate: [Float]) throws -> (ratio: Double, agreement: Double, phaseAgreement: Double)? {
+        let rate = 12000.0, separation = Int(5.1 * rate)
+        let preRoll = Int(0.04 * rate), count = Int(0.30 * rate)
+        let first = start - preRoll, second = first + separation
+        let fft = try AcousticFFT(minimumSize: 2 * (count + startTemplate.count - 1))
+        var ar = [Float](repeating: 0, count: fft.size), ai = ar, br = ar, bi = ar
+        var cr = ar, ci = ar, dr = ar, di = ar
+        // Padding allows a complete end marker near EOF without requiring the
+        // trailing silence. The independent correlations require both full codes.
+        for i in 0..<count {
+            if samples.indices.contains(first + i) { ar[i] = samples[first + i] }
+            if samples.indices.contains(second + i) { br[i] = samples[second + i] }
+        }
+        cr.replaceSubrange(0..<endTemplate.count, with: endTemplate)
+        dr.replaceSubrange(0..<startTemplate.count, with: startTemplate)
+        fft.transform(real: &ar, imaginary: &ai); fft.transform(real: &br, imaginary: &bi)
+        fft.transform(real: &cr, imaginary: &ci); fft.transform(real: &dr, imaginary: &di)
+        var energyA = 0.0, energyB = 0.0, phaseBins = 0
+        for i in ar.indices {
+            let aReal = ar[i] * cr[i] - ai[i] * ci[i], aImaginary = ar[i] * ci[i] + ai[i] * cr[i]
+            let bReal = br[i] * dr[i] - bi[i] * di[i], bImaginary = br[i] * di[i] + bi[i] * dr[i]
+            energyA += Double(aReal) * Double(aReal) + Double(aImaginary) * Double(aImaginary)
+            energyB += Double(bReal) * Double(bReal) + Double(bImaginary) * Double(bImaginary)
+            ar[i] = aReal * bReal + aImaginary * bImaginary
+            ai[i] = aImaginary * bReal - aReal * bImaginary
+            // A plain carrier can correlate with imbalanced chip codes and
+            // dominate ordinary energy agreement. Require code-specific phase
+            // agreement across the modulation band too, with equal bin weights.
+            let frequency = Double(i) * rate / Double(fft.size)
+            let magnitude = hypot(Double(ar[i]), Double(ai[i]))
+            if (700...3300).contains(frequency), magnitude > 1e-30 {
+                cr[i] = Float(Double(ar[i]) / magnitude); ci[i] = Float(Double(ai[i]) / magnitude)
+                phaseBins += 1
+            } else { cr[i] = 0; ci[i] = 0 }
+            // Analytic correlation compares the envelope, allowing the carrier
+            // phase to change without turning that phase into clock drift.
+            if i == 0 || i >= fft.size / 2 { ar[i] = 0; ai[i] = 0 }
+        }
+        let normalization = sqrt(energyA * energyB) / Double(fft.size)
+        guard normalization > 1e-20 else { return nil }
+        fft.transform(real: &ar, imaginary: &ai, inverse: true)
+        fft.transform(real: &cr, imaginary: &ci, inverse: true)
+        let radius = Int(ceil(Double(separation) * 0.005))
+        func value(_ lag: Int) -> Double {
+            let index = (lag + fft.size) % fft.size
+            return 2 * hypot(Double(ar[index]), Double(ai[index])) / normalization
+        }
+        let peak = (-radius...radius).max { value($0) < value($1) } ?? 0
+        var fraction = 0.0
+        if abs(peak) < radius {
+            let denominator = value(peak - 1) - 2 * value(peak) + value(peak + 1)
+            if denominator < -1e-12 {
+                fraction = max(-0.5, min(0.5, 0.5 * (value(peak - 1) - value(peak + 1)) / denominator))
+            }
+        }
+        let ratio = 1 - (Double(peak) + fraction) / Double(separation)
+        guard (0.995...1.005).contains(ratio) else { return nil }
+        let index = (peak + fft.size) % fft.size
+        let phaseAgreement = hypot(Double(cr[index]), Double(ci[index])) * Double(fft.size) / Double(max(1, phaseBins))
+        return (ratio, min(1, value(peak)), min(1, phaseAgreement))
+    }
     private func refineMarker(_ samples: [Float], sampleRate: Double, token: UInt32, end: Bool, time: Double) -> Double {
         let template = RoomMeasurementSignal.marker(token: token, end: end, rate: sampleRate)
         // The detector's sample-rate converter and acoustic filtering can shift
@@ -267,9 +356,8 @@ package struct RoomMeasurementAnalyzer {
                 let score = sqrt(max(0, projected) / max(1e-30, sum * determinant))
                 if score > 0.25 && score <= 1.01 {
                     if offset - last < template.count / 2, !found.isEmpty {
-                        if score > found[found.count - 1].1 { found[found.count - 1] = (start + offset, score) }
-                    } else { found.append((start + offset, score)) }
-                    last = offset
+                        if score > found[found.count - 1].1 { found[found.count - 1] = (start + offset, score); last = offset }
+                    } else { found.append((start + offset, score)); last = offset }
                 }
             }
         }

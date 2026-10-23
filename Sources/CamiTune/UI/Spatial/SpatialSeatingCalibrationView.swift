@@ -34,7 +34,8 @@ struct SpatialSeatingCalibrationView: View {
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Text("Left")
-                Slider(value: $draft.balanceDB, in: -6...6).accessibilityLabel("Listening-position balance")
+                SteppedValueSlider(value: Binding(get: { Double(draft.balanceDB) }, set: { draft.balanceDB = Float($0) }), in: -6...6)
+                    .accessibilityLabel("Listening-position balance")
                 Text("Right")
             }
             Button("Centre balance") { draft.balanceDB = 0 }.font(.caption)

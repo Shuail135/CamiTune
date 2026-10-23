@@ -10,6 +10,7 @@ final class PCMRouter: @unchecked Sendable {
     typealias MeterConsumer = (PCMFrame) -> Void
 
     struct Statistics: Sendable {
+        var transit: PCMTransitObservation?
         var camillaDroppedFrames: UInt64 = 0
         var camillaQueueRecoveries: UInt64 = 0
         var camillaWriteFailures: UInt64 = 0
@@ -31,6 +32,36 @@ final class PCMRouter: @unchecked Sendable {
     private var meterBranch: MeterPCMBranch?
     private var statisticsValue = Statistics()
     private var activeRoute: ActiveAudioRoute?
+
+    func takeAudioBufferWork() -> AudioBufferWorkObservation {
+        state.lock(); let branch = camillaBranch; state.unlock()
+        return branch?.takeAudioBufferWork() ?? .init()
+    }
+
+    func isQuietForBufferChange(seconds: Double = 3, now: PerformanceTick = PerformanceClock.now()) -> Bool {
+        state.lock(); let branch = camillaBranch; let error = statisticsValue.sourceFormatError; state.unlock()
+        return error == nil && branch?.isQuietForBufferChange(seconds: seconds, now: now) == true
+    }
+
+    func bufferHandoffToken(seconds: Double, now: PerformanceTick = PerformanceClock.now()) -> AudioBufferHandoffToken? {
+        state.lock(); let branch = camillaBranch; let error = statisticsValue.sourceFormatError; state.unlock()
+        return error == nil ? branch?.bufferHandoffToken(seconds: seconds, now: now) : nil
+    }
+
+    func acceptsBufferHandoff(_ token: AudioBufferHandoffToken) -> Bool {
+        state.lock(); let branch = camillaBranch; state.unlock()
+        return branch?.acceptsBufferHandoff(token) == true
+    }
+
+    func replaceBackendIfQuiet(_ replacement: CamillaPCMSink, token: AudioBufferHandoffToken,
+        plan: AudioRuntimePlan, clocks: [AudioClockObservation], quietSeconds: Double,
+        now: PerformanceTick = PerformanceClock.now()) -> CamillaPCMSink? {
+        state.lock(); defer { state.unlock() }
+        guard statisticsValue.sourceFormatError == nil else { return nil }
+        return camillaBranch?.replaceBackendIfQuiet(replacement, token: token,
+            chunkFrames: plan.processingGraph.chunkSize, configuration: plan.deliveryConfiguration,
+            clocks: clocks, quietSeconds: quietSeconds, now: now)
+    }
 
     var statistics: Statistics {
         state.lock()
@@ -56,6 +87,7 @@ final class PCMRouter: @unchecked Sendable {
         backendChunkFrames: Int,
         configurationObserver: (@Sendable (RenderConfiguration) -> Void)? = nil,
         referenceTopology: SpeakerTopology? = nil,
+        pluginProcessor: (any PluginAudioProcessor)? = nil,
         meterConsumer: MeterConsumer? = nil,
         analyzerConsumer: AnalyzerConsumer? = nil
     ) async {
@@ -63,7 +95,7 @@ final class PCMRouter: @unchecked Sendable {
             startSynchronously(camillaSink: camillaSink, activeRoute: activeRoute,
                 renderConfiguration: renderConfiguration, deliveryConfiguration: deliveryConfiguration,
                 backendChunkFrames: backendChunkFrames,
-                configurationObserver: configurationObserver, referenceTopology: referenceTopology,
+                configurationObserver: configurationObserver, referenceTopology: referenceTopology, pluginProcessor: pluginProcessor,
                 meterConsumer: meterConsumer, analyzerConsumer: analyzerConsumer)
         }.value
     }
@@ -78,6 +110,7 @@ final class PCMRouter: @unchecked Sendable {
         backendChunkFrames: Int,
         configurationObserver: (@Sendable (RenderConfiguration) -> Void)?,
         referenceTopology: SpeakerTopology?,
+        pluginProcessor: (any PluginAudioProcessor)?,
         meterConsumer: MeterConsumer?,
         analyzerConsumer: AnalyzerConsumer?
     ) {
@@ -88,7 +121,7 @@ final class PCMRouter: @unchecked Sendable {
             renderConfiguration: renderConfiguration, deliveryConfiguration: deliveryConfiguration,
             backendChunkFrames: backendChunkFrames,
             configurationObserver: configurationObserver, systemMaster: systemMaster,
-            referenceTopology: referenceTopology
+            referenceTopology: referenceTopology, pluginProcessor: pluginProcessor
         )
         let meterBranch = meterConsumer.map { consumer in
             MeterPCMBranch(
@@ -128,6 +161,11 @@ final class PCMRouter: @unchecked Sendable {
         branch?.setRenderConfiguration(configuration)
     }
 
+    func setPluginProcessor(_ processor: (any PluginAudioProcessor)?) {
+        state.lock(); let branch = camillaBranch; state.unlock()
+        branch?.setPluginProcessor(processor)
+    }
+
     func setDeliveryConfiguration(_ configuration: PCMDeliveryConfiguration) {
         state.lock(); let branch = camillaBranch; state.unlock()
         branch?.setDeliveryConfiguration(configuration)
@@ -142,7 +180,8 @@ final class PCMRouter: @unchecked Sendable {
     /// replacement session through the router's mutable current-branch pointer.
     func playbackClockConsumer() -> @Sendable (AudioClockObservation) -> Void {
         state.lock(); let branch = camillaBranch; state.unlock()
-        return { [weak branch] in branch?.observeClock($0, source: false) }
+        if let branch { return branch.playbackClockConsumer() }
+        return { _ in }
     }
 
     /// Called by the single transport reader after routing all PCM authorized
@@ -439,6 +478,7 @@ private final class AnalyzerPCMBranch: @unchecked Sendable {
 
 private extension PCMDeliveryStatistics {
     func project(into result: inout PCMRouter.Statistics) {
+        result.transit = transit
         result.camillaDroppedFrames = droppedFrames
         result.camillaQueueRecoveries = recoveries
         result.camillaWriteFailures = writeFailures

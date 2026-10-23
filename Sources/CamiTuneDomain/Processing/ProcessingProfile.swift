@@ -561,23 +561,61 @@ package struct ConvolutionProcessor: Codable, Hashable, Sendable {
 }
 
 package struct CrossfeedProcessor: Codable, Hashable, Sendable {
-    package init(amountPercent: Double, delayMilliseconds: Double, cutoffFrequency: Double) {
+    package enum Model: String, Codable, CaseIterable, Sendable {
+        case natural, classic
+    }
+
+    package init(amountPercent: Double, delayMilliseconds: Double, cutoffFrequency: Double, model: Model = .natural) {
         self.amountPercent = amountPercent
         self.delayMilliseconds = delayMilliseconds
         self.cutoffFrequency = cutoffFrequency
+        self.model = model
     }
 
-    package static let standard = CrossfeedProcessor(
-        amountPercent: 25,
-        delayMilliseconds: 0.3,
-        cutoffFrequency: 700
-    )
+    package static let standard = CrossfeedPreset.standard.processor
 
-    /// Opposite-channel low-frequency contribution, from 0% (none) to 100%
-    /// (equal-amplitude low-frequency contribution).
+    /// Low-frequency cross/direct ratio. Natural uses complementary paths so
+    /// their sum is unity; 100% makes only the lowest frequencies monophonic.
     package var amountPercent: Double
+    /// Extra delay belongs to Classic only. Natural's timing comes from its
+    /// first-order filter, avoiding a separate delay's comb filtering.
     package var delayMilliseconds: Double
     package var cutoffFrequency: Double
+    package var model: Model
+
+    private enum CodingKeys: String, CodingKey { case amountPercent, delayMilliseconds, cutoffFrequency, model }
+
+    package init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        amountPercent = try values.decode(Double.self, forKey: .amountPercent)
+        delayMilliseconds = try values.decode(Double.self, forKey: .delayMilliseconds)
+        cutoffFrequency = try values.decode(Double.self, forKey: .cutoffFrequency)
+        // Existing profiles retain their additive/delayed character. Choosing
+        // a preset explicitly upgrades them to the compensated Natural model.
+        model = try values.decodeIfPresent(Model.self, forKey: .model) ?? .classic
+    }
+
+    package func validate(sampleRate: Double) throws {
+        guard amountPercent.isFinite, (0...100).contains(amountPercent) else {
+            throw ProcessingGraphError.invalidCrossfeedAmount(amountPercent)
+        }
+        guard delayMilliseconds.isFinite, (0...5).contains(delayMilliseconds) else {
+            throw ProcessingGraphError.invalidCrossfeedDelay(delayMilliseconds)
+        }
+        guard sampleRate.isFinite, sampleRate > 0, sampleRate < Double(Int.max) else {
+            throw ProcessingGraphError.invalidSampleRate
+        }
+        guard cutoffFrequency.isFinite, cutoffFrequency > 0, cutoffFrequency < sampleRate / 2 else {
+            throw ProcessingGraphError.invalidCrossfeedFrequency(cutoffFrequency, Int(sampleRate))
+        }
+    }
+
+    package var preset: CrossfeedPreset? {
+        CrossfeedPreset.allCases.first {
+            model == .natural && amountPercent == $0.processor.amountPercent
+                && cutoffFrequency == $0.processor.cutoffFrequency
+        }
+    }
 
     package var crossfeedCoefficient: Double { amountPercent / 100 }
 
@@ -589,6 +627,34 @@ package struct CrossfeedProcessor: Codable, Hashable, Sendable {
 
     package var maximumBoostDB: Double {
         20 * log10(1 + max(0, crossfeedCoefficient))
+    }
+}
+
+package enum CrossfeedPreset: String, CaseIterable, Sendable {
+    case gentle, standard, strong
+
+    package var title: String {
+        switch self {
+        case .gentle: return "Gentle"
+        case .standard: return "Standard"
+        case .strong: return "Strong"
+        }
+    }
+
+    package var detail: String {
+        switch self {
+        case .gentle: return "A light blend that keeps a wide stereo image."
+        case .standard: return "A balanced starting point for everyday headphone listening."
+        case .strong: return "A closer image for recordings with instruments panned hard left or right."
+        }
+    }
+
+    package var processor: CrossfeedProcessor {
+        switch self {
+        case .gentle: return .init(amountPercent: 33, delayMilliseconds: 0, cutoffFrequency: 650)
+        case .standard: return .init(amountPercent: 50, delayMilliseconds: 0, cutoffFrequency: 700)
+        case .strong: return .init(amountPercent: 60, delayMilliseconds: 0, cutoffFrequency: 700)
+        }
     }
 }
 

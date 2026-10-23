@@ -116,7 +116,7 @@ struct PerChannelProcessingView: View {
             }
 
             if editableChannels.isEmpty {
-                Text("Configure enabled physical channels in Profile Settings.").foregroundStyle(.secondary)
+                Label("Configure enabled physical channels in Profile Settings.", systemImage: "info.circle").foregroundStyle(.secondary)
             } else if profile.usesGroupedProcessingPresentation {
                 groupAndSpeakerSelector
             } else {
@@ -131,9 +131,10 @@ struct PerChannelProcessingView: View {
             }
 
             if !convolutionOnly {
-                PerChannelGainRow(
+                PerChannelGainDelayRows(
                     gain: runtime.gain,
                     limiter: runtime.limiter,
+                    delay: runtime.delay,
                     meters: state.meters,
                     profileID: profile.id,
                     channelIndex: selectedChannelIndex,
@@ -142,13 +143,6 @@ struct PerChannelProcessingView: View {
                     onChanged: channelSettingsChanged,
                     onEditingChanged: continuousEditingChanged
                 )
-
-                PerChannelDelayRow(
-                    delay: runtime.delay,
-                    onChanged: channelSettingsChanged,
-                    onEditingChanged: continuousEditingChanged
-                )
-
 
                 PerChannelResponseGraph(responses: runtime.responses)
 
@@ -160,6 +154,8 @@ struct PerChannelProcessingView: View {
                 )
                 .accessibilityLabel("Per-channel equalizer controls")
                 .frame(width: 260)
+
+                AutomaticGlobalHeadroomView(state: state, profile: profile)
 
                 if equalizerPresentation != .simpleTone {
                     PerChannelBandsSection(
@@ -237,9 +233,10 @@ private struct PerChannelHeader: View {
     }
 }
 
-private struct PerChannelGainRow: View {
+private struct PerChannelGainDelayRows: View {
     @ObservedObject var gain: PerChannelValueState<Double>
     @ObservedObject var limiter: PerChannelValueState<Bool>
+    @ObservedObject var delay: PerChannelValueState<Double>
     let meters: AudioRuntimeMonitor
     let profileID: UUID
     let channelIndex: Int
@@ -273,138 +270,17 @@ private struct PerChannelGainRow: View {
             channelIndex: channelIndex,
             channelIndices: groupChannelIndices,
             visualEffectsEnabled: visualEffectsEnabled,
+            delayMilliseconds: Binding(
+                get: { delay.value },
+                set: { newValue in
+                    let clamped = min(100, max(0, newValue))
+                    guard clamped != delay.value else { return }
+                    delay.value = clamped
+                    onChanged()
+                }
+            ),
             onEditingChanged: onEditingChanged
         )
-    }
-}
-
-private struct PerChannelDelayRow: View {
-    @ScaledMetric(relativeTo: .body) private var valueWidth: CGFloat = 76
-    @ObservedObject var delay: PerChannelValueState<Double>
-    let onChanged: @MainActor () -> Void
-    let onEditingChanged: @MainActor (Bool) -> Void
-
-    private var delayBinding: Binding<Double> {
-        Binding(
-            get: { delay.value },
-            set: { newValue in
-                let clamped = min(100, max(0, newValue))
-                guard clamped != delay.value else { return }
-                delay.value = clamped
-                onChanged()
-            }
-        )
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Text("Channel delay")
-                .frame(width: 130, alignment: .leading)
-            ChannelDelaySlider(
-                value: delayBinding,
-                onEditingChanged: onEditingChanged
-            )
-            .frame(minWidth: 80, maxWidth: .infinity)
-            TextField("Channel delay", value: delayBinding,
-                format: .number.precision(.fractionLength(2)))
-                .textFieldStyle(.roundedBorder)
-                .multilineTextAlignment(.trailing)
-                .monospacedDigit()
-                .frame(width: valueWidth)
-                .accessibilityLabel("Channel delay in milliseconds")
-            Text("ms").foregroundStyle(.secondary).fixedSize()
-        }
-    }
-}
-
-/// Pure SwiftUI delay control. The native macOS Slider inherited system accent
-/// rendering (which can produce the black track seen in the screenshot) and its
-/// AppKit tracking could compete with the page ScrollView. This control owns its
-/// hit-testing and uses a high-priority horizontal drag instead.
-private struct ChannelDelaySlider: View {
-    @Binding var value: Double
-    let onEditingChanged: @MainActor (Bool) -> Void
-    @State private var isDragging = false
-
-    private let range = 0.0...100.0
-    private let step = 0.01
-    private let inset: CGFloat = 9
-
-    var body: some View {
-        GeometryReader { geometry in
-            let track = CGRect(
-                x: inset,
-                y: (geometry.size.height - 7) / 2,
-                width: max(1, geometry.size.width - 2 * inset),
-                height: 7
-            )
-            let amount = normalized(value)
-            let thumbX = track.minX + track.width * amount
-
-            ZStack {
-                Capsule()
-                    .fill(Color.secondary.opacity(0.18))
-                    .frame(width: track.width, height: track.height)
-                    .position(x: track.midX, y: track.midY)
-
-                Capsule()
-                    .fill(Color.blue.opacity(0.9))
-                    .frame(width: track.width, height: track.height)
-                    .scaleEffect(x: amount, y: 1, anchor: .leading)
-                    .position(x: track.midX, y: track.midY)
-
-                Circle()
-                    .fill(Color(nsColor: .controlBackgroundColor))
-                    .overlay(Circle().stroke(Color.primary.opacity(0.75), lineWidth: 1.5))
-                    .frame(width: 17, height: 17)
-                    .shadow(color: .black.opacity(0.2), radius: 1.5, y: 1)
-                    .position(x: thumbX, y: track.midY)
-            }
-            .contentShape(Rectangle())
-            .highPriorityGesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { gesture in
-                        if !isDragging {
-                            isDragging = true
-                            onEditingChanged(true)
-                        }
-                        setValue(forX: gesture.location.x, track: track)
-                    }
-                    .onEnded { _ in
-                        guard isDragging else { return }
-                        isDragging = false
-                        onEditingChanged(false)
-                    }
-            )
-        }
-        .frame(height: 24)
-        .accessibilityElement()
-        .accessibilityLabel("Channel delay")
-        .accessibilityValue("\(value.formatted(.number.precision(.fractionLength(2)))) milliseconds")
-        .accessibilityAdjustableAction { direction in
-            switch direction {
-            case .increment: value = quantized(min(range.upperBound, value + step))
-            case .decrement: value = quantized(max(range.lowerBound, value - step))
-            @unknown default: break
-            }
-        }
-    }
-
-    private func normalized(_ current: Double) -> Double {
-        let clamped = min(range.upperBound, max(range.lowerBound, current))
-        return (clamped - range.lowerBound) / (range.upperBound - range.lowerBound)
-    }
-
-    private func setValue(forX x: CGFloat, track: CGRect) {
-        let ratio = min(1, max(0, (x - track.minX) / track.width))
-        let raw = range.lowerBound + Double(ratio) * (range.upperBound - range.lowerBound)
-        let next = quantized(raw)
-        guard next != value else { return }
-        value = next
-    }
-
-    private func quantized(_ raw: Double) -> Double {
-        (raw / step).rounded() * step
     }
 }
 
@@ -456,7 +332,7 @@ private struct PerChannelBandsSection: View {
 
             if bands.isEmpty {
                 HStack {
-                    Text("No EQ bands. Simple, gain, and delay still apply.")
+                    Label("No EQ bands. Simple, gain, and delay still apply.", systemImage: "info.circle")
                         .foregroundStyle(.secondary)
                     Button("Add Bands") { requestBandCount(8) }
                 }

@@ -50,9 +50,9 @@ __pycache__/
 
 !/Sources/CamiTune/Diagnostics/
 !/Sources/CamiTune/Diagnostics/**
+!/Scripts/test-plugin-host.py
 /Scripts/check-profile-endpoints.sh
 /Scripts/preview-speakers.sh
-/Tools/ProfileEndpointCheck/
 /Documentation/MULTICHANNEL_TEST_MATRIX.md
 /test-local.sh
 
@@ -70,3 +70,5 @@ Sources/CamiTune/tray-icon-preview.png
 # Local documentation retained outside the published repository
 /Contributions/CamillaDSP/README.md
 /Drivers/SystemAudioBridge/README.md
+
+/Audio Test Files

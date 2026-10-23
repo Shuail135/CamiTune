@@ -34,11 +34,7 @@ struct VerticalEQSlider: View {
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .allowsHitTesting(false)
-                Circle()
-                    .fill(gainEnabled ? Color(nsColor: .controlBackgroundColor) : Color.secondary.opacity(0.7))
-                    .overlay(Circle().stroke(gainEnabled ? Color.primary.opacity(0.75) : Color.secondary, lineWidth: 1.5))
-                    .frame(width: 17 * metrics.scale, height: 17 * metrics.scale)
-                    .shadow(color: .black.opacity(0.2), radius: 1.5, y: 1)
+                SliderThumb(axis: .vertical, scale: metrics.scale, isEnabled: gainEnabled, isPressed: isDragging)
                     .position(x: track.midX, y: thumbY)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)

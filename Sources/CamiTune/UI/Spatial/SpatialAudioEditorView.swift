@@ -44,7 +44,7 @@ struct SpatialAudioEditorView: View {
                     HStack {
                         Text("Spatial").font(.callout)
                         Text("Focused").font(.caption).foregroundStyle(.secondary)
-                        Slider(value: amount, in: 0...1)
+                        SteppedValueSlider(value: Binding(get: { Double(amount.wrappedValue) }, set: { amount.wrappedValue = Float($0) }), in: 0...1)
                             .accessibilityLabel("Spatial amount")
                         Text("Expansive").font(.caption).foregroundStyle(.secondary)
                     }
@@ -52,7 +52,8 @@ struct SpatialAudioEditorView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     HStack {
                         Text("Dialogue")
-                        Slider(value: $profile.spatialSettings.cinema.dialogueFocus, in: 0...1)
+                        SteppedValueSlider(value: Binding(get: { Double(profile.spatialSettings.cinema.dialogueFocus) },
+                            set: { profile.spatialSettings.cinema.dialogueFocus = Float($0) }), in: 0...1)
                         Text("Clear").font(.caption).foregroundStyle(.secondary)
                     }
                     .disabled(profile.spatialSettings.contentSelection == .music)

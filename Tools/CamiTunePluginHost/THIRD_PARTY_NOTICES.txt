@@ -1,0 +1,7 @@
+CamiTune's isolated plug-in host uses Steinberg VST 3 interface headers.
+Source: https://github.com/steinbergmedia/vst3_pluginterfaces
+Pinned revision: 4f547e8 (VST SDK 3.8.x)
+The unmodified source and MIT license are in vendor/pluginterfaces.
+
+The helper hosts installed AU and VST3 audio effects. No third-party plug-in
+binaries are bundled. VST2 and Intel-only VST3 bridging are not included.

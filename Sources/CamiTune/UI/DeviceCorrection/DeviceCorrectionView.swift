@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 @MainActor
 struct DeviceCorrectionEditorView: View {
+    @ScaledMetric(relativeTo: .body) private var gainValueWidth: CGFloat = 58
     let existing: DeviceCorrectionProfile?
     let embedded: Bool
     let equalizerState: GlobalEQHistoryState?
@@ -291,6 +292,9 @@ struct DeviceCorrectionEditorView: View {
                             .fixedSize()
                             .disabled(isLoadingMeasurements)
                         }
+                        AutoEQDeviceInfoIcon(message: measurement.map {
+                            "\($0.name) · \($0.points.count) points"
+                        } ?? "Choose a search result or import your own CSV")
                         Button("Import…") { showingMeasurementImporter = true }
                             .fixedSize()
                     }
@@ -310,11 +314,6 @@ struct DeviceCorrectionEditorView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-
-                    responseRow(
-                        response: measurement,
-                        emptyText: "Choose a search result or import your own CSV"
-                    )
 
                     if sourceMeasurements.first?.source.origin == .local {
                         Picker("Measurement fixture", selection: sourceRigBinding) {
@@ -338,7 +337,7 @@ struct DeviceCorrectionEditorView: View {
                             targetImportControls
                         }
                         if measurement != nil && availableTargets.isEmpty {
-                            Text("No compatible target is available for this measurement data.")
+                            Label("No compatible target is available for this measurement data.", systemImage: "info.circle")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
 
@@ -346,7 +345,7 @@ struct DeviceCorrectionEditorView: View {
                             HStack(spacing: 10) {
                                 Text("Tilt")
                                     .font(.caption.weight(.medium))
-                                SteppedValueSlider(value: targetTiltBinding, in: -2...1, step: 0.1)
+                                SteppedValueSlider(value: targetTiltBinding, in: -2...1, step: 0.1, style: .preamp)
                                 Text("\(targetSelection.tiltDBPerOctave, format: .number.precision(.fractionLength(1))) dB/oct")
                                     .font(.caption.monospacedDigit())
                                     .frame(width: 92, alignment: .trailing)
@@ -398,11 +397,14 @@ struct DeviceCorrectionEditorView: View {
                     .accessibilityLabel("Policy")
 
                     if policy == .recommended && targetChosen && targetSelection.preset != .deviceMatch && targetSelection.preset != .custom {
-                        HStack {
+                        HStack(spacing: 10) {
                             Text("Bass")
-                            SteppedValueSlider(value: modifierBinding(\.bassGainDB), in: -12...12, step: 0.5)
-                            TextField("dB", value: modifierBinding(\.bassGainDB), format: .number.precision(.fractionLength(0...1))).frame(width: 55)
-                            Text("dB").foregroundStyle(.secondary)
+                            SteppedValueSlider(value: modifierBinding(\.bassGainDB), in: -12...12, step: 0.5, style: .preamp)
+                            TextField("Bass", value: modifierBinding(\.bassGainDB), format: .number.precision(.fractionLength(0...1)))
+                                .textFieldStyle(.roundedBorder)
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: gainValueWidth)
+                            Text("dB").foregroundStyle(.secondary).fixedSize()
                         }
                     }
                     if policy == .exactTarget {

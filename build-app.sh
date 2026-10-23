@@ -50,6 +50,10 @@ if [[ ! -x "$BUILT_APP/Contents/Resources/Helpers/camitune-speaker-eq" ]]; then
     echo "ERROR: Release archive is missing the speaker optimizer helper." >&2
     exit 1
 fi
+if [[ ! -x "$BUILT_APP/Contents/Resources/Helpers/camitune-plugin-host" ]]; then
+    echo "ERROR: Release archive is missing the AU/VST3 plug-in host." >&2
+    exit 1
+fi
 /usr/bin/ditto "$BUILT_APP" "$APP"
 /usr/bin/codesign --force --deep --sign - "$APP"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"

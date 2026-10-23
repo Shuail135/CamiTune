@@ -87,7 +87,8 @@ private struct LivePreEQSpectrumGraph: View {
             points: points.map { ($0.frequency, $0.db) },
             xRange: 20...20_000,
             yRange: -100...0,
-            fillsArea: true
+            fillsArea: true,
+            usesSpectrumLayout: true
         )
     }
 }

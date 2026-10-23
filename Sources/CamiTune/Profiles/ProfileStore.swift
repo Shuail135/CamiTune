@@ -51,7 +51,12 @@ final class ProfileStore: ObservableObject {
                 if activeDurableCommit?.mutation.kind == .history,
                    newValue.map(\.id) != libraryProfiles.map(\.id) { return }
             }
-            libraryProfiles = newValue; save()
+            libraryProfiles = newValue.map { profile in
+                var resolved = profile
+                resolved.resolveAudioBuffer(default: audioBufferDefault)
+                return resolved
+            }
+            save()
         }
     }
     @Published private var libraryDefaults: [PhysicalDeviceDefaultProfile] = []
@@ -81,6 +86,7 @@ final class ProfileStore: ObservableObject {
     var effectiveRootOrder: [ProfileRootItem] {
         ProfileRootItem.normalized(rootOrder, profiles: profiles, folders: folders)
     }
+    @Published private(set) var audioBufferDefault: AudioBufferSetting = 1024
     @Published private(set) var layoutDefaults: [String: ProfileSectionLayout] = [:] {
         didSet { save() }
     }
@@ -106,6 +112,15 @@ final class ProfileStore: ObservableObject {
             layout.equalizer = .simpleTone
             return (type.rawValue, layout)
         })
+    }
+
+    var automaticAudioBufferCache: Data? {
+        get { userDefaults.data(forKey: "automaticAudioBufferCache.v1") }
+        set { userDefaults.set(newValue, forKey: "automaticAudioBufferCache.v1") }
+    }
+
+    func commitAudioBufferDefault(_ frames: AudioBufferSetting, inheritingProfileIDs: Set<UUID> = []) async throws {
+        _ = try await commit(.audioBufferDefault(frames, inheritingProfileIDs))
     }
 
     func defaultLayout(for type: ProfileEndpointKind) -> ProfileSectionLayout {
@@ -584,6 +599,7 @@ final class ProfileStore: ObservableObject {
 
     private func load() {
         if let stored = repository.loadedDocument {
+            audioBufferDefault = stored.audioBufferDefault
             multichannelDrafts = stored.multichannelDrafts.filter { id, _ in stored.profiles.contains { $0.id == id } }
             layoutDefaults = stored.layoutDefaults; showProfileEnabledExplanation = stored.showProfileEnabledExplanation
             rootOrder = stored.rootOrder; folders = stored.folders; profiles = stored.profiles
@@ -638,7 +654,8 @@ final class ProfileStore: ObservableObject {
     var document: ProfileDocument {
         ProfileDocument(profiles: profiles, physicalDeviceDefaults: physicalDeviceDefaults,
             folders: folders, rootOrder: effectiveRootOrder, layoutDefaults: layoutDefaults,
-            showProfileEnabledExplanation: showProfileEnabledExplanation, multichannelDrafts: multichannelDrafts)
+            showProfileEnabledExplanation: showProfileEnabledExplanation, multichannelDrafts: multichannelDrafts,
+            audioBufferDefault: audioBufferDefault)
     }
     private func save() {
         guard !isLoading, !stopping else { return }
@@ -667,6 +684,7 @@ final class ProfileStore: ObservableObject {
     }
     private func publishDocument(_ value: ProfileDocument) {
         isLoading = true
+        audioBufferDefault = value.audioBufferDefault
         profiles = value.profiles; physicalDeviceDefaults = value.physicalDeviceDefaults
         folders = value.folders; rootOrder = value.rootOrder
         multichannelDrafts = value.multichannelDrafts

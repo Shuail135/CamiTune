@@ -154,6 +154,7 @@ package struct ProfileSettingsDraft {
     package var outputDevice: PhysicalOutputIdentity
     package var selectedType: ProfileEndpointKind
     package var sampleRate: Int
+    package var audioBufferOverride: AudioBufferSetting?
     package var activation: ProfileActivationMode
     package var sectionLayout: ProfileSectionLayout?
     package var speakerTopology: SpeakerTopology?
@@ -176,6 +177,7 @@ package struct ProfileSettingsDraft {
         outputDevice = profile.outputDevice
         selectedType = profile.endpointKind
         sampleRate = profile.sampleRate
+        audioBufferOverride = profile.audioBufferOverride
         self.activation = activation
         sectionLayout = profile.sectionLayout
         speakerTopology = profile.speakerTopology
@@ -236,6 +238,11 @@ package struct ProfileSettingsDraft {
         guard !result.name.isEmpty else { throw ProfileSettingsError.invalidName }
         result.outputDevice = try merge(original.outputDevice, outputDevice, current.outputDevice)
         result.sampleRate = try merge(original.sampleRate, sampleRate, current.sampleRate)
+        result.audioBufferOverride = try merge(original.audioBufferOverride, audioBufferOverride, current.audioBufferOverride)
+        if let frames = result.audioBufferOverride, frames != current.audioBufferOverride,
+           !frames.isSupported {
+            throw ProfileSettingsError.runtime("Choose a supported audio buffer size.")
+        }
         result.sectionLayout = try merge(original.sectionLayout, sectionLayout, current.sectionLayout)
         result.speakerTopology = try merge(baseline.speakerTopology, speakerTopology, result.speakerTopology)
         if speakerTopology != baseline.speakerTopology, let topology = speakerTopology {

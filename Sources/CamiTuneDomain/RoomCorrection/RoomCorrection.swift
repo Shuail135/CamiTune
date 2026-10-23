@@ -28,7 +28,7 @@ package struct RoomCorrectionSettings: Codable, Hashable, Sendable {
     }
 }
 package enum RoomCorrectionError: LocalizedError {
-    case invalidSettings, invalidSession, unreliable, timingUnavailable, latencyLimit, stale, missingBlocks, routeUnavailable, outputMuted
+    case invalidSettings, invalidSession, unreliable, timingUnavailable, latencyLimit, stale, missingBlocks, routeUnavailable, outputMuted, volumeChanged, playbackInterrupted
     case calibrationRequired, calibrationChanged, incompleteMicrophoneMeasurement, inputClipped, microphoneSweepMissing
     package var errorDescription: String? {
         switch self {
@@ -42,10 +42,12 @@ package enum RoomCorrectionError: LocalizedError {
         case .unreliable: return "The position could not be measured reliably. Reduce background noise and repeat it."
         case .timingUnavailable: return "This recording supports magnitude analysis only. Use IIR or repeat with a reliable microphone."
         case .latencyLimit: return "The selected filter length and phase exceed the latency limit."
-        case .stale: return "The output, processing or listening geometry changed. Re-measure this setup."
+        case .stale: return "The output, processing or listening geometry changed. Use Reset Room Correction to start a new measurement setup."
         case .missingBlocks: return "No complete measurement blocks were found. Import the recording made during this session."
         case .routeUnavailable: return "Activate this speaker profile and wait for audio changes to finish before measuring."
         case .outputMuted: return "Unmute the speaker output and raise the system volume before testing or measuring."
+        case .volumeChanged: return "The system volume changed during measurement. Keep the volume steady and measure this position again."
+        case .playbackInterrupted: return "Measurement playback was interrupted. Wait for audio changes to finish, then measure this position again."
         }
     }
 }

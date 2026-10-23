@@ -18,20 +18,30 @@ final class CamillaDSPManager: ObservableObject {
     private var clockPollingTask: Task<Void, Never>?
     private var clockSession: UUID?
     private(set) var lastPlaybackClock: CamillaPlaybackClock?
+    private var isStandby: Bool
 
-    init() {
-        let port = UInt16.random(in: 20_000...49_999)
+    init(standby: Bool = false, excludingPort: UInt16? = nil) {
+        var port = UInt16.random(in: 20_000...49_999)
+        while port == excludingPort { port = UInt16.random(in: 20_000...49_999) }
         controlPort = port
         rpc = CamillaRPC(port: port)
+        isStandby = standby
     }
 
-    func start(binary: URL) async throws {
+    func makeStandby() -> CamillaDSPManager { .init(standby: true, excludingPort: controlPort) }
+
+    func promoteStandby() { isStandby = false }
+
+    func start(binary: URL, shouldContinue: @MainActor () -> Bool = { true }) async throws {
+        guard shouldContinue() else { throw CancellationError() }
         if let process, process.isRunning {
-            if !isRunning { try await connectWithRetry() }
+            if !isRunning { try await connectWithRetry(shouldContinue: shouldContinue) }
             return
         }
 
-        await Self.terminateStalePrivateEngines(binary: binary)
+        // A standby is intentionally concurrent with the owned live engine.
+        if !isStandby { await Self.terminateStalePrivateEngines(binary: binary) }
+        guard shouldContinue() else { throw CancellationError() }
 
         let logDirectory = supportDirectory().appendingPathComponent("logs", isDirectory: true)
         let logURL = logDirectory.appendingPathComponent("camilladsp.log")
@@ -45,6 +55,7 @@ final class CamillaDSPManager: ObservableObject {
             try handle.seekToEnd()
             return handle
         }.value
+        guard shouldContinue() else { try? handle.close(); throw CancellationError() }
 
         let port = controlPort
         let (p, pipe) = try await Task.detached(priority: .userInitiated) {
@@ -67,7 +78,7 @@ final class CamillaDSPManager: ObservableObject {
         inputPipe = pipe
         process = p
         hasAppliedConfig = false
-        try await connectWithRetry()
+        try await connectWithRetry(shouldContinue: shouldContinue)
         isRunning = true
     }
 
@@ -122,7 +133,7 @@ final class CamillaDSPManager: ObservableObject {
     func apply(yaml: String) async throws {
         do {
             let configDirectory = supportDirectory().appendingPathComponent("configs", isDirectory: true)
-            let configURL = configDirectory.appendingPathComponent("active.yml")
+            let configURL = configDirectory.appendingPathComponent(isStandby ? "standby-\(controlPort).yml" : "active.yml")
             try await Task.detached(priority: .utility) {
                 try FileManager.default.createDirectory(
                     at: configDirectory,
@@ -217,9 +228,10 @@ final class CamillaDSPManager: ObservableObject {
         isRunning = false
     }
 
-    private func connectWithRetry() async throws {
+    private func connectWithRetry(shouldContinue: @MainActor () -> Bool = { true }) async throws {
         var finalError: Error?
         for _ in 0..<30 {
+            guard !Task.isCancelled, shouldContinue() else { throw CancellationError() }
             do {
                 try await rpc.connect()
                 return

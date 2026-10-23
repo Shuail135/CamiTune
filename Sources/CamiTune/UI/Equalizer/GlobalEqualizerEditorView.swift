@@ -16,7 +16,6 @@ struct GlobalEqualizerEditorView: View {
     @State var parsedForGraph = ParsedEQ()
     @State var preampDB = 0.0
     @State var limiterEnabled = false
-    @State var automaticSystemHeadroomDB = 0.0
     @State var graphicBands: [EQBand] = []
     @State var pendingBandCount: Int?
     @State var showBandReductionConfirmation = false
@@ -59,8 +58,7 @@ struct GlobalEqualizerEditorView: View {
                 )
                 .accessibilityLabel("Equalizer controls")
                 .frame(width: 260)
-                Text("Automatic Global Headroom: \(automaticSystemHeadroomDB, format: .number.precision(.fractionLength(2))) dB")
-                    .font(.caption.monospacedDigit().weight(.medium))
+                AutomaticGlobalHeadroomView(state: state, profile: profile)
 
                 if presentation != .simpleTone {
                     HStack(spacing: 8) {
@@ -101,7 +99,7 @@ struct GlobalEqualizerEditorView: View {
                     )
                     }
                 } else {
-                    Text("Choose a band count above.")
+                    Label("Choose a band count above.", systemImage: "info.circle")
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, minHeight: 90)
                 }
@@ -128,14 +126,10 @@ struct GlobalEqualizerEditorView: View {
         .onChange(of: graphicBands) { _ in editorValuesChanged() }
         .onChange(of: simpleTone) { _ in editorValuesChanged() }
         .onChange(of: profile.sampleRate) { _ in bandReduction.cancel(); updateGraphResponses() }
-        .onChange(of: profile.processing) { _ in updateAutomaticSystemHeadroom() }
         .onReceive(state.equalizerReplacementChanges.filter { $0 == profile.id }) { _ in
             loadGraphicEQ()
         }
         .disabled(state.isSavingProfileSettings || bandReduction.isRunning)
-        .onReceive(state.eqDraftChanges.filter { $0 == profile.id }) { _ in
-            updateAutomaticSystemHeadroom()
-        }
         .fileImporter(
             isPresented: $showTextImporter,
             allowedContentTypes: [.plainText],
@@ -181,4 +175,46 @@ struct GlobalEqualizerEditorView: View {
         }
     }
 
+}
+
+/// Both equalizers display the headroom of the complete processing graph,
+/// including global, group, and channel drafts, regardless of the selected channel.
+@MainActor
+struct AutomaticGlobalHeadroomView: View {
+    let state: AppState
+    let profile: DeviceProfile
+    @State private var headroomDB = 0.0
+    @State private var draftRevision = 0
+
+    private struct Request: Hashable {
+        let profile: DeviceProfile
+        let draftRevision: Int
+    }
+
+    var body: some View {
+        Text("Automatic Global Headroom: \(headroomDB, format: .number.precision(.fractionLength(2))) dB")
+            .font(.caption.monospacedDigit().weight(.medium))
+            .onReceive(state.eqDraftChanges.filter { $0 == profile.id }) { _ in
+                draftRevision &+= 1
+            }
+            .task(id: Request(profile: profile, draftRevision: draftRevision)) {
+                do {
+                    try await Task.sleep(for: .milliseconds(120))
+                    let candidate = try state.applyingSessionEQDrafts(to: profile)
+                    let headroom = await Task.detached(priority: .utility) {
+                        do {
+                            let assets = try PreparedRuntimeAssets.prepare(profile: candidate,
+                                directory: CamiTunePaths.impulseResponsesDirectory)
+                            return try ProcessingGraphBuilder(channelCount: candidate.processingChannelCount,
+                                preparedAssets: assets).build(profile: candidate).automaticHeadroomDB
+                        } catch { return 0.0 }
+                    }.value
+                    guard !Task.isCancelled else { return }
+                    headroomDB = headroom
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    headroomDB = 0
+                }
+            }
+    }
 }

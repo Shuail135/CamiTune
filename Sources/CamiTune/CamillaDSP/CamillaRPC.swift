@@ -160,9 +160,10 @@ actor CamillaRPC {
         disconnect()
     }
 
-    func signalLevels() async throws -> SignalLevels {
-        let response = try await request("GetSignalLevels")
-        let command = try successfulBody(response, command: "GetSignalLevels")
+    func signalLevels(since seconds: Double? = nil) async throws -> SignalLevels {
+        let name = seconds == nil ? "GetSignalLevels" : "GetSignalLevelsSince"
+        let response = try await request(seconds.map { [name: $0] as Any } ?? name)
+        let command = try successfulBody(response, command: name)
         guard let value = command["value"] as? [String: Any] else {
             throw RPCError.invalidResponse("GetSignalLevels had no level data")
         }

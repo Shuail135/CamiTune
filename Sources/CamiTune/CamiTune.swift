@@ -21,7 +21,10 @@ private var isSpeakerSetupPreview: Bool {
 
 @main
 enum CamiTuneLauncher {
+    @MainActor
     static func main() {
+        if AppUpdateInstaller.runIfRequested() { return }
+        if AppUpdateInstaller.redirectLaunchToInstaller() { return }
         // AppKit's native tooltip delay is in milliseconds. Register before
         // creating UI; this process-local default preserves explicit preferences.
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 250])
@@ -106,6 +109,13 @@ enum CamiTuneLauncher {
             return
         }
 #if DEBUG
+        if CommandLine.arguments.contains("--plugin-host-self-test") {
+            Task { @MainActor in
+                do { try await DeveloperSelfTests.pluginHostIntegration(); Darwin.exit(0) }
+                catch { print("Plug-in host tests failed: \(error.localizedDescription)"); Darwin.exit(1) }
+            }
+            RunLoop.main.run(); return
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--ui-app-self-test"), CommandLine.arguments.count > index + 1 {
             NSApplication.shared.setActivationPolicy(.accessory)
             let artifacts = URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)
@@ -299,7 +309,7 @@ final class CamiTunePresentationCoordinator {
                 modalActive: self.mainWindow?.attachedSheet != nil || NSApp.modalWindow != nil
                     || self.state.setupPresentation.isPresented
                     || self.state.profileConfirmations.showEnabledExplanation
-                    || self.state.errorMessage != nil || self.state.updateChecker.isDownloadingUpdate,
+                    || self.state.errorMessage != nil || self.state.updateChecker.isPresentingUpdate,
                 transitionInProgress: self.state.transitionInProgress,
                 sidebarVisible: sidebar)
         }
@@ -545,6 +555,7 @@ final class CamiTuneAppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         textEditingCompatibility.start()
         guard !isCamiTuneTestHost else { return }
+        AppAppearance.restore()
         let supportDirectory = CamiTunePaths.supportDirectory
         do {
             try FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
@@ -600,6 +611,7 @@ final class CamiTuneAppDelegate: NSObject, NSApplicationDelegate {
             installCloseDelegate(on: window)
         }
         CamiTunePresentationCoordinator.shared.showMainWindow()
+        AppUpdateInstaller.acknowledgeRelaunch()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

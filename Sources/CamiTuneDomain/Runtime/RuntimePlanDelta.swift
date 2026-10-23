@@ -213,7 +213,9 @@ package struct RenderConfigurationDelta: Hashable, Sendable {
         virtualLayoutChanged: Bool,
         referenceCorrectionChanged: Bool,
         playbackContextChanged: Bool,
-        referenceTopologyChanged: Bool
+        referenceTopologyChanged: Bool,
+        pluginRackChanged: Bool = false,
+        crossfeedChanged: Bool = false
     ) {
         self.playbackModeChanged = playbackModeChanged
         self.spatialModeChanged = spatialModeChanged
@@ -225,6 +227,8 @@ package struct RenderConfigurationDelta: Hashable, Sendable {
         self.referenceCorrectionChanged = referenceCorrectionChanged
         self.playbackContextChanged = playbackContextChanged
         self.referenceTopologyChanged = referenceTopologyChanged
+        self.pluginRackChanged = pluginRackChanged
+        self.crossfeedChanged = crossfeedChanged
     }
 
     package let playbackModeChanged: Bool
@@ -238,10 +242,12 @@ package struct RenderConfigurationDelta: Hashable, Sendable {
     package let playbackContextChanged: Bool
     /// Physical renderer geometry is fixed when a PCM branch is constructed.
     package let referenceTopologyChanged: Bool
+    package let pluginRackChanged: Bool
+    package let crossfeedChanged: Bool
     package var changed: Bool {
         playbackModeChanged || spatialModeChanged || spatialSettingsChanged || spatialOutputChanged
             || listenerTuningChanged || contentModeChanged || virtualLayoutChanged || referenceCorrectionChanged
-            || playbackContextChanged || referenceTopologyChanged
+            || playbackContextChanged || referenceTopologyChanged || pluginRackChanged || crossfeedChanged
     }
 }
 package struct RuntimeMetadataDelta: Hashable, Sendable {
@@ -285,6 +291,8 @@ extension RuntimePlanDelta {
             changed("Reference correction", renderer.referenceCorrectionChanged),
             changed("Per-app playback context", renderer.playbackContextChanged),
             changed("Physical renderer geometry", renderer.referenceTopologyChanged),
+            changed("Plug-in rack", renderer.pluginRackChanged),
+            changed("Crossfeed", renderer.crossfeedChanged),
             changed("Engine chunk size", engine.chunkSizeChanged),
             changed("Camilla queue limit", engine.queueLimitChanged),
             changed("PCM delivery policy", pcmDeliveryChanged),

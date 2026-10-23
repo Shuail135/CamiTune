@@ -32,12 +32,18 @@ package struct ProcessingGraphBuilder {
         guard channelCount > 0 else { throw ProcessingGraphError.invalidChannelCount }
 
         var processing = try profile.resolvedProcessing()
+        // Vendor effects have unknown gain. Keep a terminal limiter in the
+        // prepared graph while a rack is active, without changing saved EQ intent.
+        if profile.pluginRack.isProcessing { processing.setLimiterEnabled(true) }
         if profile.hasPhysicalSpeakerRoute && profile.effectiveSpatialSettings.seating?.roomCorrectionResult == nil {
             // Legacy L/R room measurements have no physical topology identity.
             // Preserve them in the profile but never apply them to a new map.
             processing.global.stages.removeAll { $0.id == ProcessingProfile.spatialRoomCorrectionStageID }
         }
         if !profile.supportsCrossfeed { processing.global.stages.removeAll { if case .crossfeed = $0.processor { return true }; return false } }
+        guard processing.global.stages.filter({ if case .crossfeed = $0.processor { return true }; return false }).count <= 1 else {
+            throw ProfileSettingsError.runtime("Only one headphone crossfeed stage can be configured per profile.")
+        }
         guard processing.schemaVersion == ProcessingProfile.currentSchemaVersion else {
             throw ProcessingGraphError.unsupportedSchemaVersion(processing.schemaVersion)
         }
@@ -335,8 +341,8 @@ package struct ProcessingGraphBuilder {
                         correction.schemaVersion
                     )
                 }
-                if let provenance = correction.speakerProvenance {
-                    try SpeakerCorrectionValidator().validate(correction.filters, settings: provenance.settings, sampleRate: Double(sampleRate))
+                if correction.speakerProvenance != nil {
+                    try SpeakerCorrectionValidator().validateManualFilters(correction.filters, sampleRate: Double(sampleRate))
                 }
                 var correctionProcessors: [ProcessingGraph.Processor] = []
                 try validateUniqueBandIDs(correction.filters)
@@ -395,14 +401,12 @@ package struct ProcessingGraphBuilder {
                     )
                 ]
             case .crossfeed(let crossfeed):
-                try appendCrossfeed(
-                    crossfeed,
-                    stageID: stage.id,
-                    identifierScope: identifierScope,
-                    pipelineScope: pipelineScope,
-                    sampleRate: sampleRate,
-                    to: &graph
-                )
+                guard case .global = pipelineScope else { throw ProcessingGraphError.crossfeedMustBeGlobal }
+                guard channelCount == 2 else { throw ProcessingGraphError.crossfeedRequiresStereo(channelCount) }
+                try crossfeed.validate(sampleRate: Double(sampleRate))
+                // Crossfeed runs on the Direct/Reference buses before they join
+                // Spatial audio. A shared backend filter would also crossfeed
+                // HRTF output and cannot honor per-app playback modes.
                 continue
             case .delay(let delay):
                 if case .global = pipelineScope {
@@ -535,144 +539,6 @@ package struct ProcessingGraphBuilder {
         return .init(filePath: prepared.url.path, channel: convolution.impulseChannel,
                      maximumMagnitudeDB: asset.maximumMagnitudeDBByChannel[convolution.impulseChannel],
                      contentSHA256: prepared.sha256)
-    }
-
-    private func appendCrossfeed(
-        _ crossfeed: CrossfeedProcessor,
-        stageID: UUID,
-        identifierScope: String,
-        pipelineScope: ProcessingGraph.PipelineStep.Scope,
-        sampleRate: Int,
-        to graph: inout ProcessingGraph
-    ) throws {
-        guard case .global = pipelineScope else {
-            throw ProcessingGraphError.crossfeedMustBeGlobal
-        }
-        guard channelCount == 2 else {
-            throw ProcessingGraphError.crossfeedRequiresStereo(channelCount)
-        }
-        guard crossfeed.amountPercent.isFinite,
-              (0...100).contains(crossfeed.amountPercent) else {
-            throw ProcessingGraphError.invalidCrossfeedAmount(crossfeed.amountPercent)
-        }
-        guard crossfeed.delayMilliseconds.isFinite,
-              (0...5).contains(crossfeed.delayMilliseconds) else {
-            throw ProcessingGraphError.invalidCrossfeedDelay(crossfeed.delayMilliseconds)
-        }
-        guard crossfeed.cutoffFrequency.isFinite,
-              crossfeed.cutoffFrequency > 0,
-              crossfeed.cutoffFrequency < Double(sampleRate) / 2 else {
-            throw ProcessingGraphError.invalidCrossfeedFrequency(
-                crossfeed.cutoffFrequency,
-                sampleRate
-            )
-        }
-
-        let splitID = processorID(
-            scope: identifierScope,
-            stageID: stageID,
-            suffix: "crossfeed_split"
-        )
-        let mergeID = processorID(
-            scope: identifierScope,
-            stageID: stageID,
-            suffix: "crossfeed_merge"
-        )
-        let lowpassID = processorID(
-            scope: identifierScope,
-            stageID: stageID,
-            suffix: "crossfeed_lowpass"
-        )
-        let delayID = processorID(
-            scope: identifierScope,
-            stageID: stageID,
-            suffix: "crossfeed_delay"
-        )
-        let gainID = processorID(
-            scope: identifierScope,
-            stageID: stageID,
-            suffix: "crossfeed_gain"
-        )
-
-        graph.mixers.append(contentsOf: [
-            .init(
-                id: splitID,
-                sourceStageID: stageID,
-                inputChannelCount: 2,
-                outputChannelCount: 4,
-                mappings: [
-                    .init(destination: 0, sources: [.init(channel: 0)]),
-                    .init(destination: 1, sources: [.init(channel: 1)]),
-                    .init(destination: 2, sources: [.init(channel: 1)]),
-                    .init(destination: 3, sources: [.init(channel: 0)])
-                ]
-            ),
-            .init(
-                id: mergeID,
-                sourceStageID: stageID,
-                inputChannelCount: 4,
-                outputChannelCount: 2,
-                mappings: [
-                    .init(
-                        destination: 0,
-                        sources: [.init(channel: 0), .init(channel: 2)]
-                    ),
-                    .init(
-                        destination: 1,
-                        sources: [.init(channel: 1), .init(channel: 3)]
-                    )
-                ]
-            )
-        ])
-        let processors: [ProcessingGraph.Processor] = [
-            .init(
-                id: lowpassID,
-                sourceStageID: stageID,
-                implementation: .firstOrderLowpass(
-                    frequency: crossfeed.cutoffFrequency
-                )
-            ),
-            .init(
-                id: delayID,
-                sourceStageID: stageID,
-                implementation: .delay(
-                    milliseconds: crossfeed.delayMilliseconds,
-                    subsample: true
-                )
-            ),
-            .init(
-                id: gainID,
-                sourceStageID: stageID,
-                implementation: .crossfeedGain(
-                    db: crossfeed.crossfeedGainDB,
-                    muted: crossfeed.amountPercent == 0,
-                    maximumBoostDB: crossfeed.maximumBoostDB
-                )
-            )
-        ]
-        graph.processors.append(contentsOf: processors)
-        graph.pipeline.append(contentsOf: [
-            .init(
-                id: stageID,
-                kind: .mixer(id: splitID),
-                scope: pipelineScope,
-                channels: [],
-                processorIDs: []
-            ),
-            .init(
-                id: stageID,
-                scope: pipelineScope,
-                channels: [2, 3],
-                processorIDs: processors.map(\.id)
-            ),
-            .init(
-                id: stageID,
-                kind: .mixer(id: mergeID),
-                scope: pipelineScope,
-                channels: [],
-                processorIDs: []
-            )
-        ])
     }
 
     private func processorID(scope: String, stageID: UUID, suffix: String) -> String {

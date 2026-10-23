@@ -13,6 +13,7 @@ struct ProfileSettingsView: View {
     private let initialSpeaker: PhysicalOutputID?
     @ObservedObject private var store: ProfileStore
     @ObservedObject private var audio: CoreAudioSnapshotStore
+    @ObservedObject private var automaticBuffers: AutomaticAudioBufferController
     @State private var draft: ProfileSettingsDraft
     @State private var category = "General"
     @State private var speakerToReveal: PhysicalOutputID?
@@ -28,6 +29,7 @@ struct ProfileSettingsView: View {
         self.state = state
         _store = ObservedObject(wrappedValue: state.profiles)
         _audio = ObservedObject(wrappedValue: state.coreAudio)
+        _automaticBuffers = ObservedObject(wrappedValue: state.automaticBuffers)
         _draft = State(initialValue: ProfileSettingsDraft(profile: profile, activation: state.profiles.activationMode(for: profile)))
         let openSubwoofer = destination == .subwoofer && profile.effectiveEndpointKind == .speakers
         let subwoofers = profile.configuredSpeakerEndpoints.filter { $0.function == .subwoofer }
@@ -53,6 +55,16 @@ struct ProfileSettingsView: View {
         (try? draft.candidate()) != draft.original || draft.activation != draft.originalActivation
     }
     private var needsSpeakerConfiguration: Bool { (try? draft.preview().needsSpeakerConfiguration) == true }
+    private var globalAudioBufferTitle: String {
+        guard store.audioBufferDefault == .automatic else {
+            return "Global Default (\(store.audioBufferDefault.displayName))"
+        }
+        let preview = (try? draft.preview()) ?? draft.original
+        let currentFrames = preview == draft.original && draft.original.audioBufferSetting == .automatic
+            ? automaticBuffers.statuses[preview.id]?.currentFrames : nil
+        let frames = currentFrames ?? automaticBuffers.recommendedFrames(for: preview)
+        return "Global Default (Automatic · \(frames) samples)"
+    }
     private var speakerConfiguration: some View {
         Group {
             if let preview = try? draft.preview() {
@@ -106,13 +118,30 @@ struct ProfileSettingsView: View {
                     Text("Configure speaker placement before saving this device type.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
-                Picker("Processing Sample Rate", selection: $draft.sampleRate) {
-                    ForEach(Array(Set([44100, 48000, 88200, 96000, 176400, 192000, draft.sampleRate])).sorted(), id: \.self) {
-                        Text("\(Double($0) / 1000, specifier: "%g") kHz").tag($0)
+                ResponsiveStackLayout(minimumHorizontalWidth: 420, horizontalSpacing: 12, verticalSpacing: 6) {
+                    HStack(spacing: 6) {
+                        Text("Processing Sample Rate")
+                        DeviceCorrectionHelpIcon(title: "Processing Sample Rate", message: "48 kHz is the recommended default. Higher rates increase CPU and bandwidth use but do not improve lower rate source audio.")
                     }
-                }
-                Text("48 kHz is the recommended default. Higher rates increase CPU and bandwidth use but do not improve lower rate source audio.")
-                    .foregroundStyle(.secondary)
+                    Picker("Processing Sample Rate", selection: $draft.sampleRate) {
+                        ForEach(Array(Set([44100, 48000, 88200, 96000, 176400, 192000, draft.sampleRate])).sorted(), id: \.self) {
+                            Text("\(Double($0) / 1000, specifier: "%g") kHz").tag($0)
+                        }
+                    }.labelsHidden()
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                ResponsiveStackLayout(minimumHorizontalWidth: 420, horizontalSpacing: 12, verticalSpacing: 6) {
+                    HStack(spacing: 6) {
+                        Text("Audio Buffer")
+                        DeviceCorrectionHelpIcon(title: "Audio Buffer", message: "Reduce buffer size to reduce latency. Increase if hearing crack sounds.")
+                    }
+                    Picker("Audio Buffer", selection: $draft.audioBufferOverride) {
+                        Text(globalAudioBufferTitle).tag(AudioBufferSetting?.none)
+                        Text("Automatic").tag(Optional(AudioBufferSetting.automatic))
+                        ForEach(Array(Set(DeviceProfile.audioBufferSizes + [draft.audioBufferOverride?.fixedFrames].compactMap { $0 })).sorted(), id: \.self) { frames in
+                            Text("\(frames) samples").tag(Optional(AudioBufferSetting.fixed(frames)))
+                        }
+                    }.labelsHidden()
+                }.frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

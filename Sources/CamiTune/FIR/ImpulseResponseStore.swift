@@ -1,5 +1,4 @@
 import CamiTuneDomain
-import Accelerate
 import Foundation
 
 /// Imports external impulse responses into immutable app-managed storage.
@@ -67,56 +66,14 @@ struct ImpulseResponseStore: Sendable {
     }
 
     private static func maximumMagnitudeDB(samples: [Double]) -> Double {
+        if let spectrum = try? ImpulseResponseSpectrum(samples: samples) {
+            return spectrum.maximumMagnitudeDB
+        }
+        // Preserve a conservative headroom bound if FFT allocation fails.
         let peak = samples.reduce(0.0) { max($0, abs($1)) }
         guard peak > 0 else { return -300 }
-        // Scale only the analysis input to keep the FFT finite for large float
-        // coefficients. The managed WAV retains the original coefficient gain.
-        let normalized = samples.map { $0 / peak }
-        let fftLength = nextPowerOfTwo(max(2, samples.count))
-        let log2Length = vDSP_Length(Int.bitWidth - (fftLength.leadingZeroBitCount + 1))
-        guard let setup = vDSP_create_fftsetupD(log2Length, FFTRadix(kFFTRadix2)) else {
-            // Allocation failure is exceptionally unlikely after the import
-            // size guard. L1 is a conservative response bound and keeps audio
-            // safety intact if the FFT setup still cannot be created.
-            let bound = normalized.reduce(0.0) { $0 + abs($1) }
-            return amplitudeToDB(bound) + amplitudeToDB(peak)
-        }
-        defer { vDSP_destroy_fftsetupD(setup) }
-
-        var real = [Double](repeating: 0, count: fftLength)
-        real.replaceSubrange(0..<samples.count, with: normalized)
-        var imaginary = [Double](repeating: 0, count: fftLength)
-        var maximum: Double = 0
-        real.withUnsafeMutableBufferPointer { realBuffer in
-            imaginary.withUnsafeMutableBufferPointer { imaginaryBuffer in
-                var split = DSPDoubleSplitComplex(
-                    realp: realBuffer.baseAddress!,
-                    imagp: imaginaryBuffer.baseAddress!
-                )
-                vDSP_fft_zipD(
-                    setup,
-                    &split,
-                    1,
-                    log2Length,
-                    FFTDirection(kFFTDirection_Forward)
-                )
-                var magnitudes = [Double](repeating: 0, count: fftLength / 2 + 1)
-                vDSP_zvabsD(&split, 1, &magnitudes, 1, vDSP_Length(magnitudes.count))
-                vDSP_maxvD(magnitudes, 1, &maximum, vDSP_Length(magnitudes.count))
-            }
-        }
-        return amplitudeToDB(maximum) + amplitudeToDB(peak)
-    }
-
-    private static func amplitudeToDB(_ amplitude: Double) -> Double {
-        guard amplitude > 0, amplitude.isFinite else { return -300 }
-        return 20 * log10(amplitude)
-    }
-
-    private static func nextPowerOfTwo(_ value: Int) -> Int {
-        var result = 1
-        while result < value { result <<= 1 }
-        return result
+        let bound = samples.reduce(0.0) { $0 + abs($1 / peak) }
+        return 20 * log10(bound) + 20 * log10(peak)
     }
 }
 

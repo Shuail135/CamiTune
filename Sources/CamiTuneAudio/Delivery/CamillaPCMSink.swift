@@ -24,6 +24,36 @@ package final class CamillaPCMSink: @unchecked Sendable {
         try handle.write(contentsOf: bytes)
     }
 
+    /// Preparation only, before this sink is handed to a PCM writer. A failed
+    /// candidate must not hang behind a full stdin pipe. Restore descriptor
+    /// flags before normal delivery; production writes keep their existing path.
+    package func writeForPreparation(_ bytes: Data, deadline: PerformanceTick) throws {
+        guard let handle else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(EBADF)) }
+        let fd = handle.fileDescriptor
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        defer { _ = fcntl(fd, F_SETFL, flags) }
+        try bytes.withUnsafeBytes { buffer in
+            var offset = 0
+            while offset < buffer.count {
+                guard PerformanceClock.now() < deadline else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(ETIMEDOUT))
+                }
+                let written = Darwin.write(fd, buffer.baseAddress!.advanced(by: offset), buffer.count - offset)
+                if written > 0 { offset += written; continue }
+                if written < 0, errno == EINTR { continue }
+                if written < 0, errno == EAGAIN || errno == EWOULDBLOCK {
+                    var descriptor = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                    _ = Darwin.poll(&descriptor, 1, 5)
+                    continue
+                }
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(written == 0 ? EPIPE : errno))
+            }
+        }
+    }
+
     /// Idempotent, called by the owning worker after its last write.
     package func finish() {
         let retired = handle

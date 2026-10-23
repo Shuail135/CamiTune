@@ -4,6 +4,150 @@ import Foundation
 import Darwin
 
 extension DeveloperSelfTests {
+    static func preparedBufferHandoffCases() -> [DiagnosticCase] {
+        func check(_ id: String, _ name: String,
+                   _ body: @escaping @MainActor (DiagnosticSandbox) async throws -> Void) -> DiagnosticCase {
+            .init(id: id, suite: "Prepared Buffer Handoff", name: name, safety: .simulated) {
+                let box = try DiagnosticSandbox(); defer { box.cleanUp() }
+                try await body(box); return .init(summary: name)
+            }
+        }
+        return [
+            check("AB19", "Prepared sink preserves exact PCM and plug-in state; resumed input wins the race") { box in
+                func open(_ name: String) throws -> (URL, FileHandle, CamillaPCMSink) {
+                    let url = box.directory.appendingPathComponent(name)
+                    FileManager.default.createFile(atPath: url.path, contents: nil)
+                    let handle = try FileHandle(forWritingTo: url)
+                    return (url, handle, try CamillaPCMSink(duplicating: handle.fileDescriptor))
+                }
+                let (referenceURL, referenceFile, referenceSink) = try open("reference.pcm")
+                let (oldURL, oldFile, oldSink) = try open("old.pcm")
+                let (newURL, newFile, newSink) = try open("prepared.pcm")
+                let referencePlugin = BufferHandoffPlugin(), switchedPlugin = BufferHandoffPlugin()
+                func pipeline(_ sink: CamillaPCMSink, _ plugin: BufferHandoffPlugin) -> CamillaDeliveryPipeline {
+                    CamillaDeliveryPipeline(sink: sink, hrtfDatabase: nil, performanceSource: .init(), activeRoute: nil,
+                        renderConfiguration: .init(), deliveryConfiguration: .legacy(sampleRate: 48000, chunkSize: 128),
+                        backendChunkFrames: 128, configurationObserver: nil, systemMaster: .init(),
+                        referenceTopology: nil, pluginProcessor: plugin)
+                }
+                let reference = pipeline(referenceSink, referencePlugin), switched = pipeline(oldSink, switchedPlugin)
+                defer {
+                    reference.stop(); switched.stop(); newSink.finish()
+                    try? referenceFile.close(); try? oldFile.close(); try? newFile.close()
+                }
+                reference.start(); switched.start()
+                func drain(_ pipeline: CamillaDeliveryPipeline, samples: [Float], count: UInt64) async throws {
+                    pipeline.enqueue(.init(interleaved: samples, channelCount: 2, sampleRate: 48000))
+                    pipeline.enqueueProducerEnd()
+                    let until = PerformanceClock.now().advanced(seconds: 2)
+                    while pipeline.statisticsSnapshot().delivery.drains.completedDrains < count, PerformanceClock.now() < until {
+                        try await Task.sleep(for: .milliseconds(5))
+                    }
+                    try diagnosticRequire(pipeline.statisticsSnapshot().delivery.drains.completedDrains == count, "Fixture did not drain")
+                }
+                let zero = [Float](repeating: 0, count: 512)
+                try await drain(reference, samples: zero, count: 1)
+                try await drain(switched, samples: zero, count: 1)
+                let quietNow = PerformanceClock.now().advanced(seconds: 4)
+                guard let token = switched.bufferHandoffToken(seconds: 3, now: quietNow) else {
+                    throw DiagnosticFailure(message: "Silent writer did not issue a handoff token")
+                }
+                // A ready engine has consumed its priming zeros before the switch.
+                let prefix = try Data(contentsOf: referenceURL).count
+                let oldCount = try Data(contentsOf: oldURL).count
+                guard let retired = switched.replaceBackendIfQuiet(newSink, token: token, chunkFrames: 256,
+                    configuration: .legacy(sampleRate: 48000, chunkSize: 256), clocks: [], quietSeconds: 3, now: quietNow) else {
+                    throw DiagnosticFailure(message: "Prepared silent handoff failed")
+                }
+                retired.finish()
+                let tone = (0..<1024).map { Float(sin(Double($0) * 0.173) * 0.4) }
+                try await drain(reference, samples: tone, count: 2)
+                try await drain(switched, samples: tone, count: 2)
+                let expected = try Data(contentsOf: referenceURL).dropFirst(prefix)
+                let actual = try Data(contentsOf: newURL)
+                try diagnosticRequire(actual == Data(expected) && !actual.isEmpty,
+                    "Buffer switch changed, duplicated, held back or truncated source PCM")
+                let oldAfter = try Data(contentsOf: oldURL).count
+                try diagnosticRequire(oldAfter == oldCount,
+                    "Audio after commit was sent to the retired sink")
+                try diagnosticRequire(referencePlugin.resetCount == 1 && switchedPlugin.resetCount == 1,
+                    "Handoff reset the live plug-in or added a transition")
+                try diagnosticRequire(!switched.acceptsBufferHandoff(token), "An old token survived new audio")
+                // Conversely, input that arrives before the atomic commit must
+                // continue on the old path, even after the earlier silence read.
+                let later = PerformanceClock.now().advanced(seconds: 4)
+                guard let next = switched.bufferHandoffToken(seconds: 3, now: later) else {
+                    throw DiagnosticFailure(message: "Second silent interval was unavailable")
+                }
+                switched.enqueue(.init(interleaved: [Float](repeating: 0.001, count: 512), channelCount: 2, sampleRate: 48000))
+                let rejected = switched.replaceBackendIfQuiet(referenceSink, token: next, chunkFrames: 128,
+                    configuration: .legacy(sampleRate: 48000, chunkSize: 128), clocks: [], quietSeconds: 3, now: later)
+                try diagnosticRequire(rejected == nil && switched.statisticsSnapshot().delivery.droppedFrames == 0,
+                    "Resumed input lost the handoff race or was discarded")
+            },
+            check("AB20", "Stop during standby preparation discards it without reviving playback") { box in
+                var profile = DiagnosticSandbox.profile(); profile.audioBufferOverride = .automatic
+                box.profiles.profiles = [profile]
+                let gate = DiagnosticManualGate()
+                let fake = DiagnosticRuntimeFakes(.init(bufferPreparationGate: gate))
+                var frames = 1024
+                var services = fake.services(); services.automaticBufferSize = { _ in frames }
+                services.automaticBufferIsQuiet = { true }
+                let state = AppState(profiles: box.profiles, perAppAudio: box.perApp, runtimeServices: services)
+                defer { gate.release(); state.shutdownSynchronously() }
+                await state.activate(profile: profile); frames = 512
+                let change = Task { await state.runtimeCoordinator.applyAutomaticBufferIfQuiet() }
+                try await gate.waitUntilEntered()
+                let generation = state.runtimeCoordinator.desiredRuntime.generation
+                let stop = Task { await state.deactivate(manual: true) }
+                let deadline = PerformanceClock.now().advanced(seconds: 2)
+                while state.runtimeCoordinator.desiredRuntime.generation == generation, PerformanceClock.now() < deadline {
+                    await Task.yield()
+                }
+                try diagnosticRequire(state.runtimeCoordinator.desiredRuntime.generation != generation, "Stop was not submitted")
+                gate.release(); await change.value; await stop.value
+                try diagnosticRequire(!state.isActive && !fake.events.contains("commit buffer engine")
+                    && fake.events.filter { $0 == "start engine" }.count == 1, "Standby superseded Stop")
+            },
+            check("AB21", "A failed final commit never falls back to a restart") { box in
+                var profile = DiagnosticSandbox.profile(); profile.audioBufferOverride = .automatic
+                box.profiles.profiles = [profile]
+                let fake = DiagnosticRuntimeFakes(.init(bufferCommitSucceeds: false))
+                var frames = 1024
+                var services = fake.services(); services.automaticBufferSize = { _ in frames }
+                services.automaticBufferIsQuiet = { true }
+                let state = AppState(profiles: box.profiles, perAppAudio: box.perApp, runtimeServices: services)
+                defer { state.shutdownSynchronously() }
+                await state.activate(profile: profile); frames = 512
+                let session = state.activeSession?.id
+                await state.runtimeCoordinator.applyAutomaticBufferIfQuiet()
+                try diagnosticRequire(state.activeSession?.id == session && state.runtimeCoordinator.appliedProfile?.chunkSize == 1024
+                    && !fake.events.contains("stop engine") && !fake.events.contains("stop PCM"),
+                    "Rejected atomic handoff used the disruptive restart path")
+            },
+            check("AB22", "A blocked standby pipe times out and restores normal descriptor flags") { _ in
+                let pipe = Pipe(), bytes = Data(count: 2 * 1024 * 1024)
+                let sink = try CamillaPCMSink(duplicating: pipe.fileHandleForWriting.fileDescriptor)
+                defer { sink.finish(); try? pipe.fileHandleForReading.close(); try? pipe.fileHandleForWriting.close() }
+                let flags = fcntl(pipe.fileHandleForWriting.fileDescriptor, F_GETFL)
+                let start = PerformanceClock.now()
+                do {
+                    try await Task.detached {
+                        try sink.writeForPreparation(bytes, deadline: PerformanceClock.now().advanced(seconds: 0.05))
+                    }.value
+                    throw DiagnosticFailure(message: "A full standby pipe did not time out")
+                } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ETIMEDOUT) { }
+                let elapsed = PerformanceClock.milliseconds(start, PerformanceClock.now())
+                let restoredFlags = fcntl(pipe.fileHandleForWriting.fileDescriptor, F_GETFL)
+                // Darwin also exposes internal flags that can change after a
+                // write. Compare the flags governing public I/O semantics.
+                let ioFlags = O_ACCMODE | O_NONBLOCK | O_APPEND | O_ASYNC | O_SYNC
+                try diagnosticRequire(elapsed < 1000 && restoredFlags & ioFlags == flags & ioFlags,
+                    "Preparation took \(elapsed) ms; descriptor flags \(flags) became \(restoredFlags)")
+            }
+        ]
+    }
+
     static func pcmSinkCases() -> [DiagnosticCase] {
         func check(_ id: String, _ name: String,
                    _ body: @escaping @MainActor () async throws -> Void) -> DiagnosticCase {
@@ -324,5 +468,17 @@ extension DeveloperSelfTests {
                 try diagnosticRequire(read == bytes, "Retiring one sink invalidated another")
             }
         ]
+    }
+}
+
+private final class BufferHandoffPlugin: PluginAudioProcessor, @unchecked Sendable {
+    let tailFrames = 0
+    private let lock = NSLock()
+    private var resets = 0
+    var resetCount: Int { lock.lock(); defer { lock.unlock() }; return resets }
+    func process(_ samples: inout [Float], sampleRate: Double, reset: Bool) -> Bool {
+        if reset { lock.lock(); resets += 1; lock.unlock() }
+        for index in samples.indices { samples[index] *= 0.5 }
+        return true
     }
 }

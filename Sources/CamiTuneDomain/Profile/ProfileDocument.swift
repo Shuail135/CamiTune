@@ -1,19 +1,20 @@
 import Foundation
 
 package struct ProfileDocument: Codable, Sendable {
-    package static let currentSchemaVersion = 8
+    package static let currentSchemaVersion = 10
     package var schemaVersion: Int = currentSchemaVersion
     package var documentRevision = ProfileDocumentRevision(rawValue: 0)
     package var profiles: [DeviceProfile]
     package var physicalDeviceDefaults: [PhysicalDeviceDefaultProfile]
     package var folders: [ProfileFolder]
     package var rootOrder: [ProfileRootItem]
+    package var audioBufferDefault: AudioBufferSetting
     package var layoutDefaults: [String: ProfileSectionLayout]
     package var multichannelDrafts: [UUID: MultichannelHistoryState]
     package var showProfileEnabledExplanation: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case multichannelDrafts, schemaVersion, documentRevision, profiles, physicalDeviceDefaults, folders, rootOrder, layoutDefaults, showProfileEnabledExplanation
+        case audioBufferDefault, multichannelDrafts, schemaVersion, documentRevision, profiles, physicalDeviceDefaults, folders, rootOrder, layoutDefaults, showProfileEnabledExplanation
     }
 
     package init(
@@ -23,8 +24,10 @@ package struct ProfileDocument: Codable, Sendable {
         rootOrder: [ProfileRootItem],
         layoutDefaults: [String: ProfileSectionLayout],
         showProfileEnabledExplanation: Bool,
-        multichannelDrafts: [UUID: MultichannelHistoryState] = [:]
+        multichannelDrafts: [UUID: MultichannelHistoryState] = [:],
+        audioBufferDefault: AudioBufferSetting = 1024
     ) {
+        self.audioBufferDefault = audioBufferDefault
         self.multichannelDrafts = multichannelDrafts
         self.layoutDefaults = layoutDefaults
         self.showProfileEnabledExplanation = showProfileEnabledExplanation
@@ -50,6 +53,11 @@ package struct ProfileDocument: Codable, Sendable {
         }
         let version = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         documentRevision = version >= 7 ? try values.decode(ProfileDocumentRevision.self, forKey: .documentRevision) : .init(rawValue: 0)
+        audioBufferDefault = try values.decodeIfPresent(AudioBufferSetting.self, forKey: .audioBufferDefault) ?? 1024
+        guard audioBufferDefault.isSupported else {
+            throw DecodingError.dataCorruptedError(forKey: .audioBufferDefault, in: values,
+                debugDescription: "Unsupported audio buffer size")
+        }
         multichannelDrafts = try values.decodeIfPresent([UUID: MultichannelHistoryState].self, forKey: .multichannelDrafts) ?? [:]
         layoutDefaults = try values.decodeIfPresent([String: ProfileSectionLayout].self, forKey: .layoutDefaults) ?? [:]
         showProfileEnabledExplanation = try values.decodeIfPresent(Bool.self, forKey: .showProfileEnabledExplanation) ?? true

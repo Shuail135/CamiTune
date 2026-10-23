@@ -65,9 +65,9 @@ private struct CorrectionFilterRow: View {
             .frame(width: 100)
             .accessibilityLabel("Filter type")
             TextField("Frequency", value: $band.frequency, format: .number.precision(.fractionLength(0))).frame(width: 115)
-            TextField("Gain", value: Binding(get: { band.gain ?? 0 }, set: { band.gain = $0 }), format: .number.precision(.fractionLength(0...1)))
+            TextField("Gain", value: Binding(get: { band.gain ?? 0 }, set: { if $0.isFinite { band.gain = min(12, $0) } }), format: .number.precision(.fractionLength(0...1)))
                 .frame(width: 90).disabled(![.peaking, .lowShelf, .highShelf].contains(band.kind))
-            TextField("Q", value: Binding(get: { band.q ?? 0.707 }, set: { band.q = $0; band.bandwidth = nil }), format: .number.precision(.fractionLength(0...2)))
+            TextField("Q", value: Binding(get: { band.q ?? 0.707 }, set: { if $0.isFinite && $0 > 0 { band.q = $0; band.bandwidth = nil } }), format: .number.precision(.fractionLength(0...2)))
                 .frame(width: 80)
             Toggle("Enabled", isOn: $band.enabled).toggleStyle(.checkbox).font(.caption)
             Button { band.isLocked.toggle() } label: { Image(systemName: band.isLocked ? "lock.fill" : "lock.open") }

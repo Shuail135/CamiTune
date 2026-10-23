@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CA7200000000000000000101 = {isa = PBXBuildFile; fileRef = CA7200000000000000000201; };
+		CA7200000000000000000100 = {isa = PBXBuildFile; fileRef = CA7200000000000000000200; };
+		CA7100000000000000000101 = {isa = PBXBuildFile; fileRef = CA7100000000000000000201; };
 		8C497FF8C5E1403A8789705D = {isa = PBXBuildFile; fileRef = 6895DDFBCFC74C5F8D415BA5; };
 		2743F93AE266464CB88C50B3 = {isa = PBXBuildFile; fileRef = 8D50B84C3C674602BE2BF1CC; };
 		D2778B54DB014C77902D9835 = {isa = PBXBuildFile; fileRef = 7563EA5E91374D90A7DE12F9; };
@@ -961,6 +964,27 @@
 		01794D55F8464999767A81EA = {isa = PBXBuildFile; fileRef = 89B6909AB6BA7AE479D7E97F; };
 		ED831E7C15B2647E539D9841 = {isa = PBXBuildFile; fileRef = 4E6B6A08C8D5CDE54BDEDEF5; };
 		173DC9FD0A511AA2519C5A03 = {isa = PBXBuildFile; fileRef = 20D01C5C6CE4905B7334A7BF; };
+		A0C6A950E853219723D91F9B = {isa = PBXBuildFile; fileRef = 5EDD3897D2F3330C5B755056; };
+		5F0B097FE3387689FC3BAA3F = {isa = PBXBuildFile; fileRef = 98DCE279CAF9689A6D158478; };
+		553765023988FC328575D471 = {isa = PBXBuildFile; fileRef = DE1CDA203D0CE7B2C71B7F4F; };
+		E07D7DA85FE855F6C5DBF631 = {isa = PBXBuildFile; fileRef = 8A8B1E9462B102EE9B93DEC7; };
+		887B90ECABC2530279A3237D = {isa = PBXBuildFile; fileRef = D646AF1E844F8BED28D797BE; };
+		FB8DFFD87127577355EB491B = {isa = PBXBuildFile; fileRef = 1E49D3C24F6D0B051D6964D1; };
+		5F8AEF89E634CF3660453ED2 = {isa = PBXBuildFile; fileRef = 247A3051643DB895A119EF0C; };
+		9FACDCAEDB88CF7C50923E98 = {isa = PBXBuildFile; fileRef = CBD19CA551475DF943B0C18D; };
+		59D66A1B25CC4424EB38AA39 = {isa = PBXBuildFile; fileRef = 58B09B7C7A3F014075CEA44E; };
+		CACA20261022000000000001 = {isa = PBXBuildFile; fileRef = CACA20261022000000000002; };
+		0E70B18414BE093724D55A69 /* PluginHostSelfTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6943D40F72F8D44EDD030FE /* PluginHostSelfTests.swift */; };
+		CF2026102200000000000001 = {isa = PBXBuildFile; fileRef = CF2026102200000000000002; };
+		8F92DB044372845F701A187F = {isa = PBXBuildFile; fileRef = E0FB1751A247B734DF599231; };
+		CDC73C7155011C867C08DC21 = {isa = PBXBuildFile; fileRef = 990A0212945035DEA4AC7BA9; };
+		CA2026102300000000000102 = {isa = PBXBuildFile; fileRef = CA2026102300000000000101; };
+		CA2026102300000000000202 = {isa = PBXBuildFile; fileRef = CA2026102300000000000201; };
+		4200E9F2FF086A0E3B50D6A1 /* PluginArchitecture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E34518D36F9F87E59908F61 /* PluginArchitecture.swift */; };
+		97963EC35125E09772FE61F9 /* PluginRackSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDB50FDE729D45809F6204E5 /* PluginRackSession.swift */; };
+		5AEA77EFE13343D43A53B9D0 /* PluginSidechainInputs.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC09FA9A9E5248D10F15B8BF /* PluginSidechainInputs.swift */; };
+		43E8614BF19A1AAE0E53591F /* PluginSidechainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC20F45031CE278A0C6BE755 /* PluginSidechainView.swift */; };
+		653821D0BCB2DBFCEA7B5A9B /* PluginSidechainBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE044991044D171AD496385B /* PluginSidechainBuffer.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1016,6 +1040,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CA7200000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdatePanel.swift; sourceTree = "<group>"; };
+		CA7200000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateInstaller.swift; sourceTree = "<group>"; };
+		CA7100000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImpulseResponseAnalysis.swift; sourceTree = "<group>"; };
 		6895DDFBCFC74C5F8D415BA5 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultichannelPersistence.swift; sourceTree = "<group>"; };
 		8D50B84C3C674602BE2BF1CC = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EqualizerPersistence.swift; sourceTree = "<group>"; };
 		7563EA5E91374D90A7DE12F9 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EqualizerReset.swift; sourceTree = "<group>"; };
@@ -2653,6 +2680,27 @@
 		89B6909AB6BA7AE479D7E97F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/Measurement/Calibrated/RoomCalibratedMicrophoneAnalysis.swift"; sourceTree = SOURCE_ROOT; };
 		4E6B6A08C8D5CDE54BDEDEF5 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/Measurement/RoomRecordingAnalyzer.swift"; sourceTree = SOURCE_ROOT; };
 		20D01C5C6CE4905B7334A7BF = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/RoomCorrection/Measurement/Simple/RoomSimpleRecordingAnalysis.swift"; sourceTree = SOURCE_ROOT; };
+		5EDD3897D2F3330C5B755056 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneDomain/Processing/PluginRack.swift"; sourceTree = SOURCE_ROOT; };
+		98DCE279CAF9689A6D158478 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/Processing/PluginAudioProcessor.swift"; sourceTree = SOURCE_ROOT; };
+		DE1CDA203D0CE7B2C71B7F4F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Plugins/PluginRackManager.swift"; sourceTree = SOURCE_ROOT; };
+		8A8B1E9462B102EE9B93DEC7 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Plugins/PluginCatalog.swift"; sourceTree = SOURCE_ROOT; };
+		D646AF1E844F8BED28D797BE = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Plugins/PluginEditing.swift"; sourceTree = SOURCE_ROOT; };
+		1E49D3C24F6D0B051D6964D1 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Plugins/PluginHostSession.swift"; sourceTree = SOURCE_ROOT; };
+		247A3051643DB895A119EF0C = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Plugins/PluginHostProcess.swift"; sourceTree = SOURCE_ROOT; };
+		CBD19CA551475DF943B0C18D = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/UI/Plugins/PluginPickerView.swift"; sourceTree = SOURCE_ROOT; };
+		58B09B7C7A3F014075CEA44E = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/UI/Plugins/PluginRackView.swift"; sourceTree = SOURCE_ROOT; };
+		CACA20261022000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/UI/Plugins/PluginRackReordering.swift"; sourceTree = SOURCE_ROOT; };
+		A6943D40F72F8D44EDD030FE /* PluginHostSelfTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Diagnostics/PluginHostSelfTests.swift"; sourceTree = SOURCE_ROOT; };
+		CF2026102200000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/Processing/HeadphoneCrossfeed.swift"; sourceTree = SOURCE_ROOT; };
+		E0FB1751A247B734DF599231 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Plugins/PluginMIDI.swift"; sourceTree = SOURCE_ROOT; };
+		990A0212945035DEA4AC7BA9 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/UI/Plugins/PluginMIDIView.swift"; sourceTree = SOURCE_ROOT; };
+		CA2026102300000000000101 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneDomain/Profile/AudioBufferSetting.swift"; sourceTree = SOURCE_ROOT; };
+		CA2026102300000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/AutomaticAudioBufferController.swift"; sourceTree = SOURCE_ROOT; };
+		8E34518D36F9F87E59908F61 /* PluginArchitecture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/CamiTune/Plugins/PluginArchitecture.swift; sourceTree = SOURCE_ROOT; };
+		EDB50FDE729D45809F6204E5 /* PluginRackSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/CamiTune/Plugins/PluginRackSession.swift; sourceTree = SOURCE_ROOT; };
+		BC09FA9A9E5248D10F15B8BF /* PluginSidechainInputs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/CamiTune/Plugins/PluginSidechainInputs.swift; sourceTree = SOURCE_ROOT; };
+		FC20F45031CE278A0C6BE755 /* PluginSidechainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/CamiTune/UI/Plugins/PluginSidechainView.swift; sourceTree = SOURCE_ROOT; };
+		EE044991044D171AD496385B /* PluginSidechainBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/CamiTuneAudio/Processing/PluginSidechainBuffer.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -2804,6 +2852,22 @@
 			isa = PBXGroup;
 			name = CamiTune;
 			children = (
+				A6943D40F72F8D44EDD030FE /* PluginHostSelfTests.swift */,
+				58B09B7C7A3F014075CEA44E,
+				FC20F45031CE278A0C6BE755,
+				CACA20261022000000000002,
+				990A0212945035DEA4AC7BA9,
+				E0FB1751A247B734DF599231,
+				CBD19CA551475DF943B0C18D,
+				247A3051643DB895A119EF0C,
+				1E49D3C24F6D0B051D6964D1,
+				BC09FA9A9E5248D10F15B8BF,
+				EDB50FDE729D45809F6204E5,
+				8E34518D36F9F87E59908F61,
+				D646AF1E844F8BED28D797BE,
+				8A8B1E9462B102EE9B93DEC7,
+				DE1CDA203D0CE7B2C71B7F4F,
+				CA2026102300000000000201,
 				0BC0CEB76B2CDB99E5FC7DCA,
 				F786AE31B2B0B6EBB7313810,
 				7F9E7480CFA9A03D77B50390,
@@ -2938,6 +3002,8 @@
 			path = Sources/CamiTuneDomain;
 			isa = PBXGroup;
 			children = (
+				5EDD3897D2F3330C5B755056,
+				CA2026102300000000000101,
 				6D10BBE978C1200B8BAD4018,
 				B35F742D41BF7199E3275180,
 				EA10F6D2C860989570E92533,
@@ -2960,6 +3026,9 @@
 			path = Sources/CamiTuneAudio;
 			isa = PBXGroup;
 			children = (
+				98DCE279CAF9689A6D158478,
+				EE044991044D171AD496385B,
+				CF2026102200000000000002,
 				39A4F07FA297646A7715F20D,
 				1470AA871EADCEE35822B25A,
 				26237C786BE10E250FA6E23D,
@@ -3079,6 +3148,7 @@
 			path = Navigation;
 			sourceTree = "<group>";
 			children = (
+				CA7200000000000000000201,
 				2CCC7DB8DC22E3DAD74403E8,
 				C918E1BD8F850B389F1EE5F9,
 				14C9869259F14FE6380CCFA1,
@@ -3249,6 +3319,7 @@
 		DA6F6D0D716FE27B848C42C7 = {
 			isa = PBXGroup;
 			children = (
+				CA7100000000000000000201,
 				4650A69AEC4E3699F2F5EB60,
 				433B0224BF9C80BDA49A2BBB,
 				1AAEC3AC65BA7141C64CD233,
@@ -3332,6 +3403,7 @@
 			isa = PBXGroup;
 			children = (
 				793942D831F21933D7F013F0,
+				CA7200000000000000000200,
 				A566B02D3307BD5D7DDF1F49,
 				4B1F60A36418774FA08832BA,
 				0680471C758C9A02A80CCD88,
@@ -3930,6 +4002,25 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CA7200000000000000000101,
+				CA7200000000000000000100,
+				0E70B18414BE093724D55A69 /* PluginHostSelfTests.swift in Sources */,
+				59D66A1B25CC4424EB38AA39,
+				43E8614BF19A1AAE0E53591F,
+				CACA20261022000000000001,
+				CDC73C7155011C867C08DC21,
+				8F92DB044372845F701A187F,
+				9FACDCAEDB88CF7C50923E98,
+				5F8AEF89E634CF3660453ED2,
+				FB8DFFD87127577355EB491B,
+				5AEA77EFE13343D43A53B9D0,
+				97963EC35125E09772FE61F9,
+				4200E9F2FF086A0E3B50D6A1,
+				887B90ECABC2530279A3237D,
+				E07D7DA85FE855F6C5DBF631,
+				553765023988FC328575D471,
+				CA2026102300000000000202,
+				CA7100000000000000000101,
 				3B353F8AD8E9E70BD571E7C5,
 				CC96CDFA9A2A46D3EEDC9A4F,
 				78D82B7215AFF2BF4D35563D,
@@ -4142,6 +4233,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A0C6A950E853219723D91F9B,
+				CA2026102300000000000102,
 				5AD1E6284C2DEEDABE714779,
 				D9DE295C10753B2103078BF5,
 				0060E45032BC70EDB20C0FB6,
@@ -4237,6 +4330,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5F0B097FE3387689FC3BAA3F,
+				653821D0BCB2DBFCEA7B5A9B,
+				CF2026102200000000000001,
 				173DC9FD0A511AA2519C5A03,
 				ED831E7C15B2647E539D9841,
 				01794D55F8464999767A81EA,

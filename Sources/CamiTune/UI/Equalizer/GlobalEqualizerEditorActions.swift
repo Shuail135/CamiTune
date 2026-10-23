@@ -251,7 +251,6 @@ extension GlobalEqualizerEditorView {
     func updateGraphResponses() {
         guard needsResponseGraph else {
             graphModel.cancel()
-            updateAutomaticSystemHeadroom()
             return
         }
         let sampleRate = Double(profile.sampleRate)
@@ -264,41 +263,6 @@ extension GlobalEqualizerEditorView {
         }
         combined.bands += (try? SimpleToneFilterFactory.filters(for: simpleTone, sampleRate: sampleRate)) ?? []
         graphModel.calculate(parsed: combined, sampleRate: sampleRate)
-        updateAutomaticSystemHeadroom()
-    }
-
-    func updateAutomaticSystemHeadroom() {
-        let candidate: DeviceProfile
-        do {
-            var current = profile
-            current.setGlobalEqualizer(preampDB: preampDB, bands: graphicBands)
-            current.processing.simpleTone = simpleTone
-            current = try state.applyingSessionEQDrafts(to: current)
-            current.setGlobalEqualizer(preampDB: preampDB, bands: graphicBands)
-            current.processing.simpleTone = simpleTone
-            candidate = current
-        } catch {
-            automaticSystemHeadroomDB = 0
-            return
-        }
-        let profileID = profile.id
-        runtime.headroomCalculationTask?.cancel()
-        runtime.headroomCalculationTask = Task {
-            do {
-                try await Task.sleep(for: .milliseconds(120))
-            } catch {
-                return
-            }
-            let headroom = await Task.detached(priority: .utility) {
-                do {
-                    let assets = try PreparedRuntimeAssets.prepare(profile: candidate, directory: CamiTunePaths.impulseResponsesDirectory)
-                    return try ProcessingGraphBuilder(channelCount: candidate.processingChannelCount, preparedAssets: assets)
-                        .build(profile: candidate).automaticHeadroomDB
-                } catch { return 0 }
-            }.value
-            guard !Task.isCancelled, profile.id == profileID else { return }
-            automaticSystemHeadroomDB = headroom
-        }
     }
 
     var currentDeviceCorrectionProvenance: DeviceCorrectionProfile? {

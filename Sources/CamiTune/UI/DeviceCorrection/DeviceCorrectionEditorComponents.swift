@@ -33,7 +33,7 @@ extension DeviceCorrectionEditorView {
 
         VStack(alignment: .leading, spacing: 8) {
             if measurement == nil {
-                Text("Choose the source device first. CamiTune will only offer target devices with compatible structured measurement rigs.")
+                Label("Choose the source device first. CamiTune will only offer target devices with compatible structured measurement rigs.", systemImage: "info.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -71,7 +71,7 @@ extension DeviceCorrectionEditorView {
                     }
                 } else if !DeviceNameNormalizer.key(for: deviceMatchSearchText).isEmpty,
                           matchSearchResults.isEmpty {
-                    Text("No compatible target measurements were found for this source fixture and configuration type.")
+                    Label("No compatible target measurements were found for this source fixture and configuration type.", systemImage: "info.circle")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -104,7 +104,7 @@ extension DeviceCorrectionEditorView {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text(emptyText)
+                Label(emptyText, systemImage: "info.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

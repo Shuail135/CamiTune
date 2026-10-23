@@ -64,6 +64,7 @@ struct SignalMetersView: View {
                 meterGroup("Audio In", capture: true, layout: layout)
                 meterGroup("Audio Out", capture: false, layout: layout)
             }
+            LiveClippingWarning(monitor: meters, profileID: profile.id)
         }.onChange(of: profile.id) { _ in showAllChannels = false }
     }
 
@@ -77,161 +78,156 @@ struct SignalMetersView: View {
     }
 }
 
-struct AudioRuntimeStatusView: View {
+/// Keep live status observation local to the warning, just like the meter bars.
+private struct LiveClippingWarning: View {
     @ObservedObject var monitor: AudioRuntimeMonitor
     let profileID: UUID
 
-    private let columns = [
-        GridItem(.adaptive(minimum: 170), spacing: 24)
-    ]
+    var body: some View {
+        if monitor.activeSession?.profileID == profileID && monitor.status.clippingIsRecent {
+            Label("Clipping detected. Lower the preamp or source volume.",
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+struct MeterStatusDisclosure: View {
+    let monitor: AudioRuntimeMonitor
+    let profileID: UUID
+    @State private var isExpanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            AudioRuntimeStatusView(monitor: monitor, profileID: profileID)
+        } label: {
+            Text("Status").font(.subheadline.weight(.semibold))
+        }
+        .disclosureGroupStyle(SectionDisclosureStyle())
+        .onChange(of: profileID) { _ in isExpanded = false }
+    }
+}
+
+private struct AudioRuntimeStatusView: View {
+    @ObservedObject var monitor: AudioRuntimeMonitor
+    let profileID: UUID
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(healthColor)
-                    .frame(width: 7, height: 7)
-                Text(pipelineTitle)
-                    .font(.body.weight(.medium))
-                Spacer()
-            }
-
-            if !activeStatus.pipelineAssessment().reasons.isEmpty {
+            if activeStatus.isActive && !activeStatus.pipelineAssessment().reasons.isEmpty {
                 Text(activeStatus.pipelineAssessment().explanation)
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Text("DSP telemetry: \(telemetrySummary)")
-                .font(.caption)
-                .foregroundStyle(activeStatus.telemetryAssessment().health == .warning ? Color.orange : Color.secondary)
-
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                RuntimeMetricValue(
-                    title: "DSP load",
-                    value: telemetryIsFresh ? percent(activeStatus.processingLoadPercent) : "—",
-                    detail: telemetryIsFresh ? "Resampler \(percent(activeStatus.resamplerLoadPercent))" : "DSP telemetry unavailable"
-                )
-                RuntimeMetricValue(
-                    title: "DSP buffer",
-                    value: telemetryIsFresh ? "\(activeStatus.dspBufferLevelFrames) frames" : "—",
-                    detail: bridgeBufferDetail
-                )
-                RuntimeMetricValue(
-                    title: "Rate adjust",
-                    value: activeStatus.route.sampleRate > 0 || telemetryIsFresh
-                        ? String(format: "%+.1f ppm", activeStatus.effectiveRateAdjustmentPPM) : "—",
-                    detail: "Matched buffer \(activeStatus.route.rateMatchBufferedFrames) frames"
-                )
-                RuntimeMetricValue(
-                    title: "Clipping",
-                    value: clippingValue,
-                    detail: clippingDetail,
-                    accent: activeStatus.clippingIsRecent ? .red : nil
-                )
-                RuntimeMetricValue(
-                    title: "Stream",
-                    value: routeValue,
-                    detail: activeStatus.route.sampleRate > 0 ? "System Audio Bridge" : "No active route"
-                )
-                RuntimeMetricValue(
-                    title: "Delivery",
-                    value: deliveryValue,
-                    detail: deliveryDetail
-                )
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 12, alignment: .top)],
+                      alignment: .leading, spacing: 12) {
+                latencySection
+                processingSection
+                signalSection
+                deliverySection
             }
         }
     }
 
-    private var profileIsActive: Bool { monitor.activeSession?.profileID == profileID }
+    private var latencySection: some View {
+        let latency = activeStatus.addedDelayEstimate()
+        return RuntimeStatusSection(title: "Latency") {
+            RuntimeStatusRow(title: "Total", value: milliseconds(latency?.milliseconds))
+            RuntimeStatusRow(title: "App transit", value: milliseconds(latency?.appMilliseconds))
+            RuntimeStatusRow(title: "Processing buffer", value: milliseconds(latency?.processingMilliseconds))
+            RuntimeStatusRow(title: "Playback buffer", value: milliseconds(latency?.playbackMilliseconds))
+        }
+    }
+
+    private var processingSection: some View {
+        RuntimeStatusSection(title: "Processing") {
+            RuntimeStatusRow(title: "Audio buffer", value: telemetryIsFresh
+                ? activeStatus.dspBlockFrames.map { "\($0) frames" } ?? "—" : "—")
+            RuntimeStatusRow(title: "DSP load", value: telemetryIsFresh ? percent(activeStatus.processingLoadPercent) : "—")
+            RuntimeStatusRow(title: "Resampler load", value: telemetryIsFresh ? percent(activeStatus.resamplerLoadPercent) : "—")
+            RuntimeStatusRow(title: "DSP buffer", value: telemetryIsFresh ? "\(activeStatus.dspBufferLevelFrames) frames" : "—")
+            RuntimeStatusRow(title: "Bridge buffer", value: activeStatus.route.bridgeFillRatio.map { percent($0 * 100) } ?? "—")
+            RuntimeStatusRow(title: "Rate adjust", value: hasRoute || telemetryIsFresh
+                ? String(format: "%+.1f ppm", activeStatus.effectiveRateAdjustmentPPM) : "—")
+            RuntimeStatusRow(title: "Matched buffer", value: hasRoute ? "\(activeStatus.route.rateMatchBufferedFrames) frames" : "—")
+        }
+    }
+
+    private var signalSection: some View {
+        RuntimeStatusSection(title: "Signal") {
+            RuntimeStatusRow(title: "Sample rate", value: hasRoute
+                ? String(format: "%.1f kHz", activeStatus.route.sampleRate / 1_000) : "—")
+            RuntimeStatusRow(title: "Channels", value: hasRoute ? "\(activeStatus.route.activeChannels)" : "—")
+            RuntimeStatusRow(title: "Clipping", value: clippingValue,
+                accent: activeStatus.clippingIsRecent ? .red : nil)
+            RuntimeStatusRow(title: "DSP clipped samples", value: telemetryIsFresh ? "\(activeStatus.dspClippedSamples)" : "—")
+            RuntimeStatusRow(title: "Source clipped samples", value: hasRoute ? "\(activeStatus.sourceClippedSamples)" : "—")
+        }
+    }
+
+    private var deliverySection: some View {
+        let route = activeStatus.route
+        return RuntimeStatusSection(title: "Delivery") {
+            RuntimeStatusRow(title: "Dropped frames", value: hasRoute
+                ? "\(route.bridgeDroppedFrames + route.camillaDroppedFrames + route.rejectedSourceFrames)" : "—")
+            RuntimeStatusRow(title: "Consumer overruns", value: hasRoute ? "\(route.bridgeConsumerOverrunCount)" : "—")
+            RuntimeStatusRow(title: "Malformed recoveries", value: hasRoute ? "\(route.bridgeMalformedPacketCount)" : "—")
+            RuntimeStatusRow(title: "Queue recoveries", value: hasRoute ? "\(route.camillaQueueRecoveries)" : "—")
+        }
+    }
+
     private var activeStatus: AudioRuntimeStatus {
-        profileIsActive ? monitor.status : .inactive
+        monitor.activeSession?.profileID == profileID ? monitor.status : .inactive
     }
-
+    private var hasRoute: Bool { activeStatus.isActive && activeStatus.route.sampleRate > 0 }
     private var telemetryIsFresh: Bool { activeStatus.hasFreshTelemetry() }
-    private var telemetrySummary: String {
-        let assessment = activeStatus.telemetryAssessment()
-        return assessment.reasons.isEmpty ? "Current" : assessment.explanation
-    }
-    private var pipelineTitle: String {
-        switch activeStatus.health {
-        case .inactive: return "Audio pipeline inactive"
-        case .healthy: return "Audio pipeline healthy"
-        case .warning: return "Audio pipeline warning"
-        case .fault: return "Audio pipeline fault"
-        }
-    }
-
-    private var healthColor: Color {
-        switch activeStatus.health {
-        case .inactive: return .secondary
-        case .healthy: return .green
-        case .warning: return .orange
-        case .fault: return .red
-        }
-    }
-
-    private var bridgeBufferDetail: String {
-        guard let ratio = activeStatus.route.bridgeFillRatio else {
-            return "Bridge buffer unavailable"
-        }
-        return "Bridge \(Int((ratio * 100).rounded()))% full"
-    }
-
     private var clippingValue: String {
-        let hasClipping = activeStatus.dspClippedSamples > 0
-            || activeStatus.sourceClippedSamples > 0
-        return hasClipping ? "Detected" : "None"
-    }
-
-    private var clippingDetail: String {
+        guard activeStatus.isActive else { return "—" }
         if activeStatus.clippingIsRecent { return "Detected recently" }
-        return "DSP \(activeStatus.dspClippedSamples) · source \(activeStatus.sourceClippedSamples) samples"
+        return activeStatus.dspClippedSamples > 0 || activeStatus.sourceClippedSamples > 0 ? "Detected" : "None"
     }
-
-    private var routeValue: String {
-        let route = activeStatus.route
-        guard route.sampleRate > 0 else { return "Idle" }
-        return String(format: "%.1f kHz · %u ch", route.sampleRate / 1_000, route.activeChannels)
+    private func milliseconds(_ value: Double?) -> String {
+        value.map { String(format: "%.1f ms", $0) } ?? "—"
     }
-
-    private var deliveryValue: String {
-        let route = activeStatus.route
-        let dropped = route.bridgeDroppedFrames + route.camillaDroppedFrames + route.rejectedSourceFrames
-        return "\(dropped) dropped"
-    }
-
-    private var deliveryDetail: String {
-        let route = activeStatus.route
-        if let error = route.sourceFormatError { return error }
-        return "\(route.bridgeConsumerOverrunCount) consumer overruns · \(route.bridgeMalformedPacketCount) malformed recoveries · \(route.camillaQueueRecoveries) queue recoveries"
-    }
-
     private func percent(_ value: Double) -> String {
         guard value.isFinite else { return "—" }
         return String(format: "%.1f%%", value)
     }
 }
 
-private struct RuntimeMetricValue: View {
+private struct RuntimeStatusSection<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(title).font(.subheadline.weight(.semibold))
+                Divider()
+                content
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(6)
+        }
+    }
+}
+
+private struct RuntimeStatusRow: View {
     let title: String
     let value: String
-    let detail: String
     var accent: Color?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.body.monospacedDigit())
-                .foregroundStyle(accent ?? .primary)
-                .lineLimit(1)
-            Text(detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Text(value).monospacedDigit().foregroundStyle(accent ?? .primary)
+                .multilineTextAlignment(.trailing)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .font(.caption)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
     }
 }
 

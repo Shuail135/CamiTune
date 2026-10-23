@@ -153,6 +153,7 @@ struct RoomMeasurementStore: Sendable {
             let decoded = try Self.read(recordingURL(reference, sessionID: snapshot.id))
             result = try Self.analyze(decoded, blocks: blocks, session: result)
         }
+        try Task.checkCancellation()
         try save(result)
         return result
     }

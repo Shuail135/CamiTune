@@ -31,6 +31,21 @@ struct DeviceCorrectionHelpIcon: View {
     }
 }
 
+struct AutoEQDeviceInfoIcon: View {
+    let message: String
+
+    var body: some View {
+        Image(systemName: "info.circle")
+            .font(.system(size: 14))
+            .foregroundStyle(.secondary)
+            .frame(width: 22, height: 22)
+            .contentShape(Rectangle())
+            .help(message)
+            .accessibilityLabel("Device measurement information")
+            .accessibilityHint(message)
+    }
+}
+
 /// Nested Auto EQ sections share the surrounding card's surface in both appearances.
 struct DeviceCorrectionCardStyle: GroupBoxStyle {
     func makeBody(configuration: Configuration) -> some View {

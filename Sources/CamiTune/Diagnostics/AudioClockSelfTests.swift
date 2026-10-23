@@ -24,6 +24,31 @@ extension DeveloperSelfTests {
             guard case .unavailable = state else { throw DiagnosticFailure(message: "Invalid clock remained usable: \(state)") }
         }
         return [
+            check("AB23", "Prepared output clock preserves source tracking and rejects invalid replacements") {
+                var clocks = AudioClockDrift(started: origin)
+                clocks.observeSource(sample(0, ppm: 120)); clocks.observeOutput(sample(0))
+                clocks.observeSource(sample(1, ppm: 120)); clocks.observeOutput(sample(1))
+                let now = origin.advanced(seconds: 1.1)
+                let before = try tracking(clocks.state(at: now))
+                func prepared(_ second: Double, rate: Double = 48_000) -> AudioClockObservation {
+                    // The new engine restarts its sample origin even when its
+                    // epoch happens to equal the old engine's epoch.
+                    .init(epoch: 1, sampleTime: second * rate,
+                        hostTime: 100 + UInt64((second + 0.4) * 24_000_000), nominalRate: rate,
+                        timestampFlags: 3, received: origin.advanced(seconds: second + 0.4))
+                }
+                for invalid in [[], [prepared(0.6)], [prepared(0), prepared(0.6, rate: 44_100)],
+                                [sample(0), sample(0.6)]] {
+                    try diagnosticRequire(!clocks.replaceOutput(with: invalid, now: now),
+                        "Unmeasured, mismatched or stale standby clock was accepted")
+                    let retained = try tracking(clocks.state(at: now))
+                    try diagnosticRequire(abs(retained - before) < 0.0001, "Rejected clock damaged live tracking")
+                }
+                try diagnosticRequire(clocks.replaceOutput(with: [prepared(0), prepared(0.6)], now: now),
+                    "Ready clock with a new sample origin was rejected")
+                let after = try tracking(clocks.state(at: now))
+                try diagnosticRequire(abs(after - 120) < 0.0001, "Handoff reset source drift or confused engine origins")
+            },
             check("PD63", "Clock comparison measures both drift directions independent of receipt jitter") {
                 for outputPPM in [-200.0, 200.0] {
                     var clocks = AudioClockDrift(started: origin)

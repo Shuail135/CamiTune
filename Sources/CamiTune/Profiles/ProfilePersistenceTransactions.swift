@@ -5,13 +5,14 @@ import Foundation
 /// to republish after awaiting disk. Volume and unrelated organization survive.
 enum ProfileDocumentMutation: Sendable {
     case settings(DeviceProfile, ProfileActivationMode)
+    case audioBufferDefault(AudioBufferSetting, Set<UUID>)
     case creation(DeviceProfile)
     case routingPolicy(UUID)
     case history
 
     var kind: ProfilePersistenceKind {
         switch self {
-        case .settings: return .settingsTransaction
+        case .settings, .audioBufferDefault: return .settingsTransaction
         case .creation: return .profileCreation
         case .routingPolicy: return .routingPolicy
         case .history: return .history
@@ -25,6 +26,7 @@ enum ProfileDocumentMutation: Sendable {
                   ProfileNamePolicy.isAvailable(candidate.name, in: result.profiles, excluding: candidate.id) else {
                 throw ProfileSettingsError.staleDraft
             }
+            candidate.resolveAudioBuffer(default: result.audioBufferDefault)
             candidate.outputVolumeScalar = result.profiles[index].outputVolumeScalar
             candidate.autoActivateWhenProfileDeviceSelected = activation == .profileAudioDevice
             if candidate.deviceTypeConfigurationKey != result.profiles[index].deviceTypeConfigurationKey {
@@ -42,12 +44,25 @@ enum ProfileDocumentMutation: Sendable {
                   ProfileNamePolicy.isAvailable(candidate.name, in: result.profiles) else {
                 throw ProfileSettingsError.runtime("Enter a unique profile name before adding the profile.")
             }
+            candidate.resolveAudioBuffer(default: result.audioBufferDefault)
             let first = !result.profiles.contains { $0.outputDeviceUID == candidate.outputDeviceUID }
             candidate.autoActivateWhenProfileDeviceSelected = !first
             result.profiles.append(candidate); result.rootOrder.append(.profile(candidate.id))
             if first {
                 result.physicalDeviceDefaults.removeAll { $0.physicalDevice.uid == candidate.outputDeviceUID }
                 result.physicalDeviceDefaults.append(.init(physicalDevice: candidate.outputDevice, profileID: candidate.id))
+            }
+        case .audioBufferDefault(let frames, let inheritingIDs):
+            guard frames.isSupported else {
+                throw ProfileSettingsError.runtime("Choose a supported audio buffer size.")
+            }
+            guard inheritingIDs.isSubset(of: Set(result.profiles.map(\.id))) else {
+                throw ProfileSettingsError.staleDraft
+            }
+            result.audioBufferDefault = frames
+            for index in result.profiles.indices {
+                if inheritingIDs.contains(result.profiles[index].id) { result.profiles[index].audioBufferOverride = nil }
+                result.profiles[index].resolveAudioBuffer(default: frames)
             }
         case .routingPolicy(let id):
             guard let index = result.profiles.firstIndex(where: { $0.id == id }) else { throw ProfileSettingsError.staleDraft }
