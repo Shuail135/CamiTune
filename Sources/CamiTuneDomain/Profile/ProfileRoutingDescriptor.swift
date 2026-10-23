@@ -51,8 +51,8 @@ package struct ProfileRoutingDescriptor: Hashable, Sendable {
     }
 
     package static func sourceLayout(for profile: DeviceProfile) -> LPCMChannelLayout {
-        if profile.hasPhysicalSpeakerRoute && profile.multichannel.routing.enabled {
-            return profile.multichannel.routing.sourceLayout.layout(channelCount: profile.multichannel.routing.discreteChannelCount)
+        if profile.hasPhysicalSpeakerRoute && profile.effectiveMultichannel.routing.enabled {
+            return profile.effectiveMultichannel.routing.sourceLayout.layout(channelCount: profile.effectiveMultichannel.routing.discreteChannelCount)
         }
         if profile.hasPhysicalSpeakerRoute, let topology = profile.speakerTopology {
             if let layout = SpeakerLayoutTemplate.selected(in: topology)?.sourceLayout { return layout }
@@ -69,7 +69,7 @@ package struct ProfileRoutingDescriptor: Hashable, Sendable {
         // Existing per-app mode buses can request reference/spatial rendering
         // independently of the profile mode. Preserve their multichannel input.
         if profile.isPersonalListening { return .sevenPointOne }
-        return profile.playbackMode == .direct ? .stereo : .sevenPointOne
+        return profile.effectivePlaybackMode == .direct ? .stereo : .sevenPointOne
     }
 
     package static func uid(for profileID: UUID) -> String {

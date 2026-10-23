@@ -34,8 +34,8 @@ final class PluginRackManager: ObservableObject {
         }
         func matches(_ plan: AudioRuntimePlan, allowRequested: Bool = false) -> Bool {
             profileID == plan.intent.id && format == plan.dspInputFormat.signalSignature
-                && (rack.audioConfiguration == plan.intent.pluginRack.audioConfiguration
-                    || (allowRequested && requestedRack.audioConfiguration == plan.intent.pluginRack.audioConfiguration)) && session?.errorMessage == nil
+                && (rack.audioConfiguration == (plan.renderConfiguration.pluginRack ?? PluginRack()).audioConfiguration
+                    || (allowRequested && requestedRack.audioConfiguration == (plan.renderConfiguration.pluginRack ?? PluginRack()).audioConfiguration)) && session?.errorMessage == nil
         }
     }
     @Published private(set) var statuses: [UUID: Status] = [:]
@@ -63,11 +63,11 @@ final class PluginRackManager: ObservableObject {
     }
 
     func prepare(_ plan: AudioRuntimePlan) async throws {
-        if active?.matches(plan) == true { updateMIDI(profileID: plan.intent.id, rack: plan.intent.pluginRack); return }
+        if active?.matches(plan) == true { updateMIDI(profileID: plan.intent.id, rack: (plan.renderConfiguration.pluginRack ?? PluginRack())); return }
         if previous?.matches(plan, allowRequested: true) == true { pending = previous; return }
-        if pending?.matches(plan, allowRequested: true) == true, !plan.intent.pluginRack.isProcessing || pending?.session != nil { return }
+        if pending?.matches(plan, allowRequested: true) == true, !(plan.renderConfiguration.pluginRack ?? PluginRack()).isProcessing || pending?.session != nil { return }
         generation &+= 1; let revision = generation
-        let candidate = Prepared(profileID: plan.intent.id, format: plan.dspInputFormat, rack: plan.intent.pluginRack)
+        let candidate = Prepared(profileID: plan.intent.id, format: plan.dspInputFormat, rack: (plan.renderConfiguration.pluginRack ?? PluginRack()))
         pending = candidate
         guard candidate.rack.isProcessing else { return }
         statuses[candidate.profileID] = Status(message: "Loading plug-ins…", loading: true,
@@ -89,11 +89,11 @@ final class PluginRackManager: ObservableObject {
     }
 
     func commit(_ plan: AudioRuntimePlan) -> (any PluginAudioProcessor)? {
-        if active?.matches(plan) == true { updateMIDI(profileID: plan.intent.id, rack: plan.intent.pluginRack); return active?.session }
+        if active?.matches(plan) == true { updateMIDI(profileID: plan.intent.id, rack: (plan.renderConfiguration.pluginRack ?? PluginRack())); return active?.session }
         let candidate: Prepared?
         if pending?.matches(plan, allowRequested: true) == true { candidate = pending }
         else if previous?.matches(plan, allowRequested: true) == true { candidate = previous }
-        else if !plan.intent.pluginRack.isProcessing { candidate = Prepared(profileID: plan.intent.id, format: plan.dspInputFormat, rack: plan.intent.pluginRack) }
+        else if !(plan.renderConfiguration.pluginRack ?? PluginRack()).isProcessing { candidate = Prepared(profileID: plan.intent.id, format: plan.dspInputFormat, rack: (plan.renderConfiguration.pluginRack ?? PluginRack())) }
         else { return active?.session }
         let old = active
         old?.session?.configureMIDI(.init(), enabled: false)
@@ -103,7 +103,7 @@ final class PluginRackManager: ObservableObject {
         sidechainInputs.configure(candidate?.rack.activeSlots.compactMap(\.sidechain) ?? [])
         if let old, old.profileID != candidate?.profileID { statuses[old.profileID]?.active = false }
         if let candidate {
-            candidate.rack.midi = plan.intent.pluginRack.midi
+            candidate.rack.midi = (plan.renderConfiguration.pluginRack ?? PluginRack()).midi
             candidate.session?.configureMIDI(candidate.rack.midi, enabled: true)
             candidate.session?.setSidechainsEnabled(true)
             statuses[candidate.profileID] = Status(latencyMilliseconds: Double(candidate.session?.latencyFrames ?? 0) * 1000 / candidate.sampleRate,
@@ -113,6 +113,21 @@ final class PluginRackManager: ObservableObject {
             configureEditorMIDI(editor, enabled: editor.profileID == candidate?.profileID)
         }
         return candidate?.session
+    }
+
+    /// Called after a successful layout transaction; rollback no longer needs
+    /// the retired rack. Dropping the sessions also stops idle helper processes.
+    func retireHiddenSection(profileID: UUID) {
+        guard active?.profileID != profileID || active?.rack.isProcessing == false else { return }
+        if previous?.profileID == profileID { previous = nil }
+        if pending?.profileID == profileID { pending = nil }
+        for (id, editor) in editors where editor.profileID == profileID {
+            editor.session?.configureMIDI(.init(), enabled: false)
+            editor.session?.setSidechainsEnabled(false)
+            editor.session?.closeEditors()
+            editors[id] = nil
+            editorClosed?(profileID, id)
+        }
     }
 
     func stop() {
@@ -147,7 +162,7 @@ final class PluginRackManager: ObservableObject {
         if let editor = editors[slot.id], editor.format == format, let session = editor.session { present(session); return }
         editors[slot.id]?.session?.closeEditors()
         var enabled = slot; enabled.isEnabled = true
-        let editor = Prepared(profileID: profile.id, format: format, rack: PluginRack(slots: [enabled], midi: profile.pluginRack.midi))
+        let editor = Prepared(profileID: profile.id, format: format, rack: PluginRack(isEnabled: true, slots: [enabled], midi: profile.pluginRack.midi))
         editors[slot.id] = editor
         do {
             editor.session = try await makeSession(editor, editorOnly: true)

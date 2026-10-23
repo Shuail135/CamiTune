@@ -141,6 +141,9 @@ final class CamillaDSPManager: ObservableObject {
                 )
                 try yaml.write(to: configURL, atomically: true, encoding: .utf8)
             }.value
+            // A previous ambiguous mutation may have retired the socket. A
+            // restoring full configuration must establish a fresh connection.
+            try await rpc.connect()
             try await rpc.setConfig(yaml: yaml)
             // Startup uses -20 dB as a safety guard. Normalize the Main fader
             // only for the first valid graph. VolumeHandoffService owns the live

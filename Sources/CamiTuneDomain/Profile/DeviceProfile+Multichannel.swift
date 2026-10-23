@@ -58,7 +58,7 @@ extension DeviceProfile {
         return hasPhysicalSpeakerRoute && endpoints.contains { $0.function == .subwoofer }
             && endpoints.contains { $0.function != .subwoofer }
     }
-    package var usesSourceProcessingBus: Bool { hasPhysicalSpeakerRoute && multichannel.isEnabled }
+    package var usesSourceProcessingBus: Bool { hasPhysicalSpeakerRoute && effectiveMultichannel.isEnabled }
     package var configuredSpeakerEndpoints: [SpeakerEndpoint] {
         let ids = Set(configuredProcessingChannels.map(\.physicalOutputID))
         return (speakerTopology?.endpoints ?? []).filter { ids.contains($0.id) }.sorted { $0.id.channelIndex < $1.id.channelIndex }

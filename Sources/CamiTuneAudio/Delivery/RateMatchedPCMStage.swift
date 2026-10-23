@@ -30,6 +30,12 @@ package struct RateMatchedPCMStage {
         return Output(frame: frame, adjustmentPPM: adjustment, observation: observation)
     }
 
+    /// Renderer completion is not new source-clock evidence. Preserve the last
+    /// clock adjustment while feeding its tail through the existing resampler.
+    package mutating func processTail(_ frame: PCMFrame) -> PCMFrame {
+        resampler.process(frame, adjustmentPPM: controller.adjustmentPPM)
+    }
+
     /// Called only for an authoritative producer END, never from an idle guess.
     package mutating func finish(discard: Bool) -> PCMFrame? {
         let tail: PCMFrame?

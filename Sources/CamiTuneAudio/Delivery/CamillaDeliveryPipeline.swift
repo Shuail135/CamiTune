@@ -597,6 +597,19 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
                     producerEnded = true
                     let discard = needsPCMDiscontinuityReset
                     condition.unlock()
+                    do {
+                        try routeRenderer.finishProducer(discard: discard) { rendered in
+                            condition.lock(); let cancelled = stopping; condition.unlock()
+                            if cancelled { throw CancellationError() }
+                            var tail = rateStage.processTail(rendered)
+                            guard !tail.interleaved.isEmpty else { return }
+                            processPlugins(&tail.interleaved, sampleRate: tail.sampleRate)
+                            masterStage.process(to: &tail.interleaved, channelCount: tail.channelCount, sampleRate: tail.sampleRate)
+                            try sink.write(tail.interleaved.withUnsafeBytes { Data($0) })
+                            recordBackendWrite(frames: tail.frameCount)
+                        }
+                    } catch is CancellationError { return }
+                    catch { failWrite(); return }
                     var tailFrames = 0
                     if var tail = rateStage.finish(discard: discard), !tail.interleaved.isEmpty {
                         processPlugins(&tail.interleaved, sampleRate: tail.sampleRate, reset: discard)
@@ -634,9 +647,8 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
                         } catch { failWrite(); return }
                         remaining -= frames
                     }
-                    // END seals resampler lookahead, not the running renderer.
-                    // Filter/delay history belongs to this delivery session and
-                    // is reset only by a real discontinuity or configuration change.
+                    // Renderer history has drained and retired before resampler
+                    // completion and backend padding seal this producer epoch.
                     condition.lock()
                     deliveryStatistics.drains.completedDrains &+= 1
                     deliveryStatistics.drains.resamplerTailFrames &+= UInt64(tailFrames)

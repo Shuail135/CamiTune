@@ -37,14 +37,11 @@ struct SettingsView: View {
     private var category: String { commands.settingsCategory }
     @State private var type: ProfileEndpointKind = .speakers
     @State private var showingApply = false
-    @State private var showingApplyBuffer = false
-    @State private var savingBuffer = false
-    @State private var bufferFailure: String?
     @State private var selectedProfiles: Set<UUID> = []
     @State private var loginItemNotice: LoginItemManager.Notice?
     @AppStorage("hideCloseKeepsRunningHint") private var hideCloseKeepsRunningHint = false
     @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system
-    private let categories = ["General", "Audio", "Drivers & Components", "Section Layout", "Diagnostics"]
+    private let categories = ["General", "Drivers & Components", "Section Layout", "Diagnostics"]
 
     init(state: AppState) {
         self.state = state
@@ -63,8 +60,6 @@ struct SettingsView: View {
                 case "General":
                     ScrollView { generalSettings }
                         .scrollBounceWhenNeeded()
-                case "Audio":
-                    audioSettings
                 case "Drivers & Components":
                     SetupView(state: state, embedded: true)
                 case "Section Layout":
@@ -75,13 +70,23 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                     SectionLayoutEditor(type: type, layout: Binding(
                         get: { store.defaultLayout(for: type) },
-                        set: { store.setDefaultLayout($0, for: type) }))
+                        set: {
+                            store.setDefaultLayout($0, for: type)
+                            state.applySectionLayoutToActiveProfile()
+                        }), requiresConfirmation: { section in
+                            store.profiles.contains { profile in
+                                profile.endpointKind == type && profile.sectionLayout == nil
+                                    && state.sectionNeedsDisableConfirmation(section, profile: profile)
+                            }
+                        })
                     Button("Apply to Existing Profiles…") {
                         selectedProfiles = []
                         showingApply = true
                     }
                 case "Diagnostics":
-                    DiagnosticsView(state: state)
+                    DiagnosticsView(state: state) {
+                        commands.settingsCategory = "Drivers & Components"
+                    }
                 default: EmptyView()
                 }
                 Spacer(minLength: 0)
@@ -89,27 +94,6 @@ struct SettingsView: View {
             .padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .onChange(of: appearance) { $0.apply() }
-        .alert("Audio Buffer", isPresented: Binding(get: { bufferFailure != nil }, set: { if !$0 { bufferFailure = nil } })) {
-            Button("OK", role: .cancel) { }
-        } message: { Text(bufferFailure ?? "") }
-        .sheet(isPresented: $showingApplyBuffer) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Apply Audio Buffer to Existing Profiles").font(.title2.bold())
-                Text("Selected profiles will use the global audio buffer. Their local buffer overrides will be replaced.")
-                List(store.profiles) { profile in
-                    Toggle(profile.name, isOn: Binding(
-                        get: { selectedProfiles.contains(profile.id) },
-                        set: { if $0 { selectedProfiles.insert(profile.id) } else { selectedProfiles.remove(profile.id) } }))
-                }
-                HStack {
-                    Spacer()
-                    Button("Cancel") { showingApplyBuffer = false }.keyboardShortcut(.cancelAction)
-                    Button("Apply") { saveBuffer(store.audioBufferDefault, inheriting: selectedProfiles) }
-                        .keyboardShortcut(.defaultAction).disabled(selectedProfiles.isEmpty)
-                }
-            }.padding(24).frame(width: 480, height: 390)
-                .disabled(savingBuffer).interactiveDismissDisabled(savingBuffer)
-        }
         .sheet(isPresented: $showingApply) {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Apply Layout to Existing Profiles").font(.title2.bold())
@@ -124,47 +108,11 @@ struct SettingsView: View {
                     Button("Cancel") { showingApply = false }.keyboardShortcut(.cancelAction)
                     Button("Apply") {
                         store.applyDefaultLayout(for: type, to: selectedProfiles)
+                        state.applySectionLayoutToActiveProfile()
                         showingApply = false
                     }.keyboardShortcut(.defaultAction).disabled(selectedProfiles.isEmpty)
                 }
             }.padding(24).frame(width: 480, height: 390)
-        }
-    }
-
-    private var audioSettings: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            ResponsiveStackLayout(minimumHorizontalWidth: 420, horizontalSpacing: 12, verticalSpacing: 6) {
-                HStack(spacing: 6) {
-                    Text("Audio Buffer")
-                    DeviceCorrectionHelpIcon(title: "Audio Buffer", message: "New profiles and profiles using global defaults will use this buffer size.\n\nAutomatic learns from CamillaDSP and active plug-ins, then applies a suitable buffer after at least three seconds of complete silence, once queued audio and effect tails have cleared. It keeps the size fixed while audio is playing.\n\nTry 256 frames first, then 128 for less delay. Smaller buffers need more processing power; increase the size if audio crackles. Changing this briefly restarts audio.")
-                }
-                Picker("Audio Buffer", selection: Binding(
-                    get: { store.audioBufferDefault }, set: { saveBuffer($0) })) {
-                    ForEach(AudioBufferSetting.choices, id: \.self) { setting in
-                        Text(setting.displayName).tag(setting)
-                    }
-                }.labelsHidden()
-            }.frame(maxWidth: .infinity, alignment: .leading)
-            Button("Apply to Existing Profiles…") {
-                selectedProfiles = []
-                showingApplyBuffer = true
-            }
-            if savingBuffer { ProgressView("Applying audio buffer…").controlSize(.small) }
-        }.disabled(savingBuffer)
-    }
-
-    private func saveBuffer(_ frames: AudioBufferSetting, inheriting ids: Set<UUID> = []) {
-        guard !savingBuffer else { return }
-        savingBuffer = true
-        Task {
-            defer { savingBuffer = false }
-            do {
-                try await state.saveGlobalAudioBuffer(frames, inheritingProfileIDs: ids)
-                showingApplyBuffer = false
-            } catch {
-                showingApplyBuffer = false
-                bufferFailure = error.localizedDescription
-            }
         }
     }
 
@@ -180,19 +128,23 @@ struct SettingsView: View {
                 .padding(6)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Toggle("Start CamiTune at login", isOn: Binding(
-                get: { loginItem.isEnabled }, set: { loginItemNotice = loginItem.setEnabled($0) }))
-                .disabled(loginItem.isUpdating)
-                .alert(loginItemNotice?.title ?? "Login Startup", isPresented: Binding(
-                    get: { loginItemNotice != nil },
-                    set: { if !$0 { loginItemNotice = nil } }), presenting: loginItemNotice) { notice in
-                        if notice.requiresApproval {
-                            Button("Open System Settings") { loginItem.openSystemSettings() }
+            GroupBox {
+                Toggle("Start CamiTune at login", isOn: Binding(
+                    get: { loginItem.isEnabled }, set: { loginItemNotice = loginItem.setEnabled($0) }))
+                    .disabled(loginItem.isUpdating)
+                    .padding(6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .alert(loginItemNotice?.title ?? "Login Startup", isPresented: Binding(
+                        get: { loginItemNotice != nil },
+                        set: { if !$0 { loginItemNotice = nil } }), presenting: loginItemNotice) { notice in
+                            if notice.requiresApproval {
+                                Button("Open System Settings") { loginItem.openSystemSettings() }
+                            }
+                            Button("OK", role: .cancel) { }
+                        } message: { notice in
+                            Text(notice.message)
                         }
-                        Button("OK", role: .cancel) { }
-                    } message: { notice in
-                        Text(notice.message)
-                    }
+            }
             GroupBox {
                 Toggle("Automatically check for updates", isOn: $updateChecker.automaticallyChecksForUpdates)
                     .padding(6)

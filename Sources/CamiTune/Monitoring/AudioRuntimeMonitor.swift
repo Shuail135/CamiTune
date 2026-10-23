@@ -152,7 +152,7 @@ enum AudioRuntimeHealthReason: Sendable, Equatable {
         case .engineStopped(let reason): return "CamillaDSP stop reason: \(reason)."
         case .transportFailure(let error): return "Driver transport error: \(error)"
         case .sourceFormatError(let error): return "Source format error: \(error)"
-        case .recentClipping: return "Audio clipping was detected recently."
+        case .recentClipping: return "DSP output clipping was detected recently."
         case .processingOverload(let percent): return String(format: "DSP processing load is %.1f%% (warning threshold: 85%%).", percent)
         case .bridgeDroppedFrames(let count): return "Bridge dropped frames: \(count)."
         case .bridgeOverruns(let count): return "Bridge consumer overruns: \(count)."
@@ -290,7 +290,9 @@ struct AudioRuntimeStatus: Equatable, Sendable {
     var dspBlockFrames: Int?
     var camillaRateAdjustment = 1.0
     var dspClippedSamples: UInt64 = 0
+    /// Source samples at or above full scale; this does not prove output clipping.
     var sourceClippedSamples: UInt64 = 0
+    /// DSP playback peaks and the backend clip counter only, never source peaks.
     var clippingIsRecent = false
     var telemetryAvailable = false
     var telemetryPollingActive = false
@@ -568,7 +570,6 @@ final class AudioRuntimeMonitor: ObservableObject {
         guard isPresented(session) else { return }
         if snapshot.clippedSamples > 0 {
             status.sourceClippedSamples &+= snapshot.clippedSamples
-            lastClipAt = Date()
         }
         // This tap uses source-channel order, not physical output indices.
         // Only DSP playback peaks may flag a particular speaker as clipping.
@@ -606,7 +607,7 @@ final class AudioRuntimeMonitor: ObservableObject {
             lastClipAt = now
         }
         for (channelIndex, peak) in incoming.playbackPeak.enumerated()
-            where peak.isFinite && peak >= 0 {
+            where peak.isFinite && peak > 0 {
             lastChannelClipAt[channelIndex] = now
         }
         if hasReceivedDSPLevels {
@@ -665,6 +666,6 @@ final class AudioRuntimeMonitor: ObservableObject {
 
 extension SignalLevels {
     var playbackExceedsFullScale: Bool {
-        playbackPeak.contains { $0.isFinite && $0 >= 0 }
+        playbackPeak.contains { $0.isFinite && $0 > 0 }
     }
 }

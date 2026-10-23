@@ -788,23 +788,8 @@ final class CoreAudioService {
         deviceID: AudioDeviceID
     ) -> OutputVolumeCapabilities {
         func capability(_ selector: AudioObjectPropertySelector) -> (Bool, Bool) {
-            var readable = false
-            var writable = false
-            for element: AudioObjectPropertyElement in [kAudioObjectPropertyElementMain, 1, 2] {
-                var address = AudioObjectPropertyAddress(
-                    mSelector: selector,
-                    mScope: kAudioDevicePropertyScopeOutput,
-                    mElement: element
-                )
-                guard AudioObjectHasProperty(deviceID, &address) else { continue }
-                readable = true
-                var settable: DarwinBoolean = false
-                if AudioObjectIsPropertySettable(deviceID, &address, &settable) == noErr,
-                   settable.boolValue {
-                    writable = true
-                }
-            }
-            return (readable, writable)
+            (!outputControlElements(deviceID: deviceID, selector: selector).isEmpty,
+             !outputControlElements(deviceID: deviceID, selector: selector, writable: true).isEmpty)
         }
         let volume = capability(kAudioDevicePropertyVolumeScalar)
         let mute = capability(kAudioDevicePropertyMute)
@@ -911,89 +896,85 @@ final class CoreAudioService {
         setMuted(uid: uid, muted: false)
     }
 
-    nonisolated static func setVolume(
-        deviceID: AudioDeviceID,
-        scalar: Float32
-    ) throws {
-        let value = max(0, min(1, scalar))
-        var didSet = false
-        var writeError: OSStatus?
-
-        for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
-            var address = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyVolumeScalar,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: element
-            )
-            guard AudioObjectHasProperty(deviceID, &address) else { continue }
-            var settable: DarwinBoolean = false
-            guard AudioObjectIsPropertySettable(
-                deviceID,
-                &address,
-                &settable
-            ) == noErr, settable.boolValue else { continue }
-            var current: Float32 = 0
-            var currentSize = UInt32(MemoryLayout<Float32>.size)
-            if AudioObjectGetPropertyData(
-                deviceID,
-                &address,
-                0,
-                nil,
-                &currentSize,
-                &current
-            ) == noErr, abs(current - value) < 0.0005 {
-                didSet = true
-                // A master element controls every channel. Without one, keep
-                // checking every channel so a prior interrupted write cannot
-                // leave the physical output with mismatched left/right gains.
-                if element == kAudioObjectPropertyElementMain { break }
-                continue
-            }
-            var v = value
-            let status = AudioObjectSetPropertyData(
-                deviceID,
-                &address,
-                0,
-                nil,
-                UInt32(MemoryLayout<Float32>.size),
-                &v
-            )
-            if status == noErr {
-                didSet = true
-                if element == kAudioObjectPropertyElementMain { break }
-            } else {
-                writeError = status
-            }
+    /// Require coverage of the entire output endpoint. This is conservative for
+    /// profiles using a subset of its channels, and keeps route changes safe.
+    nonisolated static func outputChannelElements(deviceID: AudioDeviceID) -> [AudioObjectPropertyElement] {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeOutput, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size) == noErr,
+              size > 0, size <= 65536 else { return [] }
+        var data = Data(count: Int(size))
+        let status = data.withUnsafeMutableBytes {
+            AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, $0.baseAddress!)
         }
-        if let writeError { throw AudioError.osStatus(writeError) }
-        if !didSet { throw AudioError.volumeNotSettable }
+        guard status == noErr, size <= data.count else { return [] }
+        return data.withUnsafeBytes { bytes in
+            let offset = MemoryLayout<AudioBufferList>.offset(of: \.mBuffers)!
+            guard Int(size) >= offset else { return [] }
+            let buffers = Int(bytes.loadUnaligned(as: UInt32.self))
+            guard buffers <= (Int(size) - offset) / MemoryLayout<AudioBuffer>.stride else { return [] }
+            var count = 0
+            for index in 0..<buffers {
+                count += Int(bytes.loadUnaligned(fromByteOffset: offset + index * MemoryLayout<AudioBuffer>.stride,
+                                                 as: AudioBuffer.self).mNumberChannels)
+            }
+            guard (1...1024).contains(count) else { return [] }
+            return (1...count).map { AudioObjectPropertyElement($0) }
+        }
+    }
+
+    nonisolated private static func outputControlElements(deviceID: AudioDeviceID,
+        selector: AudioObjectPropertySelector, writable: Bool = false) -> [AudioObjectPropertyElement] {
+        func supports(_ element: AudioObjectPropertyElement) -> Bool {
+            var address = AudioObjectPropertyAddress(mSelector: selector,
+                mScope: kAudioDevicePropertyScopeOutput, mElement: element)
+            guard AudioObjectHasProperty(deviceID, &address) else { return false }
+            guard writable else { return true }
+            var settable: DarwinBoolean = false
+            return AudioObjectIsPropertySettable(deviceID, &address, &settable) == noErr && settable.boolValue
+        }
+        if supports(kAudioObjectPropertyElementMain) { return [kAudioObjectPropertyElementMain] }
+        let channels = outputChannelElements(deviceID: deviceID)
+        return !channels.isEmpty && channels.allSatisfy(supports) ? channels : []
+    }
+
+    nonisolated static func setVolume(deviceID: AudioDeviceID, scalar: Float32) throws {
+        guard scalar.isFinite else { throw AudioError.volumeNotSettable }
+        var value = max(0, min(1, scalar))
+        let elements = outputControlElements(deviceID: deviceID, selector: kAudioDevicePropertyVolumeScalar, writable: true)
+        guard !elements.isEmpty else { throw AudioError.volumeNotSettable }
+        for element in elements {
+            var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar,
+                mScope: kAudioDevicePropertyScopeOutput, mElement: element)
+            var current: Float32 = 0
+            var size = UInt32(MemoryLayout<Float32>.size)
+            if AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &current) == noErr,
+               abs(current - value) < 0.0005 { continue }
+            let status = AudioObjectSetPropertyData(deviceID, &address, 0, nil,
+                UInt32(MemoryLayout<Float32>.size), &value)
+            guard status == noErr else { throw AudioError.osStatus(status) }
+        }
     }
 
     nonisolated private static func floatProperty(
-        deviceID: AudioDeviceID,
-        selector: AudioObjectPropertySelector
+        deviceID: AudioDeviceID, selector: AudioObjectPropertySelector
     ) -> Float32? {
-        for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
-            var address = AudioObjectPropertyAddress(
-                mSelector: selector,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: element
-            )
-            guard AudioObjectHasProperty(deviceID, &address) else { continue }
+        let writable = outputControlElements(deviceID: deviceID, selector: selector, writable: true)
+        let elements = writable.isEmpty ? outputControlElements(deviceID: deviceID, selector: selector) : writable
+        var values: [Float32] = []
+        for element in elements {
+            var address = AudioObjectPropertyAddress(mSelector: selector,
+                mScope: kAudioDevicePropertyScopeOutput, mElement: element)
             var value: Float32 = 0
             var size = UInt32(MemoryLayout<Float32>.size)
-            if AudioObjectGetPropertyData(
-                deviceID,
-                &address,
-                0,
-                nil,
-                &size,
-                &value
-            ) == noErr {
-                return value
-            }
+            guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value) == noErr,
+                  value.isFinite else { return nil }
+            values.append(value)
         }
-        return nil
+        // Report the loudest channel; reading channel 1 alone can hide a louder
+        // routed channel when the hardware exposes independent controls.
+        return values.max()
     }
 
     nonisolated private static func volumeDecibels(
@@ -1001,7 +982,7 @@ final class CoreAudioService {
         scalar: Float32
     ) -> Float32 {
         let clamped = max(0, min(1, scalar))
-        for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
+        for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain)] + outputChannelElements(deviceID: deviceID) {
             var address = AudioObjectPropertyAddress(
                 mSelector: kAudioDevicePropertyVolumeScalarToDecibels,
                 mScope: kAudioDevicePropertyScopeOutput,
@@ -1032,7 +1013,7 @@ final class CoreAudioService {
     nonisolated private static func volumeDecibelRange(
         deviceID: AudioDeviceID
     ) -> AudioValueRange? {
-        for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
+        for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain)] + outputChannelElements(deviceID: deviceID) {
             var address = AudioObjectPropertyAddress(
                 mSelector: kAudioDevicePropertyVolumeRangeDecibels,
                 mScope: kAudioDevicePropertyScopeOutput,
@@ -1059,27 +1040,19 @@ final class CoreAudioService {
     }
 
     nonisolated private static func isMuted(deviceID: AudioDeviceID) -> Bool? {
-        for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
-            var address = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyMute,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: element
-            )
-            guard AudioObjectHasProperty(deviceID, &address) else { continue }
+        let writable = outputControlElements(deviceID: deviceID, selector: kAudioDevicePropertyMute, writable: true)
+        let elements = writable.isEmpty ? outputControlElements(deviceID: deviceID, selector: kAudioDevicePropertyMute) : writable
+        guard !elements.isEmpty else { return nil }
+        var muted = true
+        for element in elements {
+            var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyMute,
+                mScope: kAudioDevicePropertyScopeOutput, mElement: element)
             var value: UInt32 = 0
             var size = UInt32(MemoryLayout<UInt32>.size)
-            if AudioObjectGetPropertyData(
-                deviceID,
-                &address,
-                0,
-                nil,
-                &size,
-                &value
-            ) == noErr {
-                return value != 0
-            }
+            guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value) == noErr else { return nil }
+            muted = muted && value != 0
         }
-        return nil
+        return muted
     }
 
     nonisolated private static func setMuted(
@@ -1090,47 +1063,20 @@ final class CoreAudioService {
     }
 
     nonisolated static func setMuteChecked(deviceID: AudioDeviceID, muted: Bool) throws {
-        var didSet = false
-        var writeError: OSStatus?
-        for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain), 1, 2] {
-            var address = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyMute,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: element
-            )
-            guard AudioObjectHasProperty(deviceID, &address) else { continue }
-            var settable: DarwinBoolean = false
-            guard AudioObjectIsPropertySettable(
-                deviceID,
-                &address,
-                &settable
-            ) == noErr, settable.boolValue else { continue }
-            var value: UInt32 = muted ? 1 : 0
+        let elements = outputControlElements(deviceID: deviceID, selector: kAudioDevicePropertyMute, writable: true)
+        guard !elements.isEmpty else { throw AudioError.volumeNotSettable }
+        var value: UInt32 = muted ? 1 : 0
+        for element in elements {
+            var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyMute,
+                mScope: kAudioDevicePropertyScopeOutput, mElement: element)
             var current: UInt32 = 0
             var size = UInt32(MemoryLayout<UInt32>.size)
             if AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &current) == noErr,
-               current == value {
-                didSet = true
-                if element == kAudioObjectPropertyElementMain { break }
-                continue
-            }
-            let status = AudioObjectSetPropertyData(
-                deviceID,
-                &address,
-                0,
-                nil,
-                UInt32(MemoryLayout<UInt32>.size),
-                &value
-            )
-            if status == noErr {
-                didSet = true
-                if element == kAudioObjectPropertyElementMain { break }
-            } else {
-                writeError = status
-            }
+               current == value { continue }
+            let status = AudioObjectSetPropertyData(deviceID, &address, 0, nil,
+                UInt32(MemoryLayout<UInt32>.size), &value)
+            guard status == noErr else { throw AudioError.osStatus(status) }
         }
-        if let writeError { throw AudioError.osStatus(writeError) }
-        if !didSet { throw AudioError.volumeNotSettable }
     }
 
     nonisolated static func enumerateOutputDevices() -> [AudioDeviceInfo] {

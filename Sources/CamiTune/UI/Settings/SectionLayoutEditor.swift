@@ -6,16 +6,42 @@ import AppKit
 struct SectionLayoutEditor: View {
     let type: ProfileEndpointKind
     @Binding var layout: ProfileSectionLayout
+    var requiresConfirmation: (ProfileSection) -> Bool = { _ in false }
+    @State private var confirmingHide = false
+    @State private var pendingLayout: ProfileSectionLayout?
+    @State private var pendingSection: ProfileSection?
+
+    private var confirmedLayout: Binding<ProfileSectionLayout> {
+        Binding(get: { layout }, set: { proposed in
+            if let section = proposed.hidden.subtracting(layout.hidden).first(where: requiresConfirmation) {
+                pendingLayout = proposed
+                pendingSection = section
+                confirmingHide = true
+            } else { layout = proposed }
+        })
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Picker("Default Equalizer", selection: $layout.equalizer) {
                 ForEach(EqualizerPresentation.allCases) { Text($0.title).tag($0) }
             }
-            Label("Drag the reorder symbol to arrange sections. Hidden sections keep their processing settings.", systemImage: "info.circle")
+            Label("Drag the reorder symbol to arrange sections. Unchecked sections stop processing and keep their saved settings.", systemImage: "info.circle")
                 .font(.caption).foregroundStyle(.secondary)
-            SectionLayoutList(type: type, layout: $layout)
+            SectionLayoutList(type: type, layout: confirmedLayout)
                 .frame(minHeight: 280)
+        }
+        .alert("Disable \(pendingSection?.title ?? "section")?", isPresented: $confirmingHide) {
+            Button("Disable", role: .destructive) {
+                if let pendingLayout { layout = pendingLayout }
+                pendingSection = nil
+                pendingLayout = nil
+            }
+            Button("Cancel", role: .cancel) { pendingSection = nil; pendingLayout = nil }
+        } message: {
+            Text(pendingSection == .mode
+                ? "Are you sure you want to uncheck Mode? Playback will use Direct only and the mode controls will be hidden. Your saved mode settings will be kept."
+                : "Are you sure you want to uncheck this section? Its enabled processing will stop when the layout is applied. Your saved settings will be kept.")
         }
     }
 }
@@ -95,6 +121,10 @@ final class SectionLayoutTableView: NSTableView, NSTableViewDataSource, NSTableV
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { sections.count }
+
+    // Match App Order's explicit row-height delegate. Native gap tracking needs
+    // this geometry to move every intervening row before the mouse is released.
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rowHeight }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let identifier = NSUserInterfaceItemIdentifier("section-layout-cell")

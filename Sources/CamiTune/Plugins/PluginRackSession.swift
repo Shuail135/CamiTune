@@ -35,7 +35,7 @@ final class PluginHostSession: PluginAudioProcessor, @unchecked Sendable {
             throw PluginHostError(message: "The plug-in rack needs a supported sample rate and 1–32 channels.")
         }
         for (index, group) in PluginArchitecture.groups(for: rack.activeSlots).enumerated() {
-            let connection = try PluginHostConnection(rack: .init(slots: group.slots, midi: rack.midi), sampleRate: sampleRate,
+            let connection = try PluginHostConnection(rack: .init(isEnabled: true, slots: group.slots, midi: rack.midi), sampleRate: sampleRate,
                 channelRoles: channelRoles, editorOnly: editorOnly, architecture: group.architecture, sidechainHub: sidechainHub) { [weak self] event in
                     self?.receive(event, group: index, architecture: group.architecture)
                 }

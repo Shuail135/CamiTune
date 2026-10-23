@@ -1,5 +1,6 @@
 import CamiTuneDomain
 import SwiftUI
+import AppKit
 
 /// One local value owns every step. No profile exists in the store until Add.
 struct AddOutputDraft: Equatable {
@@ -37,6 +38,7 @@ struct AddOutputDraft: Equatable {
             throw ProfileSettingsError.runtime(Self.incompleteMessage)
         }
         var candidate = profile
+        candidate.audioBufferOverride = profile.audioBufferSetting
         candidate.name = candidate.name.trimmingCharacters(in: .whitespacesAndNewlines)
         candidate.endpointKind = deviceType
         candidate.setPlaybackMode(.direct)
@@ -100,8 +102,12 @@ struct AddOutputProfileSheet: View {
     @State private var busy = false
     @State private var message: String?
     @FocusState private var nameFocused: Bool
+    @State private var editingName = false
     @State private var nameHovered = false
     @State private var deviceTypePickerWidth: CGFloat?
+    private let pencilWidth: CGFloat = 16
+    private let pencilSpacing: CGFloat = 6
+    private var pencilColumnWidth: CGFloat { pencilWidth + pencilSpacing }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let pageTitles = ["Choose an output and configure its profile.", "Device Configuration"]
     private var lastStep: Int {
@@ -269,24 +275,47 @@ struct AddOutputProfileSheet: View {
             GroupBox { outputChooser.padding(8) } label: { Text("Audio Output") }
             GroupBox {
                 VStack(spacing: 0) {
-                    HStack(spacing: 16) {
+                    HStack(spacing: pencilSpacing) {
                         Text("Profile Name")
-                        TextField("Choose an output", text: $draft.profile.name)
-                            .labelsHidden()
-                            .textFieldStyle(.plain)
-                            .multilineTextAlignment(.trailing)
-                            .focused($nameFocused)
-                            .frame(maxWidth: .infinity)
-                            .accessibilityLabel("Profile Name")
+                        Spacer()
+                        Group {
+                            if editingName {
+                                TextField("Choose an output", text: $draft.profile.name)
+                                    .labelsHidden()
+                                    .textFieldStyle(.plain)
+                                    .multilineTextAlignment(.leading)
+                                    .focused($nameFocused)
+                                    .onSubmit { nameFocused = false }
+                                    .accessibilityLabel("Profile Name")
+                            } else {
+                                Button { beginNameEdit() } label: {
+                                    Text(draft.profile.name.isEmpty ? "Choose an output" : draft.profile.name)
+                                        .lineLimit(1)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Rename Profile")
+                            }
+                        }
+                        .frame(width: deviceTypePickerWidth, alignment: .leading)
+                        .background {
+                            WizardNameEditBoundary(isEditing: editingName) {
+                                nameFocused = false
+                                editingName = false
+                            }
+                        }
                         Image(systemName: "pencil")
                             .font(.caption).foregroundStyle(.secondary)
+                            .frame(width: pencilWidth)
                             .opacity(nameHovered || nameFocused ? 1 : 0.6)
                             .accessibilityHidden(true)
                     }
                     .padding(.horizontal, 12).padding(.vertical, 12)
                     .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
-                    .onTapGesture { nameFocused = true }
+                    .onTapGesture { if !editingName { beginNameEdit() } }
+                    .onChange(of: nameFocused) { if !$0 { editingName = false } }
                     .onHover { nameHovered = $0 }
                     .background(Color.primary.opacity(0.065))
                     Divider()
@@ -299,33 +328,64 @@ struct AddOutputProfileSheet: View {
                                     Color.clear.preference(key: OutputProfilePickerWidthKey.self, value: picker.size.width)
                                 }
                             }
+                            .padding(.trailing, pencilColumnWidth)
                     }.padding(.horizontal, 12).padding(.vertical, 10)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             } label: { Text("Profile") }
             GroupBox {
-                HStack {
-                    Text("Sample Rate")
-                    Spacer()
-                    Picker("Sample Rate", selection: Binding(get: { draft.profile.sampleRate }, set: { rate in
-                        var updated = draft
-                        updated.profile.sampleRate = rate
-                        updated.profile.speakerTopology?.sampleRate = Double(rate)
-                        draft = updated
-                    })) {
-                        ForEach([44100, 48000, 88200, 96000, 176400, 192000], id: \.self) {
-                            Text("\(Double($0) / 1000, specifier: "%g") kHz").tag($0)
+                VStack(spacing: 0) {
+                    HStack {
+                        HStack(spacing: 6) {
+                            Text("Sample Rate")
+                            DeviceCorrectionHelpIcon(title: "Processing Sample Rate", message: "48 kHz is the recommended default. Higher rates increase CPU and bandwidth use but do not improve lower rate source audio.")
                         }
+                        Spacer()
+                        Picker("Sample Rate", selection: Binding(get: { draft.profile.sampleRate }, set: { rate in
+                            var updated = draft
+                            updated.profile.sampleRate = rate
+                            updated.profile.speakerTopology?.sampleRate = Double(rate)
+                            draft = updated
+                        })) {
+                            ForEach([44100, 48000, 88200, 96000, 176400, 192000], id: \.self) {
+                                Text("\(Double($0) / 1000, specifier: "%g") kHz").tag($0)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: deviceTypePickerWidth)
+                        .padding(.trailing, pencilColumnWidth)
                     }
-                    .labelsHidden()
-                    .frame(width: deviceTypePickerWidth)
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    Divider()
+                    HStack {
+                        HStack(spacing: 6) {
+                            Text("Buffer Size")
+                            DeviceCorrectionHelpIcon(title: "Buffer size", message: "Reduce buffer size to reduce latency. Increase if hearing crack sounds.")
+                        }
+                        Spacer()
+                        Picker("Audio Buffer", selection: Binding(
+                            get: { draft.profile.audioBufferSetting },
+                            set: { draft.profile.audioBufferOverride = $0 })) {
+                            ForEach(AudioBufferSetting.choices, id: \.self) { setting in
+                                Text(setting.displayName).tag(setting)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: deviceTypePickerWidth)
+                        .padding(.trailing, pencilColumnWidth)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 10)
                 }
-                .padding(.horizontal, 12).padding(.vertical, 10)
             } label: { Text("Audio") }
-            Text("48 kHz is the recommended default. Higher rates increase CPU and bandwidth use but do not improve lower rate source audio.")
-                .font(.caption).foregroundStyle(.secondary)
         }
         .onPreferenceChange(OutputProfilePickerWidthKey.self) { deviceTypePickerWidth = $0 > 0 ? $0 : nil }
+    }
+
+    private func beginNameEdit() {
+        editingName = true
+        // Enter editing through keyboard focus so AppKit selects the full name,
+        // matching the profile editor's rename interaction.
+        DispatchQueue.main.async { nameFocused = true }
     }
 
     @ViewBuilder private var deviceConfiguration: some View {
@@ -547,5 +607,52 @@ private struct OutputProfilePickerWidthKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+/// Native menus and blank sheet areas do not always take keyboard focus.
+/// Watch clicks outside the name field without consuming the clicked control's event.
+@MainActor
+private struct WizardNameEditBoundary: NSViewRepresentable {
+    var isEditing: Bool
+    var onOutsideClick: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        let coordinator = context.coordinator
+        coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak view, weak coordinator] event in
+            guard let view, let coordinator, coordinator.isEditing,
+                  let window = view.window, event.window === window,
+                  !view.bounds.contains(view.convert(event.locationInWindow, from: nil)) else { return event }
+            let request = TextFocusClearRequest(window: window)
+            // Let the original click reach its control before changing the view tree.
+            DispatchQueue.main.async { [weak view, weak coordinator] in
+                guard view?.window != nil, let coordinator, coordinator.isEditing else { return }
+                request?.perform()
+                coordinator.onOutsideClick?()
+            }
+            return event
+        }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        context.coordinator.isEditing = isEditing
+        context.coordinator.onOutsideClick = onOutsideClick
+    }
+
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        if let monitor = coordinator.monitor { NSEvent.removeMonitor(monitor) }
+        coordinator.monitor = nil
+        coordinator.isEditing = false
+        coordinator.onOutsideClick = nil
+    }
+
+    final class Coordinator {
+        var monitor: Any?
+        var isEditing = false
+        var onOutsideClick: (() -> Void)?
     }
 }

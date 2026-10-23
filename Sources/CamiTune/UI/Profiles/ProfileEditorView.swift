@@ -51,69 +51,66 @@ struct ProfileEditorView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .firstTextBaseline) {
-                    Button { beginProfileRename() } label: {
-                        HStack(spacing: 8) {
-                            Text(profile.name)
-                                .font(.largeTitle.bold())
-                                .lineLimit(1)
-                                .alignmentGuide(.profileNameTrailing) { $0[.trailing] }
-                            Image(systemName: "pencil")
-                                .font(.body).foregroundStyle(.secondary)
-                                .opacity(titleHovered || titleFocused ? 1 : 0)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .focused($titleFocused)
-                    .onHover { titleHovered = $0 }
-                    .accessibilityLabel("Rename \(profile.name)")
-                    .disabled(isRenamingProfile)
-                    .accessibilityHidden(isRenamingProfile)
-                    .opacity(isRenamingProfile ? 0 : 1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    // Retain the title's size and baseline while editing.
-                    .overlay(alignment: .leadingFirstTextBaseline) {
-                        if isRenamingProfile {
-                            TextField("Profile name", text: $profileNameDraft)
-                                .font(.largeTitle.bold())
-                                .textFieldStyle(.plain)
-                                .frame(maxWidth: 480)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .focused($profileNameFocused)
-                                .onSubmit { commitProfileRename() }
-                                .onExitCommand { cancelProfileRename() }
-                        }
-                    }
-                    Button { settingsDestination = .general } label: {
-                        Image(systemName: "gearshape")
-                            .font(.system(size: 20, weight: .regular))
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 32, height: 32)
+                ProfileHeaderLayout {
+                    HStack(alignment: .firstTextBaseline) {
+                        Button { beginProfileRename() } label: {
+                            HStack(spacing: 8) {
+                                Text(profile.name)
+                                    .font(.largeTitle.bold())
+                                    .lineLimit(1)
+                                    .alignmentGuide(.profileNameTrailing) { $0[.trailing] }
+                                Image(systemName: "pencil")
+                                    .font(.body).foregroundStyle(.secondary)
+                                    .opacity(titleHovered || titleFocused ? 1 : 0)
+                            }
                             .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel("Profile Settings")
-                    Toggle("Enabled", isOn: Binding(
-                        get: { profile.isEnabled },
-                        set: { newValue in
-                            Task { await state.setProfileEnabled(id: profile.id, enabled: newValue) }
                         }
-                    ))
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .accessibilityLabel("Enable Profile")
-                }
-                .overlay(alignment: Alignment(horizontal: .profileNameTrailing, vertical: .bottom)) {
+                        .buttonStyle(.plain)
+                        .focused($titleFocused)
+                        .onHover { titleHovered = $0 }
+                        .accessibilityLabel("Rename \(profile.name)")
+                        .disabled(isRenamingProfile)
+                        .accessibilityHidden(isRenamingProfile)
+                        .opacity(isRenamingProfile ? 0 : 1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        // Retain the title's size and baseline while editing.
+                        .overlay(alignment: .leadingFirstTextBaseline) {
+                            if isRenamingProfile {
+                                TextField("Profile name", text: $profileNameDraft)
+                                    .font(.largeTitle.bold())
+                                    .textFieldStyle(.plain)
+                                    .frame(maxWidth: 480)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .focused($profileNameFocused)
+                                    .onSubmit { commitProfileRename() }
+                                    .onExitCommand { cancelProfileRename() }
+                            }
+                        }
+                        Button { settingsDestination = .general } label: {
+                            Image(systemName: "gearshape")
+                                .font(.system(size: 20, weight: .regular))
+                                .symbolRenderingMode(.hierarchical)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 32, height: 32)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Profile Settings")
+                        Toggle("Enabled", isOn: Binding(
+                            get: { profile.isEnabled },
+                            set: { newValue in
+                                Task { await state.setProfileEnabled(id: profile.id, enabled: newValue) }
+                            }
+                        ))
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .accessibilityLabel("Enable Profile")
+                    }
                     ProfileConnectionStatusView(
                         coreAudio: coreAudio,
                         outputDeviceUID: profile.outputDeviceUID
                     )
                     .fixedSize()
-                    .alignmentGuide(.profileNameTrailing) { $0[.trailing] }
-                    // Use the existing header gap without changing layout size.
-                    .alignmentGuide(.bottom) { $0[.top] - 4 }
                 }
 
                 ForEach(Array(sections.prefix(preparedSectionCount))) { section in
@@ -193,7 +190,11 @@ struct ProfileEditorView: View {
         case .meters:
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(ProfileSection.meters.title).font(.title3.bold())
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text(ProfileSection.meters.title).font(.title3.bold())
+                        Spacer(minLength: 0)
+                        LiveClippingWarning(monitor: state.meters, profileID: profile.id)
+                    }
                     SignalMetersView(meters: state.meters, profile: profile)
                     Divider()
                     MeterStatusDisclosure(monitor: state.meters, profileID: profile.id)
@@ -310,6 +311,28 @@ struct ProfileEditorView: View {
 
 }
 
+
+/// Keep the status under the name's trailing edge, clamped to its leading edge
+/// for short names. The status uses the existing gap below the header.
+struct ProfileHeaderLayout: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        subviews.first?.sizeThatFits(proposal) ?? .zero
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let headerView = subviews.first else { return }
+        let headerProposal = ProposedViewSize(width: bounds.width, height: bounds.height)
+        headerView.place(at: bounds.origin, anchor: .topLeading, proposal: headerProposal)
+        // SwiftUI removes the conditional status child when the output connects.
+        // This can happen on the initial device refresh as well as a profile edit.
+        guard subviews.count > 1 else { return }
+        let header = headerView.dimensions(in: headerProposal)
+        let status = subviews[1].sizeThatFits(.unspecified)
+        let statusX = max(0, header[.profileNameTrailing] - status.width)
+        subviews[1].place(at: CGPoint(x: bounds.minX + statusX, y: bounds.maxY + 4),
+            anchor: .topLeading, proposal: .unspecified)
+    }
+}
 
 private extension HorizontalAlignment {
     private enum ProfileNameTrailing: AlignmentID {

@@ -145,3 +145,89 @@ package struct ProfileSectionLayout: Codable, Hashable, Sendable {
         order = ordered
     }
 }
+
+extension DeviceProfile {
+    package var effectiveSectionLayout: ProfileSectionLayout {
+        sectionLayout ?? inheritedSectionLayouts[endpointKind.rawValue] ?? defaultSectionLayout
+    }
+
+    package func isSectionEnabled(_ section: ProfileSection) -> Bool {
+        effectiveSectionLayout.visibleSections(for: self).contains(section.consolidated)
+    }
+
+    package var effectivePlaybackMode: PlaybackMode { isSectionEnabled(.mode) ? playbackMode : .direct }
+    package var effectivePluginRack: PluginRack { isSectionEnabled(.plugins) ? pluginRack : PluginRack() }
+    package var effectiveMultichannel: MultichannelProcessingSettings {
+        var settings = multichannel
+        if !isSectionEnabled(.multichannel) {
+            settings.bass.enabled = false
+            settings.routing.enabled = false
+            settings.crossover.enabled = false
+        }
+        if !isSectionEnabled(.subwooferControl) { settings.subwooferControl = .init() }
+        return settings
+    }
+
+    private static func isCorrectionStage(_ stage: ProcessingStage) -> Bool {
+        if ProcessingProfile.isRoomStage(stage.id) { return true }
+        switch stage.processor {
+        case .deviceCorrection, .convolution, .crossfeed: return true
+        default: return false
+        }
+    }
+
+    /// A disposable execution copy. Never persist it: the original retains all
+    /// settings, including bypassed stages and the user's selected playback mode.
+    package func processingRuntimeProfile() throws -> DeviceProfile {
+        var result = self
+        var processing = try resolvedProcessing()
+        let correction = isSectionEnabled(.deviceCorrection)
+        let equalizer = isSectionEnabled(.equalizer)
+        let channels = isSectionEnabled(.perChannel)
+        processing.global.stages.removeAll { Self.isCorrectionStage($0) ? !correction : !equalizer }
+        if !equalizer { processing.simpleTone = .init() }
+        for index in processing.channels.indices {
+            processing.channels[index].chain.stages.removeAll { Self.isCorrectionStage($0) ? !correction : !channels }
+            if !channels { processing.channels[index].chain.simpleTone = nil }
+        }
+        for index in processing.groups.indices {
+            processing.groups[index].chain.stages.removeAll { Self.isCorrectionStage($0) ? !correction : !channels }
+            if !channels { processing.groups[index].chain.simpleTone = nil }
+        }
+        result.physicalChannelProcessing = [:]
+        result.replaceProcessing(processing)
+        if !correction {
+            for index in result.spatialSettings.listeningPositions.indices {
+                result.spatialSettings.listeningPositions[index].roomCorrectionEnabled = false
+            }
+        }
+        result.setPlaybackMode(effectivePlaybackMode)
+        if !isSectionEnabled(.mode) { result.personalReferenceCorrections = [:] }
+        result.pluginRack = effectivePluginRack
+        result.multichannel = effectiveMultichannel
+        return result
+    }
+
+    /// Used before hiding a section, including enabled settings on an inactive
+    /// profile that would otherwise run the next time it is activated.
+    package func hasEnabledProcessing(in section: ProfileSection) -> Bool {
+        guard isSectionEnabled(section) else { return false }
+        let processing = (try? resolvedProcessing()) ?? self.processing
+        let chains = [processing.global] + processing.channels.map(\.chain) + processing.groups.map(\.chain)
+        switch section.consolidated {
+        case .mode: return playbackMode != .direct
+        case .plugins: return pluginRack.isProcessing
+        case .equalizer:
+            return !processing.simpleTone.isNeutral || processing.global.stages.contains { $0.isEnabled && !Self.isCorrectionStage($0) }
+        case .deviceCorrection:
+            return chains.contains { $0.stages.contains { $0.isEnabled && Self.isCorrectionStage($0) } }
+        case .perChannel:
+            return (processing.channels.map(\.chain) + processing.groups.map(\.chain)).contains {
+                $0.simpleTone?.isNeutral == false || $0.stages.contains { $0.isEnabled && !Self.isCorrectionStage($0) }
+            }
+        case .multichannel: return multichannel.isEnabled
+        case .subwooferControl: return multichannel.subwooferControl.mode != .standard
+        default: return false
+        }
+    }
+}

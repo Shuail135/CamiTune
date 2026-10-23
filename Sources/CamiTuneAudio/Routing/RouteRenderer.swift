@@ -21,6 +21,57 @@ package final class RouteRenderer {
     private var lastSingleMode: PlaybackMode?
     private let referenceTopology: SpeakerTopology?
     package let expectedOutputChannelCount: Int
+    private struct DrainContext {
+        var template: PCMFrame
+        let mode: PlaybackMode
+        let settings: SpatialRenderSettings
+        let output: SpatialOutputKind
+        let correction: DeviceCorrectionProfile?
+        let crossfeed: CrossfeedProcessor?
+        let bypassCrossfeed: Bool
+    }
+    private var drainContext: DrainContext?
+
+    /// END authorizes a bounded drain. Finite delays/convolution always finish;
+    /// recursive tails settle below -140 dB or stop after one additional second.
+    /// Retiring all history afterward prevents replay in the next producer epoch.
+    package func finishProducer(discard: Bool, consume: (PCMFrame) throws -> Void) throws {
+        defer {
+            drainContext = nil
+            spatialEngine.reset(); physicalModeRenderer?.reset()
+            directCrossfeed.reset(); referenceCrossfeed.reset()
+            correctionBank = PerAppFilterBank()
+            contentAnalyzer.reset(); renderedModeBuses.removeAll()
+            lastSingleMode = nil; lastSourceFormat = nil; busSafetyGain = 1
+        }
+        guard !discard, let context = drainContext else { return }
+        let modes = context.template.playbackModeSamples.isEmpty
+            ? Set([context.mode]) : renderedModeBuses
+        guard modes.contains(.spatialRender) || context.crossfeed != nil ||
+              (modes.contains(.referencePlayback) && context.correction?.isEnabled == true) else { return }
+        let rate = context.template.sampleRate
+        // The extra 50 ms covers short delay networks and bypass ramps before
+        // silence can establish completion; HRTF gaps cannot end the drain early.
+        let minimum = max(spatialEngine.finiteTailFrames, Int(ceil(rate * 0.05)))
+        let maximum = minimum + Int(ceil(rate))
+        var emitted = 0, quietFrames = 0
+        while emitted < maximum {
+            let count = min(256, maximum - emitted)
+            var silence = context.template
+            silence.interleaved = .init(repeating: 0, count: count * silence.channelCount)
+            for mode in silence.playbackModeSamples.keys {
+                silence.playbackModeSamples[mode] = silence.interleaved
+            }
+            guard let frame = render(silence, mode: context.mode, settings: context.settings,
+                output: context.output, correction: context.correction, physicalOutput: nil,
+                analyzeContent: false, resetContent: false, resetPCM: false, resetSpatial: false,
+                crossfeed: context.crossfeed, bypassCrossfeed: context.bypassCrossfeed) else { return }
+            try consume(frame)
+            emitted += count
+            quietFrames = frame.interleaved.allSatisfy { abs($0) < 1e-7 } ? quietFrames + count : 0
+            if emitted >= minimum && quietFrames >= 512 { break }
+        }
+    }
 
     package init(activeRoute: ActiveAudioRoute?, referenceTopology: SpeakerTopology?, hrtfDatabase: (any HRTFDatabase)?) {
         self.activeRoute = activeRoute
@@ -86,6 +137,13 @@ package final class RouteRenderer {
         }
         guard let rendered, rendered.channelCount == expectedOutputChannelCount else { return nil }
         if let activeRoute, (try? activeRoute.validateDSPFrame(rendered)) == nil { return nil }
+        if physicalOutput == nil {
+            var template = PCMFrame(interleaved: [], channelCount: frame.channelCount,
+                                    sampleRate: frame.sampleRate, channelLayout: frame.channelLayout)
+            template.playbackModeSamples = frame.playbackModeSamples.mapValues { _ in [] }
+            drainContext = DrainContext(template: template, mode: mode, settings: settings,
+                output: output, correction: correction, crossfeed: crossfeed, bypassCrossfeed: bypassCrossfeed)
+        }
         return rendered
     }
 

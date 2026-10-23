@@ -24,6 +24,7 @@ struct GlobalEqualizerEditorView: View {
     @State var simpleTone = SimpleToneSettings()
     @StateObject var runtime = GlobalEQEditorRuntime()
     @StateObject var bandReduction = UIBackgroundOperation<[EQBand]>()
+    @StateObject var textImport = UIBackgroundOperation<String>()
 
     var profileIsActive: Bool {
         state.isActive && state.activeProfileID == profile.id
@@ -109,6 +110,7 @@ struct GlobalEqualizerEditorView: View {
         .onChange(of: state.historyReplayRevision) { _ in loadGraphicEQ() }
         .onAppear { loadGraphicEQIfNeeded() }
         .onDisappear {
+            textImport.cancel()
             pendingReset = nil
             bandReduction.cancel()
             if runtime.continuousEditDepth > 0 {
@@ -117,7 +119,7 @@ struct GlobalEqualizerEditorView: View {
             }
         }
         .onChange(of: needsResponseGraph) { _ in updateGraphResponses() }
-        .onChange(of: presentation) { _ in updateGraphResponses() }
+        .onChange(of: presentation) { _ in textImport.cancel(); updateGraphResponses() }
         .onChange(of: profile.id) { _ in
             loadGraphicEQIfNeeded()
         }
@@ -137,14 +139,19 @@ struct GlobalEqualizerEditorView: View {
         ) { result in
             do {
                 guard let url = try result.get().first else { return }
-                Task { @MainActor in
+                let profileID = profile.id
+                let generation = state.editGeneration
+                let baseline = currentHistoryState
+                textImport.run {
                     let access = url.startAccessingSecurityScopedResource()
                     defer { if access { url.stopAccessingSecurityScopedResource() } }
+                    return try String(contentsOf: url, encoding: .utf8)
+                } completion: { result in
+                    guard profileID == profile.id, generation == state.editGeneration,
+                          baseline == currentHistoryState,
+                          state.profiles.profiles.contains(where: { $0.id == profileID }) else { return }
                     do {
-                        let text = try await Task.detached(priority: .userInitiated) {
-                            try String(contentsOf: url, encoding: .utf8)
-                        }.value
-                        try importAPOText(text)
+                        try importAPOText(result.get())
                     } catch {
                         state.errorMessage = "Could not import Equalizer APO text: \(error.localizedDescription)"
                     }

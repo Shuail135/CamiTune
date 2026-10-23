@@ -5,6 +5,7 @@ import Foundation
 
 extension PreparedRuntimeAssets {
     static func prepare(profile: DeviceProfile, directory: URL) throws -> Self {
+        let profile = try profile.processingRuntimeProfile()
         let processing = try profile.resolvedProcessing()
         let activeChannels = Set(profile.configuredProcessingChannels.map(\.index))
         let activeGroups = Set(profile.configuredSpeakerGroups.map(\.id))

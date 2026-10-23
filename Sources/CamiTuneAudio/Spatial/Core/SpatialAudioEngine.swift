@@ -26,6 +26,12 @@ package final class SpatialAudioEngine {
     private var safety = SpatialPeakSafety()
     package private(set) var diagnostics = SpatialRenderDiagnostics()
 
+    /// Include the complete finite convolution and the maximum seating delay.
+    /// Recursive filters are allowed additional settling time by RouteRenderer.
+    package var finiteTailFrames: Int {
+        max(binauralIsRunning ? (binaural?.tailFrames ?? 0) : 0, Int(ceil(rate * 0.01)) + 2)
+    }
+
     /// PCMRouter constructs this on its lifecycle worker, before starting audio.
     /// All six HRTF banks are prepared here, never during per-frame rendering.
     package init(hrtfDatabase: (any HRTFDatabase)?) {

@@ -788,6 +788,16 @@ void sabr_driver_transport_remove_client(AudioObjectID deviceObjectID, uint32_t 
     sabr_release_transport_access();
 }
 
+Boolean sabr_driver_transport_has_device_clients(AudioObjectID deviceObjectID) {
+    Boolean found = false;
+    pthread_mutex_lock(&gClientMutex);
+    for (SABRRegisteredClient* item = gRegisteredClients; item; item = item->next) {
+        if (item->identity.deviceObjectID == deviceObjectID) { found = true; break; }
+    }
+    pthread_mutex_unlock(&gClientMutex);
+    return found;
+}
+
 void sabr_driver_transport_suspend_device_clients(AudioObjectID deviceObjectID) {
     pthread_mutex_lock(&gClientMutex);
     /* HAL can keep a registered client across a profile hide/show. Stop its

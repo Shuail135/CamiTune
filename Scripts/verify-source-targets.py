@@ -81,7 +81,7 @@ def verify(root, package, project, require_modules=False):
     counts = {}
     for name, target in package_targets.items():
         # Optional ignored local test suites are not part of shipping parity.
-        if target.get("type") == "test":
+        if target.get("type") == "test" or Path(target["path"]).parts[0] == "Tests":
             continue
         expected = {(root / target["path"] / p).resolve() for p in target["sources"]}
         counts[name] = len(expected)

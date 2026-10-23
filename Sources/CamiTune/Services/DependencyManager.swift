@@ -289,6 +289,30 @@ final class DependencyManager: ObservableObject {
         }
     }
 
+    func uninstallCamillaDSP(preparing: () async -> Bool = { true }) async {
+        guard beginSetup() else { return }
+        defer { setupInProgress = false }
+        guard await preparing() else { return }
+        setupFailed = false
+        setupMessage = "Removing CamillaDSP…"
+        camillaDSPStatus = .working("Removing CamillaDSP…")
+        let targets = [camillaDSPBinary, camillaDSPCapabilityMarker]
+        do {
+            try await Task.detached(priority: .utility) {
+                for target in targets {
+                    do { try FileManager.default.removeItem(at: target) }
+                    catch CocoaError.fileNoSuchFile { continue }
+                }
+            }.value
+            camillaDSPStatus = .missing
+            setupMessage = "CamillaDSP uninstalled. Your profiles and System Audio Bridge driver are kept."
+        } catch {
+            setupFailed = true
+            camillaDSPStatus = .failed(error.localizedDescription)
+            setupMessage = "CamillaDSP removal did not complete: \(error.localizedDescription)"
+        }
+    }
+
     func installAudioDriver(preparing: () async -> Bool = { true }) async {
         guard beginSetup() else { return }
         defer { setupInProgress = false }

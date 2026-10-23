@@ -20,7 +20,7 @@ struct PluginMIDIInputView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 Text("MIDI input")
-                DeviceCorrectionHelpIcon(title: "MIDI input", message: "Use a MIDI keyboard or controller with this profile’s plug-ins. Learn maps knobs and faders to plug-in parameters. MIDI uses the existing audio buffer. Instruments play from the selected inputs while this profile is active. Use a plug-in’s keyboard button to select its program changes. Mappings remain active for every mapped plug-in in this profile. MIDI clock and SysEx are not supported.")
+                DeviceCorrectionHelpIcon(title: "MIDI input", message: "Use a MIDI keyboard or controller with this profile’s plug-ins. Support MIDI mapping.")
                 Toggle("MIDI input", isOn: Binding(get: { profile.pluginRack.midi.isEnabled }, set: { value in edit { $0.isEnabled = value } }))
                     .labelsHidden().toggleStyle(.switch).uiInteractionAnchor("plugin-midi-enabled")
                 Spacer(minLength: 0)

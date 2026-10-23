@@ -14,7 +14,7 @@ package struct ProcessingGraphBuilder {
     }
 
     package func build(profile: DeviceProfile) throws -> ProcessingGraph {
-        var profile = profile
+        var profile = try profile.processingRuntimeProfile()
         try profile.migrateInterfaceTopology()
         try profile.validateMultichannelSettings()
         if let topology = try profile.validatedPhysicalSpeakerTopology(), topology.declaredChannelCount != channelCount {
@@ -32,8 +32,9 @@ package struct ProcessingGraphBuilder {
         guard channelCount > 0 else { throw ProcessingGraphError.invalidChannelCount }
 
         var processing = try profile.resolvedProcessing()
-        // Vendor effects have unknown gain. Keep a terminal limiter in the
-        // prepared graph while a rack is active, without changing saved EQ intent.
+        // The delivery worker runs the entire plug-in rack before this graph.
+        // Keep a terminal limiter after all DSP while a rack is active, including
+        // when the EQ section is bypassed, without changing saved EQ intent.
         if profile.pluginRack.isProcessing { processing.setLimiterEnabled(true) }
         if profile.hasPhysicalSpeakerRoute && profile.effectiveSpatialSettings.seating?.roomCorrectionResult == nil {
             // Legacy L/R room measurements have no physical topology identity.
@@ -222,7 +223,7 @@ package struct ProcessingGraphBuilder {
             to: &graph
         )
 
-        if profile.hasPhysicalSpeakerRoute {
+        if profile.isSectionEnabled(.subwooferControl), profile.hasPhysicalSpeakerRoute {
             let subs = Set(profile.configuredSpeakerEndpoints.filter { $0.function == .subwoofer }.map { $0.id.channelIndex })
             if !subs.isEmpty {
                 let control = profile.multichannel.subwooferControl

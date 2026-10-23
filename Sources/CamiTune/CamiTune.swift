@@ -28,14 +28,6 @@ enum CamiTuneLauncher {
         // AppKit's native tooltip delay is in milliseconds. Register before
         // creating UI; this process-local default preserves explicit preferences.
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 250])
-        if let index = CommandLine.arguments.firstIndex(of: "--replay-producer-completion"), CommandLine.arguments.count > index + 1 {
-            let source = URL(fileURLWithPath: CommandLine.arguments[index + 1])
-            Task { @MainActor in
-                do { print(try DeveloperSelfTests.replayProducerCompletion(from: source)); Darwin.exit(0) }
-                catch { print("Producer completion replay failed: \(error.localizedDescription)"); Darwin.exit(1) }
-            }
-            RunLoop.main.run(); return
-        }
         if let index = CommandLine.arguments.firstIndex(of: "--pcm-delivery-baseline"), CommandLine.arguments.count > index + 2 {
             let destination = CommandLine.arguments[index + 1], silence = CommandLine.arguments[index + 2]
             let showsUI = ProcessInfo.processInfo.environment["CAMITUNE_DELIVERY_UI"] == "1"
@@ -87,11 +79,15 @@ enum CamiTuneLauncher {
             RunLoop.main.run()
             return
         }
+        let localTestCommands = ["--ui-self-test", "--ui-app-self-test", "--plugin-host-self-test", "--replay-producer-completion"]
+        if CommandLine.arguments.contains(where: localTestCommands.contains) {
+            print("Regression runners live in the local Tests folder. Use CAMITUNE_LOCAL_TESTS=diagnostics swift test.")
+            Darwin.exit(2)
+        }
         if CommandLine.arguments.contains("--self-test") {
             Task { @MainActor in
                 var failures = 0
-                let cases = ProcessInfo.processInfo.environment["CAMITUNE_STAGE3_BASELINE_DIRECTORY"] == nil
-                    ? DeveloperSelfTests.cases() : DeveloperSelfTests.presentationBenchmarkCases()
+                let cases = DeveloperSelfTests.cases()
                 for test in cases {
                     do {
                         let result = try await test.execute()
@@ -109,45 +105,6 @@ enum CamiTuneLauncher {
             return
         }
 #if DEBUG
-        if CommandLine.arguments.contains("--plugin-host-self-test") {
-            Task { @MainActor in
-                do { try await DeveloperSelfTests.pluginHostIntegration(); Darwin.exit(0) }
-                catch { print("Plug-in host tests failed: \(error.localizedDescription)"); Darwin.exit(1) }
-            }
-            RunLoop.main.run(); return
-        }
-        if let index = CommandLine.arguments.firstIndex(of: "--ui-app-self-test"), CommandLine.arguments.count > index + 1 {
-            NSApplication.shared.setActivationPolicy(.accessory)
-            let artifacts = URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)
-            Task { @MainActor in
-                do {
-                    try await UIInteractionSelfTests.runWholeWindow(artifacts: artifacts)
-                    print("Whole-window interaction checks passed")
-                    Darwin.exit(0)
-                } catch {
-                    print("Whole-window interaction checks failed: \(error.localizedDescription)")
-                    Darwin.exit(1)
-                }
-            }
-            NSApplication.shared.run()
-            return
-        }
-        if let index = CommandLine.arguments.firstIndex(of: "--ui-self-test"), CommandLine.arguments.count > index + 1 {
-            NSApplication.shared.setActivationPolicy(.accessory)
-            let artifacts = URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)
-            Task { @MainActor in
-                do {
-                    try await UIInteractionSelfTests.run(artifacts: artifacts)
-                    print("UI interaction checks passed")
-                    Darwin.exit(0)
-                } catch {
-                    print("UI interaction checks failed: \(error.localizedDescription)")
-                    Darwin.exit(1)
-                }
-            }
-            NSApplication.shared.run()
-            return
-        }
         if isSpeakerSetupPreview { SpeakerSetupPreviewApp.main(); return }
 #endif
         CamiTuneMain.main()

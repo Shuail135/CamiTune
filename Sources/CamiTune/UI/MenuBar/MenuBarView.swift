@@ -313,14 +313,16 @@ struct MenuBarRootView: View {
                     )
                     .frame(width: 84, height: 24)
                 }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Mode").font(.caption)
-                    JoinedSegmentedControl(options: profile.availablePlaybackModes, selection: Binding(
-                        get: { profile.playbackMode }, set: { model.setPlaybackMode($0) }
-                    ), title: { $0.compactDisplayName }, symbol: { $0.systemImageName },
-                        unavailableReason: { profile.playbackReadiness($0).reason })
-                    .accessibilityLabel("Mode")
-                    .disabled(model.actionInFlight || model.state.transitionInProgress || model.state.isSavingProfileSettings || model.state.spatialCalibrationContext != nil)
+                if profile.isSectionEnabled(.mode) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Mode").font(.caption)
+                        JoinedSegmentedControl(options: profile.availablePlaybackModes, selection: Binding(
+                            get: { profile.playbackMode }, set: { model.setPlaybackMode($0) }
+                        ), title: { $0.compactDisplayName }, symbol: { $0.systemImageName },
+                            unavailableReason: { profile.playbackReadiness($0).reason })
+                        .accessibilityLabel("Mode")
+                        .disabled(model.actionInFlight || model.state.transitionInProgress || model.state.isSavingProfileSettings || model.state.spatialCalibrationContext != nil)
+                    }
                 }
             } else {
                 outputProfileMenu(title: "No output profile")
@@ -611,6 +613,7 @@ private struct MenuBarApplicationsSection: View {
         MenuAppDropBridge(applicationID: app.id, isPopover: isPopover, coordinator: reorder) {
             MenuBarApplicationRow(application: app, displayedName: presentation.displayName(for: app),
                 controller: controller, context: profile.map(PerAppPlaybackContext.init(profile:)), reorder: reorder,
+                showsModeControls: model.profile?.isSectionEnabled(.mode) != false,
                 isLoading: model.actionInFlight || model.state.transitionInProgress)
         }
         .frame(height: 30)
@@ -630,6 +633,7 @@ private struct MenuBarApplicationRow: View {
     let controller: PerAppAudioController
     let context: PerAppPlaybackContext?
     let reorder: MenuAppReorderCoordinator
+    let showsModeControls: Bool
     let isLoading: Bool
 
     var body: some View {
@@ -650,9 +654,11 @@ private struct MenuBarApplicationRow: View {
                     controller.setVolume(volume, for: application.id, interactionFinished: finished)
                 }
                 .frame(maxWidth: .infinity).frame(height: 24)
-            PerAppPlaybackModeMenu(application: application, displayedName: displayedName, controller: controller,
-                context: context, isLoading: isLoading)
-                .frame(width: 30)
+            if showsModeControls {
+                PerAppPlaybackModeMenu(application: application, displayedName: displayedName, controller: controller,
+                    context: context, isLoading: isLoading)
+                    .frame(width: 30)
+            }
         }
         .frame(height: 30)
     }

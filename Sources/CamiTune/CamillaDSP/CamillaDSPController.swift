@@ -77,6 +77,9 @@ final class CamillaDSPController {
             let patch = await Task.detached(priority: .userInitiated) {
                 compiler.compileRuntimePatch(processors: processors)
             }.value
+            // Once submitted, a lost reply cannot establish which graph is live.
+            // Keep the cache unknown until a complete operation is acknowledged.
+            activeGraph = nil
             do {
                 try await applyPatch(patch)
                 lastGraphUpdate = .runtimePatch
@@ -98,6 +101,7 @@ final class CamillaDSPController {
             let configuration = await Task.detached(priority: .userInitiated) {
                 compiler.compile(graph)
             }.value
+            activeGraph = nil
             try await applyConfiguration(configuration)
             lastGraphUpdate = .fullConfiguration
             patchedFilterCount = 0

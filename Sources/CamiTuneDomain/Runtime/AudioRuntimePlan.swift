@@ -15,16 +15,16 @@ package struct RenderConfiguration: Codable, Hashable, Sendable {
 
     package init(profile: DeviceProfile, revision: RuntimeIntentRevision) {
         self.revision = revision
-        playbackMode = profile.playbackMode
-        spatialRenderingMode = profile.effectiveSpatialRenderingMode
+        playbackMode = profile.effectivePlaybackMode
+        spatialRenderingMode = playbackMode == .spatialRender ? .spatialAudio : .standard
         spatialSettings = profile.effectiveSpatialSettings
         spatialOutput = spatialSettings.resolvedOutput(deviceName: profile.outputDeviceName)
         spatialListenerTuning = profile.spatialListenerTuning.validated
         spatialContentMode = profile.spatialContentMode
         virtualSurroundLayout = profile.virtualSurroundLayout
-        referenceCorrection = profile.personalReferenceCorrection
-        pluginRack = profile.pluginRack
-        if profile.supportsCrossfeed, let stage = profile.processing.crossfeed, stage.isEnabled {
+        referenceCorrection = profile.isSectionEnabled(.mode) ? profile.personalReferenceCorrection : nil
+        pluginRack = profile.effectivePluginRack
+        if profile.isSectionEnabled(.deviceCorrection), profile.supportsCrossfeed, let stage = profile.processing.crossfeed, stage.isEnabled {
             crossfeed = stage.processor
         }
     }
@@ -154,7 +154,7 @@ package struct AudioRuntimePlanCompiler {
     package init() {}
 
     package func compile(_ input: PreparedRuntimeInputs) throws -> AudioRuntimePlan {
-        let profile = input.profile; let hardware = input.hardware
+        let profile = try input.profile.processingRuntimeProfile(); let hardware = input.hardware
         guard input.revision.profileID == profile.id,
               profile.outputDeviceUID == hardware.output.uid,
               profile.sampleRate == hardware.sampleRate,
@@ -194,7 +194,7 @@ package struct AudioRuntimePlanCompiler {
         let endpoints = profile.configuredProcessingChannels.map {
             SpeakerEndpoint(id: $0.physicalOutputID, role: $0.role, displayName: $0.displayName, connectionState: .confirmedByUser)
         }
-        return AudioRuntimePlan(revision: input.revision, preparedAt: input.preparedAt, intent: profile,
+        return AudioRuntimePlan(revision: input.revision, preparedAt: input.preparedAt, intent: input.profile,
             metadata: .init(profileDisplayName: profile.name, endpointDisplayName: descriptor.name),
             sourceFormat: route.sourceFormat, dspInputFormat: route.dspInputFormat,
             physicalEndpointFormat: try .physicalEndpoints(sampleRate: profile.sampleRate, endpoints: endpoints),

@@ -27,6 +27,12 @@ struct SetupView: View {
                         Task {
                             await dependencies.installCamillaDSP(preparing: state.prepareForDependencyRepair)
                         }
+                    },
+                    uninstallTitle: "Uninstall CamillaDSP",
+                    uninstall: {
+                        Task {
+                            await dependencies.uninstallCamillaDSP(preparing: state.prepareForDependencyRepair)
+                        }
                     }
                 )
 
@@ -39,6 +45,7 @@ struct SetupView: View {
                             await dependencies.installAudioDriver(preparing: state.prepareForDependencyRepair)
                         }
                     },
+                    uninstallTitle: "Uninstall Driver",
                     uninstall: {
                         Task {
                             await dependencies.uninstallAudioDriver(preparing: state.prepareForDependencyRepair)
@@ -110,7 +117,7 @@ struct SetupView: View {
     }
 
     @ViewBuilder
-    private func dependencyCard(title: String, status: DependencyManager.Status, detail: String, action: @escaping () -> Void, uninstall: (() -> Void)? = nil) -> some View {
+    private func dependencyCard(title: String, status: DependencyManager.Status, detail: String, action: @escaping () -> Void, uninstallTitle: String = "Uninstall", uninstall: (() -> Void)? = nil) -> some View {
         GroupBox {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 7) {
@@ -127,7 +134,7 @@ struct SetupView: View {
                         Button("Install", action: action)
                     }
                     if let uninstall {
-                        Button("Uninstall Driver", role: .destructive, action: uninstall)
+                        Button(uninstallTitle, role: .destructive, action: uninstall)
                     }
                 }
                 .disabled(dependencies.setupInProgress)

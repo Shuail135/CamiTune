@@ -140,6 +140,8 @@ enum
 };
 
 #define kProfileDevice_Count 32
+#define kProfileObjectGenerationStride (5 * kProfileDevice_Count)
+#define kProfileObjectMaximumGeneration ((UINT32_MAX - kObjectID_ProfileSource_Last) / kProfileObjectGenerationStride)
 #define kDevice_ClockDomain 0x53414252U /* 'SABR' */
 
 _Static_assert(
@@ -312,6 +314,8 @@ static CFStringRef                  gDevice_DisplayName                 = NULL;
 static Boolean                      gDevice_IsHidden                    = kDevice_IsHidden;
 static CFStringRef                  gProfileDevice_UIDs[kProfileDevice_Count] = { NULL };
 static CFStringRef                  gProfileDevice_AssignedUIDs[kProfileDevice_Count] = { NULL };
+// Reusing storage must never reuse the HAL object identity of a different UID.
+static _Atomic UInt32               gProfileDevice_Generations[kProfileDevice_Count] = {0};
 static CFStringRef                  gProfileDevice_Names[kProfileDevice_Count] = { NULL };
 /*
  * Profile object IDs are validated from the HAL real-time callbacks. Never
@@ -605,72 +609,56 @@ static CFStringRef get_device_name(void)
 }
 static CFStringRef get_device_model_uid(void) { RETURN_FORMATTED_STRING(kDevice_ModelUID) }
 
+static UInt32 profile_object_base(AudioObjectID objectID)
+{
+    if(objectID < kObjectID_ProfileDevice_First) { return 0; }
+    const UInt32 offset = objectID - kObjectID_ProfileDevice_First;
+    const UInt32 slot = offset % kProfileDevice_Count;
+    if(offset / kProfileObjectGenerationStride !=
+        atomic_load_explicit(&gProfileDevice_Generations[slot], memory_order_acquire)) { return 0; }
+    return kObjectID_ProfileDevice_First + offset % kProfileObjectGenerationStride;
+}
+
 static bool is_profile_device_id(AudioObjectID objectID)
 {
-    return objectID >= kObjectID_ProfileDevice_First &&
-        objectID <= kObjectID_ProfileDevice_Last;
+    const UInt32 base = profile_object_base(objectID);
+    return base >= kObjectID_ProfileDevice_First && base <= kObjectID_ProfileDevice_Last;
 }
-
 static bool is_profile_stream_id(AudioObjectID objectID)
 {
-    return objectID >= kObjectID_ProfileStream_First &&
-        objectID <= kObjectID_ProfileStream_Last;
+    const UInt32 base = profile_object_base(objectID);
+    return base >= kObjectID_ProfileStream_First && base <= kObjectID_ProfileStream_Last;
 }
-
 static bool is_profile_volume_id(AudioObjectID objectID)
 {
-    return objectID >= kObjectID_ProfileVolume_First &&
-        objectID <= kObjectID_ProfileVolume_Last;
+    const UInt32 base = profile_object_base(objectID);
+    return base >= kObjectID_ProfileVolume_First && base <= kObjectID_ProfileVolume_Last;
 }
-
 static bool is_profile_mute_id(AudioObjectID objectID)
 {
-    return objectID >= kObjectID_ProfileMute_First &&
-        objectID <= kObjectID_ProfileMute_Last;
+    const UInt32 base = profile_object_base(objectID);
+    return base >= kObjectID_ProfileMute_First && base <= kObjectID_ProfileMute_Last;
 }
-
 static bool is_profile_source_id(AudioObjectID objectID)
 {
-    return objectID >= kObjectID_ProfileSource_First && objectID <= kObjectID_ProfileSource_Last;
+    const UInt32 base = profile_object_base(objectID);
+    return base >= kObjectID_ProfileSource_First && base <= kObjectID_ProfileSource_Last;
 }
-
 static UInt32 profile_device_index(AudioObjectID objectID)
 {
-    return (UInt32)(objectID - kObjectID_ProfileDevice_First);
+    return (objectID - kObjectID_ProfileDevice_First) % kProfileDevice_Count;
 }
-
-static AudioObjectID profile_device_id(UInt32 index)
+static AudioObjectID profile_object_id(UInt32 first, UInt32 index)
 {
-    return kObjectID_ProfileDevice_First + index;
+    return first + index + kProfileObjectGenerationStride *
+        atomic_load_explicit(&gProfileDevice_Generations[index], memory_order_acquire);
 }
-
-static AudioObjectID profile_stream_id(UInt32 index)
-{
-    return kObjectID_ProfileStream_First + index;
-}
-
-static AudioObjectID profile_volume_id(UInt32 index)
-{
-    return kObjectID_ProfileVolume_First + index;
-}
-
-static AudioObjectID profile_mute_id(UInt32 index)
-{
-    return kObjectID_ProfileMute_First + index;
-}
-
-static AudioObjectID profile_source_id(UInt32 index)
-{
-    return kObjectID_ProfileSource_First + index;
-}
-
-static UInt32 profile_child_index(AudioObjectID objectID)
-{
-    if(is_profile_stream_id(objectID)) { return (UInt32)(objectID - kObjectID_ProfileStream_First); }
-    if(is_profile_volume_id(objectID)) { return (UInt32)(objectID - kObjectID_ProfileVolume_First); }
-    if(is_profile_source_id(objectID)) { return (UInt32)(objectID - kObjectID_ProfileSource_First); }
-    return (UInt32)(objectID - kObjectID_ProfileMute_First);
-}
+static AudioObjectID profile_device_id(UInt32 index) { return profile_object_id(kObjectID_ProfileDevice_First, index); }
+static AudioObjectID profile_stream_id(UInt32 index) { return profile_object_id(kObjectID_ProfileStream_First, index); }
+static AudioObjectID profile_volume_id(UInt32 index) { return profile_object_id(kObjectID_ProfileVolume_First, index); }
+static AudioObjectID profile_mute_id(UInt32 index) { return profile_object_id(kObjectID_ProfileMute_First, index); }
+static AudioObjectID profile_source_id(UInt32 index) { return profile_object_id(kObjectID_ProfileSource_First, index); }
+static UInt32 profile_child_index(AudioObjectID objectID) { return profile_device_index(objectID); }
 
 static bool profile_slot_is_live(UInt32 index)
 {
@@ -723,12 +711,15 @@ static bool is_control_object(AudioObjectID objectID)
 
 static AudioObjectID profile_owner_device(AudioObjectID childObjectID)
 {
-    return profile_device_id(profile_child_index(childObjectID));
+    // Derive the owner from the callback's generation, never from reused storage.
+    const UInt32 offset = childObjectID - kObjectID_ProfileDevice_First;
+    return kObjectID_ProfileDevice_First + offset % kProfileDevice_Count +
+        (offset / kProfileObjectGenerationStride) * kProfileObjectGenerationStride;
 }
 
 static AudioObjectID stream_owner_device(AudioObjectID streamObjectID)
 {
-    return is_profile_stream_id(streamObjectID)
+    return streamObjectID >= kObjectID_ProfileDevice_First
         ? profile_owner_device(streamObjectID)
         : kObjectID_Device;
 }
@@ -782,7 +773,7 @@ static Float64 endpoint_available_rate(AudioObjectID deviceID, UInt32 index)
 
 static AudioObjectID control_owner_device(AudioObjectID controlObjectID)
 {
-    return (is_profile_volume_id(controlObjectID) || is_profile_mute_id(controlObjectID) || is_profile_source_id(controlObjectID))
+    return controlObjectID >= kObjectID_ProfileDevice_First
         ? profile_owner_device(controlObjectID)
         : kObjectID_Device;
 }
@@ -852,7 +843,7 @@ static CFStringRef copy_profile_device_uid(AudioObjectID objectID)
     CFStringRef result = NULL;
     if(!is_profile_device_id(objectID)) { return NULL; }
     pthread_mutex_lock(&gPlugIn_StateMutex);
-    result = gProfileDevice_UIDs[profile_device_index(objectID)];
+    if(is_profile_device_id(objectID)) { result = gProfileDevice_UIDs[profile_device_index(objectID)]; }
     if(result != NULL) { CFRetain(result); }
     pthread_mutex_unlock(&gPlugIn_StateMutex);
     return result;
@@ -863,7 +854,7 @@ static CFStringRef copy_profile_device_name(AudioObjectID objectID)
     CFStringRef result = NULL;
     if(!is_profile_device_id(objectID)) { return NULL; }
     pthread_mutex_lock(&gPlugIn_StateMutex);
-    result = gProfileDevice_Names[profile_device_index(objectID)];
+    if(is_profile_device_id(objectID)) { result = gProfileDevice_Names[profile_device_index(objectID)]; }
     if(result != NULL) { CFRetain(result); }
     pthread_mutex_unlock(&gPlugIn_StateMutex);
     return result;
@@ -882,7 +873,7 @@ static void notify_profile_devices(
     {
         if(gProfileDevice_UIDs[slot] != NULL)
         {
-            deviceIDs[deviceCount++] = kObjectID_ProfileDevice_First + slot;
+            deviceIDs[deviceCount++] = profile_device_id(slot);
         }
     }
     pthread_mutex_unlock(&gPlugIn_StateMutex);
@@ -1000,6 +991,30 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
         }
         if(slot < 0)
         {
+            // Only reclaim already-retired endpoints after HAL releases every
+            // registration. Keep hide/show identity while a client still owns it.
+            for(UInt32 candidate = 0; candidate < kProfileDevice_Count; ++candidate)
+            {
+                if(assignedSlots[candidate] || gProfileDevice_UIDs[candidate] != NULL ||
+                    gProfileDeviceIOStates[candidate].runningCount != 0 ||
+                    atomic_load_explicit(&gProfileDevice_Generations[candidate], memory_order_acquire) >= kProfileObjectMaximumGeneration ||
+                    sabr_driver_transport_has_device_clients(profile_device_id(candidate))) { continue; }
+#if SABR_ENABLE_COMPLETION
+                const uint64_t admission = atomic_load_explicit(&gProfileDeviceIOStates[candidate].completionAdmission.state, memory_order_acquire);
+                if((admission & (SABR_COMPLETION_OPEN | SABR_COMPLETION_USERS)) != 0 ||
+                    (admission != 0 && !(admission & SABR_COMPLETION_SEALED))) { continue; }
+#endif
+                bool requestedAgain = false;
+                for(CFIndex other = 0; other < count; ++other)
+                {
+                    if(gProfileDevice_AssignedUIDs[candidate] != NULL &&
+                        CFEqual(gProfileDevice_AssignedUIDs[candidate], requestedUIDs[other])) { requestedAgain = true; break; }
+                }
+                if(!requestedAgain) { slot = (SInt32)candidate; break; }
+            }
+        }
+        if(slot < 0)
+        {
             result = kAudioHardwareIllegalOperationError;
             pthread_mutex_unlock(&gPlugIn_StateMutex);
             goto Cleanup;
@@ -1054,6 +1069,17 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
     for(CFIndex index = 0; index < count; ++index)
     {
         UInt32 slot = (UInt32)requestedSlots[index];
+        if(gProfileDevice_AssignedUIDs[slot] != NULL &&
+            !CFEqual(gProfileDevice_AssignedUIDs[slot], requestedUIDs[index]))
+        {
+            CFRelease(gProfileDevice_AssignedUIDs[slot]);
+            gProfileDevice_AssignedUIDs[slot] = NULL;
+            atomic_fetch_add_explicit(&gProfileDevice_Generations[slot], 1, memory_order_release);
+            atomic_store_explicit(&gProfileDeviceIOStates[slot].volume, 1.0f, memory_order_release);
+            atomic_store_explicit(&gProfileDeviceIOStates[slot].mute, false, memory_order_release);
+            gProfileDeviceIOStates[slot].outputStreamIsActive = true;
+            gProfileDeviceIOStates[slot].requestedSampleRate = 0;
+        }
         if(gProfileDevice_AssignedUIDs[slot] == NULL)
         {
             gProfileDevice_AssignedUIDs[slot] = requestedUIDs[index];
@@ -2697,7 +2723,7 @@ static OSStatus	SystemAudioBridge_GetPlugInPropertyData(AudioServerPlugInDriverR
 					if(gProfileDevice_UIDs[slot] != NULL &&
 						CFStringCompare(requestedUID, gProfileDevice_UIDs[slot], 0) == kCFCompareEqualTo)
 					{
-						*((AudioObjectID*)outData) = kObjectID_ProfileDevice_First + slot;
+						*((AudioObjectID*)outData) = profile_device_id(slot);
 						break;
 					}
 				}
@@ -5466,6 +5492,7 @@ static OSStatus	SystemAudioBridge_SetControlPropertyData(AudioServerPlugInDriver
 	Float32 theNewVolume;
     Float32 theNewPitch;
     UInt32 theNewSource;
+    bool profileLocked = false;
 	
 	//	check the arguments
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_SetControlPropertyData: bad driver reference");
@@ -5473,13 +5500,19 @@ static OSStatus	SystemAudioBridge_SetControlPropertyData(AudioServerPlugInDriver
 	FailWithAction(outNumberPropertiesChanged == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetControlPropertyData: no place to return the number of properties that changed");
 	FailWithAction(outChangedAddresses == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetControlPropertyData: no place to return the properties that changed");
 	FailWithAction(inData == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_SetControlPropertyData: no data");
+    // Serialize profile control writes with retirement/reclamation. A callback
+    // admitted before a slot changes generation must not mutate its replacement.
+    if(inObjectID >= kObjectID_ProfileDevice_First) {
+        pthread_mutex_lock(&gPlugIn_StateMutex);
+        profileLocked = true;
+    }
 	FailWithAction(!is_control_object(inObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_SetControlPropertyData: not a control object");
 	if(is_profile_source_id(inObjectID)) {
         *outNumberPropertiesChanged = 0;
         if(profile_source_property_size(inAddress) == UINT32_MAX ||
-            inAddress->mSelector != kAudioSelectorControlPropertyCurrentItem) { return kAudioHardwareUnknownPropertyError; }
-        if(inDataSize != sizeof(UInt32)) { return kAudioHardwareBadPropertySizeError; }
-        return *(const UInt32*)inData == 0 ? noErr : kAudioHardwareIllegalOperationError;
+            inAddress->mSelector != kAudioSelectorControlPropertyCurrentItem) { theAnswer = kAudioHardwareUnknownPropertyError; goto Done; }
+        if(inDataSize != sizeof(UInt32)) { theAnswer = kAudioHardwareBadPropertySizeError; goto Done; }
+        theAnswer = *(const UInt32*)inData == 0 ? noErr : kAudioHardwareIllegalOperationError; goto Done;
     }
 	
 	//	initialize the returned number of changed properties
@@ -5690,6 +5723,7 @@ static OSStatus	SystemAudioBridge_SetControlPropertyData(AudioServerPlugInDriver
 	};
 
 Done:
+    if(profileLocked) { pthread_mutex_unlock(&gPlugIn_StateMutex); }
 	return theAnswer;
 }
 
@@ -6034,6 +6068,10 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
         inOperationID == kAudioServerPlugInIOOperationWriteMix) {
         completionState = state;
         completionLease = sabr_completion_enter(&state->completionAdmission);
+        // A callback may have paused after initial ID validation while an old
+        // registration retired. Pin completion first, then revalidate identity.
+        FailWithAction(!is_device_object(inDeviceObjectID) || !is_stream_object(inStreamObjectID),
+            theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: retired generation");
         const bool valid = completionLease && inIOBufferFrameSize > 0 &&
             (inIOCycleInfo->mOutputTime.mFlags & kAudioTimeStampSampleTimeValid) &&
             isfinite(inIOCycleInfo->mOutputTime.mSampleTime);

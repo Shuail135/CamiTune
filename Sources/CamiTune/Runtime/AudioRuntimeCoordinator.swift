@@ -898,14 +898,17 @@ final class AudioRuntimeCoordinator: ObservableObject {
         }
         try await AudioRuntimePlanPreparer().validateCurrent(candidate, services: runtimeServices); try checkCurrent(intent.generation)
         phase("Applying in place", status: .applying)
-        var graphApplied = false, rendererApplied = false, endpointAttempted = false
+        var graphAttempted = false, rendererApplied = false, endpointAttempted = false
         do {
             if delta.renderer.pluginRackChanged {
                 try await runtimeServices.preparePluginRack(candidate)
                 try checkCurrent(intent.generation)
                 guard owns(owner.ownershipID) else { throw CancellationError() }
             }
-            if delta.requirements.requiresGraphUpdate { try await applyPlanGraph(candidate, operation: operation); graphApplied = true }
+            if delta.requirements.requiresGraphUpdate {
+                graphAttempted = true
+                try await applyPlanGraph(candidate, operation: operation)
+            }
             guard owns(owner.ownershipID) else { throw CancellationError() }
             // Supersession after RPC submission cannot split graph and renderer.
             if delta.requirements.requiresRenderConfigurationUpdate || delta.requirements.requiresPCMDeliveryUpdate {
@@ -917,7 +920,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
         } catch {
             guard owns(owner.ownershipID) else { throw error }
             do {
-                if graphApplied { try await applyPlanGraph(old, operation: operation) }
+                if graphAttempted { try await applyPlanGraph(old, operation: operation) }
                 guard owns(owner.ownershipID) else { throw CancellationError() }
                 if rendererApplied { applyRenderer(old) }
                 if endpointAttempted { try await publishPlanEndpoint(old) }

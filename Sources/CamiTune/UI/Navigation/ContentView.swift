@@ -80,8 +80,7 @@ struct ContentView: View {
             case .appAudio: selection = .applications
             case .addOutput: Task { await beginAddingOutput() }
             case .openSetup:
-                commands.settingsCategory = "Drivers & Components"
-                selection = .settings
+                state.setupPresentation.isPresented = true
             case .toggleSidebar: columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
             case .rename, .profileSettings: return // The selected editor owns inline edit and its settings sheet.
             }

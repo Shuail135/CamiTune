@@ -65,7 +65,7 @@ package struct PluginRack: Codable, Hashable, Sendable {
     package var isEnabled: Bool
     package var slots: [AudioPluginSlot]
     package var midi: PluginMIDIConfiguration
-    package init(isEnabled: Bool = true, slots: [AudioPluginSlot] = [], midi: PluginMIDIConfiguration = .init()) {
+    package init(isEnabled: Bool = false, slots: [AudioPluginSlot] = [], midi: PluginMIDIConfiguration = .init()) {
         self.isEnabled = isEnabled; self.slots = slots; self.midi = midi
     }
     private enum CodingKeys: String, CodingKey { case isEnabled, slots, midi }

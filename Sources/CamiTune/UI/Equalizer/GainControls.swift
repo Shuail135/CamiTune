@@ -80,12 +80,12 @@ struct PreampGainControl: View {
 
     private var limiterStatus: some View {
         LiveGainPresentation(meters: meters, context: meterContext, limiterEnabled: limiterEnabled) { reading in
-            Text(reading.clipping ? "CLIP" : "LIMIT")
+            Text("LIMIT")
                 .font(.caption.bold())
-                .foregroundStyle(reading.clipping ? Color.red : Color.orange)
-                .opacity(limiterEnabled && (reading.clipping || reading.atCeiling) ? 1 : 0)
-                .accessibilityHidden(!limiterEnabled || (!reading.clipping && !reading.atCeiling))
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: reading.clipping)
+                .foregroundStyle(Color.orange)
+                .opacity(reading.atCeiling && !reading.clipping ? 1 : 0)
+                .accessibilityHidden(!reading.atCeiling || reading.clipping)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: reading.atCeiling && !reading.clipping)
         }
         .frame(width: statusWidth, alignment: .leading)
     }
@@ -111,10 +111,10 @@ private struct GainMeterContext {
         let clipping: Bool
         if let indices {
             peak = indices.compactMap { meters.playbackPeak.indices.contains($0) ? meters.playbackPeak[$0] : nil }.max() ?? -150
-            clipping = limiterEnabled && indices.contains { meters.channelClippingIsRecent($0) }
+            clipping = indices.contains { meters.channelClippingIsRecent($0) }
         } else {
             peak = meters.playbackPeak.max() ?? -150
-            clipping = limiterEnabled && meters.status.clippingIsRecent
+            clipping = meters.status.clippingIsRecent
         }
         return .init(peak: peak, clipping: clipping,
             atCeiling: limiterEnabled && peak >= LimiterProcessor.standard.clipLimitDB - 0.05)

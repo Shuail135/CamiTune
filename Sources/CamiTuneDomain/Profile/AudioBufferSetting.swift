@@ -47,6 +47,7 @@ package struct AutomaticAudioBufferPolicy: Sendable {
     package private(set) var recommendedFrames: Int
     package private(set) var minimumFrames: Int
     private var stableSeconds = 0.0
+    private var recoverySeconds = 0.0
     private var pressureObservations = 0
     package init(frames: Int, minimumFrames: Int = 128) {
         self.recommendedFrames = Self.sizes.contains(frames) ? frames : 1024
@@ -71,18 +72,38 @@ package struct AutomaticAudioBufferPolicy: Sendable {
             minimumFrames = max(minimumFrames, larger)
             recommendedFrames = max(recommendedFrames, minimumFrames)
             stableSeconds = 0
+            recoverySeconds = 0
+            pressureObservations = 0
             return
         }
         // Unknown clocks/load, silence, and interrupted observations cannot be
         // evidence for lowering latency. Leave generous headroom for a smaller
         // block's higher overhead and signal-dependent third-party processing.
-        guard validDSP, evidence.underruns != nil, combined < 0.20,
-              evidence.pluginLoad < 0.15, !evidence.pluginFailed, !evidence.deliveryFault else {
+        let hasHeadroom = combined < 0.30 && evidence.pluginLoad < 0.25
+        // A queued reduction may wait for a quiet gap. Revoke it if active
+        // processing has become too expensive before that gap arrives.
+        if validDSP, !hasHeadroom, recommendedFrames < currentFrames {
+            recommendedFrames = currentFrames
+        }
+        if !hasHeadroom { recoverySeconds = 0 }
+        guard validDSP, evidence.underruns != nil, hasHeadroom,
+              !evidence.pluginFailed, !evidence.deliveryFault else {
             stableSeconds = 0; return
         }
         stableSeconds += min(evidence.audioSeconds, 2)
-        guard stableSeconds >= 60, recommendedFrames == currentFrames, index > 0 else { return }
-        recommendedFrames = max(minimumFrames, Self.sizes[index - 1])
+        recoverySeconds += min(evidence.audioSeconds, 2)
+        // A fault establishes a temporary recovery floor, not a permanent
+        // ratchet. Require five clean minutes before retrying a smaller size;
+        // otherwise probe one step down after a clean minute. This also lets
+        // records saved by older versions recover from a transient overload.
+        // Pauses do not count toward recovery, but do not erase clean audio
+        // already observed; short tracks must be able to recover too.
+        let retryingBelowFloor = currentFrames <= minimumFrames && minimumFrames > Self.sizes[0]
+        guard (retryingBelowFloor ? recoverySeconds >= 300 : stableSeconds >= 60),
+              recommendedFrames == currentFrames, index > 0 else { return }
+        recommendedFrames = Self.sizes[index - 1]
+        if retryingBelowFloor { minimumFrames = Self.sizes[0] }
         stableSeconds = 0
+        recoverySeconds = 0
     }
 }

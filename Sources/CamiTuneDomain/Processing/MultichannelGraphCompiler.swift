@@ -7,6 +7,7 @@ package struct MultichannelGraphCompiler {
     package init() {}
 
     package func build(profile: DeviceProfile, inputFormat: AudioFormatDescriptor, assets: PreparedRuntimeAssets) throws -> ProcessingGraph {
+        let profile = try profile.processingRuntimeProfile()
         try profile.validateMultichannelSettings()
         let settings = profile.multichannel
         let width = profile.configuredPhysicalChannelCount

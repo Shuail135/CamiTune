@@ -202,9 +202,11 @@ struct PerAppAudioList: View {
                             .buttonStyle(.borderless)
                             .accessibilityLabel("Equalizer for \(name)")
                             .accessibilityValue("\(application.settings.isEqualizerActive ? "Active" : "Inactive"), \(expanded.wrappedValue ? "expanded" : "collapsed")")
-                            PerAppPlaybackModeMenu(application: application, displayedName: name,
-                                controller: controller, context: playbackContext)
-                                .frame(width: 30)
+                            if playbackContext?.showsModeControls != false {
+                                PerAppPlaybackModeMenu(application: application, displayedName: name,
+                                    controller: controller, context: playbackContext)
+                                    .frame(width: 30)
+                            }
                         }
                         .controlSize(.small)
                         .disabled(!controlsEnabled)

@@ -54,6 +54,7 @@ final class ProfileStore: ObservableObject {
             libraryProfiles = newValue.map { profile in
                 var resolved = profile
                 resolved.resolveAudioBuffer(default: audioBufferDefault)
+                resolved.inheritedSectionLayouts = layoutDefaults
                 return resolved
             }
             save()
@@ -88,7 +89,14 @@ final class ProfileStore: ObservableObject {
     }
     @Published private(set) var audioBufferDefault: AudioBufferSetting = 1024
     @Published private(set) var layoutDefaults: [String: ProfileSectionLayout] = [:] {
-        didSet { save() }
+        didSet {
+            libraryProfiles = libraryProfiles.map { profile in
+                var resolved = profile
+                resolved.inheritedSectionLayouts = layoutDefaults
+                return resolved
+            }
+            save()
+        }
     }
     @Published var multichannelDrafts: [UUID: MultichannelHistoryState] = [:] {
         didSet { if oldValue != multichannelDrafts { save() } }
@@ -145,6 +153,7 @@ final class ProfileStore: ObservableObject {
         var result = profile
         // Hardware volume events are live state, not conflicting settings edits.
         result.outputVolumeScalar = 0
+        result.inheritedSectionLayouts = [:]
         return result
     }
     func validateSettingsSnapshot(_ expected: DeviceProfile, activation: ProfileActivationMode) throws {

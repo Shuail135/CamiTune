@@ -28,50 +28,39 @@ var packageTargets: [Target] = [
     )
 ]
 
-// Device Correction tests remain local and follow the existing opt-in policy.
-if ["1", "room"].contains(ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] ?? "") {
-    packageTargets.append(.testTarget(name: "RoomCorrectionRegression",
-        dependencies: ["CamiTune", "CamiTuneDomain", "CamiTuneAudio"], path: "Tests/RoomCorrectionRegression",
-        exclude: ["Fixtures", "README.md"]))
+// All regression sources and fixtures stay in the ignored, local-only Tests folder.
+// Published checkouts have no test targets or dependencies on test support.
+let localTests = ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] ?? ""
+let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+let supportPath = "Tests/CamiTuneTestSupport"
+let hasTestSupport = FileManager.default.fileExists(atPath: packageRoot.appendingPathComponent(supportPath).path)
+if ["1", "room", "correction", "diagnostics", "profile-ui"].contains(localTests), hasTestSupport {
+    packageTargets.append(.target(name: "CamiTuneTestSupport",
+        dependencies: ["CamiTune", "CamiTuneDomain", "CamiTuneAudio", "SystemAudioBridgeC"], path: supportPath))
 }
-
-if ["1", "correction"].contains(ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] ?? "") {
-    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-    let path = "Tests/DeviceCorrectionRegression"
-    if FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path) {
-        packageTargets.append(.testTarget(name: "DeviceCorrectionRegression", dependencies: ["CamiTune", "CamiTuneDomain", "CamiTuneAudio"], path: path, exclude: ["Fixtures", "SpeakerEQCoreTests.rs"]))
-    }
+let localSuites: [(name: String, modes: [String], excludes: [String])] = [
+    ("RoomCorrectionRegression", ["1", "room"], ["Fixtures", "README.md"]),
+    ("DeviceCorrectionRegression", ["1", "correction"], ["Fixtures", "SpeakerEQCoreTests.rs"]),
+    ("MultichannelTests", ["1"], []),
+    ("CamiTuneTests", ["1"], []),
+    ("ProfileUIRegression", ["1", "profile-ui"], []),
+    ("DiagnosticsRegression", ["1", "diagnostics"], [])
+]
+for suite in localSuites where suite.modes.contains(localTests) && hasTestSupport {
+    let path = "Tests/\(suite.name)"
+    guard FileManager.default.fileExists(atPath: packageRoot.appendingPathComponent(path).path) else { continue }
+    packageTargets.append(.testTarget(name: suite.name,
+        dependencies: ["CamiTune", "CamiTuneDomain", "CamiTuneAudio", "SystemAudioBridgeC", "CamiTuneTestSupport"],
+        path: path, exclude: suite.excludes))
 }
-
-// Test sources stay local. Clean GitHub checkouts build without the ignored
-// Tests directory; opt in to the suites available in this working copy.
-if ["1", "domain", "modules"].contains(ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] ?? "") {
-    let path = "Tests/CamiTuneDomainTests"
-    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-    if FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path) {
-        packageTargets.append(.testTarget(name: "CamiTuneDomainTests", dependencies: ["CamiTuneDomain"], path: path))
-    }
-}
-if ["1", "audio", "modules"].contains(ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] ?? "") {
-    let path = "Tests/CamiTuneAudioTests"
-    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-    if FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path) {
-        packageTargets.append(.testTarget(name: "CamiTuneAudioTests", dependencies: ["CamiTuneDomain", "CamiTuneAudio"], path: path))
-    }
-}
-if ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] == "1" {
-    let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-    for name in ["MultichannelTests", "CamiTuneTests"] {
-        let path = "Tests/\(name)"
-        guard FileManager.default.fileExists(atPath: packageRoot.appendingPathComponent(path).path) else { continue }
-        packageTargets.append(
-            .testTarget(
-                name: name,
-                dependencies: ["CamiTune", "CamiTuneDomain", "CamiTuneAudio", "SystemAudioBridgeC"],
-                path: path
-            )
-        )
-    }
+for (name, modes, dependency) in [
+    ("CamiTuneDomainTests", ["1", "domain", "modules"], "CamiTuneDomain"),
+    ("CamiTuneAudioTests", ["1", "audio", "modules"], "CamiTuneAudio")
+] where modes.contains(localTests) {
+    let path = "Tests/\(name)"
+    guard FileManager.default.fileExists(atPath: packageRoot.appendingPathComponent(path).path) else { continue }
+    let dependencies: [Target.Dependency] = dependency == "CamiTuneDomain" ? ["CamiTuneDomain"] : ["CamiTuneDomain", "CamiTuneAudio"]
+    packageTargets.append(.testTarget(name: name, dependencies: dependencies, path: path))
 }
 
 let package = Package(

@@ -31,6 +31,8 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     package var personalReferenceCorrections: [String: DeviceCorrectionProfile] = [:]
     package var audioInterface: AudioInterfaceConfiguration?
     package var sectionLayout: ProfileSectionLayout?
+    /// Resolved by the library; intentionally excluded from the saved document.
+    package var inheritedSectionLayouts: [String: ProfileSectionLayout] = [:]
     package var playbackModesByEndpoint: [String: PlaybackMode] = [:]
     package var isEnabled: Bool = true
     package var autoActivateWhenProfileDeviceSelected: Bool = false
@@ -74,7 +76,7 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     package var spatialSettings = SpatialRenderSettings()
     package var speakerTopology: SpeakerTopology?
     package var usesReferenceSpeakers: Bool {
-        get { playbackMode == .referencePlayback && !isPersonalListening }
+        get { effectivePlaybackMode == .referencePlayback && !isPersonalListening }
         set {
             if newValue { setPlaybackMode(.referencePlayback) }
             else if playbackMode == .referencePlayback { setPlaybackMode(.direct) }
@@ -94,6 +96,7 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     }
 
     package var availablePlaybackModes: [PlaybackMode] {
+        guard isSectionEnabled(.mode) else { return [.direct] }
         var modes: [PlaybackMode]
         switch effectiveEndpointKind {
         case .headphones, .iem, .speakers:
@@ -207,7 +210,7 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         return settings
     }
     package var effectiveSpatialRenderingMode: SpatialRenderingMode {
-        playbackMode == .spatialRender ? .spatialAudio : .standard
+        effectivePlaybackMode == .spatialRender ? .spatialAudio : .standard
     }
     package var spatialContentMode: SpatialContentMode = .automatic
     package var virtualSurroundLayout: VirtualSurroundLayout = .standard

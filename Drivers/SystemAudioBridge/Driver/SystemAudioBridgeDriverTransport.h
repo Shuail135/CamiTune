@@ -35,6 +35,7 @@ OSStatus sabr_driver_transport_add_client(
 OSStatus sabr_driver_transport_start_client(AudioObjectID deviceObjectID, uint32_t clientID);
 void sabr_driver_transport_stop_client(AudioObjectID deviceObjectID, uint32_t clientID);
 void sabr_driver_transport_remove_client(AudioObjectID deviceObjectID, uint32_t clientID, int32_t processID);
+Boolean sabr_driver_transport_has_device_clients(AudioObjectID deviceObjectID);
 /* Retire active IO when an endpoint is unpublished; retain HAL registrations. */
 void sabr_driver_transport_suspend_device_clients(AudioObjectID deviceObjectID);
 void sabr_driver_transport_publish_control(

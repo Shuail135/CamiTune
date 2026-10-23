@@ -6,6 +6,9 @@ import Foundation
 package final class VirtualSpeakerBinauralizer {
     package let latencyFrames: Int
     package let expectedPeakGain: Float
+    package var tailFrames: Int {
+        max(latencyFrames, convolvers.map { $0.historyFrameCount + $0.blockSize }.max() ?? 0)
+    }
     private let convolvers: [BinauralConvolver]
     private let roles = VirtualSpeakerLayout.cinema.speakers.map(\.role)
     private var indices = [Int?](repeating: nil, count: 7)

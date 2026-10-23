@@ -10,6 +10,7 @@ extension GlobalEqualizerEditorView {
     }
 
     func loadGraphicEQ() {
+        textImport.cancel()
         pendingReset = nil
         // Replacement notifications arrive before SwiftUI necessarily refreshes
         // the binding. Auto EQ has already persisted and retired its draft.
@@ -56,6 +57,7 @@ extension GlobalEqualizerEditorView {
 
     func editorValuesChanged() {
         guard !runtime.suppressChanges else { return }
+        textImport.cancel()
         if runtime.continuousEditDepth == 0 { recordEQEdit() }
         graphicEQChanged()
     }
@@ -74,6 +76,7 @@ extension GlobalEqualizerEditorView {
 
     func continuousEditingChanged(_ isEditing: Bool) {
         if isEditing {
+            textImport.cancel()
             if runtime.continuousEditDepth == 0 {
                 runtime.historyBaseline = currentHistoryState
                 state.history.beginGesture(key: eqGestureKey, actionName: "Adjust Equalizer", contextName: profile.name,

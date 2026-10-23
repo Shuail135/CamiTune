@@ -26,6 +26,7 @@ final class AutomaticAudioBufferController: ObservableObject {
         var lastObserved: Date
         var clockEpoch: UInt64?
         var underruns: UInt64?
+        var wasContinuouslyActive = false
         var droppedFrames: UInt64
         var policy: AutomaticAudioBufferPolicy
     }
@@ -119,18 +120,24 @@ final class AutomaticAudioBufferController: ObservableObject {
                  underrunFrames: UInt64?, droppedFrames: UInt64, now: Date = Date()) {
         guard var current = context else { return }
         let elapsed = now.timeIntervalSince(current.lastObserved)
-        let clockIsContinuous = clockEpoch != nil && clockEpoch == current.clockEpoch
+        let usable = now.timeIntervalSince(current.started) >= 3 && elapsed > 0 && elapsed <= 2.5
+        // The output clock also counts starvation while the producer is idle.
+        // Compare counters only across complete active intervals, so a pause
+        // or resume cannot masquerade as an undersized processing buffer.
+        let continuouslyActive = usable && work.audioSeconds.isFinite && work.audioSeconds >= elapsed * 0.9
+        let clockIsContinuous = (clockEpoch ?? 0) > 0 && clockEpoch == current.clockEpoch
         let underrunDelta: UInt64?
-        if clockIsContinuous, let count = underrunFrames, let previous = current.underruns, count >= previous {
+        if continuouslyActive, current.wasContinuouslyActive, clockIsContinuous,
+           let count = underrunFrames, let previous = current.underruns, count >= previous {
             underrunDelta = count - previous
         } else { underrunDelta = nil }
         let dropped = droppedFrames > current.droppedFrames
         current.clockEpoch = clockEpoch; current.underruns = underrunFrames
+        current.wasContinuouslyActive = continuouslyActive
         current.droppedFrames = droppedFrames; current.lastObserved = now
         let oldRecommendation = current.policy.recommendedFrames
         let oldMinimum = current.policy.minimumFrames
         // Discard startup transients and stale/incomplete collection intervals.
-        let usable = now.timeIntervalSince(current.started) >= 3 && elapsed > 0 && elapsed <= 2.5
         current.policy.observe(.init(audioSeconds: usable ? min(work.audioSeconds, elapsed) : 0,
             dspLoad: dspLoadPercent.map { $0 / 100 }, writerLoad: work.writerLoad, pluginLoad: work.pluginLoad,
             underruns: underrunDelta, deliveryFault: dropped, pluginFailed: work.pluginFailed),

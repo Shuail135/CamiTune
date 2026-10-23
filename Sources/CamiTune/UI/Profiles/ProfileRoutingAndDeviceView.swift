@@ -68,12 +68,12 @@ struct ProfileRoutingAndDeviceView: View {
                 Text("Activation Mode").font(.headline)
                 Text("To activate CamiTune, choose the audio device from macOS Sound Settings.")
                     .font(.callout).foregroundStyle(.secondary)
-                activationRow(.physicalOutput, title: "When I select \(profile.outputDeviceName)")
-                activationRow(.profileAudioDevice, title: "When I select \(profileRoutingName)")
-                activationRow(.manual, title: "Only when I select it in CamiTune")
+                activationRow(.physicalOutput, title: "When I select", emphasizedName: profile.outputDeviceName)
+                activationRow(.profileAudioDevice, title: "When I select", emphasizedName: profileRoutingName)
+                activationRow(.manual, title: "Only when I activate it in CamiTune")
                 if let owner = state.profiles.automaticProfileID(forPhysicalDeviceUID: profile.outputDeviceUID),
                    owner != profile.id, let other = state.profiles.profiles.first(where: { $0.id == owner }) {
-                    Text("\(profile.outputDeviceName) currently starts \(other.name). Selecting the first option makes this profile the default for that output.")
+                    Text("\(Text(profile.outputDeviceName).fontWeight(.semibold)) currently starts \(Text(other.name).fontWeight(.semibold)). Selecting the first option makes this profile the default for that output.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }.padding(6)
@@ -81,11 +81,12 @@ struct ProfileRoutingAndDeviceView: View {
         .disabled(state.transitionInProgress || state.isSavingProfileSettings)
     }
 
-    private func activationRow(_ mode: ProfileActivationMode, title: String) -> some View {
-        HStack(spacing: 8) {
-            ActivationRadioButton(selection: activationBinding, value: mode, title: title)
+    private func activationRow(_ mode: ProfileActivationMode, title: String, emphasizedName: String? = nil) -> some View {
+        let nameSuffix = emphasizedName.map { " \($0)" } ?? ""
+        return HStack(spacing: 8) {
+            ActivationRadioButton(selection: activationBinding, value: mode, title: title + nameSuffix)
                 .frame(width: 18, height: 20)
-            Text(title)
+            (Text(title) + Text(nameSuffix).fontWeight(.semibold))
                 .contentShape(Rectangle())
                 .onTapGesture { activationBinding.wrappedValue = mode }
             Spacer(minLength: 8)

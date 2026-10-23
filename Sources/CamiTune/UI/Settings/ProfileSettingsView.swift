@@ -13,7 +13,6 @@ struct ProfileSettingsView: View {
     private let initialSpeaker: PhysicalOutputID?
     @ObservedObject private var store: ProfileStore
     @ObservedObject private var audio: CoreAudioSnapshotStore
-    @ObservedObject private var automaticBuffers: AutomaticAudioBufferController
     @State private var draft: ProfileSettingsDraft
     @State private var category = "General"
     @State private var speakerToReveal: PhysicalOutputID?
@@ -29,7 +28,6 @@ struct ProfileSettingsView: View {
         self.state = state
         _store = ObservedObject(wrappedValue: state.profiles)
         _audio = ObservedObject(wrappedValue: state.coreAudio)
-        _automaticBuffers = ObservedObject(wrappedValue: state.automaticBuffers)
         _draft = State(initialValue: ProfileSettingsDraft(profile: profile, activation: state.profiles.activationMode(for: profile)))
         let openSubwoofer = destination == .subwoofer && profile.effectiveEndpointKind == .speakers
         let subwoofers = profile.configuredSpeakerEndpoints.filter { $0.function == .subwoofer }
@@ -55,15 +53,9 @@ struct ProfileSettingsView: View {
         (try? draft.candidate()) != draft.original || draft.activation != draft.originalActivation
     }
     private var needsSpeakerConfiguration: Bool { (try? draft.preview().needsSpeakerConfiguration) == true }
-    private var globalAudioBufferTitle: String {
-        guard store.audioBufferDefault == .automatic else {
-            return "Global Default (\(store.audioBufferDefault.displayName))"
-        }
-        let preview = (try? draft.preview()) ?? draft.original
-        let currentFrames = preview == draft.original && draft.original.audioBufferSetting == .automatic
-            ? automaticBuffers.statuses[preview.id]?.currentFrames : nil
-        let frames = currentFrames ?? automaticBuffers.recommendedFrames(for: preview)
-        return "Global Default (Automatic · \(frames) samples)"
+    private var audioBufferSelection: Binding<AudioBufferSetting> {
+        Binding(get: { draft.audioBufferOverride ?? draft.original.audioBufferSetting },
+                set: { draft.audioBufferOverride = $0 })
     }
     private var speakerConfiguration: some View {
         Group {
@@ -90,7 +82,12 @@ struct ProfileSettingsView: View {
     private var generalSettings: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                TextField("Profile name", text: $draft.name)
+                ResponsiveStackLayout(minimumHorizontalWidth: 420, horizontalSpacing: 12, verticalSpacing: 6) {
+                    Text("Profile Name")
+                    TextField("Profile Name", text: $draft.name)
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                }.frame(maxWidth: .infinity, alignment: .leading)
                 Picker("Device Type", selection: Binding(get: { draft.selectedType }, set: { selectDeviceType($0) })) {
                     ForEach(ProfileEndpointKind.allCases, id: \.self) { Text($0.displayName).tag($0) }
                 }
@@ -131,14 +128,13 @@ struct ProfileSettingsView: View {
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 ResponsiveStackLayout(minimumHorizontalWidth: 420, horizontalSpacing: 12, verticalSpacing: 6) {
                     HStack(spacing: 6) {
-                        Text("Audio Buffer")
-                        DeviceCorrectionHelpIcon(title: "Audio Buffer", message: "Reduce buffer size to reduce latency. Increase if hearing crack sounds.")
+                        Text("Buffer Size")
+                        DeviceCorrectionHelpIcon(title: "Buffer Size", message: "Smaller buffers need more processing power but reduce latency, increase the size if audio crackles.")
                     }
-                    Picker("Audio Buffer", selection: $draft.audioBufferOverride) {
-                        Text(globalAudioBufferTitle).tag(AudioBufferSetting?.none)
-                        Text("Automatic").tag(Optional(AudioBufferSetting.automatic))
-                        ForEach(Array(Set(DeviceProfile.audioBufferSizes + [draft.audioBufferOverride?.fixedFrames].compactMap { $0 })).sorted(), id: \.self) { frames in
-                            Text("\(frames) samples").tag(Optional(AudioBufferSetting.fixed(frames)))
+                    Picker("Audio Buffer", selection: audioBufferSelection) {
+                        Text("Automatic").tag(AudioBufferSetting.automatic)
+                        ForEach(Array(Set(DeviceProfile.audioBufferSizes + [audioBufferSelection.wrappedValue.fixedFrames].compactMap { $0 })).sorted(), id: \.self) { frames in
+                            Text("\(frames) samples").tag(AudioBufferSetting.fixed(frames))
                         }
                     }.labelsHidden()
                 }.frame(maxWidth: .infinity, alignment: .leading)
@@ -162,7 +158,11 @@ struct ProfileSettingsView: View {
                     case "Section Layout":
                         SectionLayoutEditor(type: draft.selectedType, layout: Binding(
                             get: { draft.sectionLayout ?? store.defaultLayout(for: draft.selectedType) },
-                            set: { draft.sectionLayout = $0 }))
+                            set: { draft.sectionLayout = $0 }), requiresConfirmation: { section in
+                                guard var preview = try? draft.preview() else { return true }
+                                preview.inheritedSectionLayouts = store.layoutDefaults
+                                return state.sectionNeedsDisableConfirmation(section, profile: preview)
+                            })
                         SectionResetButton("Reset to Global Defaults") { draft.sectionLayout = nil }
                             .disabled(draft.sectionLayout == nil)
                     case "Speaker & Listening Position":

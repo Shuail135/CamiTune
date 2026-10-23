@@ -606,7 +606,7 @@ final class VolumeHandoffService {
         // Master-only devices, per-channel devices, and devices without mute
         // each keep every listener that successfully installs.
         for selector in [kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyMute] {
-            for element: AudioObjectPropertyElement in [kAudioObjectPropertyElementMain, 1, 2] {
+            for element in [AudioObjectPropertyElement(kAudioObjectPropertyElementMain)] + CoreAudioService.outputChannelElements(deviceID: deviceID) {
                 var address = AudioObjectPropertyAddress(
                     mSelector: selector, mScope: kAudioDevicePropertyScopeOutput, mElement: element
                 )

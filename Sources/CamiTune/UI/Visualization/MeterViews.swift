@@ -64,7 +64,6 @@ struct SignalMetersView: View {
                 meterGroup("Audio In", capture: true, layout: layout)
                 meterGroup("Audio Out", capture: false, layout: layout)
             }
-            LiveClippingWarning(monitor: meters, profileID: profile.id)
         }.onChange(of: profile.id) { _ in showAllChannels = false }
     }
 
@@ -79,17 +78,19 @@ struct SignalMetersView: View {
 }
 
 /// Keep live status observation local to the warning, just like the meter bars.
-private struct LiveClippingWarning: View {
+struct LiveClippingWarning: View {
     @ObservedObject var monitor: AudioRuntimeMonitor
     let profileID: UUID
 
     var body: some View {
         if monitor.activeSession?.profileID == profileID && monitor.status.clippingIsRecent {
-            Label("Clipping detected. Lower the preamp or source volume.",
+            Label("DSP output clipping",
                   systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
                 .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
+                .help("DSP output clipping detected. Lower the preamp or enable the output limiter.")
+                .accessibilityHint("Lower the preamp or enable the output limiter.")
         }
     }
 }
@@ -142,7 +143,7 @@ private struct AudioRuntimeStatusView: View {
 
     private var processingSection: some View {
         RuntimeStatusSection(title: "Processing") {
-            RuntimeStatusRow(title: "Audio buffer", value: telemetryIsFresh
+            RuntimeStatusRow(title: "Buffer Size", value: telemetryIsFresh
                 ? activeStatus.dspBlockFrames.map { "\($0) frames" } ?? "—" : "—")
             RuntimeStatusRow(title: "DSP load", value: telemetryIsFresh ? percent(activeStatus.processingLoadPercent) : "—")
             RuntimeStatusRow(title: "Resampler load", value: telemetryIsFresh ? percent(activeStatus.resamplerLoadPercent) : "—")
@@ -159,10 +160,10 @@ private struct AudioRuntimeStatusView: View {
             RuntimeStatusRow(title: "Sample rate", value: hasRoute
                 ? String(format: "%.1f kHz", activeStatus.route.sampleRate / 1_000) : "—")
             RuntimeStatusRow(title: "Channels", value: hasRoute ? "\(activeStatus.route.activeChannels)" : "—")
-            RuntimeStatusRow(title: "Clipping", value: clippingValue,
+            RuntimeStatusRow(title: "DSP output clipping", value: clippingValue,
                 accent: activeStatus.clippingIsRecent ? .red : nil)
             RuntimeStatusRow(title: "DSP clipped samples", value: telemetryIsFresh ? "\(activeStatus.dspClippedSamples)" : "—")
-            RuntimeStatusRow(title: "Source clipped samples", value: hasRoute ? "\(activeStatus.sourceClippedSamples)" : "—")
+            RuntimeStatusRow(title: "Source samples at/above full scale", value: hasRoute ? "\(activeStatus.sourceClippedSamples)" : "—")
         }
     }
 
@@ -185,7 +186,7 @@ private struct AudioRuntimeStatusView: View {
     private var clippingValue: String {
         guard activeStatus.isActive else { return "—" }
         if activeStatus.clippingIsRecent { return "Detected recently" }
-        return activeStatus.dspClippedSamples > 0 || activeStatus.sourceClippedSamples > 0 ? "Detected" : "None"
+        return activeStatus.dspClippedSamples > 0 ? "Detected" : "None"
     }
     private func milliseconds(_ value: Double?) -> String {
         value.map { String(format: "%.1f ms", $0) } ?? "—"

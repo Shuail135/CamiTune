@@ -63,7 +63,7 @@ extension AppState {
         var draft = ProfileSettingsDraft(profile: profile, activation: profiles.activationMode(for: profile))
         draft.audioBufferOverride = frames
         try await saveProfileSettings(draft)
-        history.record(actionName: "Change Audio Buffer", contextName: profile.name, target: .profile(profileID),
+        history.record(actionName: "Change Buffer Size", contextName: profile.name, target: .profile(profileID),
             before: .audioBuffer(previous), after: .audioBuffer(frames))
     }
 

@@ -25,7 +25,7 @@ package struct ActiveAudioRoute: Hashable, Sendable {
     package let usesDiscreteSource: Bool
 
     package init(profile original: DeviceProfile) throws {
-        var profile = original
+        var profile = try original.processingRuntimeProfile()
         try profile.migrateInterfaceTopology()
         try profile.validateMultichannelSettings()
         usesSourceProcessingBus = profile.usesSourceProcessingBus
@@ -51,6 +51,7 @@ package struct ActiveAudioRoute: Hashable, Sendable {
     }
 
     package func buildGraph(profile: DeviceProfile, assets: PreparedRuntimeAssets) throws -> ProcessingGraph {
+        let profile = try profile.processingRuntimeProfile()
         let builder = ProcessingGraphBuilder(channelCount: profile.processingChannelCount, preparedAssets: assets)
         var graph: ProcessingGraph
         if usesSourceProcessingBus {

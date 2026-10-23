@@ -7,6 +7,13 @@ import SwiftUI
 // Explicit developer command; exercises the existing lifecycle without changing it.
 @MainActor
 enum LiveRuntimeBaseline {
+    // Retain the old queue policy only for explicit live A/B measurements.
+    private static func legacyDelivery(sampleRate: Double, chunkSize: Int) -> PCMDeliveryConfiguration {
+        .init(queue: .init(sampleRate: sampleRate, operatingTargetFrames: min(Int(sampleRate * 0.04), chunkSize * 2),
+            recoveryTargetFrames: 0, hardLimitFrames: Int(sampleRate * 0.1), recoveryStrategy: .clearAll,
+            rateTargetMode: .legacyBlockTarget), camillaQueueLimit: 4)
+    }
+
     private static func configureEngine(_ path: String?, state: AppState) throws {
         guard let path else { return }
         guard path.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: path) else {
@@ -29,7 +36,7 @@ enum LiveRuntimeBaseline {
         let duration = max(60, min(300, Int(environment["CAMITUNE_POLICY_SOAK_SECONDS"] ?? "120") ?? 120))
         let stress = environment["CAMITUNE_POLICY_CPU_STRESS"] == "1"
         let captureTails = environment["CAMITUNE_POLICY_CAPTURE_TAILS"] == "1"
-        let original = ProfileStore(), box = try DiagnosticSandbox()
+        let original = ProfileStore(), box = try DiagnosticWorkspace()
         defer { box.cleanUp() }
         box.profiles.profiles = original.profiles
         let state = AppState(profiles: box.profiles, perAppAudio: box.perApp)
@@ -91,7 +98,7 @@ enum LiveRuntimeBaseline {
 
     static func capture(destination: String, silence: String, deliveryEvidence: Bool = false) async throws {
         let original = ProfileStore()
-        let box = try DiagnosticSandbox()
+        let box = try DiagnosticWorkspace()
         defer { box.cleanUp() }
         box.profiles.profiles = original.profiles
         let state = AppState(profiles: box.profiles, perAppAudio: box.perApp)
@@ -173,7 +180,7 @@ enum LiveRuntimeBaseline {
             let target = try integer("CAMITUNE_DELIVERY_TARGET_FRAMES", default: 0)
             let legacy = environment["CAMITUNE_DELIVERY_LEGACY_POLICY"] == "1"
             let defaults = legacy
-                ? PCMDeliveryConfiguration.legacy(sampleRate: Double(profile.sampleRate), chunkSize: profile.chunkSize)
+                ? legacyDelivery(sampleRate: Double(profile.sampleRate), chunkSize: profile.chunkSize)
                 : PCMDeliveryConfiguration.standard(sampleRate: Double(profile.sampleRate), chunkSize: profile.chunkSize)
             let limit = try integer("CAMITUNE_DELIVERY_QUEUE_LIMIT", default: defaults.camillaQueueLimit)
             let recoveryTarget = try integer("CAMITUNE_DELIVERY_RECOVERY_TARGET", default: 0)
@@ -188,7 +195,7 @@ enum LiveRuntimeBaseline {
                 throw DiagnosticFailure(message: "Invalid delivery candidate")
             }
             state.runtimeServices.deliveryConfiguration = { profile in
-                let baseline = legacy ? PCMQueuePolicy.legacy(sampleRate: Double(profile.sampleRate), chunkSize: profile.chunkSize)
+                let baseline = legacy ? legacyDelivery(sampleRate: Double(profile.sampleRate), chunkSize: profile.chunkSize).queue
                     : PCMDeliveryConfiguration.standard(sampleRate: Double(profile.sampleRate), chunkSize: profile.chunkSize).queue
                 return .init(queue: .init(sampleRate: Double(profile.sampleRate),
                     operatingTargetFrames: target > 0 ? target : baseline.operatingTargetFrames,
@@ -389,7 +396,7 @@ extension LiveRuntimeBaseline {
     /// Explicit developer command. Silent signal, isolated profiles, and restoration
     /// of the physical scalar/mute/rate even if any assertion fails.
     static func routeHandoff(destination: String, silence: String) async throws {
-        let original = ProfileStore(), box = try DiagnosticSandbox()
+        let original = ProfileStore(), box = try DiagnosticWorkspace()
         defer { box.cleanUp() }
         box.profiles.profiles = original.profiles
         let state = AppState(profiles: box.profiles, perAppAudio: box.perApp)

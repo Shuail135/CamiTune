@@ -681,8 +681,6 @@ private struct NativeProfileSidebar: NSViewRepresentable {
             case .folder(let id):
                 let ids = selectedIDs()
                 add(ids.isEmpty ? "New Folder" : "New Folder with Selection", .newFolder(ids))
-                add("Move Up", .moveItem(.folder(id), -1))
-                add("Move Down", .moveItem(.folder(id), 1))
                 add("Rename Folder", .renameFolder(id))
                 add("Delete Folder…", .removeFolder(id))
             case .profile(let id):

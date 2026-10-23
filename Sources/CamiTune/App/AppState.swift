@@ -1130,6 +1130,9 @@ final class AppState: NSObject, ObservableObject {
         let draftRevision = eqDraftRevision
         isSavingProfileSettings = true
         defer { finishSavingSettings() }
+        if let preview = try? draft.preview(), !preview.isSectionEnabled(.plugins) {
+            await pluginRackManager.flushEditors(profileID: draft.original.id, close: false)
+        }
         guard let original = profiles.profiles.first(where: { $0.id == draft.original.id }) else { throw ProfileSettingsError.staleDraft }
         let originalActivation = profiles.activationMode(for: original)
         guard draft.activation == draft.originalActivation || originalActivation == draft.originalActivation || originalActivation == draft.activation else { throw ProfileSettingsError.staleDraft }
@@ -1188,6 +1191,9 @@ final class AppState: NSObject, ObservableObject {
         }
         if resolution == .finalizedCurrentRuntime && (activation != originalActivation || candidate.outputDevice != original.outputDevice) {
             runtimeCoordinator.resetAutomaticPolicy(outputUID: candidate.outputDeviceUID)
+        }
+        if !candidate.isSectionEnabled(.plugins) {
+            pluginRackManager.retireHiddenSection(profileID: candidate.id)
         }
         operation?.mark("final publication")
         performanceResult = "success"
@@ -1499,6 +1505,32 @@ final class AppState: NSObject, ObservableObject {
         profile.processing.removeRoomStages()
         profiles.update(profile)
         if activeProfileID == profileID { await apply(profile: profile) }
+    }
+
+    func sectionNeedsDisableConfirmation(_ section: ProfileSection, profile: DeviceProfile) -> Bool {
+        let runtime = (try? applyingSessionEQDrafts(to: profile)) ?? profile
+        if runtime.hasEnabledProcessing(in: section) { return true }
+        guard activeProfileID == profile.id, profile.isSectionEnabled(section) else { return false }
+        if section == .meters || section == .spectrum { return true }
+        if section == .mode {
+            let context = PerAppPlaybackContext(profile: profile)
+            return perAppAudio.applications.contains {
+                context.effectiveMode(for: $0.settings.playbackModeOverride) != .direct
+            }
+        }
+        return false
+    }
+
+    func applySectionLayoutToActiveProfile() {
+        guard let profile = profiles.profiles.first(where: { $0.id == activeProfileID }) else { return }
+        Task {
+            if !profile.isSectionEnabled(.plugins) {
+                await pluginRackManager.flushEditors(profileID: profile.id, close: false)
+            }
+            guard let current = profiles.profiles.first(where: { $0.id == profile.id }) else { return }
+            await apply(profile: current)
+            if !current.isSectionEnabled(.plugins) { pluginRackManager.retireHiddenSection(profileID: current.id) }
+        }
     }
 
     func apply(profile: DeviceProfile) async {

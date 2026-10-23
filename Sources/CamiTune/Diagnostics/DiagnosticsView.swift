@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct DiagnosticsView: View {
     // Live audio publications must not invalidate the entire settings page.
     let state: AppState
+    let onOpenComponents: () -> Void
     @ObservedObject private var controller: DiagnosticsController
     @State private var showRuntime = false
     @State private var showTests = false
@@ -13,8 +14,9 @@ struct DiagnosticsView: View {
     @State private var exportError: String?
     @StateObject private var exportOperation = UIBackgroundOperation<Bool>()
 
-    init(state: AppState) {
+    init(state: AppState, onOpenComponents: @escaping () -> Void) {
         self.state = state
+        self.onOpenComponents = onOpenComponents
         _controller = ObservedObject(wrappedValue: state.diagnostics)
     }
 
@@ -42,6 +44,7 @@ struct DiagnosticsView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    DiagnosticsComponentsSection(dependencies: state.dependencies, onOpenSettings: onOpenComponents)
                     PerformanceDiagnosticsSection(state: state)
                     GroupBox {
                         DisclosureGroup(isExpanded: $showRuntime) {
@@ -58,7 +61,7 @@ struct DiagnosticsView: View {
                         } label: {
                             let summary = DiagnosticResultsSummary(results: controller.results.filter { $0.safety == .simulated })
                             sectionLabel("Developer Self-Tests", subtitle: summary.total == 0
-                                ? "Isolated simulations for development and support." : summary.detail,
+                                ? "Performance benchmarks for this computer." : summary.detail,
                                          anchor: "diagnostics-self-tests")
                         }
                         .padding(6)
@@ -114,6 +117,72 @@ struct DiagnosticsView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.headline).uiInteractionAnchor(anchor)
             Text(subtitle).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+@MainActor
+private struct DiagnosticsComponentsSection: View {
+    @ObservedObject var dependencies: DependencyManager
+    let onOpenSettings: () -> Void
+    @State private var expanded = false
+
+    var body: some View {
+        GroupBox {
+            DisclosureGroup(isExpanded: $expanded) {
+                if expanded {
+                    VStack(alignment: .leading, spacing: 12) {
+                        componentRow("CamillaDSP", status: dependencies.camillaDSPStatus)
+                        componentRow("System Audio Bridge Driver", status: dependencies.audioDriverStatus)
+                        if needsSettings(dependencies.camillaDSPStatus) || needsSettings(dependencies.audioDriverStatus) {
+                            Button("Open Drivers & Components Settings", action: onOpenSettings)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .task { await dependencies.refreshWithoutBlockingUI() }
+                }
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Drivers & Components").font(.headline)
+                        .uiInteractionAnchor("diagnostics-components")
+                    Text("Installation status for the audio engine and system audio driver.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(6)
+        }
+    }
+
+    private func needsSettings(_ status: DependencyManager.Status) -> Bool {
+        switch status {
+        case .missing, .failed: return true
+        case .checking, .installed, .working: return false
+        }
+    }
+
+    private func componentRow(_ title: String, status: DependencyManager.Status) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Group {
+                switch status {
+                case .checking, .working: ProgressView().controlSize(.small)
+                case .installed: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                case .missing: Image(systemName: "xmark.circle.fill").foregroundStyle(.orange)
+                case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                }
+            }
+            .frame(width: 16)
+            .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).fontWeight(.medium)
+                switch status {
+                case .checking: Text("Checking…")
+                case .missing: Text("Not installed")
+                case .installed(let version): Text(version.map { "Installed · \($0)" } ?? "Installed")
+                case .working(let message): Text(message)
+                case .failed(let message): Text("Needs attention · \(message)")
+                }
+            }
+            .font(.callout)
         }
     }
 }

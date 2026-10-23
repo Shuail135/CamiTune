@@ -4,7 +4,7 @@ import Foundation
 enum CamiTunePaths {
     static let supportDirectory: URL = {
 #if DEBUG
-        if CommandLine.arguments.contains("--ui-app-self-test") || CommandLine.arguments.contains("--ui-self-test") {
+        if NSClassFromString("XCTestCase") != nil {
             let directory = ProcessInfo.processInfo.environment["CAMITUNE_UI_TEST_SUPPORT_DIRECTORY"]
                 .map { URL(fileURLWithPath: $0, isDirectory: true) }
                 ?? FileManager.default.temporaryDirectory.appendingPathComponent("CamiTune-UI-Support-\(UUID().uuidString)", isDirectory: true)

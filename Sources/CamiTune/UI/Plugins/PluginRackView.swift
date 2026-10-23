@@ -93,12 +93,12 @@ struct PluginRackView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     ResponsiveStackLayout(minimumHorizontalWidth: 420, horizontalSpacing: 12, verticalSpacing: 6) {
                         HStack(spacing: 6) {
-                            Text("Audio Buffer")
-                            DeviceCorrectionHelpIcon(title: "Profile Audio Buffer", message: "Reduce buffer size to reduce latency. Increase if hearing crack sounds.")
+                            Text("Buffer Size")
+                            DeviceCorrectionHelpIcon(title: "Profile Buffer Size", message: "Smaller buffers need more processing power but reduce latency, increase the size if audio crackles.")
                         }
                         HStack {
-                            PluginAudioBufferPicker(controller: state.automaticBuffers, store: state.profiles, profile: profile,
-                                selection: Binding(get: { profile.audioBufferOverride }, set: { changeBuffer($0) }))
+                            PluginAudioBufferPicker(controller: state.automaticBuffers, profile: profile,
+                                selection: Binding(get: { profile.audioBufferSetting }, set: { changeBuffer($0) }))
                                 .labelsHidden().disabled(busy)
                                 .fixedSize(horizontal: true, vertical: false)
                                 .accessibilityIdentifier("plugin-audio-buffer")
@@ -140,7 +140,6 @@ struct PluginRackView: View {
                 showingPicker = false
                 edit("Add \(plugin.name)") {
                     $0.slots.append(AudioPluginSlot(plugin: plugin))
-                    if plugin.isInstrument { $0.midi.isEnabled = true }
                 }
             }
         }
@@ -332,25 +331,20 @@ struct PluginRackView: View {
 @MainActor
 private struct PluginAudioBufferPicker: View {
     @ObservedObject var controller: AutomaticAudioBufferController
-    @ObservedObject var store: ProfileStore
     let profile: DeviceProfile
-    @Binding var selection: AudioBufferSetting?
+    @Binding var selection: AudioBufferSetting
 
     var body: some View {
         let currentFrames = profile.audioBufferSetting == .automatic
             ? controller.statuses[profile.id]?.currentFrames : nil
         let frames = currentFrames ?? controller.recommendedFrames(for: profile)
         let automaticTitle = "Automatic (\(frames) samples)"
-        let globalDefault = store.audioBufferDefault == .automatic
-            ? "Automatic · \(frames) samples" : store.audioBufferDefault.displayName
         return Picker("Profile Audio Buffer", selection: $selection) {
-            Text("Global Default (\(globalDefault))")
-                .tag(AudioBufferSetting?.none)
             ForEach(AudioBufferSetting.choices, id: \.self) { setting in
-                Text(setting == .automatic ? automaticTitle : setting.displayName).tag(Optional(setting))
+                Text(setting == .automatic ? automaticTitle : setting.displayName).tag(setting)
             }
-            if let setting = profile.audioBufferOverride, !AudioBufferSetting.choices.contains(setting) {
-                Text(setting.displayName).tag(Optional(setting))
+            if !AudioBufferSetting.choices.contains(selection) {
+                Text(selection.displayName).tag(selection)
             }
         }
     }
