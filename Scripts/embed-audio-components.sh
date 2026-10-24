@@ -13,6 +13,7 @@ CAMILLADSP_PATCHES=(
     "$ROOT/Contributions/CamillaDSP/0001-coreaudio-accept-device-uid.patch"
     "$ROOT/Contributions/CamillaDSP/0002-coreaudio-buffer-telemetry-without-rate-adjust.patch"
     "$ROOT/Contributions/CamillaDSP/0004-coreaudio-playback-clock-feedback.patch"
+    "$ROOT/Contributions/CamillaDSP/0005-coreaudio-event-driven-backpressure.patch"
 )
 CAMILLADSP_CAPABILITY="coreaudio-uid-playback-clock-v1"
 CAMILLADSP_BUILD_ROOT="$BUILD_ROOT/camilladsp"

@@ -108,11 +108,20 @@ struct MIDIHost::Impl {
     NSDictionary* configuration = @{};
     std::vector<MIDIEndpointRef> connected;
     std::string error;
+    std::function<void()> wakeWorker;
 
-    Impl(std::vector<std::unique_ptr<Effect>>& effects, NSArray<NSDictionary*>* slots) : effects(effects), slots(slots) {
+    Impl(std::vector<std::unique_ptr<Effect>>& effects, NSArray<NSDictionary*>* slots,
+         std::function<void()> wakeWorker) : effects(effects), slots(slots), wakeWorker(std::move(wakeWorker)) {
         for (auto& effect : effects) {
             auto cache = std::make_shared<ParameterCache>(effect->parameters()); caches.push_back(cache);
-            effect->observeParameters([cache](uint64_t id, double value, bool touch) { cache->put(id, value, touch); });
+            effect->observeParameters([cache, notify = this->wakeWorker](uint64_t id, double value, bool touch) {
+                cache->put(id, value, touch);
+                // VST3 performEdit and AU automation observers publish their
+                // pending changes before this callback. Wake the audio worker
+                // for an edit, without polling every open editor at 100 Hz.
+                // Controller echoes must not wake the worker again.
+                if (touch) notify();
+            });
         }
     }
     ~Impl() {
@@ -127,6 +136,7 @@ struct MIDIHost::Impl {
         uint8_t kind = message.status & 0xf0;
         if (kind < 0x80 || kind > 0xe0 || message.data1 > 127 || message.data2 > 127) return;
         if (!incoming.push({message, generation.load(std::memory_order_acquire)})) { panic = true; overflow = true; discardInput = true; }
+        wakeWorker();
     }
     void connect() {
         accepting = false; panic = true;
@@ -179,6 +189,7 @@ struct MIDIHost::Impl {
         if ([configuration[@"isEnabled"] boolValue] && (![expected isEqual:actual] || actual.count != connected.size())) {
             generation.fetch_add(1); connect();
             pending.generation = generation.load(); hasPending = !configurations.push(pending);
+            wakeWorker();
         } else publishSources();
     }
     void publishSources() {
@@ -217,6 +228,7 @@ struct MIDIHost::Impl {
         pending = next; hasPending = !configurations.push(next);
         if (releaseAll) panic = true;
         if (reconnect) connect(); else publishSources();
+        wakeWorker();
     }
     void process() {
         while (configurations.pop(incomingRouting)) {
@@ -332,7 +344,7 @@ struct MIDIHost::Impl {
 #endif
     }
     void idle() {
-        if (hasPending) hasPending = !configurations.push(pending);
+        if (hasPending) { hasPending = !configurations.push(pending); wakeWorker(); }
         if (dirtyState.exchange(false)) lastChange = CFAbsoluteTimeGetCurrent();
         if (inspected < 0 && watching < 0 && ![configuration[@"isEnabled"] boolValue]) return;
         Learned result{};
@@ -359,7 +371,8 @@ struct MIDIHost::Impl {
         if (overflow.exchange(false)) emit(@{@"event": @"midiWarning", @"message": @"MIDI input overflowed. Held notes were released."});
     }
 };
-MIDIHost::MIDIHost(std::vector<std::unique_ptr<Effect>>& effects, NSArray<NSDictionary*>* slots) : impl(std::make_unique<Impl>(effects, slots)) {}
+MIDIHost::MIDIHost(std::vector<std::unique_ptr<Effect>>& effects, NSArray<NSDictionary*>* slots,
+                   std::function<void()> wakeWorker) : impl(std::make_unique<Impl>(effects, slots, std::move(wakeWorker))) {}
 MIDIHost::~MIDIHost() = default;
 void MIDIHost::configure(NSDictionary* config) { impl->configure(config); }
 void MIDIHost::command(NSDictionary* command) { impl->command(command); }

@@ -15,14 +15,6 @@ package struct ParsedEQ: Sendable {
 
     package var hasMeaningfulProcessing: Bool {
         if abs(preampDB) > 0.000_001 { return true }
-        return bands.contains { band in
-            guard band.enabled else { return false }
-            switch band.kind {
-            case .peaking, .lowShelf, .highShelf:
-                return abs(band.gain ?? 0) > 0.000_001
-            case .lowPass, .highPass, .notch, .allPass:
-                return true
-            }
-        }
+        return bands.contains(where: \.hasMeaningfulProcessing)
     }
 }

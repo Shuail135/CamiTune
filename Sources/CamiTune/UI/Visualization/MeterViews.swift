@@ -113,11 +113,17 @@ struct MeterStatusDisclosure: View {
 }
 
 private struct AudioRuntimeStatusView: View {
-    @ObservedObject var monitor: AudioRuntimeMonitor
+    let monitor: AudioRuntimeMonitor
     let profileID: UUID
+    @State private var activeStatus = AudioRuntimeStatus.inactive
 
     var body: some View {
-        AudioRuntimeStatusContent(activeStatus: monitor.activeSession?.profileID == profileID ? monitor.status : .inactive)
+        AudioRuntimeStatusContent(activeStatus: activeStatus)
+            // Meter samples must not rebuild the status text and layout. Only
+            // telemetry or a session change affects this part of the panel.
+            .onReceive(Publishers.CombineLatest(monitor.$activeSession, monitor.$status)
+                .map { session, status in session?.profileID == profileID ? status : .inactive }
+                .removeDuplicates()) { activeStatus = $0 }
     }
 }
 

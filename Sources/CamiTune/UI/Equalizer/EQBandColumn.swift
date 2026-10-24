@@ -64,11 +64,11 @@ struct EQBandColumn: View {
             VerticalEQSlider(
                 gain: Binding(
                     get: { band.gain ?? 0 },
-                    set: { band.gain = usesGain(band.kind) ? $0 : nil }
+                    set: { band.gain = band.kind.usesGain ? $0 : nil }
                 ),
                 audioDB: audioDB,
                 responseDB: responseDB,
-                gainEnabled: usesGain(band.kind),
+                gainEnabled: band.kind.usesGain,
                 accessibilityTitle: "\(band.frequency.formatted(Self.frequencyFormat)) Hz gain",
                 onEditingChanged: onGainEditingChanged,
                 spectrum: spectrum,
@@ -88,7 +88,7 @@ struct EQBandColumn: View {
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.trailing)
                 .frame(width: fieldWidth)
-                .disabled(!usesGain(band.kind))
+                .disabled(!band.kind.usesGain)
             }
             .frame(maxWidth: .infinity)
 
@@ -158,10 +158,6 @@ struct EQBandColumn: View {
         frequencyDraft = frequency.formatted(Self.frequencyFormat)
         guard frequency != band.frequency else { return }
         commitFrequency(frequency)
-    }
-
-    private func usesGain(_ kind: EQBand.Kind) -> Bool {
-        kind == .peaking || kind == .lowShelf || kind == .highShelf
     }
 
     private func filterLabel(_ kind: EQBand.Kind) -> String {

@@ -7,7 +7,8 @@ class MIDIHost {
     struct Impl;
     std::unique_ptr<Impl> impl;
 public:
-    MIDIHost(std::vector<std::unique_ptr<Effect>>& effects, NSArray<NSDictionary*>* slots);
+    MIDIHost(std::vector<std::unique_ptr<Effect>>& effects, NSArray<NSDictionary*>* slots,
+             std::function<void()> wakeWorker);
     ~MIDIHost();
     void configure(NSDictionary* configuration);
     void command(NSDictionary* command);

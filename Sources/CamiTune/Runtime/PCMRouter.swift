@@ -90,14 +90,19 @@ final class PCMRouter: @unchecked Sendable {
         referenceTopology: SpeakerTopology? = nil,
         pluginProcessor: (any PluginAudioProcessor)? = nil,
         meterConsumer: MeterConsumer? = nil,
-        analyzerConsumer: AnalyzerConsumer? = nil
+        meterAdmission: (() -> Bool)? = nil,
+        analyzerConsumer: AnalyzerConsumer? = nil,
+        analyzerAdmission: (() -> UInt64?)? = nil,
+        analyzerBatchFrames: Int = 1
     ) async {
         await Task.detached(priority: .userInitiated) { [self] in
             startSynchronously(camillaSink: camillaSink, outputSink: outputSink, activeRoute: activeRoute,
                 renderConfiguration: renderConfiguration, deliveryConfiguration: deliveryConfiguration,
                 backendChunkFrames: backendChunkFrames,
                 configurationObserver: configurationObserver, referenceTopology: referenceTopology, pluginProcessor: pluginProcessor,
-                meterConsumer: meterConsumer, analyzerConsumer: analyzerConsumer)
+                meterConsumer: meterConsumer, meterAdmission: meterAdmission,
+                analyzerConsumer: analyzerConsumer, analyzerAdmission: analyzerAdmission,
+                analyzerBatchFrames: analyzerBatchFrames)
         }.value
     }
 
@@ -114,7 +119,10 @@ final class PCMRouter: @unchecked Sendable {
         referenceTopology: SpeakerTopology?,
         pluginProcessor: (any PluginAudioProcessor)?,
         meterConsumer: MeterConsumer?,
-        analyzerConsumer: AnalyzerConsumer?
+        meterAdmission: (() -> Bool)?,
+        analyzerConsumer: AnalyzerConsumer?,
+        analyzerAdmission: (() -> UInt64?)?,
+        analyzerBatchFrames: Int
     ) {
         stop()
         let camillaBranch = CamillaDeliveryPipeline(
@@ -128,12 +136,15 @@ final class PCMRouter: @unchecked Sendable {
         let meterBranch = meterConsumer.map { consumer in
             MeterPCMBranch(
                 consumer: consumer,
+                admission: meterAdmission,
                 dropHandler: { [weak self] droppedFrames in
                     self?.recordMeterDrop(droppedFrames: droppedFrames)
                 }
             )
         }
-        let analyzerBranch = analyzerConsumer.map(AnalyzerPCMBranch.init(consumer:))
+        let analyzerBranch = analyzerConsumer.map {
+            AnalyzerPCMBranch(consumer: $0, admission: analyzerAdmission, minimumBatchFrames: analyzerBatchFrames)
+        }
         state.lock()
         statisticsValue = Statistics()
         self.activeRoute = activeRoute
@@ -339,6 +350,7 @@ final class PCMRouter: @unchecked Sendable {
 /// stale observations instead of applying backpressure to the audio writer.
 private final class MeterPCMBranch: @unchecked Sendable {
     private let consumer: PCMRouter.MeterConsumer
+    private let admission: (() -> Bool)?
     private let dropHandler: (Int) -> Void
     private let condition = NSCondition()
     private var buffers: [PCMFrame] = []
@@ -349,9 +361,11 @@ private final class MeterPCMBranch: @unchecked Sendable {
 
     init(
         consumer: @escaping PCMRouter.MeterConsumer,
+        admission: (() -> Bool)?,
         dropHandler: @escaping (Int) -> Void
     ) {
         self.consumer = consumer
+        self.admission = admission
         self.dropHandler = dropHandler
     }
 
@@ -369,6 +383,9 @@ private final class MeterPCMBranch: @unchecked Sendable {
     }
 
     func enqueue(_ frame: PCMFrame) {
+        // Admission is a cheap presentation/cadence check on the producer.
+        // Hidden meters must not wake a worker merely to discard this frame.
+        guard admission?() ?? true else { return }
         var droppedFrames = 0
         condition.lock()
         guard !stopping else {
@@ -415,15 +432,20 @@ private final class MeterPCMBranch: @unchecked Sendable {
 
 private final class AnalyzerPCMBranch: @unchecked Sendable {
     private let consumer: PCMRouter.AnalyzerConsumer
+    private let admission: (() -> UInt64?)?
+    private let minimumBatchFrames: Int
     private let condition = NSCondition()
     private var buffers: [PCMFrame] = []
+    private var queuedFrames = 0
+    private var admissionGeneration: UInt64?
     private var stopping = false
     private var workerFinished = true
     private var worker: Thread?
-    private let maximumQueuedBuffers = 4
 
-    init(consumer: @escaping PCMRouter.AnalyzerConsumer) {
+    init(consumer: @escaping PCMRouter.AnalyzerConsumer, admission: (() -> UInt64?)?, minimumBatchFrames: Int) {
         self.consumer = consumer
+        self.admission = admission
+        self.minimumBatchFrames = max(1, minimumBatchFrames)
     }
 
     func start() {
@@ -440,23 +462,45 @@ private final class AnalyzerPCMBranch: @unchecked Sendable {
     }
 
     func enqueue(_ frame: PCMFrame) {
+        // A token identifies the presentation interval, including a hide/show
+        // with no intervening audio packets. Never mix those partial windows.
+        let generation: UInt64?
+        if let admission { generation = admission() } else { generation = 0 }
         condition.lock()
         defer { condition.unlock() }
-        guard !stopping, buffers.count < maximumQueuedBuffers else { return }
+        guard !stopping else { return }
+        guard let generation else {
+            // Do not carry a partial window across a hidden interval.
+            buffers.removeAll(keepingCapacity: true)
+            queuedFrames = 0
+            admissionGeneration = nil
+            return
+        }
+        if admissionGeneration != generation {
+            buffers.removeAll(keepingCapacity: true)
+            queuedFrames = 0
+            admissionGeneration = generation
+        }
+        // Bound both storage and tiny-packet overhead. An FFT cannot use a new
+        // result before a hop's worth of samples arrives, so wake once per hop
+        // while retaining every admitted sample in source order.
+        guard buffers.count < max(4, minimumBatchFrames),
+              queuedFrames < max(frame.frameCount * 4, minimumBatchFrames * 2) else { return }
+        let wasReady = queuedFrames >= minimumBatchFrames
         buffers.append(frame)
-        condition.signal()
+        queuedFrames += frame.frameCount
+        if !wasReady && queuedFrames >= minimumBatchFrames { condition.signal() }
     }
 
     func stop() {
         condition.lock()
         stopping = true
         buffers.removeAll()
+        queuedFrames = 0
         condition.broadcast()
         let deadline = Date().addingTimeInterval(0.25)
         while !workerFinished, condition.wait(until: deadline) {}
-        // A failed analyzer must not hold pipeline shutdown indefinitely. If
-        // its consumer is stuck, the detached branch exits after that call
-        // eventually returns; the router has already released it.
+        // A failed analyzer must not hold pipeline shutdown indefinitely.
         worker = nil
         condition.unlock()
     }
@@ -464,16 +508,18 @@ private final class AnalyzerPCMBranch: @unchecked Sendable {
     private func run() {
         while true {
             condition.lock()
-            while buffers.isEmpty && !stopping { condition.wait() }
+            while queuedFrames < minimumBatchFrames && !stopping { condition.wait() }
             if stopping {
                 workerFinished = true
                 condition.broadcast()
                 condition.unlock()
                 return
             }
-            let buffer = buffers.removeFirst()
+            let batch = buffers
+            buffers.removeAll(keepingCapacity: true)
+            queuedFrames = 0
             condition.unlock()
-            consumer(buffer)
+            for buffer in batch { consumer(buffer) }
         }
     }
 }

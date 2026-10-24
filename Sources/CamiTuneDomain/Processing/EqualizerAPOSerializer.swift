@@ -8,15 +8,11 @@ package struct EqualizerAPOSerializer {
             let state = band.enabled ? "ON" : "OFF"
             var line = "Filter \(index + 1): \(state) \(token(band.kind))"
             line += " Fc \(format(max(1, band.frequency))) Hz"
-            if usesGain(band.kind) { line += " Gain \(format(band.gain ?? 0)) dB" }
+            if band.kind.usesGain { line += " Gain \(format(band.gain ?? 0)) dB" }
             line += " Q \(format(max(0.05, band.q ?? 0.70710678)))"
             lines.append(line)
         }
         return lines.joined(separator: "\n")
-    }
-
-    private func usesGain(_ kind: EQBand.Kind) -> Bool {
-        kind == .peaking || kind == .lowShelf || kind == .highShelf
     }
 
     private func token(_ kind: EQBand.Kind) -> String {

@@ -211,6 +211,11 @@ private final class RuntimePresentationGate: @unchecked Sendable {
         lock.unlock()
     }
 
+    func isPresented(profileID: UUID) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return self.profileID == profileID
+    }
+
     func beginSample(profileID: UUID, uptime: TimeInterval) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -506,6 +511,7 @@ final class AudioRuntimeMonitor: ObservableObject {
         self.routeDiagnosticsProvider = routeDiagnosticsProvider
         status.isActive = true
         status.engineState = "Starting"
+        presentationGate.setProfileID(presentedProfileID)
         updatePolling()
     }
 
@@ -539,8 +545,8 @@ final class AudioRuntimeMonitor: ObservableObject {
                     let snapshot = output.snapshot(readMeters: true)
                     self.decayIdleInputLevels()
                     self.publishOutputLevels(peak: snapshot.peak, rms: snapshot.rms)
-                    self.status.transportError = snapshot.error
-                    self.status.engineIsRunning = snapshot.error == nil
+                    if self.status.transportError != snapshot.error { self.status.transportError = snapshot.error }
+                    if self.status.engineIsRunning != (snapshot.error == nil) { self.status.engineIsRunning = snapshot.error == nil }
                     self.publish(.init(backend: "Direct Core Audio", engineState: snapshot.error == nil ? "Running" : "Stopped",
                         stopReason: snapshot.error ?? "None", bufferLevelFrames: snapshot.bufferedFrames,
                         clippedSamples: snapshot.clippedSamples, sampleRate: output.sampleRate,
@@ -589,14 +595,20 @@ final class AudioRuntimeMonitor: ObservableObject {
         }
     }
 
+    /// Evaluate before queuing PCM so hidden views and packets between meter
+    /// samples do not wake the observation worker at the audio callback rate.
+    func pcmAdmission(for session: AudioRuntimeSession) -> () -> Bool {
+        { [presentationGate] in
+            presentationGate.beginSample(profileID: session.profileID,
+                uptime: ProcessInfo.processInfo.systemUptime)
+        }
+    }
+
     /// Returns the independent PCM-router consumer used for source metering.
     /// Level calculation happens on the meter branch, never on the audio route.
     func pcmConsumer(for session: AudioRuntimeSession) -> PCMRouter.MeterConsumer {
         { [weak self, presentationGate] frame in
-            guard presentationGate.beginSample(
-                profileID: session.profileID,
-                uptime: ProcessInfo.processInfo.systemUptime
-            ) else { return }
+            guard presentationGate.isPresented(profileID: session.profileID) else { return }
             let snapshot = PCMLevelSnapshot.measure(frame)
             presentationGate.submit(snapshot, profileID: session.profileID) { [weak self] snapshot in
                 self?.ingest(snapshot, session: session)
@@ -613,6 +625,7 @@ final class AudioRuntimeMonitor: ObservableObject {
         directOutput = nil
         routeDiagnosticsProvider = nil
         activeSession = nil
+        presentationGate.setProfileID(nil)
         resetObservationState()
     }
 
@@ -642,25 +655,29 @@ final class AudioRuntimeMonitor: ObservableObject {
         }
         // Audio In always describes the shared source boundary, in source order.
         // Output backends cannot replace these values with their own input bus.
-        levels.capturePeak = smooth(
+        var next = levels
+        next.capturePeak = smooth(
                 current: levels.capturePeak,
                 target: snapshot.peak,
                 attack: 0.72,
                 release: 0.16
             )
-        levels.captureRMS = smooth(
+        next.captureRMS = smooth(
                 current: levels.captureRMS,
                 target: snapshot.rms,
                 attack: 0.42,
                 release: 0.20
             )
+        if levels != next { levels = next }
         refreshRecentClipping(now: Date())
     }
 
     func decayIdleInputLevels(now: Date = Date()) {
         guard let lastInputLevelsAt, now.timeIntervalSince(lastInputLevelsAt) > 0.3 else { return }
-        levels.capturePeak = smooth(current: capturePeak, target: .init(repeating: -150, count: capturePeak.count), attack: 0.72, release: 0.16)
-        levels.captureRMS = smooth(current: captureRMS, target: .init(repeating: -150, count: captureRMS.count), attack: 0.42, release: 0.20)
+        var next = levels
+        next.capturePeak = smooth(current: capturePeak, target: .init(repeating: -150, count: capturePeak.count), attack: 0.72, release: 0.16)
+        next.captureRMS = smooth(current: captureRMS, target: .init(repeating: -150, count: captureRMS.count), attack: 0.42, release: 0.20)
+        if levels != next { levels = next }
     }
 
     func publishOutputLevels(peak: [Double], rms: [Double]) {
@@ -675,14 +692,16 @@ final class AudioRuntimeMonitor: ObservableObject {
             where peak.isFinite && peak > 0 {
             lastChannelClipAt[channelIndex] = now
         }
+        var next = levels
         if hasReceivedOutputLevels {
-            levels.playbackPeak = smooth(current: playbackPeak, target: peak, attack: 0.72, release: 0.16)
-            levels.playbackRMS = smooth(current: playbackRMS, target: rms, attack: 0.42, release: 0.20)
+            next.playbackPeak = smooth(current: playbackPeak, target: peak, attack: 0.72, release: 0.16)
+            next.playbackRMS = smooth(current: playbackRMS, target: rms, attack: 0.42, release: 0.20)
         } else {
-            levels.playbackPeak = peak
-            levels.playbackRMS = rms
+            next.playbackPeak = peak
+            next.playbackRMS = rms
             hasReceivedOutputLevels = true
         }
+        if levels != next { levels = next }
         refreshRecentClipping(now: now)
     }
 
@@ -691,16 +710,21 @@ final class AudioRuntimeMonitor: ObservableObject {
             lastClipAt = now
         }
         lastOutputClippedSamples = diagnostics.clippedSamples
-        status.recordTelemetry(diagnostics, at: now)
-        publishRouteDiagnostics(now: now)
+        var next = status
+        next.recordTelemetry(diagnostics, at: now)
+        if let routeDiagnosticsProvider { next.route = routeDiagnosticsProvider() }
+        next.lastUpdated = now
+        next.clippingIsRecent = lastClipAt.map { now.timeIntervalSince($0) < 2 } ?? false
+        if status != next { status = next }
     }
 
     private func publishRouteDiagnostics(now: Date) {
         guard let routeDiagnosticsProvider else { return }
-        let route = routeDiagnosticsProvider()
-        status.route = route
-        status.lastUpdated = now
-        refreshRecentClipping(now: now)
+        var next = status
+        next.route = routeDiagnosticsProvider()
+        next.lastUpdated = now
+        next.clippingIsRecent = lastClipAt.map { now.timeIntervalSince($0) < 2 } ?? false
+        if status != next { status = next }
     }
 
     private func refreshRecentClipping(now: Date) {
@@ -719,6 +743,9 @@ final class AudioRuntimeMonitor: ObservableObject {
         return (0..<channelCount).map { channel in
             let previous = channel < current.count ? current[channel] : -150
             let next = channel < target.count ? target[channel] : -150
+            // Below one thousandth of a dB the remaining motion is invisible.
+            // Settle instead of invalidating idle views for an asymptotic tail.
+            if abs(next - previous) < 0.001 { return next }
             let amount = next > previous ? attack : release
             return previous + (next - previous) * amount
         }

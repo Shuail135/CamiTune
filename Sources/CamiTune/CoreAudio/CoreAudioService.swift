@@ -125,6 +125,7 @@ final class CoreAudioService {
                 self.schedulePeriodicRefresh()
             }
         }
+        timer?.tolerance = 1
     }
 
     private var observationTokens: [CoreAudioListenerToken] = []

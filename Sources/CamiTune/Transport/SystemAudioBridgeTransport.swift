@@ -86,6 +86,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         func markFailed() { condition.lock(); failed = true; condition.unlock() }
         let completion: ProducerCompletionAssembler
         private var wakeDeadline: Date?
+        private var wakeTimer: DispatchSourceTimer?
         private var wakeTimerFinished = false
         private var disconnectStatus: OSStatus = noErr
 
@@ -117,6 +118,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         func requestStop() {
             condition.lock()
             stopRequested = true
+            wakeTimer?.cancel()
             condition.broadcast()
             condition.unlock()
             // Wake the packet reader if it is sleeping in sem_wait().
@@ -137,32 +139,53 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             condition.unlock()
         }
 
-        func scheduleWake(at deadline: Date) {
+        func startWakeTimer() {
             condition.lock()
-            wakeDeadline = deadline
-            condition.broadcast()
+            let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(
+                label: "CamiTune Bridge Deadlines", qos: .utility))
+            timer.setEventHandler { [weak self] in self?.fireWakeTimer() }
+            // Cancellation runs after any in-flight event handler. Teardown
+            // waits for it before destroying the transport's semaphore.
+            timer.setCancelHandler { [weak self] in
+                guard let self else { return }
+                self.condition.lock()
+                self.wakeTimerFinished = true
+                self.condition.broadcast()
+                self.condition.unlock()
+            }
+            wakeTimer = timer
+            timer.schedule(deadline: .distantFuture)
+            timer.resume()
+            if stopRequested { timer.cancel() }
             condition.unlock()
         }
 
-        func runWakeTimer() {
+        func scheduleWake(at deadline: Date) {
             condition.lock()
-            while !stopRequested {
-                guard let deadline = wakeDeadline else {
-                    condition.wait()
-                    continue
-                }
-                if deadline <= Date() {
-                    wakeDeadline = nil
-                    condition.unlock()
-                    sabr_client_transport_signal(transport)
-                    condition.lock()
-                } else {
-                    _ = condition.wait(until: deadline)
-                }
+            defer { condition.unlock() }
+            guard !stopRequested, wakeDeadline != deadline else { return }
+            wakeDeadline = deadline
+            // Re-arm a system timer without waking a dedicated thread for
+            // every PCM/fence record. The reader still owns the exact deadline.
+            wakeTimer?.schedule(deadline: .now() + max(0, deadline.timeIntervalSinceNow))
+        }
+
+        private func fireWakeTimer() {
+            condition.lock()
+            guard !stopRequested, let deadline = wakeDeadline else {
+                condition.unlock()
+                return
             }
-            wakeTimerFinished = true
-            condition.broadcast()
+            // A previously fired event may already be queued when the reader
+            // postpones its deadline. It must not wake the reader prematurely.
+            if deadline > Date() {
+                wakeTimer?.schedule(deadline: .now() + max(0, deadline.timeIntervalSinceNow))
+                condition.unlock()
+                return
+            }
+            wakeDeadline = nil
             condition.unlock()
+            sabr_client_transport_signal(transport)
         }
 
         func waitForWakeTimer() {
@@ -376,12 +399,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
     }
 
     private static func run(context: RunContext, owner: WeakOwner) {
-        let wakeTimer = Thread {
-            context.runWakeTimer()
-        }
-        wakeTimer.name = "System Audio Bridge Deadline Timer"
-        wakeTimer.qualityOfService = .utility
-        wakeTimer.start()
+        context.startWakeTimer()
 
         defer {
             context.requestStop()

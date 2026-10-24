@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C4A268A994F7996E7FC14B0A = {isa = PBXBuildFile; fileRef = 84BFF11A115B28A1EE1E27ED; };
 		CA7300000000000000000101 = {isa = PBXBuildFile; fileRef = CA7300000000000000000201; };
 		CA7300000000000000000100 = {isa = PBXBuildFile; fileRef = CA7300000000000000000200; };
 		CA7200000000000000000101 = {isa = PBXBuildFile; fileRef = CA7200000000000000000201; };
@@ -1061,6 +1062,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		84BFF11A115B28A1EE1E27ED = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BiquadCoefficients.swift; sourceTree = "<group>"; };
 		CA7300000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectCoreAudioOutput.swift; sourceTree = "<group>"; };
 		CA7300000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectOutputBuffer.swift; sourceTree = "<group>"; };
 		CA7200000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdatePanel.swift; sourceTree = "<group>"; };
@@ -3709,6 +3711,7 @@
 				416888FE4EA7A43EF59520DA,
 				DB216BDDF372D300B11CCA84,
 				0728AFF584D7415331145589,
+				84BFF11A115B28A1EE1E27ED,
 				0DC8194EE9D70DE26823C71C,
 				7B746526CAB8BA124B4BF5E3,
 				6CE764E6BF9720E0B5F03D95,
@@ -4339,6 +4342,7 @@
 				D832A9B950C753BDE1256AB0,
 				2EEE754D0F31F42A9EF60AD6,
 				E1D2B518CB870609758A5538,
+				C4A268A994F7996E7FC14B0A,
 				610644B7DBBCFA1C5E15D6BA,
 				D5D4E506061F6FE3BF56990D,
 				0F17503611AA5DBEB2F7B028,

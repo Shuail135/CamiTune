@@ -34,47 +34,31 @@ final class DeviceMeasurementCache: @unchecked Sendable {
 
     func loadCatalog(providerID: String, maximumAge: TimeInterval?) throws
         -> [DeviceCatalogEntry]? {
-        try synchronized {
-            let url = catalogURL(providerID: providerID)
-            guard fileManager.fileExists(atPath: url.path) else { return nil }
-            let envelope = try decoder.decode(
-                Envelope<[DeviceCatalogEntry]>.self,
-                from: Data(contentsOf: url)
-            )
-            guard envelope.schemaVersion == Self.schemaVersion else { return nil }
-            if let maximumAge, Date().timeIntervalSince(envelope.savedAt) > maximumAge {
-                return nil
-            }
-            return envelope.value
-        }
+        try load(from: catalogURL(providerID: providerID), maximumAge: maximumAge)
     }
 
     func saveCatalog(_ entries: [DeviceCatalogEntry], providerID: String) throws {
-        try synchronized {
-            try prepareDirectory()
-            let envelope = Envelope(
-                schemaVersion: Self.schemaVersion,
-                savedAt: Date(),
-                value: entries
-            )
-            try encoder.encode(envelope).write(
-                to: catalogURL(providerID: providerID),
-                options: .atomic
-            )
-        }
+        try save(entries, to: catalogURL(providerID: providerID))
     }
 
     func loadMeasurement(
         referenceID: String,
         maximumAge: TimeInterval? = nil
     ) throws -> DeviceCorrectionMeasurement? {
+        try load(from: measurementURL(referenceID: referenceID), maximumAge: maximumAge)
+    }
+
+    func saveMeasurement(
+        _ measurement: DeviceCorrectionMeasurement,
+        referenceID: String
+    ) throws {
+        try save(measurement, to: measurementURL(referenceID: referenceID))
+    }
+
+    private func load<Value: Codable>(from url: URL, maximumAge: TimeInterval?) throws -> Value? {
         try synchronized {
-            let url = measurementURL(referenceID: referenceID)
             guard fileManager.fileExists(atPath: url.path) else { return nil }
-            let envelope = try decoder.decode(
-                Envelope<DeviceCorrectionMeasurement>.self,
-                from: Data(contentsOf: url)
-            )
+            let envelope = try decoder.decode(Envelope<Value>.self, from: Data(contentsOf: url))
             guard envelope.schemaVersion == Self.schemaVersion else { return nil }
             if let maximumAge, Date().timeIntervalSince(envelope.savedAt) > maximumAge {
                 return nil
@@ -83,21 +67,11 @@ final class DeviceMeasurementCache: @unchecked Sendable {
         }
     }
 
-    func saveMeasurement(
-        _ measurement: DeviceCorrectionMeasurement,
-        referenceID: String
-    ) throws {
+    private func save<Value: Codable>(_ value: Value, to url: URL) throws {
         try synchronized {
-            try prepareDirectory()
-            let envelope = Envelope(
-                schemaVersion: Self.schemaVersion,
-                savedAt: Date(),
-                value: measurement
-            )
-            try encoder.encode(envelope).write(
-                to: measurementURL(referenceID: referenceID),
-                options: .atomic
-            )
+            try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+            let envelope = Envelope(schemaVersion: Self.schemaVersion, savedAt: Date(), value: value)
+            try encoder.encode(envelope).write(to: url, options: .atomic)
         }
     }
 
@@ -113,10 +87,6 @@ final class DeviceMeasurementCache: @unchecked Sendable {
             "measurement-\(StableContentHash.string(referenceID)).json",
             isDirectory: false
         )
-    }
-
-    private func prepareDirectory() throws {
-        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
     }
 
     private func synchronized<T>(_ operation: () throws -> T) rethrows -> T {

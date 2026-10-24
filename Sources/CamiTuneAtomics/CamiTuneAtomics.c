@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <dispatch/dispatch.h>
 
 // These counters never acquire a mutex on a transport or PCM worker.
 struct CMTPerformanceAtomic { _Atomic(uint64_t) value; };
@@ -24,6 +25,8 @@ struct CMTOutputRing {
     _Atomic(uint64_t) read, write, accepting, underruns, rendered, clipped;
     _Atomic(uint64_t) sequence, host, sample, flags, callback, signal_host;
     _Atomic(uint32_t) peak[32], rms[32];
+    dispatch_semaphore_t writer_signal;
+    _Atomic(int) writer_waiting;
     // Render-callback-owned ramp and startup state.
     float last[32];
     uint32_t ramp, waiting_frames;
@@ -37,6 +40,9 @@ CMTOutputRingRef cmt_output_ring_create(uint32_t channels, uint32_t capacity, ui
     if (!r) return NULL;
     r->samples = calloc((size_t)channels * capacity, sizeof(float));
     if (!r->samples) { free(r); return NULL; }
+    r->writer_signal = dispatch_semaphore_create(0);
+    if (!r->writer_signal) { free(r->samples); free(r); return NULL; }
+    atomic_init(&r->writer_waiting, 0);
     r->channels = channels; r->capacity = capacity; r->preroll = preroll;
     atomic_init(&r->read, 0); atomic_init(&r->write, 0); atomic_init(&r->accepting, 1);
     atomic_init(&r->underruns, 0); atomic_init(&r->rendered, 0); atomic_init(&r->clipped, 0);
@@ -46,8 +52,26 @@ CMTOutputRingRef cmt_output_ring_create(uint32_t channels, uint32_t capacity, ui
     for (uint32_t c = 0; c < channels; ++c) { atomic_init(&r->peak[c], 0); atomic_init(&r->rms[c], 0); }
     return r;
 }
-void cmt_output_ring_destroy(CMTOutputRingRef r) { if (r) { free(r->samples); free(r); } }
-void cmt_output_ring_cancel(CMTOutputRingRef r) { atomic_store_explicit(&r->accepting, 0, memory_order_release); }
+void cmt_output_ring_destroy(CMTOutputRingRef r) { if (r) { dispatch_release(r->writer_signal); free(r->samples); free(r); } }
+static void cmt_output_ring_wake(CMTOutputRingRef r) {
+    // No signal syscall when the writer has work or there is no input audio.
+    if (atomic_exchange_explicit(&r->writer_waiting, 0, memory_order_seq_cst)) dispatch_semaphore_signal(r->writer_signal);
+}
+void cmt_output_ring_cancel(CMTOutputRingRef r) {
+    atomic_store_explicit(&r->accepting, 0, memory_order_seq_cst);
+    cmt_output_ring_wake(r);
+}
+void cmt_output_ring_wait(CMTOutputRingRef r, uint64_t rendered, uint64_t timeout_ns) {
+    // A signal may arrive after a previous arm/recheck avoided sleeping. Drain
+    // those tickets before arming; never accumulate notifications per callback.
+    while (dispatch_semaphore_wait(r->writer_signal, DISPATCH_TIME_NOW) == 0) {}
+    atomic_store_explicit(&r->writer_waiting, 1, memory_order_seq_cst);
+    if (atomic_load_explicit(&r->rendered, memory_order_seq_cst) == rendered &&
+        atomic_load_explicit(&r->accepting, memory_order_seq_cst)) {
+        dispatch_semaphore_wait(r->writer_signal, dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeout_ns));
+    }
+    atomic_store_explicit(&r->writer_waiting, 0, memory_order_seq_cst);
+}
 int cmt_output_ring_accepting(CMTOutputRingRef r) { return atomic_load_explicit(&r->accepting, memory_order_acquire) != 0; }
 uint32_t cmt_output_ring_channels(CMTOutputRingRef r) { return r->channels; }
 uint32_t cmt_output_ring_push(CMTOutputRingRef r, const float* samples, uint32_t frames) {
@@ -99,7 +123,6 @@ void cmt_output_ring_render(CMTOutputRingRef r, float* output, uint32_t frames, 
     }
     atomic_store_explicit(&r->read, read + count, memory_order_release);
     if (was_primed && count < frames) atomic_fetch_add_explicit(&r->underruns, frames - count, memory_order_relaxed);
-    atomic_fetch_add_explicit(&r->rendered, frames, memory_order_relaxed);
     atomic_fetch_add_explicit(&r->clipped, clipped, memory_order_relaxed);
     for (uint32_t c = 0; c < r->channels; ++c) {
         if (peaks[c] > 0) atomic_store_explicit(&r->signal_host, host, memory_order_relaxed);
@@ -115,6 +138,9 @@ void cmt_output_ring_render(CMTOutputRingRef r, float* output, uint32_t frames, 
     atomic_store_explicit(&r->flags, flags, memory_order_relaxed);
     atomic_store_explicit(&r->callback, frames, memory_order_relaxed);
     atomic_fetch_add_explicit(&r->sequence, 1, memory_order_seq_cst);
+    // Publish consumption and the new callback size before notifying the writer.
+    atomic_fetch_add_explicit(&r->rendered, frames, memory_order_seq_cst);
+    cmt_output_ring_wake(r);
 }
 CMTOutputSnapshot cmt_output_ring_snapshot(CMTOutputRingRef r) {
     CMTOutputSnapshot s = {0};

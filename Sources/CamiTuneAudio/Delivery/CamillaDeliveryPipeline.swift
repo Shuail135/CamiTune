@@ -530,7 +530,20 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
                     condition.unlock()
                     continue
                 }
-                let frames = min(256, backendChunkFrames)
+                let frames: Int
+                if let blockFrames = sink.processingBlockFrames {
+                    // Direct output has a small hardware runway. Preserve its
+                    // configured processing and delivery cadence exactly.
+                    frames = min(256, backendChunkFrames, max(1, blockFrames))
+                } else {
+                    // The standard backend's filter chunk is not the plug-in
+                    // scheduling quantum. Waking for each 64-frame filter
+                    // block costs 750 timers/sec at 48 kHz even in silence.
+                    // Retain the existing 256-frame instrument cap, allowing
+                    // at most 4 ms more idle MIDI wait than the old cadence.
+                    // Real source packets still interrupt this wait at once.
+                    frames = min(256, backendChunkFrames + max(0, Int(backendSampleRate * 0.004)))
+                }
                 wasGeneratingInstrument = true
                 instrumentStopPadding = false
                 let duration = UInt64(Double(frames) / backendSampleRate * 1_000_000_000)

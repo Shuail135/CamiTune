@@ -206,7 +206,7 @@ package struct EqualizerAPOParser {
         // BW Oct and shelf-slope forms now so later editing/serialization cannot
         // silently change their response.
         var normalizedFrequency = fc
-        var q = explicitQ ?? bw.map(qFromBandwidth)
+        var q = explicitQ ?? bw.map(BiquadCoefficients.q(fromBandwidth:))
         if kind == .lowShelf || kind == .highShelf {
             guard gain != nil else { throw ParseError(line: lineNumber, message: "Shelf filter needs Gain") }
             if let declaredShelfSlope {
@@ -299,10 +299,6 @@ package struct EqualizerAPOParser {
         }
         guard let value = Double(normalized), value.isFinite else { return nil }
         return value
-    }
-
-    private func qFromBandwidth(_ bandwidth: Double) -> Double {
-        1 / (2 * sinh(log(2) / 2 * bandwidth))
     }
 
     private func qFromShelfSlope(_ slopeDBPerOctave: Double, gainDB: Double) -> Double {

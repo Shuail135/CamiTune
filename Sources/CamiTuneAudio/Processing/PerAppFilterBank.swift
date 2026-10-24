@@ -82,61 +82,22 @@ package struct PerAppFilterBank {
             q = value
         } else if let bandwidth = band.bandwidth,
                   bandwidth.isFinite, bandwidth > 0 {
-            q = 1 / (2 * sinh(log(2) / 2 * bandwidth))
+            q = BiquadCoefficients.q(fromBandwidth: bandwidth)
         } else {
             q = 0.70710678
         }
-        let w0 = 2 * Double.pi * band.frequency / sampleRate
-        let cosw = cos(w0)
-        let sinw = sin(w0)
         let gain = band.gain ?? 0
         guard gain.isFinite else { return nil }
-        let a = pow(10, gain / 40)
-        let alpha = sinw / (2 * q)
-        var b0 = 1.0, b1 = 0.0, b2 = 0.0
-        var a0 = 1.0, a1 = 0.0, a2 = 0.0
-        switch band.kind {
-        case .peaking:
-            b0 = 1 + alpha * a; b1 = -2 * cosw; b2 = 1 - alpha * a
-            a0 = 1 + alpha / a; a1 = -2 * cosw; a2 = 1 - alpha / a
-        case .lowPass:
-            b0 = (1 - cosw) / 2; b1 = 1 - cosw; b2 = b0
-            a0 = 1 + alpha; a1 = -2 * cosw; a2 = 1 - alpha
-        case .highPass:
-            b0 = (1 + cosw) / 2; b1 = -(1 + cosw); b2 = b0
-            a0 = 1 + alpha; a1 = -2 * cosw; a2 = 1 - alpha
-        case .notch:
-            b0 = 1; b1 = -2 * cosw; b2 = 1
-            a0 = 1 + alpha; a1 = -2 * cosw; a2 = 1 - alpha
-        case .allPass:
-            b0 = 1 - alpha; b1 = -2 * cosw; b2 = 1 + alpha
-            a0 = 1 + alpha; a1 = -2 * cosw; a2 = 1 - alpha
-        case .lowShelf, .highShelf:
-            let squareRootA = sqrt(a)
-            let beta = 2 * squareRootA * alpha
-            if band.kind == .lowShelf {
-                b0 = a * ((a + 1) - (a - 1) * cosw + beta)
-                b1 = 2 * a * ((a - 1) - (a + 1) * cosw)
-                b2 = a * ((a + 1) - (a - 1) * cosw - beta)
-                a0 = (a + 1) + (a - 1) * cosw + beta
-                a1 = -2 * ((a - 1) + (a + 1) * cosw)
-                a2 = (a + 1) + (a - 1) * cosw - beta
-            } else {
-                b0 = a * ((a + 1) + (a - 1) * cosw + beta)
-                b1 = -2 * a * ((a - 1) + (a + 1) * cosw)
-                b2 = a * ((a + 1) + (a - 1) * cosw - beta)
-                a0 = (a + 1) - (a - 1) * cosw + beta
-                a1 = 2 * ((a - 1) - (a + 1) * cosw)
-                a2 = (a + 1) - (a - 1) * cosw - beta
-            }
-        }
+        let c = BiquadCoefficients(kind: band.kind, frequency: band.frequency,
+            gainDB: gain, q: q, sampleRate: sampleRate)
+        let a0 = c.a0
         guard a0.isFinite, a0 != 0 else { return nil }
         return Coefficients(
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0
+            b0: c.b0 / a0,
+            b1: c.b1 / a0,
+            b2: c.b2 / a0,
+            a1: c.a1 / a0,
+            a2: c.a2 / a0
         )
     }
 }

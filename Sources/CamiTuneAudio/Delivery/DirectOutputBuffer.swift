@@ -26,6 +26,9 @@ package final class DirectOutputBuffer: @unchecked Sendable {
     deinit { cmt_output_ring_destroy(ring) }
     package var accepting: Bool { cmt_output_ring_accepting(ring) != 0 }
     package func cancel() { cmt_output_ring_cancel(ring) }
+    package func waitForCallback(after renderedFrames: UInt64, timeoutNanoseconds: UInt64) {
+        cmt_output_ring_wait(ring, renderedFrames, timeoutNanoseconds)
+    }
     package func push(_ samples: UnsafePointer<Float>, frames: Int) -> Int {
         guard frames > 0, frames <= Int(UInt32.max) else { return 0 }
         return Int(cmt_output_ring_push(ring, samples, UInt32(frames)))

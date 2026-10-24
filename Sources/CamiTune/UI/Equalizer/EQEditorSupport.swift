@@ -66,7 +66,7 @@ enum EQEditorSupport {
         let target = min(20, max(0, requestedCount))
         return target < bands.count
             && !bands.isEmpty
-            && bands.allSatisfy(hasActiveValue)
+            && bands.allSatisfy(\.hasMeaningfulProcessing)
     }
 
     /// Recreates a smaller PEQ whose magnitude response follows the existing
@@ -110,7 +110,7 @@ enum EQEditorSupport {
         band.kind = kind
         band.q = band.q ?? 0.707
         band.bandwidth = nil
-        band.gain = usesGain(kind) ? (band.gain ?? 0) : nil
+        band.gain = kind.usesGain ? (band.gain ?? 0) : nil
     }
 
     private static func distributedFrequencies(count: Int) -> [Double] {
@@ -134,16 +134,6 @@ enum EQEditorSupport {
         }
     }
 
-    private static func hasActiveValue(_ band: EQBand) -> Bool {
-        guard band.enabled else { return false }
-        switch band.kind {
-        case .peaking, .lowShelf, .highShelf:
-            return abs(band.gain ?? 0) > 0.000_001
-        case .lowPass, .highPass, .notch, .allPass:
-            return true
-        }
-    }
-
     private static func isDefaultBand(_ band: EQBand, index: Int, count: Int) -> Bool {
         guard count > 0 else { return false }
         let expected = distributedFrequencies(count: count)[index]
@@ -161,7 +151,4 @@ enum EQEditorSupport {
         abs((band.gain ?? 0)) < 0.0001 && abs((band.q ?? 1) - 1) < 0.0001
     }
 
-    private static func usesGain(_ kind: EQBand.Kind) -> Bool {
-        kind == .peaking || kind == .lowShelf || kind == .highShelf
-    }
 }

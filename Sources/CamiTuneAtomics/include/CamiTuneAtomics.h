@@ -32,6 +32,9 @@ void cmt_output_ring_cancel(CMTOutputRingRef ring);
 int cmt_output_ring_accepting(CMTOutputRingRef ring);
 uint32_t cmt_output_ring_channels(CMTOutputRingRef ring);
 uint32_t cmt_output_ring_push(CMTOutputRingRef ring, const float* samples, uint32_t frames);
+// Sole writer only. Sleeps until a callback advances, cancellation, or timeout.
+// Arm/recheck prevents a callback between the writer's snapshot and wait being lost.
+void cmt_output_ring_wait(CMTOutputRingRef ring, uint64_t rendered_frames, uint64_t timeout_ns);
 void cmt_output_ring_render(CMTOutputRingRef ring, float* output, uint32_t frames,
                             double sample_time, uint64_t host_time, uint32_t flags);
 CMTOutputSnapshot cmt_output_ring_snapshot(CMTOutputRingRef ring);

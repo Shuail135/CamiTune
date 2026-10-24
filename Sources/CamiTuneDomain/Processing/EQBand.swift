@@ -9,6 +9,10 @@ package struct EQBand: Identifiable, Codable, Hashable, Sendable {
         case highPass
         case notch
         case allPass
+
+        package var usesGain: Bool {
+            self == .peaking || self == .lowShelf || self == .highShelf
+        }
     }
 
     package let id: UUID
@@ -23,6 +27,10 @@ package struct EQBand: Identifiable, Codable, Hashable, Sendable {
     package var gain: Double?
     package var q: Double?
     package var bandwidth: Double?
+
+    package var hasMeaningfulProcessing: Bool {
+        enabled && (!kind.usesGain || abs(gain ?? 0) > 0.000_001)
+    }
 
     package init(
         id: UUID = UUID(),

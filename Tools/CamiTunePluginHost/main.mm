@@ -24,6 +24,28 @@ static std::atomic<bool> audioFailed{false};
 static std::atomic<unsigned> openEditorCount{0};
 static int audioSocket = -1;
 static std::unique_ptr<MIDIHost> midiHost;
+static int workerWakePipe[2]{-1, -1};
+static std::atomic<bool> workerWakePending{false};
+static NSTimer* editorTimer;
+static void refreshEditors();
+static void wakeWorker() {
+    if (workerWakePending.exchange(true, std::memory_order_acq_rel)) return;
+    // Nonblocking writes coalesce naturally when the pipe fills. A full pipe
+    // already guarantees readiness, including MIDI overflow/panic recovery.
+    char byte = 1;
+    ssize_t result;
+    do { result = write(workerWakePipe[1], &byte, 1); } while (result < 0 && errno == EINTR);
+}
+static void updateEditorTimer() {
+    bool needed = openEditorCount.load() || midiHost->needsIdle();
+    if (needed && !editorTimer) {
+        editorTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES block:^(NSTimer*) {
+            midiHost->idle();
+            refreshEditors();
+        }];
+        editorTimer.tolerance = 0.01;
+    } else if (!needed && editorTimer) { [editorTimer invalidate]; editorTimer = nil; }
+}
 
 static bool transfer(int fd, void* bytes, size_t size, bool writing) {
     auto p = (uint8_t*)bytes;
@@ -262,9 +284,15 @@ static NSMutableDictionary<NSString*, NSDictionary*>* editorPositions;
         emit(event);
         if (editors[identifier] == self) [editors removeObjectForKey:identifier];
         openEditorCount = (unsigned)editors.count;
+        updateEditorTimer();
+        wakeWorker();
     });
 }
 @end
+
+static void refreshEditors() {
+    for (CTPluginEditor* editor in editors.allValues) [editor refreshValues];
+}
 
 #ifdef CAMITUNE_PLUGIN_TESTING
 #include "FixtureEffect.h"
@@ -294,7 +322,12 @@ static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketP
         else throw std::runtime_error("Unsupported plug-in format.");
         if ([slot[@"state"] isKindOfClass:NSString.class]) savedStates[slot[@"id"]] = [[NSData alloc] initWithBase64EncodedString:slot[@"state"] options:0];
     }
-    midiHost = std::make_unique<MIDIHost>(effects, slots);
+    if (pipe(workerWakePipe)) throw std::runtime_error("Could not create plug-in control notifications.");
+    for (int fd : workerWakePipe) {
+        if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0 || fcntl(fd, F_SETFD, FD_CLOEXEC) < 0)
+            throw std::runtime_error("Could not configure plug-in control notifications.");
+    }
+    midiHost = std::make_unique<MIDIHost>(effects, slots, wakeWorker);
     int file = open(memoryPath.fileSystemRepresentation, O_RDWR | O_NOFOLLOW);
     struct stat info{};
     if (file < 0 || fstat(file, &info) || info.st_size != sharedBytes || info.st_uid != getuid()) throw std::runtime_error("Invalid shared audio buffer.");
@@ -305,7 +338,6 @@ static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketP
     strlcpy(address.sun_path, socketPath.fileSystemRepresentation, sizeof(address.sun_path));
     if (connect(audioSocket, (sockaddr*)&address, sizeof(address))) throw std::runtime_error("Could not connect the audio stream.");
     int noSignal = 1; setsockopt(audioSocket, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, sizeof(noSignal));
-    bool editorOnly = [config[@"editorOnly"] boolValue];
     // 32 channels exceed the default macOS worker stack once an AU renders.
     // Allocate and touch all scratch storage before starting the audio thread.
     struct AudioBuffers {
@@ -313,21 +345,35 @@ static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketP
         std::array<std::array<float, maximumFrames>, 2> sidechain{};
     };
     auto buffers = std::make_shared<AudioBuffers>();
-    std::thread worker([samples, editorOnly, channels, buffers] {
+    std::thread worker([samples, channels, buffers] {
         pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
         auto& first = buffers->first; auto& second = buffers->second;
         AudioRequest request{};
         while (true) {
-            pollfd descriptor{audioSocket, POLLIN, 0};
-            int available = poll(&descriptor, 1, 10);
+            pollfd descriptors[2]{{audioSocket, POLLIN, 0}, {workerWakePipe[0], POLLIN, 0}};
+            // Audio, MIDI, commands and native parameter observers all notify
+            // this worker. An unchanged editor needs no parameter-flush timer.
+            int available = poll(descriptors, 2, -1);
             if (available < 0 && errno == EINTR) continue;
             if (available < 0) break;
-            if (available == 0) {
+            if (descriptors[1].revents & POLLIN) {
+                char bytes[256];
+                for (int batch = 0; batch < 16; ++batch) {
+                    ssize_t count = read(workerWakePipe[0], bytes, sizeof(bytes));
+                    if (count > 0 || (count < 0 && errno == EINTR)) continue;
+                    break;
+                }
+                // Clear before consuming any mailboxes: a producer that saw
+                // the old true is covered by this pass; a later producer
+                // writes a new notification for the next pass.
+                workerWakePending.store(false, std::memory_order_release);
+            }
+            if (!(descriptors[0].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))) {
                 // A quiet socket is not a gap in the audio timeline: a normal
                 // 1024-frame block at 48 kHz spans more than two 10 ms polls.
                 // Rendering hidden silence here destroys effect history between
                 // real blocks. Only flush edits, with zero samples, at rest.
-                if (audioFailed.load() || (!editorOnly && !openEditorCount.load() && !midiHost->needsIdle())) continue;
+                if (audioFailed.load()) continue;
                 @autoreleasepool {
                     midiHost->process();
                     for (auto& effect : effects) if (!effect->flushParameters()) { audioFailed = true; break; }
@@ -442,17 +488,18 @@ static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketP
                     }
                 }
             }
+            updateEditorTimer();
+            wakeWorker();
         }
     });
     dispatch_resume(inputSource);
-    [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES block:^(NSTimer*) {
-        midiHost->idle();
-        for (CTPluginEditor* editor in editors.allValues) [editor refreshValues];
-    }];
     __block uint64_t previousLatency = latency;
     __block double previousTail = std::min(10.0, tail);
-    [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer*) {
+    NSTimer* maintenanceTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer*) {
         try {
+            // Preserve pending state saves and configuration retries even when
+            // the fast editor/MIDI presentation timer is suspended.
+            if (!editorTimer) midiHost->idle();
             uint64_t currentLatency = 0; double currentTail = 0;
             for (auto& effect : effects) {
                 effect->idle(); currentLatency += effect->latency(); currentTail += effect->tailSeconds();
@@ -467,6 +514,7 @@ static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketP
             if (openEditorCount.load() || midiHost->takeStateChanges()) snapshot();
         } catch (const std::exception& error) { emit(@{@"event": @"error", @"message": @(error.what())}); }
     }];
+    maintenanceTimer.tolerance = 0.05;
     [NSApp run]; return 0;
 }
 

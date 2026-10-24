@@ -198,7 +198,9 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                 guard let self else { return }
                 UIRenderPerformance.recordAppPublication()
                 self.applicationPublicationRevision = snapshot.revision
-                self.applications = snapshot.applications
+                if self.applications != snapshot.applications {
+                    self.applications = snapshot.applications
+                }
             })
         clientRegistry.start(onResolved: { [weak self] resolved, clients, unresolved, revision, attempt in
             self?.applyResolvedIdentities(resolved, clients: clients, unresolvedActiveKeys: unresolved,

@@ -26,7 +26,7 @@ struct AudioDeviceInfo: Identifiable, Hashable, Sendable {
     }
 }
 
-struct SpectrumPoint: Identifiable {
+struct SpectrumPoint: Identifiable, Equatable {
     let frequency: Double
     let db: Double
     var id: Double { frequency }

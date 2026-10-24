@@ -278,6 +278,8 @@ final class AppState: NSObject, ObservableObject {
             }
         }
 
+        monitorTimer?.tolerance = 0.3
+
         Task { await notifications.requestAuthorization() }
         updateChecker.start()
         NotificationCenter.default.addObserver(
@@ -1789,10 +1791,13 @@ extension AppState {
                     referenceTopology: plan.referenceTopology,
                     pluginProcessor: pluginProcessor,
                     meterConsumer: meters.pcmConsumer(for: runtimeSession),
+                    meterAdmission: meters.pcmAdmission(for: runtimeSession),
                     analyzerConsumer: { [weak spectrum] frame in
                         spectrum?.ingest(interleaved: frame.interleaved, channelCount: frame.channelCount,
                             sampleRate: frame.sampleRate, session: runtimeSession)
-                    })
+                    },
+                    analyzerAdmission: spectrum.pcmAdmission(for: runtimeSession),
+                    analyzerBatchFrames: spectrum.analysisHopFrames)
                 if let output = directOutput {
                     let consume = pcmRouter.playbackClockConsumer()
                     directOutputClockTask = Task { @MainActor [weak self] in

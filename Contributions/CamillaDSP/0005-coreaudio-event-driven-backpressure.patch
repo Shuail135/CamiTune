@@ -1,0 +1,80 @@
+--- a/src/coreaudio_backend/device.rs
++++ b/src/coreaudio_backend/device.rs
+@@ -485,6 +485,10 @@
+ 
+                 let ringbuffer = HeapRb::<u8>::new(blockalign * ( 2 * chunksize + 2048 ));
+                 let (mut device_producer, mut device_consumer) = ringbuffer.split();
++                // Coalesce callback notifications in one preallocated slot.
++                // A full ring waits for actual device consumption, never a
++                // sub-millisecond retry timer. Stale notifications are bounded.
++                let (space_tx, space_rx) = bounded::<()>(1);
+ 
+                 let (mut audio_unit, device_id) = match open_coreaudio_playback(
+                     &devname,
+@@ -513,6 +517,7 @@
+                         num_frames, data, time_stamp, ..
+                     } = args;
+                     trace!("Playback cb called with {num_frames} frames.");
++                    let mut released_space = false;
+                     while sample_queue.len() < (blockalign * num_frames) {
+                         trace!("playback loop needs more samples, reading from channel");
+                         match rx_dev.try_recv() {
+@@ -533,6 +538,7 @@
+                                 }
+                                 for element in device_consumer.pop_iter().take(bytes) {
+                                     sample_queue.push_back(element);
++                                    released_space = true;
+                                 }
+                             }
+                             Err(_) => {
+@@ -553,6 +559,10 @@
+                     for bufferbyte in data.buffer.iter_mut() {
+                         let byte = sample_queue.pop_front().unwrap_or(0);
+                         *bufferbyte = byte;
++                    }
++                    if released_space {
++                        // Nonblocking; no allocation or wait on the callback.
++                        let _ = space_tx.try_send(());
+                     }
+                     let curr_buffer_fill =
+                         sample_queue.len() / blockalign + rx_dev.len() * chunksize;
+@@ -697,22 +707,25 @@
+                                 &mut peak_values,
+                                 conversion_result.1,
+                             );
+-                            // Wait for enough space in the ring buffer before pushing.
+-                            // This is essential when the capture side is not rate-limited
+-                            // (e.g. signal generator): without this wait the data would
+-                            // arrive far faster than the playback callback can drain it
+-                            // and most of it would be dropped.  The sleep duration is
+-                            // based on the time it takes to play back one chunksize.
++                            // Keep the existing ring size and sample order. Only
++                            // a full ring waits; the callback immediately wakes
++                            // this writer when it consumes data. A missing device
++                            // callback must fail within a bounded time, rather
++                            // than silently delivering a partial audio block.
+                             let bytes_to_write = conversion_result.0;
+-                            let sleep_duration = std::time::Duration::from_micros(
+-                                (1_000_000 * chunksize / samplerate / 2) as u64
+-                            );
+-                            let max_retries = 8;
+-                            for _ in 0..max_retries {
+-                                if device_producer.vacant_len() >= bytes_to_write {
+-                                    break;
++                            let space_timeout = Duration::from_millis(100).max(
++                                Duration::from_secs_f64(4.0 * chunksize as f64 / samplerate as f64));
++                            let space_deadline = std::time::Instant::now() + space_timeout;
++                            while device_producer.vacant_len() < bytes_to_write {
++                                if space_rx.recv_deadline(space_deadline).is_err()
++                                    && device_producer.vacant_len() < bytes_to_write
++                                {
++                                    let message = "Playback device stopped consuming audio";
++                                    error!("{message}");
++                                    status_channel.send(StatusMessage::PlaybackError(message.to_string()))
++                                        .unwrap_or(());
++                                    break 'deviceloop;
+                                 }
+-                                std::thread::sleep(sleep_duration);
+                             }
+                             let bytes = device_producer.push_slice(&buf[0..bytes_to_write]);
+                             match tx_dev.send(PlaybackDeviceMessage::Data(bytes)) {

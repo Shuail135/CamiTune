@@ -19,6 +19,11 @@ final class SpectrumAnalyzer: ObservableObject, @unchecked Sendable {
 #endif
 
     private var fftSetup: FFTSetup?
+    private let window: [Float] = {
+        var values = [Float](repeating: 0, count: 4096)
+        vDSP_hann_window(&values, vDSP_Length(values.count), Int32(vDSP_HANN_NORM))
+        return values
+    }()
     private let fftSize = 4096
     private let fftHopSize = 2048
     private let log2n: vDSP_Length = 12
@@ -84,6 +89,19 @@ final class SpectrumAnalyzer: ObservableObject, @unchecked Sendable {
             self?.resetProcessingState()
         }
     }
+
+    /// Keep the FFT queue asleep until the editor actually requests it.
+    func pcmAdmission(for session: AudioRuntimeSession) -> () -> UInt64? {
+        { [weak self] in
+            guard let self else { return nil }
+            self.stateLock.lock(); defer { self.stateLock.unlock() }
+            guard self.analysisSessionID == session.id,
+                  self.presentedProfileID == session.profileID else { return nil }
+            return self.pointsPublicationGeneration
+        }
+    }
+
+    var analysisHopFrames: Int { fftHopSize }
 
     func ingest(
         interleaved: [Float],
@@ -186,16 +204,20 @@ final class SpectrumAnalyzer: ObservableObject, @unchecked Sendable {
         guard pendingSamples.count >= fftSize else {
             return
         }
-        let samples = Array(pendingSamples.prefix(fftSize))
-        // Keep half the window for the next analysis frame. The 50% overlap
-        // provides about 23 spectrum frames per second at 48 kHz, making
-        // musical changes visible without sacrificing frequency resolution.
-        pendingSamples.removeFirst(fftHopSize)
-        process(
-            samples: samples,
-            sampleRate: sampleRate,
-            session: session
-        )
+        // Drain every complete hop, including large HAL packets. Consuming
+        // only one hop per packet lets the backlog grow without bound when a
+        // packet is larger than the hop, showing increasingly stale audio.
+        var consumed = 0
+        while pendingSamples.count - consumed >= fftSize {
+            let now = Date()
+            if now.timeIntervalSince(lastPublish) >= 0.05 {
+                process(samples: Array(pendingSamples[consumed..<(consumed + fftSize)]),
+                    sampleRate: sampleRate, session: session)
+            }
+            consumed += fftHopSize
+        }
+        // Preserve the same 50% overlap, moving the retained samples once.
+        pendingSamples.removeFirst(consumed)
     }
 
     private func process(
@@ -211,8 +233,6 @@ final class SpectrumAnalyzer: ObservableObject, @unchecked Sendable {
         lastPublish = now
 
         var samples = input
-        var window = [Float](repeating: 0, count: fftSize)
-        vDSP_hann_window(&window, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
         vDSP_vmul(samples, 1, window, 1, &samples, 1, vDSP_Length(fftSize))
 
         guard let setup = fftSetup else { return }
@@ -287,7 +307,8 @@ final class SpectrumAnalyzer: ObservableObject, @unchecked Sendable {
                         } else {
                             amount = difference > 8 ? 0.18 : (difference > 3 ? 0.12 : 0.07)
                         }
-                        smoothedDB[index] += (current[index] - smoothedDB[index]) * amount
+                        if difference < 0.001 { smoothedDB[index] = current[index] }
+                        else { smoothedDB[index] += (current[index] - smoothedDB[index]) * amount }
                     }
                 }
 
@@ -349,7 +370,7 @@ final class SpectrumAnalyzer: ObservableObject, @unchecked Sendable {
             now: now
         ) else { return }
         lastPointsPublication = now
-        points = mapped
+        if points != mapped { points = mapped }
     }
 
     private func markFirstBufferReceived() -> Bool {

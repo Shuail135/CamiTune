@@ -133,28 +133,8 @@ private struct LiveGainPresentation<Content: View>: View {
 
 /// Repositions the same controls without rebuilding native fields. An optional
 /// delay row shares the gain row's label, slider, and value columns.
-private struct GainControlLayout: Layout {
-    struct Cache { var sizes: [CGSize] }
-    func makeCache(subviews: Subviews) -> Cache {
-        Cache(sizes: subviews.map { $0.sizeThatFits(.unspecified) })
-    }
-    func updateCache(_ cache: inout Cache, subviews: Subviews) { cache = makeCache(subviews: subviews) }
-    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect,
-        proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGFloat? { nil }
-    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect,
-        proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGFloat? { nil }
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
-        arrangement(width: proposal.width, sizes: cache.sizes).size
-    }
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
-        let result = arrangement(width: bounds.width, sizes: cache.sizes)
-        for (index, view) in subviews.enumerated() {
-            let frame = result.frames[index]
-            view.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
-                anchor: .topLeading, proposal: ProposedViewSize(frame.size))
-        }
-    }
-    private func arrangement(width proposedWidth: CGFloat?, sizes: [CGSize]) -> (size: CGSize, frames: [CGRect]) {
+struct GainControlLayout: MeasuredControlLayout {
+    func arrangement(width proposedWidth: CGFloat?, sizes: [CGSize]) -> (size: CGSize, frames: [CGRect]) {
         if sizes.count == 8 {
             var columns = Array(sizes.prefix(5))
             columns[0].width = max(columns[0].width, sizes[5].width)

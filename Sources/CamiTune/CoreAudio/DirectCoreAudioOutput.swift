@@ -140,8 +140,10 @@ package final class DirectCoreAudioOutput: PCMOutputSink, @unchecked Sendable {
                     let written = storage.push(base + offset * outputChannels, frames: min(frames - offset, allowance))
                     if written > 0 { offset += written; lastProgress = ProcessInfo.processInfo.systemUptime; continue }
                 }
-                guard ProcessInfo.processInfo.systemUptime - lastProgress < 0.25 else { throw Failure("The output device stopped consuming audio.") }
-                Thread.sleep(forTimeInterval: min(0.001, Double(currentFrames) / sampleRate / 4))
+                let remaining = 0.25 - (ProcessInfo.processInfo.systemUptime - lastProgress)
+                guard remaining > 0 else { throw Failure("The output device stopped consuming audio.") }
+                storage.waitForCallback(after: snapshot.renderedFrames,
+                    timeoutNanoseconds: UInt64(remaining * 1_000_000_000))
             }
         }
     }

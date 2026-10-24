@@ -149,7 +149,7 @@ devices:
                 "q": .null,
                 "bandwidth": .null
             ]
-            if usesGain(band.kind), let gain = band.gain {
+            if band.kind.usesGain, let gain = band.gain {
                 parameters["gain"] = .number(gain)
             }
             if let q = band.q { parameters["q"] = .number(q) }
@@ -223,7 +223,7 @@ devices:
                 "      type: \(camillaType(band.kind))",
                 "      freq: \(format(band.frequency))"
             ]
-            if usesGain(band.kind), let gain = band.gain {
+            if band.kind.usesGain, let gain = band.gain {
                 lines.append("      gain: \(format(gain))")
             }
             if let q = band.q { lines.append("      q: \(format(q))") }
@@ -326,10 +326,6 @@ devices:
 
     private func needsDefaultQ(_ kind: EQBand.Kind) -> Bool {
         [.lowShelf, .highShelf, .lowPass, .highPass, .notch].contains(kind)
-    }
-
-    private func usesGain(_ kind: EQBand.Kind) -> Bool {
-        [.peaking, .lowShelf, .highShelf].contains(kind)
     }
 
     private func format(_ value: Double) -> String {

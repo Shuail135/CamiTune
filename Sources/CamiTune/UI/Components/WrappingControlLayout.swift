@@ -1,11 +1,14 @@
 import SwiftUI
 
-/// Keeps each control at its readable size and wraps whole controls into rows.
-struct WrappingControlLayout: Layout {
-    var horizontalSpacing: CGFloat = 14
-    var verticalSpacing: CGFloat = 8
+struct ControlLayoutCache { var sizes: [CGSize] }
 
-    struct Cache { var sizes: [CGSize] }
+/// Measure each child once and place its computed frame without rebuilding it.
+/// Conformers own their geometry and share the native-control lifecycle.
+protocol MeasuredControlLayout: Layout where Cache == ControlLayoutCache {
+    func arrangement(width: CGFloat?, sizes: [CGSize]) -> (size: CGSize, frames: [CGRect])
+}
+
+extension MeasuredControlLayout {
     func makeCache(subviews: Subviews) -> Cache {
         Cache(sizes: subviews.map { $0.sizeThatFits(.unspecified) })
     }
@@ -16,7 +19,7 @@ struct WrappingControlLayout: Layout {
         proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGFloat? { nil }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
-        arrangement(width: proposal.width ?? .infinity, sizes: cache.sizes).size
+        arrangement(width: proposal.width, sizes: cache.sizes).size
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
@@ -27,8 +30,15 @@ struct WrappingControlLayout: Layout {
                 anchor: .topLeading, proposal: ProposedViewSize(frame.size))
         }
     }
+}
 
-    private func arrangement(width: CGFloat, sizes: [CGSize]) -> (size: CGSize, frames: [CGRect]) {
+/// Keeps each control at its readable size and wraps whole controls into rows.
+struct WrappingControlLayout: MeasuredControlLayout {
+    var horizontalSpacing: CGFloat = 14
+    var verticalSpacing: CGFloat = 8
+
+    func arrangement(width proposedWidth: CGFloat?, sizes: [CGSize]) -> (size: CGSize, frames: [CGRect]) {
+        let width = proposedWidth ?? .infinity
         var frames: [CGRect] = []
         var x: CGFloat = 0
         var y: CGFloat = 0
