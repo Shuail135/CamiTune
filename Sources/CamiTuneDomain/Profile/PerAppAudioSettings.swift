@@ -41,28 +41,44 @@ extension PerAppAudioSettings {
     }
 }
 
-package struct PerAppAudioDocument: Codable {
-    package init(schemaVersion: Int = currentVersion, settings: [String: PerAppAudioSettings]) {
+package struct PerAppAudioDocument: Codable, Equatable, Sendable {
+    package init(schemaVersion: Int = currentVersion, settings: [String: PerAppAudioSettings],
+                 profileSettings: [UUID: [String: PerAppAudioSettings]] = [:], localProfileIDs: Set<UUID> = []) {
         self.schemaVersion = schemaVersion
         self.settings = settings
+        self.profileSettings = profileSettings
+        self.localProfileIDs = localProfileIDs
     }
 
-    package static let currentVersion = 1
-    package var schemaVersion: Int = currentVersion
+    package static let currentVersion = 2
+    package var schemaVersion: Int
     package var settings: [String: PerAppAudioSettings]
+    package var profileSettings: [UUID: [String: PerAppAudioSettings]]
+    package var localProfileIDs: Set<UUID>
 
-    package static func decode(_ data: Data) throws -> [String: PerAppAudioSettings] {
+    private enum CodingKeys: String, CodingKey { case schemaVersion, settings, profileSettings, localProfileIDs }
+    package init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try values.decode(Int.self, forKey: .schemaVersion)
+        guard (1...Self.currentVersion).contains(version) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Unsupported per-app settings version."))
+        }
+        schemaVersion = Self.currentVersion
+        settings = try values.decode([String: PerAppAudioSettings].self, forKey: .settings)
+        profileSettings = try values.decodeIfPresent([UUID: [String: PerAppAudioSettings]].self, forKey: .profileSettings) ?? [:]
+        localProfileIDs = try values.decodeIfPresent(Set<UUID>.self, forKey: .localProfileIDs) ?? []
+    }
+
+    package static func decodeDocument(_ data: Data) throws -> Self {
         struct Header: Decodable { var schemaVersion: Int? }
         let decoder = JSONDecoder()
         let header = try decoder.decode(Header.self, from: data)
-        if let version = header.schemaVersion {
-            guard version == currentVersion else {
-                throw DecodingError.dataCorrupted(.init(codingPath: [],
-                    debugDescription: "Unsupported per-app settings version."))
-            }
-            return try decoder.decode(Self.self, from: data).settings
-        }
-        return try decoder.decode([String: PerAppAudioSettings].self, from: data)
+        if header.schemaVersion != nil { return try decoder.decode(Self.self, from: data) }
+        return Self(settings: try decoder.decode([String: PerAppAudioSettings].self, from: data))
+    }
+
+    package static func decode(_ data: Data) throws -> [String: PerAppAudioSettings] {
+        try decodeDocument(data).settings
     }
 }
 

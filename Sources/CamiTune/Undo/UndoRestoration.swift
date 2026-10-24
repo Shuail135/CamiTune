@@ -83,7 +83,7 @@ extension AppState: HistoryRestoring {
         case .deviceCorrection, .globalEQ, .channel, .crossfeed, .convolution, .convolutionBatch, .roomCorrectionImport, .profileName, .profileOrganization, .deletion, .referenceTransfer, .pluginRack, .pluginOrder, .pluginMIDI, .audioBuffer:
             try await profiles.persistHistoryChanges()
         case .perAppAudio, .perAppBatch: try perAppAudio.persistHistoryChanges()
-        case .appAlias, .appPlacement: try perAppAudio.presentationStore.persistHistoryChanges()
+        case .appAlias, .appPlacement: try perAppAudio.persistPresentationHistoryChanges()
         default: break
         }
     }
@@ -123,9 +123,17 @@ extension AppState: HistoryRestoring {
             return .convolutionBatch(try Dictionary(uniqueKeysWithValues: values.keys.map {
                 ($0, try convolutionHistoryState(for: .profileChannel(id, $0)))
             }))
+        case (.perAppAudio, .scopedApplication(let id, let scope)):
+            return .perAppAudio(perAppAudio.settings(for: id, scope: scope))
+        case (.perAppBatch(let values), .scopedApplications(let scope)):
+            return .perAppBatch(Dictionary(uniqueKeysWithValues: values.keys.map { ($0, perAppAudio.settings(for: $0, scope: scope)) }))
         case (.perAppAudio, .application(let id)): return .perAppAudio(perAppAudio.settings(for: id))
         case (.perAppBatch(let values), .applicationPresentationDocument):
             return .perAppBatch(Dictionary(uniqueKeysWithValues: values.keys.map { ($0, perAppAudio.settings(for: $0)) }))
+        case (.appAlias, .scopedAppPresentation(let id, let scope)):
+            return .appAlias(perAppAudio.presentationStore(for: scope).currentDocument.records[id]?.userAlias)
+        case (.appPlacement, .scopedAppPresentationDocument(let scope)):
+            return .appPlacement(perAppAudio.presentationStore(for: scope).placementHistoryState())
         case (.appAlias, .applicationPresentation(let id)): return .appAlias(perAppAudio.presentationStore.currentDocument.records[id]?.userAlias)
         case (.appPlacement, .applicationPresentationDocument): return .appPlacement(perAppAudio.presentationStore.placementHistoryState())
         case (.profileName, .profile(let id)): return .profileName(try historyProfile(id).name)
@@ -237,10 +245,18 @@ extension AppState: HistoryRestoring {
                 processing.channels.sort { $0.index < $1.index }
             }
             applyID = id
+        case let (.perAppAudio(value), .scopedApplication(id, scope)):
+            perAppAudio.replaceSettings(value, for: id, scope: scope)
+        case let (.perAppBatch(values), .scopedApplications(scope)):
+            perAppAudio.replaceSettingsBatch(values, scope: scope)
         case let (.perAppAudio(value), .application(id)):
             perAppAudio.replaceSettings(value, for: id)
         case let (.perAppBatch(values), .applicationPresentationDocument):
             perAppAudio.replaceSettingsBatch(values)
+        case let (.appAlias(value), .scopedAppPresentation(id, scope)):
+            perAppAudio.presentationStore(for: scope).setAlias(value, for: id)
+        case let (.appPlacement(value), .scopedAppPresentationDocument(scope)):
+            perAppAudio.presentationStore(for: scope).restorePlacementHistoryState(value)
         case let (.appAlias(value), .applicationPresentation(id)):
             perAppAudio.presentationStore.setAlias(value, for: id)
         case let (.appPlacement(value), .applicationPresentationDocument):

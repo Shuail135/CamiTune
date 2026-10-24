@@ -7,7 +7,14 @@ import Foundation
 final class PluginHostSession: PluginAudioProcessor, @unchecked Sendable {
     static let maximumFrames = PluginHostConnection.maximumFrames
     static let protocolVersion = PluginHostConnection.protocolVersion
+    // The delivery worker measures processing load separately. Missing one
+    // block's playback budget must not permanently retire a healthy helper:
+    // editor activity and OS scheduling can briefly delay its reply. This is
+    // a bounded hang watchdog, shared by every helper in the block, not added
+    // playback latency; a completed reply returns immediately.
+    private static let processingTimeoutNanoseconds: UInt64 = 100_000_000
     let sampleRate: Double
+    private let blockFrames: Int
     let channelRoles: [ChannelRole]
     var channelCount: Int { channelRoles.count }
     private var connections: [PluginHostConnection] = []
@@ -28,8 +35,10 @@ final class PluginHostSession: PluginAudioProcessor, @unchecked Sendable {
     }
 
     init(rack: PluginRack, sampleRate: Double, channelRoles: [ChannelRole] = [.left, .right], editorOnly: Bool = false,
+         blockFrames: Int = PluginHostConnection.maximumFrames,
          sidechainHub: PluginSidechainHub? = nil, eventHandler: @escaping @Sendable ([String: Any]) -> Void) throws {
         self.sampleRate = sampleRate; self.channelRoles = channelRoles; self.eventHandler = eventHandler
+        self.blockFrames = min(Self.maximumFrames, max(32, blockFrames))
         try rack.validate()
         guard sampleRate.isFinite, (8000...384000).contains(sampleRate), (1...32).contains(channelRoles.count) else {
             throw PluginHostError(message: "The plug-in rack needs a supported sample rate and 1–32 channels.")
@@ -85,10 +94,9 @@ final class PluginHostSession: PluginAudioProcessor, @unchecked Sendable {
         return samples.withUnsafeMutableBufferPointer { all in
             var offset = 0
             while offset < all.count {
-                let count = min(Self.maximumFrames * channelCount, all.count - offset), frames = count / channelCount
+                let count = min(blockFrames * channelCount, all.count - offset)
                 let block = UnsafeMutableBufferPointer(rebasing: all[offset..<(offset + count)])
-                let allowance = UInt64(min(20, max(4, ceil(Double(frames) * 750 / sampleRate))))
-                let deadline = DispatchTime.now().uptimeNanoseconds + allowance * 1_000_000
+                let deadline = DispatchTime.now().uptimeNanoseconds + Self.processingTimeoutNanoseconds
                 for connection in connections {
                     guard connection.processChunk(block, reset: reset && offset == 0, deadline: deadline) else {
                         connections.forEach { $0.stop() }; return false

@@ -16,6 +16,9 @@ struct UnsupportedLayout : std::runtime_error {
     explicit UnsupportedLayout(const char* message, bool isInstrument = false) : std::runtime_error(message), instrument(isInstrument) {}
 };
 using ParameterObserver = std::function<void(uint64_t, double, bool)>;
+// The parent is already installed in a real window before vendor UI code runs.
+// nil/nil means no native editor; a non-nil error must not silently fall back.
+using EditorCompletion = void (^)(NSView*, NSString*);
 struct MIDIMessage { uint64_t timestamp = 0; int32_t source = 0; uint8_t status = 0, data1 = 0, data2 = 0; };
 
 // The socket is the ownership handoff for the shared sample buffer. Exactly one
@@ -46,7 +49,7 @@ public:
     virtual void midi(const MIDIMessage& message) {}
     virtual void clearMIDI() {}
     virtual void syncParameters() {} // main thread, coalesced controller updates
-    virtual void editor(void (^completion)(NSView*)) = 0;
+    virtual void editor(NSView* parent, EditorCompletion completion) = 0;
     virtual void closeEditor() {}
     // Audio worker only. Deliver pending edits at rest without rendering any
     // samples or advancing filter, delay, transport, or tail history.

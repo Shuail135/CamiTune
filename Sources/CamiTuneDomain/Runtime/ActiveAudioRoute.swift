@@ -29,8 +29,10 @@ package struct ActiveAudioRoute: Hashable, Sendable {
         try profile.migrateInterfaceTopology()
         try profile.validateMultichannelSettings()
         usesSourceProcessingBus = profile.usesSourceProcessingBus
-        usesDiscreteSource = usesSourceProcessingBus && profile.multichannel.routing.enabled && profile.multichannel.routing.sourceLayout == .discrete
-        sourceFormat = try .source(sampleRate: profile.sampleRate, layout: ProfileRoutingDescriptor.sourceLayout(for: profile))
+        let sourceLayout = ProfileRoutingDescriptor.sourceLayout(for: profile)
+        usesDiscreteSource = (profile.usesExclusivePluginOutput && sourceLayout.roles.allSatisfy { $0 == .unknown })
+            || (usesSourceProcessingBus && profile.multichannel.routing.enabled && profile.multichannel.routing.sourceLayout == .discrete)
+        sourceFormat = try .source(sampleRate: profile.sampleRate, layout: sourceLayout)
         if let topology = try profile.validatedPhysicalSpeakerTopology() {
             // Match the profile's confirmed processing targets. Sorting by stable
             // physical identity makes role/name edits independent of bus order.

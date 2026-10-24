@@ -70,7 +70,7 @@ struct Mapping {
 };
 struct Routing {
     bool enabled = false; int32_t source = 0; int channel = 0; uint32_t generation = 0;
-    int programSlot = -1;
+    std::array<bool, 16> keyboardEnabled{};
     size_t count = 0; std::array<Mapping, 256> mappings{};
 };
 struct Incoming { MIDIMessage message; uint32_t generation; };
@@ -97,7 +97,7 @@ struct MIDIHost::Impl {
     Queue<Incoming, 1024> incoming;
     Queue<Routing, 8> configurations;
     Queue<Learned, 16> learned;
-    Routing routing{}, pending{}; bool hasPending = false;
+    Routing routing{}, pending{}, incomingRouting{}; bool hasPending = false;
     std::atomic<uint32_t> generation{0};
     std::atomic<bool> accepting{false}, panic{false}, overflow{false}, discardInput{false}, dirtyState{false};
     std::atomic<bool> inspectorOpen{false};
@@ -187,12 +187,17 @@ struct MIDIHost::Impl {
     void configure(NSDictionary* config) {
         bool reconnect = [configuration[@"isEnabled"] boolValue] != [config[@"isEnabled"] boolValue]
             || [configuration[@"sourceID"] intValue] != [config[@"sourceID"] intValue];
+        bool releaseAll = reconnect || [configuration[@"channel"] intValue] != [config[@"channel"] intValue]
+            || ![configuration[@"mappings"] isEqual:config[@"mappings"]];
         configuration = [config copy];
         if (![config[@"isEnabled"] boolValue]) { learnSlot = -1; watching = -1; }
         Routing next{}; next.enabled = [config[@"isEnabled"] boolValue];
         next.source = [config[@"sourceID"] intValue]; next.channel = std::clamp([config[@"channel"] intValue], 0, 16);
-        next.programSlot = slotIndex(config[@"programChangeSlotID"]);
-        next.generation = generation.fetch_add(1) + 1;
+        NSArray* disabledKeyboardSlots = config[@"keyboardInputDisabledSlotIDs"];
+        for (int i = 0; i < slots.count && i < next.keyboardEnabled.size(); ++i)
+            next.keyboardEnabled[i] = ![disabledKeyboardSlots containsObject:slots[i][@"id"]];
+        // Keyboard-only edits must retain queued note-offs for other slots.
+        next.generation = releaseAll ? generation.fetch_add(1) + 1 : generation.load();
         for (NSDictionary* item in config[@"mappings"]) {
             if (next.count == next.mappings.size()) break;
             int slot = slotIndex(item[@"slotID"]); if (slot < 0) continue;
@@ -209,11 +214,22 @@ struct MIDIHost::Impl {
             map.mode = [mode isEqual:@"button"] ? 1 : [mode isEqual:@"toggle"] ? 2 : [mode isEqual:@"velocity"] ? 3 : 0;
             map.curve = [curve isEqual:@"soft"] ? 1 : [curve isEqual:@"hard"] ? 2 : [curve isEqual:@"sCurve"] ? 3 : 0;
         }
-        pending = next; hasPending = !configurations.push(next); panic = true;
+        pending = next; hasPending = !configurations.push(next);
+        if (releaseAll) panic = true;
         if (reconnect) connect(); else publishSources();
     }
     void process() {
-        while (configurations.pop(routing)) {}
+        while (configurations.pop(incomingRouting)) {
+            auto& next = incomingRouting;
+            for (int i = 0; i < effects.size(); ++i)
+                if (routing.keyboardEnabled[i] && !next.keyboardEnabled[i]) effects[i]->clearMIDI();
+            if (next.generation == routing.generation) {
+                // Keyboard-only edits preserve pickup and held mapping buttons.
+                next.mappings = routing.mappings;
+                next.count = routing.count;
+            }
+            routing = next;
+        }
         if (discardInput.exchange(false)) { Incoming discarded{}; for (int i = 0; i < 1024 && incoming.pop(discarded); ++i) {} }
         if (panic.exchange(false)) for (auto& effect : effects) { effect->clearMIDI(); }
         Incoming item{};
@@ -221,13 +237,8 @@ struct MIDIHost::Impl {
             auto& message = item.message; int channel = (message.status & 15) + 1;
             if (!routing.enabled || item.generation != routing.generation || (routing.source && routing.source != message.source)
                 || (routing.channel && routing.channel != channel)) continue;
-            if ((message.status & 0xf0) == 0xc0) {
-                if (routing.programSlot >= 0) {
-                    effects[routing.programSlot]->midi(message);
-                    dirtyState = true;
-                }
-                continue; // Never broadcast program selection or consume it for Learn.
-            }
+            // Keyboard selection controls playing, never preset switching.
+            if ((message.status & 0xf0) == 0xc0) continue;
             bool cc = (message.status & 0xf0) == 0xb0 && message.data1 < 120;
             bool note = (message.status & 0xf0) == 0x90 || (message.status & 0xf0) == 0x80;
             bool noteOn = (message.status & 0xf0) == 0x90 && message.data2 > 0;
@@ -274,7 +285,8 @@ struct MIDIHost::Impl {
                 p.mappedValue = value; p.mappedDirty = true;
                 caches[map.slot]->put(p.id, value, false); dirtyState = true;
             }
-            for (int i = 0; i < effects.size(); ++i) if (!consumed[i]) effects[i]->midi(message);
+            for (int i = 0; i < effects.size(); ++i)
+                if (routing.keyboardEnabled[i] && !consumed[i]) effects[i]->midi(message);
             if ((message.status & 0xf0) >= 0xb0) dirtyState = true;
         }
         // Absolute controllers can send many positions before the next block.

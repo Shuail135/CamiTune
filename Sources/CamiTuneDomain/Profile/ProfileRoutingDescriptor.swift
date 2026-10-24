@@ -51,6 +51,21 @@ package struct ProfileRoutingDescriptor: Hashable, Sendable {
     }
 
     package static func sourceLayout(for profile: DeviceProfile) -> LPCMChannelLayout {
+        if profile.usesExclusivePluginOutput {
+            guard profile.hasPhysicalSpeakerRoute else { return .stereo }
+            let roles = profile.configuredProcessingChannels.map(\.role)
+            if roles == [.center] { return .mono }
+            // Named layouts keep Core Audio's semantic speaker order. Custom
+            // buses use one discrete lane per enabled physical output, in the
+            // same compact order as the plug-in bus, including sparse devices.
+            if !roles.contains(.unknown), Set(roles).count == roles.count,
+               let layout = SpeakerLayoutTemplate.all.compactMap(\.sourceLayout)
+                .filter({ Set(roles).isSubset(of: Set($0.roles)) })
+                .min(by: { $0.channelCount < $1.channelCount }) {
+                return layout
+            }
+            return RoutingSourceLayout.discrete.layout(channelCount: roles.count)
+        }
         if profile.hasPhysicalSpeakerRoute && profile.effectiveMultichannel.routing.enabled {
             return profile.effectiveMultichannel.routing.sourceLayout.layout(channelCount: profile.effectiveMultichannel.routing.discreteChannelCount)
         }
@@ -59,6 +74,7 @@ package struct ProfileRoutingDescriptor: Hashable, Sendable {
             // Custom physical setups still receive a known content layout when
             // all enabled role assignments match it. Never infer from capacity.
             let roles = profile.configuredSpeakerEndpoints.filter { !($0.function == .subwoofer && $0.role == .unknown) }.map(\.role)
+            if roles == [.center] { return .mono }
             if let template = SpeakerLayoutTemplate.all.first(where: {
                 $0.endpointRoles.count == roles.count && Set($0.endpointRoles) == Set(roles)
             }), let layout = template.sourceLayout { return layout }

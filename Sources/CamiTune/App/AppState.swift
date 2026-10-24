@@ -151,6 +151,13 @@ final class AppState: NSObject, ObservableObject {
     let dependencies: DependencyManager
     let loginItem = LoginItemManager()
     private(set) var dsp: CamillaDSPManager
+    private var directOutput: DirectCoreAudioOutput?
+    private var directOutputClockTask: Task<Void, Never>?
+    private var directOutputError: String?
+    var outputEngineIsRunning: Bool {
+        if let output = directOutput { return output.snapshot().error == nil }
+        return dsp.isRunning
+    }
     let meters = AudioRuntimeMonitor()
     let spectrum = SpectrumAnalyzer()
     let pcmRouter = PCMRouter()
@@ -175,6 +182,10 @@ final class AppState: NSObject, ObservableObject {
         let manager = PluginRackManager(sidechains: perAppAudio.pluginSidechains)
         manager.stateChanged = { [weak self] in self?.capturePluginState(profileID: $0, slotID: $1, data: $2) }
         manager.editorClosed = { [weak self] in self?.finishPluginEditor(profileID: $0, slotID: $1) }
+        manager.linkedEditorChanged = { [weak self] id in
+            self?.markPendingEditorApply(id)
+            self?.pluginReorderApplies.schedule(id)
+        }
         manager.midiLearned = { [weak self] in self?.captureMIDIMapping(profileID: $0, mapping: $1) }
         return manager
     }()
@@ -711,7 +722,7 @@ final class AppState: NSObject, ObservableObject {
         guard let graph = await validate(profile: profile) else { return }
         do {
             await dependencies.refreshWithoutBlockingUI()
-            guard FileManager.default.isExecutableFile(atPath: dependencies.camillaDSPBinary.path) else {
+            guard profile.usesExclusivePluginOutput || FileManager.default.isExecutableFile(atPath: dependencies.camillaDSPBinary.path) else {
                 throw AppError.missingCamillaDSP
             }
             guard let bridge = await coreAudioService.resolveSystemAudioBridgeWithoutBlockingUI() else {
@@ -744,6 +755,11 @@ final class AppState: NSObject, ObservableObject {
                 throw AppError.unsupportedSampleRate(profile.sampleRate, output.name)
             }
 
+            if profile.usesExclusivePluginOutput {
+                validationMessage = "Ready: direct plug-in output, devices and \(rateDescription(profile.sampleRate)) checked."
+                clearTransientError()
+                return
+            }
             let configuration = await dspController.configuration(for: graph)
             try await dependencies.validateConfiguration(configuration.yaml)
 
@@ -920,6 +936,7 @@ final class AppState: NSObject, ObservableObject {
                 guard let self else { return }
                 guard !self.transitionInProgress, self.spatialCalibrationContext == nil,
                       let profile = self.runtimeCoordinator.appliedProfile,
+                      !profile.usesExclusivePluginOutput,
                       self.profiles.profiles.first(where: { $0.id == profile.id })?.audioBufferSetting == .automatic,
                       let session = self.activeSession?.id, let revision = self.acknowledgedPlanRevision else {
                     _ = self.pcmRouter.takeAudioBufferWork()
@@ -932,8 +949,9 @@ final class AppState: NSObject, ObservableObject {
                     observedRevision = revision; observedSession = session
                     continue
                 }
-                let load = try? await self.dsp.rpc.processingLoad()
-                let clock = try? await self.dsp.rpc.playbackClock()
+                let directSnapshot = self.directOutput?.snapshot()
+                let load = directSnapshot != nil ? 0 : try? await self.dsp.rpc.processingLoad()
+                let clock = directSnapshot != nil ? nil : try? await self.dsp.rpc.playbackClock()
                 guard !Task.isCancelled, self.activeSession?.id == session,
                       self.acknowledgedPlanRevision == revision, !self.transitionInProgress,
                       self.spatialCalibrationContext == nil,
@@ -941,7 +959,8 @@ final class AppState: NSObject, ObservableObject {
                     observedRevision = nil; continue
                 }
                 self.automaticBuffers.observe(work: self.pcmRouter.takeAudioBufferWork(), dspLoadPercent: load,
-                    clockEpoch: clock?.epoch, underrunFrames: clock?.underrunFrames,
+                    clockEpoch: directSnapshot?.clock?.epoch ?? clock?.epoch,
+                    underrunFrames: directSnapshot?.underrunFrames ?? clock?.underrunFrames,
                     droppedFrames: self.pcmRouter.statistics.camillaDroppedFrames)
                 if self.automaticBuffers.hasPendingChange(profileID: profile.id),
                    !self.isSavingProfileSettings, !self.runtimeCoordinator.hasLiveApplyWork,
@@ -959,6 +978,11 @@ final class AppState: NSObject, ObservableObject {
         let seconds = runtimeCoordinator.automaticBufferQuietSeconds
         guard pcmRouter.isQuietForBufferChange(seconds: seconds),
               driverTransport.runtimeError == nil else { return false }
+        if let directOutput {
+            let snapshot = directOutput.snapshot()
+            return snapshot.error == nil && snapshot.clock != nil && snapshot.silentSeconds >= seconds
+                && snapshot.bufferedFrames == 0
+        }
         // Use unsmoothed historical peaks, independently of whether meters are
         // visible. Silence in the input alone does not exclude DSP/effect tails.
         guard let levels = try? await dsp.rpc.signalLevels(since: 3),
@@ -1130,7 +1154,7 @@ final class AppState: NSObject, ObservableObject {
         let draftRevision = eqDraftRevision
         isSavingProfileSettings = true
         defer { finishSavingSettings() }
-        if let preview = try? draft.preview(), !preview.isSectionEnabled(.plugins) {
+        if let preview = try? draft.preview(), !preview.isSectionEnabled(.plugins) && !preview.usesExclusivePluginOutput {
             await pluginRackManager.flushEditors(profileID: draft.original.id, close: false)
         }
         guard let original = profiles.profiles.first(where: { $0.id == draft.original.id }) else { throw ProfileSettingsError.staleDraft }
@@ -1192,7 +1216,7 @@ final class AppState: NSObject, ObservableObject {
         if resolution == .finalizedCurrentRuntime && (activation != originalActivation || candidate.outputDevice != original.outputDevice) {
             runtimeCoordinator.resetAutomaticPolicy(outputUID: candidate.outputDeviceUID)
         }
-        if !candidate.isSectionEnabled(.plugins) {
+        if !candidate.isSectionEnabled(.plugins) && !candidate.usesExclusivePluginOutput {
             pluginRackManager.retireHiddenSection(profileID: candidate.id)
         }
         operation?.mark("final publication")
@@ -1313,6 +1337,10 @@ final class AppState: NSObject, ObservableObject {
     }
 
     func beginSpatialCalibration(profileID: UUID, roomMeasurement: Bool = false) -> SpatialCalibrationContext? {
+        guard directOutput == nil else {
+            errorMessage = "Use Through CamillaDSP to measure or calibrate this profile."
+            return nil
+        }
         guard isActive, !transitionInProgress, !runtimeCoordinator.hasLiveApplyWork, spatialCalibrationContext == nil,
               let session = activeSession, session.profileID == profileID,
               let rate = activeSampleRate,
@@ -1524,12 +1552,12 @@ final class AppState: NSObject, ObservableObject {
     func applySectionLayoutToActiveProfile() {
         guard let profile = profiles.profiles.first(where: { $0.id == activeProfileID }) else { return }
         Task {
-            if !profile.isSectionEnabled(.plugins) {
+            if !profile.isSectionEnabled(.plugins) && !profile.usesExclusivePluginOutput {
                 await pluginRackManager.flushEditors(profileID: profile.id, close: false)
             }
             guard let current = profiles.profiles.first(where: { $0.id == profile.id }) else { return }
             await apply(profile: current)
-            if !current.isSectionEnabled(.plugins) { pluginRackManager.retireHiddenSection(profileID: current.id) }
+            if !current.isSectionEnabled(.plugins) && !current.usesExclusivePluginOutput { pluginRackManager.retireHiddenSection(profileID: current.id) }
         }
     }
 
@@ -1625,6 +1653,17 @@ extension AppState {
         coreAudioService.performanceRecorder = performanceRecorder
         volumeBridge.performanceRecorder = performanceRecorder
         return AudioRuntimeServices(
+            startDirectOutput: { [unowned self] plan in
+                guard let device = await coreAudioService.resolveDeviceWithoutBlockingUI(uid: plan.hardwareEvidence.output.uid) else {
+                    throw AppError.outputMissing(plan.hardwareEvidence.output.name)
+                }
+                let output = try await Task.detached(priority: .userInitiated) {
+                    try DirectCoreAudioOutput(deviceID: device.objectID, sampleRate: Double(plan.sourceFormat.sampleRate),
+                        inputChannels: plan.dspInputFormat.channelCount, outputChannels: plan.hardwareOutputFormat.channelCount,
+                        channelMap: plan.directOutputChannelMap, requestedFrames: plan.processingGraph.chunkSize)
+                }.value
+                directOutput = output; directOutputError = nil
+            },
             preparePluginRack: { [unowned self] in try await pluginRackManager.prepare($0) },
             commitPluginRack: { [unowned self] in pcmRouter.setPluginProcessor(pluginRackManager.commit($0)) },
             currentVolumeLease: { [volumeBridge] in volumeBridge.currentLease },
@@ -1650,7 +1689,11 @@ extension AppState {
                 stopPCM: { [unowned self] in pcmRouter.stop(); pluginRackManager.stop() },
                 closeEngineInput: { [unowned self] in dsp.closeAudioInput() },
                 stopSpectrum: { [spectrum] in spectrum.stop() },
-                stopEngine: { [unowned self] in dsp.forceStopAndWait() },
+                stopEngine: { [unowned self] in
+                    directOutputClockTask?.cancel(); directOutputClockTask = nil
+                    directOutput?.stop(); directOutput = nil; directOutputError = nil
+                    dsp.forceStopAndWait()
+                },
                 stopVolume: { [volumeBridge] in volumeBridge.stop() },
                 setDefaultOutput: { [coreAudioService] in try coreAudioService.setDefaultOutput(uid: $0) },
                 hideBridge: { [coreAudioService] in try coreAudioService.setSystemAudioBridgePresentation(name: "System Audio Bridge", visible: false) },
@@ -1695,8 +1738,9 @@ extension AppState {
             applyGraph: { [unowned self] in try await dspController.applyGraph($0, performanceRecorder: performanceRecorder) },
             startObservations: { [unowned self] runtimeSession in
                 meters.start(
-                    controller: dspController,
+                    controller: directOutput == nil ? dspController : nil,
                     session: runtimeSession,
+                    directOutput: directOutput,
                     routeDiagnosticsProvider: { [driverTransport, pcmRouter] in
                         AudioRouteDiagnostics(
                             transport: driverTransport.statistics,
@@ -1738,7 +1782,8 @@ extension AppState {
                 pcmRouter.performanceSource.setSession(runtimeSession.id)
                 try await pluginRackManager.prepare(plan)
                 let pluginProcessor = pluginRackManager.commit(plan)
-                await pcmRouter.start(camillaSink: try dsp.audioInputHandle(), activeRoute: plan.route,
+                await pcmRouter.start(camillaSink: plan.usesExclusivePluginOutput ? nil : try dsp.audioInputHandle(),
+                    outputSink: plan.usesExclusivePluginOutput ? directOutput : nil, activeRoute: plan.route,
                     renderConfiguration: plan.renderConfiguration, deliveryConfiguration: plan.deliveryConfiguration,
                     backendChunkFrames: plan.processingGraph.chunkSize,
                     referenceTopology: plan.referenceTopology,
@@ -1748,14 +1793,24 @@ extension AppState {
                         spectrum?.ingest(interleaved: frame.interleaved, channelCount: frame.channelCount,
                             sampleRate: frame.sampleRate, session: runtimeSession)
                     })
-                if plan.deliveryConfiguration.queue.rateTargetMode == .clockTracked {
+                if let output = directOutput {
+                    let consume = pcmRouter.playbackClockConsumer()
+                    directOutputClockTask = Task { @MainActor [weak self] in
+                        while !Task.isCancelled {
+                            let snapshot = output.snapshot()
+                            if let clock = snapshot.clock { consume(clock) }
+                            self?.directOutputError = snapshot.error
+                            do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+                        }
+                    }
+                } else if plan.deliveryConfiguration.queue.rateTargetMode == .clockTracked {
                     dsp.observePlaybackClock(session: runtimeSession.id, consumer: pcmRouter.playbackClockConsumer())
                 }
             },
             applyRenderConfiguration: { [unowned self] in pcmRouter.setRenderConfiguration($0) },
             applyPCMDeliveryConfiguration: { [unowned self] configuration in
                 pcmRouter.setDeliveryConfiguration(configuration)
-                if configuration.queue.rateTargetMode == .clockTracked, let session = runtimeCoordinator.activeSession {
+                if directOutput == nil, configuration.queue.rateTargetMode == .clockTracked, let session = runtimeCoordinator.activeSession {
                     dsp.observePlaybackClock(session: session.id, consumer: pcmRouter.playbackClockConsumer())
                 } else { dsp.stopClockObservations() }
             },
@@ -1777,6 +1832,7 @@ extension AppState {
             stopObservations: { [unowned self] in meters.stop() },
             stopTransport: { [unowned self] in await driverTransport.stopWithoutBlockingUI() },
             stopPCM: { [unowned self] in
+                directOutputClockTask?.cancel(); directOutputClockTask = nil
                 automaticBufferTask?.cancel(); automaticBufferTask = nil
                 automaticBuffers.end()
                 dsp.stopClockObservations()
@@ -1787,9 +1843,15 @@ extension AppState {
             },
             closeEngineInput: { [unowned self] in await dsp.closeAudioInputWithoutBlockingUI() },
             stopSpectrum: { [unowned self] in await spectrum.stopWithoutBlockingUI() },
-            stopEngine: { [unowned self] in await dsp.stop() },
+            stopEngine: { [unowned self] in
+                if let output = directOutput {
+                    directOutput = nil; directOutputError = nil
+                    await Task.detached(priority: .userInitiated) { output.stop() }.value
+                }
+                await dsp.stop()
+            },
             stopVolume: { [unowned self] in await volumeBridge.stopWithoutBlockingUI() },
-            transportError: { [unowned self] in driverTransport.runtimeError ?? pcmRouter.statistics.deliveryError },
+            transportError: { [unowned self] in driverTransport.runtimeError ?? pcmRouter.statistics.deliveryError ?? directOutputError },
             notifyActivation: { [unowned self] in notifications.activated() },
             notifyDeactivation: { [unowned self] in notifications.deactivated() },
             sleep: { try await Task.sleep(for: $0) },
@@ -1829,7 +1891,7 @@ extension AppState {
             windowVisible: mainWindowPresentationActive,
             profileVisible: mainWindowPresentationActive && requestedRuntimeVisualProfileID == activeProfileID && activeProfileID != nil,
             telemetryHealth: String(describing: telemetry.telemetryAssessment().health),
-            dspLoad: fresh ? telemetry.processingLoadPercent : nil, dspBufferFrames: fresh ? telemetry.dspBufferLevelFrames : nil,
+            dspLoad: fresh ? telemetry.processingLoadPercent : nil, dspBufferFrames: fresh ? telemetry.outputBufferedFrames : nil,
             dspResamplerLoad: fresh ? telemetry.resamplerLoadPercent : nil, queue: statistics.camillaQueue,
             recoveries: statistics.camillaQueueRecoveries, droppedFrames: statistics.camillaDroppedFrames,
             transportDroppedFrames: driverTransport.statistics.droppedFrames, processCPUSeconds: RuntimePerformanceRecorder.cpuSeconds(),

@@ -33,7 +33,14 @@ struct ContentDetailView: View {
         case .settings:
             SettingsView(state: state)
         case .applications:
-            PerAppAudioView(state: state)
+            if let profile = profileStore.profiles.first(where: { $0.id == profileStore.selectedProfileID }) ?? profileStore.profiles.first {
+                ProfileEditorView(state: state, coreAudio: coreAudio,
+                    profile: Self.editorBinding(for: profile, in: profileStore))
+                    .id(profile.id)
+            } else {
+                ScrollView { PerAppAudioView(state: state).padding(24) }
+                    .scrollBounceWhenNeeded()
+            }
         case .profile(let id):
             if let profile = profileStore.profiles.first(where: { $0.id == id }) {
                 ProfileEditorView(

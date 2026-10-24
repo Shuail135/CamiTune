@@ -6,7 +6,7 @@ import Foundation
 package final class CamillaDeliveryPipeline: @unchecked Sendable {
     // The writer owns the duplicate through CamillaPCMSink. Control threads
     // request stop and join; they never close a descriptor beneath a write.
-    private var sink: CamillaPCMSink?
+    private var sink: (any PCMOutputSink)?
     private let pipelineID = UUID()
     private var activityGeneration: UInt64 = 0
     private var backendGeneration: UInt64 = 0
@@ -78,7 +78,7 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
     private var instrumentStopPadding = false
 
     package init(
-        sink: CamillaPCMSink?,
+        sink: (any PCMOutputSink)?,
         hrtfDatabase: (any HRTFDatabase)?,
         performanceSource: PerformanceTraceSource,
         activeRoute: ActiveAudioRoute?,
@@ -153,7 +153,7 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
         condition.lock(); defer { condition.unlock() }
         guard token.pipelineID == pipelineID, token.activity == activityGeneration,
               isQuietForBufferChangeLocked(seconds: quietSeconds, now: now),
-              let retired = sink, replacement !== retired,
+              let retired = sink as? CamillaPCMSink, replacement !== retired,
               chunkFrames > 0, chunkFrames <= 8192, configuration.queue.isValid,
               configuration.queue.sampleRate == backendSampleRate,
               configuration.queue.rateTargetMode == queue.policy?.rateTargetMode else { return nil }
@@ -328,7 +328,7 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
         }
 
         let thread = Thread { [weak self] in self?.run() }
-        thread.name = "CamiTune CamillaDSP PCM Writer"
+        thread.name = "CamiTune PCM Output Writer"
         thread.qualityOfService = .userInteractive
         worker = thread
         thread.start()
@@ -453,8 +453,11 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
     }
 
     package func stop() {
+        // A direct sink can cancel a bounded writer wait without touching HAL
+        // or freeing memory beneath the render callback.
         let performance = performanceSource.snapshot()
         condition.lock()
+        sink?.cancel()
         stopping = true
         calibrationID = nil
         calibrationPlayback = nil
@@ -551,12 +554,13 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
                 condition.unlock()
                 do {
                     try sink.write(generated.withUnsafeBytes { Data($0) })
+                    recordTransit(received: started)
                     backendRemainderFrames = (backendRemainderFrames + frames) % backendChunkFrames
                 } catch { failWrite(); return }
                 continue
             }
             if queue.isEmpty, calibrationPlayback == nil, pluginTailFrames > 0 {
-                let frames = min(256, pluginTailFrames)
+                let frames = min(sink.processingBlockFrames ?? 256, pluginTailFrames)
                 pluginTailFrames -= frames
                 condition.unlock()
                 var silence = [Float](repeating: 0, count: frames * expectedOutputChannelCount)
@@ -753,41 +757,59 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
                 recordObservation: trace != nil)
             recordAdjustment(matched.adjustmentPPM, bufferedFrames)
             let rateObservation = matched.observation
-            var adjustedFrame = matched.frame
+            let adjustedFrame = matched.frame
             guard !adjustedFrame.interleaved.isEmpty else { continue }
             let resampleCompleted = trace.map { _ in PerformanceClock.now() }
-            processPlugins(&adjustedFrame.interleaved, sampleRate: adjustedFrame.sampleRate,
-                reset: shouldResetPCMDiscontinuity, bypass: isCalibrationSample)
-            masterStage.process(
-                to: &adjustedFrame.interleaved,
-                channelCount: adjustedFrame.channelCount,
-                sampleRate: adjustedFrame.sampleRate
-            )
-            let workFinished = PerformanceClock.now()
-            if !isCalibrationSample, frame.interleaved.contains(where: { $0 != 0 }) {
-                let seconds = Double(frame.frameCount) / frame.sampleRate
-                condition.lock()
-                if workGeneration == bufferWorkGeneration, seconds > 0 {
-                    bufferWork.audioSeconds += seconds
-                    bufferWork.writerLoad = max(bufferWork.writerLoad,
-                        PerformanceClock.milliseconds(workStarted, workFinished) / (1000 * seconds))
-                    bufferWork.pluginLoad = max(bufferWork.pluginLoad, lastPluginLoad)
-                    bufferWork.pluginFailed = bufferWork.pluginFailed || lastPluginFailed
-                }
-                condition.unlock()
-            }
-            let masterCompleted = trace.map { _ in workFinished }
+            var workMilliseconds = PerformanceClock.milliseconds(workStarted, PerformanceClock.now())
+            var blockPluginLoad: Double = 0
+            var blockPluginFailed = false
+            // Trace the first output-ready block, then completion of the entire
+            // packet. Processing and delivery overlap in exclusive mode.
+            var masterCompleted: PerformanceTick?
+            var pipeWriteStarted: PerformanceTick?
             do {
-                let payload = adjustedFrame.interleaved.withUnsafeBytes { Data($0) }
-                let pipeWriteStarted = trace.map { _ in PerformanceClock.now() }
-                try sink.write(payload)
-                recordBackendWrite(frames: adjustedFrame.frameCount)
-                if let received = frame.sourceReceivedAt {
-                    let completed = PerformanceClock.now()
+                func processAndDeliver(_ samples: inout [Float], reset: Bool) throws {
+                    let started = PerformanceClock.now()
+                    processPlugins(&samples, sampleRate: adjustedFrame.sampleRate,
+                        reset: reset, bypass: isCalibrationSample)
+                    masterStage.process(to: &samples, channelCount: adjustedFrame.channelCount,
+                        sampleRate: adjustedFrame.sampleRate)
+                    let finished = PerformanceClock.now()
+                    workMilliseconds += PerformanceClock.milliseconds(started, finished)
+                    blockPluginLoad = max(blockPluginLoad, lastPluginLoad)
+                    blockPluginFailed = blockPluginFailed || lastPluginFailed
+                    if trace != nil && masterCompleted == nil { masterCompleted = finished }
+                    let payload = samples.withUnsafeBytes { Data($0) }
+                    if trace != nil && pipeWriteStarted == nil { pipeWriteStarted = PerformanceClock.now() }
+                    try sink.write(payload)
+                }
+                if let frames = sink.processingBlockFrames, frames > 0, frames < adjustedFrame.frameCount {
+                    let blockSamples = frames * adjustedFrame.channelCount
+                    for offset in stride(from: 0, to: adjustedFrame.interleaved.count, by: blockSamples) {
+                        condition.lock(); let cancelled = stopping; condition.unlock()
+                        if cancelled { return }
+                        let end = min(adjustedFrame.interleaved.count, offset + blockSamples)
+                        var block = Array(adjustedFrame.interleaved[offset..<end])
+                        try processAndDeliver(&block, reset: shouldResetPCMDiscontinuity && offset == 0)
+                    }
+                } else {
+                    // Keep the existing CamillaDSP packet path intact.
+                    var samples = adjustedFrame.interleaved
+                    try processAndDeliver(&samples, reset: shouldResetPCMDiscontinuity)
+                }
+                if !isCalibrationSample, frame.interleaved.contains(where: { $0 != 0 }) {
+                    let seconds = Double(frame.frameCount) / frame.sampleRate
                     condition.lock()
-                    deliveryStatistics.transit = .init(receivedAt: received, completedAt: completed)
+                    if workGeneration == bufferWorkGeneration, seconds > 0 {
+                        bufferWork.audioSeconds += seconds
+                        bufferWork.writerLoad = max(bufferWork.writerLoad, workMilliseconds / (1000 * seconds))
+                        bufferWork.pluginLoad = max(bufferWork.pluginLoad, blockPluginLoad)
+                        bufferWork.pluginFailed = bufferWork.pluginFailed || blockPluginFailed
+                    }
                     condition.unlock()
                 }
+                recordBackendWrite(frames: adjustedFrame.frameCount)
+                if let received = frame.sourceReceivedAt { recordTransit(received: received) }
                 if let trace, let queueLeft, let renderCompleted, let resampleCompleted, let masterCompleted, let pipeWriteStarted {
                     let interval = trace.interval
                     trace.capture.append(.audio(.init(identity: trace.identity,
@@ -810,6 +832,13 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
         }
     }
 
+    private func recordTransit(received: PerformanceTick) {
+        let completed = PerformanceClock.now()
+        condition.lock()
+        deliveryStatistics.transit = .init(receivedAt: received, completedAt: completed)
+        condition.unlock()
+    }
+
     private func recordBackendWrite(frames: Int) {
         backendRemainderFrames = (backendRemainderFrames + frames) % backendChunkFrames
         nextInstrumentTick = DispatchTime.now().uptimeNanoseconds + UInt64(Double(frames) / backendSampleRate * 1_000_000_000)
@@ -826,7 +855,7 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
         condition.lock()
         deliveryStatistics.writeFailures &+= 1
         condition.unlock()
-        recordDeliveryFailure("Audio paused: the CamillaDSP input pipe failed. Restart the audio session to recover.")
+        recordDeliveryFailure("Audio paused: the audio output stopped accepting samples. Restart the audio session to recover.")
     }
 
     private func recordDeliveryFailure(_ message: String) {

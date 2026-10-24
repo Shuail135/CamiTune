@@ -11,6 +11,8 @@ package struct LPCMChannelLayout: Hashable, Sendable {
 
     package var channelCount: Int { roles.count }
 
+    package static let mono = LPCMChannelLayout(coreAudioTag: UInt32(kAudioChannelLayoutTag_Mono), roles: [.center])
+
     package static let stereo = LPCMChannelLayout(
         coreAudioTag: UInt32(kAudioChannelLayoutTag_Stereo),
         roles: [.left, .right]

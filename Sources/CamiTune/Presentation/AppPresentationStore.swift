@@ -109,17 +109,20 @@ final class AppPresentationStore: ObservableObject, @unchecked Sendable {
     @Published private(set) var persistenceError: String?
     private let lock = NSLock()
     private var document: AppPresentationDocument
+    let historyScope: PerAppSettingsScope
     private let url: URL
     private let canWrite: Bool
     private let persistenceQueue = DispatchQueue(label: "CamiTune.AppPresentation", qos: .utility)
     private var pendingWrite: DispatchWorkItem?
 
-    init(url: URL = CamiTunePaths.perAppPresentationURL, legacyHistoryURL: URL? = nil) {
+    init(url: URL = CamiTunePaths.perAppPresentationURL, legacyHistoryURL: URL? = nil,
+         initialDocument: AppPresentationDocument? = nil, historyScope: PerAppSettingsScope = .global) {
         self.url = url
-        var loaded = AppPresentationDocument()
+        self.historyScope = historyScope
+        var loaded = initialDocument ?? AppPresentationDocument()
         var writable = true
         var errorMessage: String?
-        var migrated = false
+        var migrated = initialDocument != nil && !FileManager.default.fileExists(atPath: url.path)
         if FileManager.default.fileExists(atPath: url.path) {
             do {
                 let data = try Data(contentsOf: url)
@@ -154,6 +157,19 @@ final class AppPresentationStore: ObservableObject, @unchecked Sendable {
         if migrated { scheduleWrite(loaded) }
     }
 
+    @MainActor
+    func makeProfileStore(for id: UUID) -> AppPresentationStore {
+        let destination = url.deletingPathExtension().appendingPathExtension("profiles")
+            .appendingPathComponent(id.uuidString).appendingPathExtension("json")
+        let store = AppPresentationStore(url: destination, initialDocument: currentDocument, historyScope: .local(id))
+        store.history = history
+        for (id, record) in currentDocument.records where record.hasBeenSeen {
+            store.observeAudioProvenApplication(.init(applicationID: id,
+                systemDisplayName: record.lastKnownSystemDisplayName, bundleID: record.lastKnownBundleID))
+        }
+        return store
+    }
+
     var currentDocument: AppPresentationDocument {
         lock.lock(); defer { lock.unlock() }
         return document
@@ -178,7 +194,7 @@ final class AppPresentationStore: ObservableObject, @unchecked Sendable {
     private func recordPlacement(_ before: AppPlacementHistoryState) {
         guard Thread.isMainThread else { return }
         withMainThreadHistory {
-            history?.record(actionName: "Arrange Applications", target: .applicationPresentationDocument,
+            history?.record(actionName: "Arrange Applications", target: .scopedAppPresentationDocument(historyScope),
                 before: .appPlacement(before), after: .appPlacement(placementHistoryState()))
         }
     }
@@ -241,7 +257,7 @@ final class AppPresentationStore: ObservableObject, @unchecked Sendable {
         defer {
             if Thread.isMainThread {
                 withMainThreadHistory {
-                    history?.record(actionName: "Rename Application", contextName: context, target: .applicationPresentation(id),
+                    history?.record(actionName: "Rename Application", contextName: context, target: .scopedAppPresentation(id, historyScope),
                         before: .appAlias(before), after: .appAlias(currentDocument.records[id]?.userAlias))
                 }
             }

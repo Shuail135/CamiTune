@@ -102,10 +102,16 @@ final class PluginCatalog: ObservableObject {
     /// Only explicit Add loads a VST3 factory. A bundle without moduleinfo stays
     /// a named browser entry until then; racks never receive unresolved IDs.
     func resolveForAddition(_ plugin: AudioPluginDescriptor) async throws -> [AudioPluginDescriptor] {
-        guard !isBusy else { throw PluginHostError(message: "Wait for the current plug-in operation to finish.") }
-        guard plugin.format == .vst3 else { return [plugin] }
+        guard resolvingName == nil else { throw PluginHostError(message: "Wait for the current plug-in operation to finish.") }
         resolvingName = plugin.name; errorMessage = nil
         defer { resolvingName = nil }
+        // An explicit selection takes priority over background discovery. Wait
+        // for cancellation so the scan cannot overwrite the resolved catalog.
+        let discovery = scanTask
+        discovery?.cancel()
+        await discovery?.value
+        try Task.checkCancellation()
+        guard plugin.format == .vst3 else { return [plugin] }
         let path = plugin.location, url = URL(fileURLWithPath: plugin.location)
         let fingerprint = await Task.detached(priority: .utility) { PluginDiscovery.fingerprint(url) }.value
         if let cached = bundles[path], cached.verified, cached.fingerprint == fingerprint {

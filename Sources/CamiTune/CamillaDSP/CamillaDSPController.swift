@@ -22,6 +22,23 @@ struct CamillaDSPDiagnostics: Sendable {
     }
 }
 
+extension AudioOutputTelemetry {
+    init(camilla diagnostics: CamillaDSPDiagnostics) {
+        self.init(backend: "CamillaDSP", engineState: diagnostics.engineState,
+            stopReason: diagnostics.stopReason, processingLoadPercent: diagnostics.processingLoadPercent,
+            resamplerLoadPercent: diagnostics.resamplerLoadPercent, bufferLevelFrames: diagnostics.bufferLevelFrames,
+            rateAdjustment: diagnostics.rateAdjustment, clippedSamples: diagnostics.clippedSamples,
+            sampleRate: diagnostics.sampleRate, blockFrames: diagnostics.blockFrames,
+            processingBufferFrames: diagnostics.blockFrames)
+    }
+}
+
+extension AudioRuntimeStatus {
+    mutating func recordTelemetry(_ diagnostics: CamillaDSPDiagnostics, at now: Date) {
+        recordTelemetry(AudioOutputTelemetry(camilla: diagnostics), at: now)
+    }
+}
+
 /// Runtime boundary used by the application. It owns the active graph snapshot
 /// and chooses between a small WebSocket patch and a full topology replacement.
 @MainActor

@@ -34,14 +34,14 @@ let localTests = ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] ?? 
 let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
 let supportPath = "Tests/CamiTuneTestSupport"
 let hasTestSupport = FileManager.default.fileExists(atPath: packageRoot.appendingPathComponent(supportPath).path)
-if ["1", "room", "correction", "diagnostics", "profile-ui"].contains(localTests), hasTestSupport {
+if ["1", "room", "correction", "diagnostics", "profile-ui", "multichannel"].contains(localTests), hasTestSupport {
     packageTargets.append(.target(name: "CamiTuneTestSupport",
         dependencies: ["CamiTune", "CamiTuneDomain", "CamiTuneAudio", "SystemAudioBridgeC"], path: supportPath))
 }
 let localSuites: [(name: String, modes: [String], excludes: [String])] = [
     ("RoomCorrectionRegression", ["1", "room"], ["Fixtures", "README.md"]),
     ("DeviceCorrectionRegression", ["1", "correction"], ["Fixtures", "SpeakerEQCoreTests.rs"]),
-    ("MultichannelTests", ["1"], []),
+    ("MultichannelTests", ["1", "multichannel"], []),
     ("CamiTuneTests", ["1"], []),
     ("ProfileUIRegression", ["1", "profile-ui"], []),
     ("DiagnosticsRegression", ["1", "diagnostics"], [])

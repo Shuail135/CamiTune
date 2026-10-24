@@ -5,6 +5,9 @@ import Foundation
 /// Every field is required so simulated compositions cannot silently fall back to HAL.
 @MainActor
 struct AudioRuntimeServices {
+    var startDirectOutput: (AudioRuntimePlan) async throws -> Void = { _ in
+        throw ProfileSettingsError.runtime("Direct plug-in output is unavailable in this runtime.")
+    }
     var preparePluginRack: (AudioRuntimePlan) async throws -> Void = { _ in }
     var commitPluginRack: (AudioRuntimePlan) -> Void = { _ in }
     /// Optional pure configuration injection for controlled developer comparisons.

@@ -7,7 +7,7 @@ import SwiftUI
 final class MenuBarViewModel: ObservableObject {
     let state: AppState
     @Published private(set) var actionInFlight = false
-    let reorder: MenuAppReorderCoordinator
+    @Published private(set) var reorder: MenuAppReorderCoordinator
     @Published var pendingOffProfileID: UUID?
     // Routing can temporarily lose its active profile during a mode change.
     // Keep the controls attached to the same profile until the command finishes.
@@ -83,7 +83,12 @@ final class MenuBarViewModel: ObservableObject {
 
     init(state: AppState) {
         self.state = state
-        reorder = MenuAppReorderCoordinator(store: state.perAppAudio.presentationStore)
+        reorder = MenuAppReorderCoordinator(store: state.perAppAudio.activePresentationStore)
+        state.perAppAudio.$activePresentationStore.dropFirst().sink { [weak self] store in
+            guard let self else { return }
+            self.reorder.cancel()
+            self.reorder = MenuAppReorderCoordinator(store: store)
+        }.store(in: &subscriptions)
         Publishers.Merge3(state.objectWillChange, state.profiles.objectWillChange,
                           state.coreAudio.objectWillChange)
             .receive(on: DispatchQueue.main)
@@ -217,8 +222,7 @@ struct MenuBarRootView: View {
             outputSection.padding(12)
             Divider()
             MenuBarApplicationsSection(controller: model.state.perAppAudio,
-                presentation: model.state.perAppAudio.presentationStore, reorder: model.reorder,
-                profile: model.isActive ? model.profile : nil)
+                presentation: model.state.perAppAudio.activePresentationStore, reorder: model.reorder)
                 .padding(.horizontal, 12).padding(.vertical, 8)
             Divider()
             VStack(alignment: .leading, spacing: 0) {
@@ -548,7 +552,6 @@ private struct MenuBarApplicationsSection: View {
     @ObservedObject var controller: PerAppAudioController
     @ObservedObject var presentation: AppPresentationStore
     @ObservedObject var reorder: MenuAppReorderCoordinator
-    let profile: DeviceProfile?
     @State private var primaryCount = 6
 
     private var applications: [PerAppAudioApplication] {
@@ -612,16 +615,12 @@ private struct MenuBarApplicationsSection: View {
     private func row(_ app: PerAppAudioApplication, isPopover: Bool = false) -> some View {
         MenuAppDropBridge(applicationID: app.id, isPopover: isPopover, coordinator: reorder) {
             MenuBarApplicationRow(application: app, displayedName: presentation.displayName(for: app),
-                controller: controller, context: profile.map(PerAppPlaybackContext.init(profile:)), reorder: reorder,
-                showsModeControls: model.profile?.isSectionEnabled(.mode) != false,
-                isLoading: model.actionInFlight || model.state.transitionInProgress)
+                controller: controller, reorder: reorder)
         }
         .frame(height: 30)
         .opacity(reorder.draggedApplicationID == app.id ? 0.6 : 1)
-        .overlay(alignment: reorder.dropTarget?.after == true ? .bottom : .top) {
-            if reorder.dropTarget?.applicationID == app.id {
-                Rectangle().fill(Color.accentColor).frame(height: 2).allowsHitTesting(false)
-            }
+        .overlay {
+            MenuAppDropIndicator(feedback: reorder.feedback, applicationID: app.id)
         }
     }
 }
@@ -631,10 +630,7 @@ private struct MenuBarApplicationRow: View {
     let application: PerAppAudioApplication
     let displayedName: String
     let controller: PerAppAudioController
-    let context: PerAppPlaybackContext?
     let reorder: MenuAppReorderCoordinator
-    let showsModeControls: Bool
-    let isLoading: Bool
 
     var body: some View {
         HStack(spacing: 6) {
@@ -654,11 +650,6 @@ private struct MenuBarApplicationRow: View {
                     controller.setVolume(volume, for: application.id, interactionFinished: finished)
                 }
                 .frame(maxWidth: .infinity).frame(height: 24)
-            if showsModeControls {
-                PerAppPlaybackModeMenu(application: application, displayedName: displayedName, controller: controller,
-                    context: context, isLoading: isLoading)
-                    .frame(width: 30)
-            }
         }
         .frame(height: 30)
     }

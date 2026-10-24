@@ -75,7 +75,9 @@ package struct DirectChannelMapper {
         try outputFormat.validate()
         if allowDiscreteOrder {
             guard sourceLayout.channelCount == outputFormat.channelCount,
-                  sourceLayout.roles.allSatisfy({ $0 == .unknown }), outputFormat.channels.allSatisfy({ $0.role == .unknown }) else { throw AudioRouteFormatError.unsupportedLayout }
+                  sourceLayout.roles.allSatisfy({ $0 == .unknown }) else { throw AudioRouteFormatError.unsupportedLayout }
+            // Explicit discrete routes use bus order, including named physical
+            // endpoints in exclusive mode. No role-based mixing is inferred.
             self.sourceLayout = sourceLayout; self.outputFormat = outputFormat
             assignments = sourceLayout.roles.indices.map { (source: $0, destination: $0, gain: 1) }
             return

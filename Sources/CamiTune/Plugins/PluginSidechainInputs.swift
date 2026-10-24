@@ -99,8 +99,8 @@ private final class PluginInputCapture: NSObject, AVCaptureAudioDataOutputSample
         notification = NotificationCenter.default.addObserver(forName: NSNotification.Name.AVCaptureSessionRuntimeError,
             object: session, queue: nil) { [weak self] note in
                 guard let self else { return }
-                hub.invalidate(kind: .audioInput, id: id)
-                report((note.userInfo?[AVCaptureSessionErrorKey] as? Error)?.localizedDescription ?? "The audio input stopped.")
+                self.hub.invalidate(kind: .audioInput, id: self.id)
+                self.report((note.userInfo?[AVCaptureSessionErrorKey] as? Error)?.localizedDescription ?? "The audio input stopped.")
             }
     }
     deinit { if let notification { NotificationCenter.default.removeObserver(notification) } }

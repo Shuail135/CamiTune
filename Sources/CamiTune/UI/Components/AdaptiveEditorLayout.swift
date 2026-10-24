@@ -4,13 +4,13 @@ import SwiftUI
 struct AdaptiveEditorLayout<Sidebar: View, CompactSelector: View, Content: View>: View {
     @ScaledMetric(relativeTo: .body) private var sidebarWidth: CGFloat = 160
     @ScaledMetric(relativeTo: .body) private var minimumEditorWidth: CGFloat = 400
-    @State private var availableWidth: CGFloat = 0
+    @State private var isCompact = true
     @ViewBuilder var sidebar: () -> Sidebar
     @ViewBuilder var compactSelector: () -> CompactSelector
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        let compact = availableWidth < sidebarWidth + minimumEditorWidth + 33
+        let compact = isCompact
         let layout = compact
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
             : AnyLayout(HStackLayout(alignment: .top, spacing: 33))
@@ -37,9 +37,12 @@ struct AdaptiveEditorLayout<Sidebar: View, CompactSelector: View, Content: View>
         }
         .background {
             GeometryReader { geometry in
+                let needsCompactLayout = geometry.size.width < sidebarWidth + minimumEditorWidth + 33
                 Color.clear
-                    .onAppear { availableWidth = geometry.size.width }
-                    .onChange(of: geometry.size.width) { availableWidth = $0 }
+                    .onAppear { isCompact = needsCompactLayout }
+                    // Publish only a breakpoint crossing, not every pixel of
+                    // the sidebar animation or a live window resize.
+                    .onChange(of: needsCompactLayout) { isCompact = $0 }
             }
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -77,6 +80,10 @@ struct SelectedEditorPageLayout: Layout {
         guard bounds.width.isFinite, bounds.height.isFinite else { return }
         for index in subviews.indices {
             let size = index == selection ? bounds.size : cache.sizes[index] ?? CGSize(width: bounds.width, height: 0)
+            // Also retain the initial geometry of pages that have never been
+            // selected. Otherwise every sidebar animation frame proposes a new
+            // width to all hidden editors and measures their native controls.
+            cache.sizes[index] = size
             subviews[index].place(at: bounds.origin, anchor: .topLeading,
                 proposal: ProposedViewSize(width: size.width, height: size.height))
         }

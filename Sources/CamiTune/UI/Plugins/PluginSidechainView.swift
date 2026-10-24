@@ -46,7 +46,7 @@ struct PluginSidechainView: View {
                 Text("This plug-in does not expose a sidechain input.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Picker("Source", selection: Binding(get: { sourceKey }, set: select)) {
+            Picker("Source", selection: Binding(get: { sourceKey }, set: { select($0) })) {
                 Text("Off").tag("off")
                 if !applications.applications.isEmpty {
                     Section("Apps") {

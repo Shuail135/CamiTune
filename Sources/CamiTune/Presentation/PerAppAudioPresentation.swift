@@ -16,12 +16,16 @@ final class PerAppMeterState: ObservableObject {
 @MainActor
 final class PerAppAudioPresentation: ObservableObject {
     @Published private(set) var applications: [PerAppAudioApplication] = []
+    @Published private(set) var settingsRevision: UInt64 = 0
     @Published private(set) var persistenceError: String?
     private var meters: [String: PerAppMeterState] = [:]
     private var subscriptions: Set<AnyCancellable> = []
 
     init(controller: PerAppAudioController? = nil) {
         guard let controller else { return }
+        controller.$settingsChangeRevision.receive(on: RunLoop.main).sink { [weak self] in
+            self?.settingsRevision = $0
+        }.store(in: &subscriptions)
         update(controller.applications)
         persistenceError = controller.persistenceError
         controller.$applications.receive(on: RunLoop.main).sink { [weak self] in
@@ -37,6 +41,19 @@ final class PerAppAudioPresentation: ObservableObject {
         let meter = PerAppMeterState()
         meters[id] = meter
         return meter
+    }
+
+    /// Global settings remain editable for previously detected apps even when
+    /// there are no live audio sources or active output profile.
+    func editableApplications(in document: AppPresentationDocument) -> [PerAppAudioApplication] {
+        let liveIDs = Set(applications.map(\.id))
+        let saved = document.orderedApplicationIDs.compactMap { id -> PerAppAudioApplication? in
+            guard !liveIDs.contains(id), let record = document.records[id], record.hasBeenSeen else { return nil }
+            return PerAppAudioApplication(id: id, bundleID: record.lastKnownBundleID,
+                processID: 0, displayName: record.lastKnownSystemDisplayName ?? id,
+                isActive: false, level: 0, settings: .init())
+        }
+        return applications + saved
     }
 
     func update(_ snapshot: [PerAppAudioApplication]) {

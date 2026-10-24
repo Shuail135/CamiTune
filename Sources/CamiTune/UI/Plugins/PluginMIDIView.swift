@@ -8,11 +8,15 @@ struct PluginMIDIInputView: View {
     @Binding var profile: DeviceProfile
     @ObservedObject var status: PluginMIDIStatus
     @State private var error: String?
-    private func edit(action: String = "Change MIDI Input", _ mutation: (inout PluginMIDIConfiguration) -> Void) {
-        var configuration = profile.pluginRack.midi; mutation(&configuration)
+    private func edit(action: String = "Change MIDI Input", _ mutation: @escaping (inout PluginMIDIConfiguration) -> Void) {
         let id = profile.id
         Task {
-            do { try await state.commitPluginMIDI(configuration, profileID: id, action: action); error = nil }
+            do {
+                var configuration = try state.historyProfile(id).pluginRack.midi
+                mutation(&configuration)
+                try await state.commitPluginMIDI(configuration, profileID: id, action: action)
+                error = nil
+            }
             catch { self.error = error.localizedDescription }
         }
     }
@@ -20,7 +24,7 @@ struct PluginMIDIInputView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 Text("MIDI input")
-                DeviceCorrectionHelpIcon(title: "MIDI input", message: "Use a MIDI keyboard or controller with this profile’s plug-ins. Support MIDI mapping.")
+                DeviceCorrectionHelpIcon(title: "MIDI input", message: "Enable notes, controllers and MIDI mappings across this profile’s plug-ins. Each mapping targets its assigned plug-in. The keyboard icons control notes and unmapped controllers for individual plug-ins.")
                 Toggle("MIDI input", isOn: Binding(get: { profile.pluginRack.midi.isEnabled }, set: { value in edit { $0.isEnabled = value } }))
                     .labelsHidden().toggleStyle(.switch).uiInteractionAnchor("plugin-midi-enabled")
                 Spacer(minLength: 0)
@@ -57,16 +61,19 @@ struct PluginMIDIInputView: View {
     }
 }
 
-/// Program selection is independent of the profile-wide parameter mappings.
+/// Per-slot keyboard playing is separate from profile-wide parameter mappings.
 @MainActor
-struct PluginProgramButton: View {
+struct PluginMIDIInputButton: View {
     let state: AppState
     let profile: DeviceProfile
     let slot: AudioPluginSlot
     @Binding var error: String?
     @State private var saving = false
 
-    private var selected: Bool { profile.pluginRack.midi.programChangeSlotID == slot.id }
+    private var selected: Bool {
+        profile.pluginRack.midi.receivesKeyboardInput(slotID: slot.id)
+            && profile.pluginRack.isEnabled && slot.isEnabled
+    }
 
     var body: some View {
         Button {
@@ -75,11 +82,7 @@ struct PluginProgramButton: View {
             Task {
                 defer { saving = false }
                 do {
-                    let current = try state.historyProfile(profileID)
-                    guard current.pluginRack.slots.contains(where: { $0.id == slotID }) else { return }
-                    var midi = current.pluginRack.midi
-                    midi.programChangeSlotID = midi.programChangeSlotID == slotID ? nil : slotID
-                    try await state.commitPluginMIDI(midi, profileID: profileID, action: "Change MIDI Program Destination")
+                    try await state.togglePluginKeyboardInput(profileID: profileID, slotID: slotID)
                     error = nil
                 } catch { self.error = error.localizedDescription }
             }
@@ -90,13 +93,13 @@ struct PluginProgramButton: View {
                 .background(selected ? Color.accentColor.opacity(0.15) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
         }
         .buttonStyle(.borderless)
-        .disabled(saving || (!selected && (!profile.pluginRack.midi.isEnabled || !profile.pluginRack.isEnabled || !slot.isEnabled)))
-        .accessibilityLabel("Program changes for \(slot.plugin.name)")
-        .accessibilityValue(selected ? "Selected" : "Off")
+        .disabled(saving || !profile.pluginRack.midi.isEnabled || !profile.pluginRack.isEnabled || !slot.isEnabled)
+        .accessibilityLabel("Keyboard input for \(slot.plugin.name)")
+        .accessibilityValue(selected ? "On" : "Off")
         .help(selected
-            ? "Program changes selected for \(slot.plugin.name). Click to turn off. MIDI mappings still work across this profile."
-            : "Send program changes to \(slot.plugin.name). Requires MIDI input and this plug-in to be enabled, and support for MIDI programs. MIDI mappings still work across this profile.")
-        .uiInteractionAnchor("plugin-midi-program-\(slot.id)")
+            ? "Keyboard input is on for \(slot.plugin.name). Click to stop notes and unmapped controllers for this plug-in. Saved MIDI mappings remain active."
+            : "Enable notes and unmapped controllers for \(slot.plugin.name). Requires MIDI input and this plug-in to be enabled. Saved MIDI mappings work independently.")
+        .uiInteractionAnchor("plugin-midi-input-\(slot.id)")
     }
 }
 

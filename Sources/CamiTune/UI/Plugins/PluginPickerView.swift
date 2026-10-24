@@ -81,7 +81,8 @@ struct PluginPickerView: View {
 
     private var pluginList: some View {
         List(selection: $selectedID) {
-            ForEach(filtered, id: \.self) { plugin in
+            ForEach(filtered.map { (id: key($0), plugin: $0) }, id: \.id) { row in
+                let plugin = row.plugin
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(plugin.name).font(.headline)
@@ -92,8 +93,9 @@ struct PluginPickerView: View {
                         Text(plugin.format.rawValue).font(.caption.weight(.medium))
                         if plugin.isInstrument { Text("Instrument").font(.caption) }
                     }.foregroundStyle(.secondary)
-                }.padding(.vertical, 4).tag(key(plugin))
-                    .onTapGesture(count: 2) { add(plugin) }
+                }.padding(.vertical, 4).contentShape(Rectangle()).tag(row.id)
+                    .onTapGesture { selectedID = row.id }
+                    .simultaneousGesture(TapGesture(count: 2).onEnded { add(plugin) })
                     .uiInteractionAnchor("plugin-picker-row-\(key(plugin))")
             }
         }
@@ -152,15 +154,17 @@ struct PluginPickerView: View {
                 Button("Cancel") { addingTask?.cancel(); catalog.cancelScan(); dismiss() }.keyboardShortcut(.cancelAction)
                     .uiInteractionAnchor("plugin-picker-cancel")
                 Button("Add") { if let selected { add(selected) } }
-                    .keyboardShortcut(.defaultAction).disabled(selected == nil || catalog.isBusy)
+                    .keyboardShortcut(.defaultAction).disabled(selected == nil || catalog.resolvingName != nil || addingTask != nil)
+                    .uiInteractionAnchor("plugin-picker-add")
             }.uiInteractionAnchor("plugin-picker-actions")
         }
     }
 
     private func add(_ plugin: AudioPluginDescriptor) {
-        guard !catalog.isBusy else { return }
+        guard addingTask == nil, catalog.resolvingName == nil else { return }
         selectionMessage = nil
         addingTask = Task {
+            defer { addingTask = nil }
             do {
                 let choices = try await catalog.resolveForAddition(plugin)
                 try Task.checkCancellation()

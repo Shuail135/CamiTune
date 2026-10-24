@@ -16,6 +16,7 @@ struct PluginRackView: View {
     @State private var sidechainSlotID: UUID?
     @State private var busy = false
     @State private var errorMessage: String?
+    @State private var confirmingExclusiveOutput = false
     @StateObject private var reorder = PluginRackReorderCoordinator()
     // An actual image reserves native menu geometry; Color.clear labels collapse
     // when SwiftUI converts them to an AppKit menu button.
@@ -91,18 +92,32 @@ struct PluginRackView: View {
                         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    ResponsiveStackLayout(minimumHorizontalWidth: 420, horizontalSpacing: 12, verticalSpacing: 6) {
-                        HStack(spacing: 6) {
-                            Text("Buffer Size")
-                            DeviceCorrectionHelpIcon(title: "Profile Buffer Size", message: "Smaller buffers need more processing power but reduce latency, increase the size if audio crackles.")
-                        }
-                        HStack {
-                            PluginAudioBufferPicker(controller: state.automaticBuffers, profile: profile,
-                                selection: Binding(get: { profile.audioBufferSetting }, set: { changeBuffer($0) }))
+                    Picker("Output mode", selection: Binding(get: { profile.pluginRack.outputMode }, set: { mode in
+                        changeOutputMode(mode)
+                    })) {
+                        ForEach(PluginOutputMode.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
+                    }
+                    .disabled(busy)
+                    .fixedSize(horizontal: true, vertical: false)
+                    if profile.pluginRack.outputMode == .exclusive {
+                        ResponsiveStackLayout(minimumHorizontalWidth: 420, horizontalSpacing: 12, verticalSpacing: 6) {
+                            HStack(spacing: 6) {
+                                Text("Buffer Size")
+                                DeviceCorrectionHelpIcon(title: "Exclusive Plug-in Buffer Size", message: " Smaller buffers reduce latency; increase the size if audio crackles.")
+                            }
+                            HStack {
+                                Picker("Exclusive Plug-in Buffer", selection: Binding(get: { profile.pluginRack.exclusiveBufferSize }, set: { frames in
+                                    edit("Change Plug-in Buffer Size") { $0.exclusiveBufferSize = frames }
+                                })) {
+                                    ForEach(DeviceProfile.audioBufferSizes, id: \.self) { frames in
+                                        Text("\(frames) samples").tag(frames)
+                                    }
+                                }
                                 .labelsHidden().disabled(busy)
                                 .fixedSize(horizontal: true, vertical: false)
                                 .accessibilityIdentifier("plugin-audio-buffer")
-                            Spacer(minLength: 0)
+                                Spacer(minLength: 0)
+                            }
                         }
                     }
                 }
@@ -146,6 +161,25 @@ struct PluginRackView: View {
         .sheet(isPresented: $showingMappings) {
             PluginMIDIMappingsView(state: state, profile: $profile)
         }
+        .alert("Switch to Exclusive Mode?", isPresented: $confirmingExclusiveOutput) {
+            Button("Switch to Exclusive") {
+                edit("Change Plug-in Output Mode") { $0.outputMode = .exclusive }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Exclusive mode disables native audio processing, including your enabled processing sections. Their controls will be hidden and your saved settings will be kept. Switch back to Through CamillaDSP to restore them.")
+        }
+    }
+
+    private func changeOutputMode(_ mode: PluginOutputMode) {
+        guard !busy, mode != profile.pluginRack.outputMode else { return }
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        let nativeSections: [ProfileSection] = [.mode, .equalizer, .deviceCorrection, .perChannel, .multichannel, .subwooferControl]
+        if mode == .exclusive, nativeSections.contains(where: { state.sectionNeedsDisableConfirmation($0, profile: profile) }) {
+            confirmingExclusiveOutput = true
+        } else {
+            edit("Change Plug-in Output Mode") { $0.outputMode = mode }
+        }
     }
 
     private func rackRow(_ slot: AudioPluginSlot, index: Int) -> some View {
@@ -171,10 +205,8 @@ struct PluginRackView: View {
                 Spacer(minLength: 4)
             }
             HStack(spacing: 10) {
-                if profile.pluginRack.midi.isEnabled {
-                    PluginProgramButton(state: state, profile: profile, slot: slot, error: $errorMessage)
-                        .disabled(busy)
-                }
+                PluginMIDIInputButton(state: state, profile: profile, slot: slot, error: $errorMessage)
+                    .disabled(busy)
                 Toggle("Enable \(slot.plugin.name)", isOn: Binding(get: { slot.isEnabled }, set: { value in
                     edit("\(value ? "Enable" : "Bypass") \(slot.plugin.name)") { rack in
                         if let index = rack.slots.firstIndex(where: { $0.id == slot.id }) { rack.slots[index].isEnabled = value }
@@ -217,6 +249,7 @@ struct PluginRackView: View {
                 edit("Remove \(slot.plugin.name)") {
                     $0.slots.removeAll { $0.id == slot.id }
                     $0.midi.mappings.removeAll { $0.slotID == slot.id }
+                    $0.midi.keyboardInputDisabledSlotIDs.remove(slot.id)
                     if $0.midi.programChangeSlotID == slot.id { $0.midi.programChangeSlotID = nil }
                 }
             }.disabled(busy).accessibilityIdentifier("plugin-remove-\(slot.id)")
@@ -275,17 +308,6 @@ struct PluginRackView: View {
         do { try state.movePlugin(id, relativeTo: target, after: after, profileID: profile.id); errorMessage = nil }
         catch { errorMessage = error.localizedDescription }
     }
-    private func changeBuffer(_ setting: AudioBufferSetting?) {
-        guard !busy else { return }
-        busy = true; errorMessage = nil
-        let id = profile.id
-        Task {
-            defer { busy = false }
-            do { try await state.commitAudioBufferSize(setting, profileID: id) }
-            catch { errorMessage = error.localizedDescription }
-        }
-    }
-
     private struct Preset: Codable { let version: Int; let pluginID: String; let format: AudioPluginFormat; let state: Data? }
     private func savePreset(_ slot: AudioPluginSlot) {
         let panel = NSSavePanel()
@@ -323,28 +345,6 @@ struct PluginRackView: View {
                         if let index = rack.slots.firstIndex(where: { $0.id == slot.id }) { rack.slots[index].state = preset.state }
                     }
                 } catch { errorMessage = error.localizedDescription }
-            }
-        }
-    }
-}
-
-@MainActor
-private struct PluginAudioBufferPicker: View {
-    @ObservedObject var controller: AutomaticAudioBufferController
-    let profile: DeviceProfile
-    @Binding var selection: AudioBufferSetting
-
-    var body: some View {
-        let currentFrames = profile.audioBufferSetting == .automatic
-            ? controller.statuses[profile.id]?.currentFrames : nil
-        let frames = currentFrames ?? controller.recommendedFrames(for: profile)
-        let automaticTitle = "Automatic (\(frames) samples)"
-        return Picker("Profile Audio Buffer", selection: $selection) {
-            ForEach(AudioBufferSetting.choices, id: \.self) { setting in
-                Text(setting == .automatic ? automaticTitle : setting.displayName).tag(setting)
-            }
-            if !AudioBufferSetting.choices.contains(selection) {
-                Text(selection.displayName).tag(selection)
             }
         }
     }

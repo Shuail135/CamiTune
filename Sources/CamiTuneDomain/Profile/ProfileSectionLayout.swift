@@ -3,9 +3,9 @@ import Foundation
 package enum ProfileSection: String, Codable, CaseIterable, Identifiable, Sendable {
     case deviceSetup, meters, spectrum, mode, equalizer, perChannel, deviceCorrection, crossfeed, multichannel, subwooferControl
     // Retain the old identifiers so saved layouts can migrate without losing settings.
-    case convolution, plugins
+    case convolution, plugins, appAudio
     package static let allCases: [ProfileSection] = [
-        .deviceSetup, .meters, .spectrum, .mode, .deviceCorrection, .equalizer, .plugins, .subwooferControl, .perChannel, .multichannel
+        .deviceSetup, .meters, .spectrum, .mode, .appAudio, .deviceCorrection, .equalizer, .plugins, .subwooferControl, .perChannel, .multichannel
     ]
     package static let defaultLayoutSections = allCases
     package var consolidated: Self {
@@ -19,6 +19,7 @@ package enum ProfileSection: String, Codable, CaseIterable, Identifiable, Sendab
         switch self {
         case .deviceSetup: return "Device Setup"
         case .meters: return "Meters & Status"
+        case .appAudio: return "App Audio"
         case .spectrum: return "Spectrum"
         case .mode: return "Mode"
         case .deviceCorrection: return "Device Correction"
@@ -74,9 +75,7 @@ package struct ProfileSectionLayout: Codable, Hashable, Sendable {
     package init(order: [ProfileSection] = ProfileSection.allCases, hidden: Set<ProfileSection> = [],
          presentation: [String: SectionPresentationPreference] = [:], explicitlyShown: Set<ProfileSection> = []) {
         self.explicitlyShown = explicitlyShown
-        var seen: Set<ProfileSection> = [.deviceSetup]
-        self.order = [.deviceSetup] + (order + ProfileSection.defaultLayoutSections)
-            .map(\.consolidated).filter { seen.insert($0).inserted }
+        self.order = Self.normalize(order)
         self.hidden = hidden.subtracting([.convolution, .crossfeed])
         if order.contains(.convolution) || order.contains(.crossfeed)
             || hidden.contains(.convolution) || hidden.contains(.crossfeed) {
@@ -112,13 +111,30 @@ package struct ProfileSectionLayout: Codable, Hashable, Sendable {
                 sections.contains(.spectrum) || (sections.contains(.equalizer) && equalizer != .simpleTone))
     }
 
+    package func visualDemand(for profile: DeviceProfile) -> (meters: Bool, spectrum: Bool) {
+        let sections = editorSections(for: profile)
+        return (sections.contains(.meters) || sections.contains(.equalizer) || sections.contains(.perChannel),
+                sections.contains(.spectrum) || (sections.contains(.equalizer) && equalizer != .simpleTone))
+    }
+
     package var equalizer: EqualizerPresentation {
         get { presentation[ProfileSection.equalizer.rawValue]?.equalizer ?? .both }
         set { presentation[ProfileSection.equalizer.rawValue] = SectionPresentationPreference(equalizer: newValue) }
     }
     package var normalizedOrder: [ProfileSection] {
+        Self.normalize(order)
+    }
+    private static func normalize(_ order: [ProfileSection]) -> [ProfileSection] {
         var seen: Set<ProfileSection> = [.deviceSetup]
-        return [.deviceSetup] + (order + ProfileSection.allCases).map(\.consolidated).filter { seen.insert($0).inserted }
+        var normalized = [.deviceSetup] + (order + ProfileSection.defaultLayoutSections)
+            .map(\.consolidated).filter { seen.insert($0).inserted }
+        // Introduce App Audio below Mode in older layouts and endpoint defaults.
+        // Once saved, its explicit position remains user-controlled.
+        if !order.contains(.appAudio), let modeIndex = normalized.firstIndex(of: .mode) {
+            normalized.removeAll { $0 == .appAudio }
+            normalized.insert(.appAudio, at: modeIndex + 1)
+        }
+        return normalized
     }
     package func visibleSections(for type: ProfileEndpointKind) -> [ProfileSection] {
         normalizedOrder.filter { $0.applies(to: type) && ($0 == .deviceSetup || !hidden.contains($0)) }
@@ -135,6 +151,14 @@ package struct ProfileSectionLayout: Codable, Hashable, Sendable {
         visibleSections(for: profile.effectiveEndpointKind).filter {
             $0 != .subwooferControl || subwooferVisibility == .shown || profile.hasSpeakersAndSubwoofer
         }
+    }
+
+    /// Exclusive output changes presentation without changing the saved layout
+    /// or the section enablement used to validate native processing settings.
+    package func editorSections(for profile: DeviceProfile) -> [ProfileSection] {
+        let sections = visibleSections(for: profile)
+        guard profile.pluginRack.outputMode == .exclusive else { return sections }
+        return sections.filter { $0 == .deviceSetup || $0 == .plugins || $0 == .meters || $0 == .appAudio }
     }
     package mutating func move(_ section: ProfileSection, before destination: ProfileSection?) {
         let section = section.consolidated
@@ -156,7 +180,8 @@ extension DeviceProfile {
     }
 
     package var effectivePlaybackMode: PlaybackMode { isSectionEnabled(.mode) ? playbackMode : .direct }
-    package var effectivePluginRack: PluginRack { isSectionEnabled(.plugins) ? pluginRack : PluginRack() }
+    package var effectivePluginRack: PluginRack { (pluginRack.outputMode == .exclusive || isSectionEnabled(.plugins)) ? pluginRack : PluginRack() }
+    package var usesExclusivePluginOutput: Bool { effectivePluginRack.outputMode == .exclusive }
     package var effectiveMultichannel: MultichannelProcessingSettings {
         var settings = multichannel
         if !isSectionEnabled(.multichannel) {
@@ -180,6 +205,25 @@ extension DeviceProfile {
     /// settings, including bypassed stages and the user's selected playback mode.
     package func processingRuntimeProfile() throws -> DeviceProfile {
         var result = self
+        if usesExclusivePluginOutput {
+            // Only the disposable execution copy uses the plug-in buffer.
+            // The saved local/global buffer preference remains independent.
+            result.chunkSize = effectivePluginRack.exclusiveBufferSize
+            guard !effectiveMultichannel.crossover.enabled else {
+                throw ProfileSettingsError.runtime("Exclusive plug-in output cannot bypass an active speaker crossover. Use Through CamillaDSP for this profile.")
+            }
+            // A disposable execution view; switching back restores every saved
+            // profile processor. The bridge and physical channel identities stay.
+            var layout = effectiveSectionLayout
+            layout.hidden.formUnion([.mode, .equalizer, .deviceCorrection, .perChannel, .multichannel, .subwooferControl])
+            result.sectionLayout = layout
+            result.physicalChannelProcessing = [:]
+            result.replaceProcessing(.init(global: .init(), channels: []))
+            result.multichannel = .init()
+            result.personalReferenceCorrections = [:]
+            result.setPlaybackMode(.direct)
+            return result
+        }
         var processing = try resolvedProcessing()
         let correction = isSectionEnabled(.deviceCorrection)
         let equalizer = isSectionEnabled(.equalizer)
@@ -216,7 +260,7 @@ extension DeviceProfile {
         let chains = [processing.global] + processing.channels.map(\.chain) + processing.groups.map(\.chain)
         switch section.consolidated {
         case .mode: return playbackMode != .direct
-        case .plugins: return pluginRack.isProcessing
+        case .plugins: return pluginRack.outputMode != .exclusive && pluginRack.isProcessing
         case .equalizer:
             return !processing.simpleTone.isNeutral || processing.global.stages.contains { $0.isEnabled && !Self.isCorrectionStage($0) }
         case .deviceCorrection:

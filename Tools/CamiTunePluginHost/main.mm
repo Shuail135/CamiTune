@@ -39,13 +39,27 @@ void CamiTunePlugins::emit(NSDictionary* event) {
     if (!data || data.length > 96 * 1024 * 1024) return;
     transfer(protocolFD, (void*)data.bytes, data.length, true); char newline = '\n'; transfer(protocolFD, &newline, 1, true);
 }
-static void snapshot() {
+static bool snapshot(NSUInteger only = NSNotFound) {
+    bool succeeded = true;
     for (NSUInteger i = 0; i < effects.size(); ++i) {
-        NSData* data = effects[i]->saveState(); NSString* identifier = slots[i][@"id"];
-        if (!data || data.length > maximumStateBytes || [savedStates[identifier] isEqual:data]) continue;
-        savedStates[identifier] = data;
-        emit(@{@"event": @"state", @"slotID": identifier, @"state": [data base64EncodedStringWithOptions:0]});
+        if (only != NSNotFound && i != only) continue;
+        @try { try {
+            NSData* data = effects[i]->saveState(); NSString* identifier = slots[i][@"id"];
+            if (data.length > maximumStateBytes) throw std::runtime_error("The plug-in preset exceeded the size limit. The previous saved preset was kept.");
+            if (!data) { succeeded = false; continue; }
+            if ([savedStates[identifier] isEqual:data]) continue;
+            savedStates[identifier] = data;
+            emit(@{@"event": @"state", @"slotID": identifier, @"state": [data base64EncodedStringWithOptions:0]});
+        } catch (const std::exception& error) {
+            succeeded = false;
+            emit(@{@"event": @"snapshotError", @"slotID": slots[i][@"id"], @"message": @(error.what())});
+        } } @catch (NSException* error) {
+            succeeded = false;
+            emit(@{@"event": @"snapshotError", @"slotID": slots[i][@"id"],
+                @"message": @"The plug-in could not save its preset. The previous saved preset was kept."});
+        }
     }
+    return succeeded;
 }
 
 // Match SliderThumb in the app, including its enlarged handle hit rectangle.
@@ -93,34 +107,107 @@ static void snapshot() {
 @property(nonatomic, strong) NSMutableDictionary<NSNumber*, NSNumber*>* addresses;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber*, NSSlider*>* sliders;
 @property(nonatomic) BOOL closed;
+@property(nonatomic) BOOL nativeEditor;
+@property(nonatomic) NSUInteger presentationRevision;
+@property(nonatomic, strong) NSData* initialState;
+@property(nonatomic, strong) NSDictionary* position;
 - (void)open;
+- (void)openContent;
+- (void)showEditorError:(NSString*)message;
 - (void)refreshValues;
+- (void)rememberPosition;
+- (void)restorePosition;
 @end
 static NSMutableDictionary<NSString*, CTPluginEditor*>* editors;
+static NSMutableDictionary<NSString*, NSDictionary*>* editorPositions;
 
 @implementation CTPluginEditor
 - (void)open {
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 560, 420)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];
     self.window.title = [NSString stringWithFormat:@"%@ — CamiTune", slots[self.index][@"plugin"][@"name"]];
-    self.window.releasedWhenClosed = NO; self.window.delegate = self;
+    self.window.releasedWhenClosed = NO;
+    [self.window center]; [self restorePosition];
+    self.window.delegate = self;
+    [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
+    [self rememberPosition];
+    [self openContent];
+}
+- (void)restorePosition {
+    NSNumber* x = self.position[@"x"], *y = self.position[@"y"];
+    if (![x isKindOfClass:NSNumber.class] || ![y isKindOfClass:NSNumber.class]
+        || !std::isfinite(x.doubleValue) || !std::isfinite(y.doubleValue)) return;
+    NSPoint point = NSMakePoint(x.doubleValue, y.doubleValue);
+    // A disconnected display must not leave the title bar unreachable.
+    for (NSScreen* screen in NSScreen.screens) {
+        if (NSPointInRect(NSMakePoint(point.x + 16, point.y - 16), screen.visibleFrame)) {
+            [self.window setFrameTopLeftPoint:point]; return;
+        }
+    }
+}
+- (void)rememberPosition {
+    if (self.closed) return;
+    self.position = @{@"x": @(NSMinX(self.window.frame)), @"y": @(NSMaxY(self.window.frame))};
+    editorPositions[slots[self.index][@"id"]] = self.position;
+    emit(@{@"event": @"editorPosition", @"slotID": slots[self.index][@"id"], @"position": self.position});
+}
+- (void)windowDidMove:(NSNotification*)notification { [self rememberPosition]; }
+- (void)openContent {
+    self.nativeEditor = NO; self.sliders = nil;
+    self.initialState = nil;
+    self.window.subtitle = @"";
+    NSView* parent = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 560, 420)];
+    self.window.contentView = parent;
     NSTextField* loading = [NSTextField labelWithString:@"Opening plug-in editor…"];
-    loading.frame = NSMakeRect(24, 190, 500, 24); [self.window.contentView addSubview:loading];
-    [self.window center]; [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
+    loading.frame = NSMakeRect(24, 190, 500, 24); [parent addSubview:loading];
+    // Capture before editing; a linked rack is rebuilt only when its complete
+    // preset changes. Ordinary viewing must not reset its processing history.
+    if (effects[self.index]->instanceCount() > 1) {
+        @try { try { self.initialState = effects[self.index]->saveState(); } catch (...) {} }
+        @catch (NSException*) {}
+    }
     __weak CTPluginEditor* weak = self;
-    effects[self.index]->editor(^(NSView* view) {
+    @try { try {
+    effects[self.index]->editor(parent, ^(NSView* view, NSString* error) {
         CTPluginEditor* owner = weak; if (!owner || owner.closed) return;
-        if (view && view.frame.size.width > 0 && view.frame.size.height > 0) {
-            [owner.window setContentSize:view.frame.size]; owner.window.contentView = view;
+        [loading removeFromSuperview];
+        if (error) { [owner showEditorError:error]; return; }
+        if (view) {
+            NSSize size = view.frame.size;
+            if (owner.window.contentView != view) owner.window.contentView = view;
+            if (size.width > 0 && size.height > 0) [owner.window setContentSize:size];
+            owner.nativeEditor = YES;
+            if (effects[owner.index]->instanceCount() > 1)
+                owner.window.subtitle = @"Linked channels · Preset changes apply to all channels when this window closes";
+            emit(@{@"event": @"editorOpened", @"slotID": slots[owner.index][@"id"], @"native": @YES});
         } else { [owner showParameters]; }
     });
+    } catch (const std::exception& error) { [self showEditorError:@(error.what())]; }
+    } @catch (NSException*) { [self showEditorError:@"The plug-in could not open its native editor. Try opening it again."]; }
 }
+- (void)showEditorError:(NSString*)message {
+    NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 560, 240)]; self.window.contentView = root;
+    [self.window setContentSize:root.frame.size];
+    NSTextField* label = [NSTextField wrappingLabelWithString:message];
+    label.frame = NSMakeRect(24, 105, 512, 100); [root addSubview:label];
+    NSButton* retry = [NSButton buttonWithTitle:@"Retry Native Editor" target:self action:@selector(retryEditor:)];
+    retry.frame = NSMakeRect(24, 48, 190, 32); [root addSubview:retry];
+    NSButton* controls = [NSButton buttonWithTitle:@"Parameter Controls" target:self action:@selector(openParameters:)];
+    controls.frame = NSMakeRect(232, 48, 190, 32); [root addSubview:controls];
+    emit(@{@"event": @"editorError", @"slotID": slots[self.index][@"id"], @"message": message});
+}
+- (void)retryEditor:(id)sender { effects[self.index]->closeEditor(); [self openContent]; }
+- (void)openParameters:(id)sender { effects[self.index]->closeEditor(); [self showParameters]; }
 - (void)showParameters {
+    self.nativeEditor = NO;
+    self.window.subtitle = @"Plug-in parameter controls";
     self.parameters = effects[self.index]->parameters(); self.addresses = [NSMutableDictionary dictionary]; self.sliders = [NSMutableDictionary dictionary];
     NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 560, 420)]; self.window.contentView = root;
+    [self.window setContentSize:NSMakeSize(560, 420)];
     self.search = [[NSSearchField alloc] initWithFrame:NSMakeRect(16, 378, 528, 26)]; self.search.placeholderString = @"Search parameters"; self.search.delegate = self; [root addSubview:self.search];
     self.scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(16, 16, 528, 350)]; self.scroll.hasVerticalScroller = YES; [root addSubview:self.scroll];
     [self rebuildParameters];
+    emit(@{@"event": @"editorOpened", @"slotID": slots[self.index][@"id"], @"native": @NO});
 }
 - (void)controlTextDidChange:(NSNotification*)notification { [self rebuildParameters]; }
 - (void)rebuildParameters {
@@ -156,35 +243,31 @@ static NSMutableDictionary<NSString*, CTPluginEditor*>* editors;
 }
 - (void)parameterChanged:(NSSlider*)sender { effects[self.index]->setParameter([self.addresses[@(sender.tag)] unsignedLongLongValue], sender.doubleValue); }
 - (void)windowWillClose:(NSNotification*)notification {
+    [self rememberPosition];
     self.closed = YES; effects[self.index]->closeEditor();
     NSString* identifier = slots[self.index][@"id"];
+    emit(@{@"event": @"editorClosing", @"slotID": identifier});
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        snapshot(); emit(@{@"event": @"editorClosed", @"slotID": identifier});
-        [editors removeObjectForKey:identifier]; openEditorCount = (unsigned)editors.count;
+        // A quick reopen owns a new window. Its eventual close will capture
+        // the state; an old callback must not dismiss that new editor.
+        if (editors[identifier] != self) return;
+        const bool captured = snapshot(self.index);
+        NSData* preset = savedStates[identifier];
+        const bool linkedNative = self.nativeEditor && effects[self.index]->instanceCount() > 1;
+        const bool reload = captured && linkedNative && preset && ![preset isEqual:self.initialState];
+        NSMutableDictionary* event = [@{@"event": @"editorClosed", @"slotID": identifier, @"requiresReload": @(reload)} mutableCopy];
+        if (reload) event[@"state"] = [preset base64EncodedStringWithOptions:0];
+        if (linkedNative && !captured) emit(@{@"event": @"snapshotError", @"slotID": identifier,
+            @"message": @"The plug-in could not save its full settings for the linked channels."});
+        emit(event);
+        if (editors[identifier] == self) [editors removeObjectForKey:identifier];
+        openEditorCount = (unsigned)editors.count;
     });
 }
 @end
 
 #ifdef CAMITUNE_PLUGIN_TESTING
-class FixtureEffect final : public Effect {
-    NSString* behavior; double gain; uint32_t channels;
-public:
-    explicit FixtureEffect(NSDictionary* slot, uint32_t count) : channels(count), behavior(slot[@"plugin"][@"id"]), gain([slot[@"gain"] doubleValue]) {}
-    bool render(float* const* input, float** output, uint32_t frames) override {
-        if ([behavior isEqual:@"crash"]) _exit(99);
-        if ([behavior isEqual:@"hang"]) for (;;) pause();
-        for (uint32_t c = 0; c < channels; ++c) for (uint32_t f = 0; f < frames; ++f) output[c][f] = [behavior isEqual:@"nan"] ? NAN : input[c][f] * gain;
-        return true;
-    }
-    void reset() override {}
-    uint32_t latency() override { return 0; }
-    double tailSeconds() override { return 0; }
-    NSData* saveState() override { return nil; }
-    NSArray<NSDictionary*>* parameters() override { return @[]; }
-    void setParameter(uint64_t, double) override {}
-    void scheduleParameter(uint64_t, double) override {}
-    void editor(void (^completion)(NSView*)) override { completion(nil); }
-};
+#include "FixtureEffect.h"
 #endif
 
 static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketPath) {
@@ -200,6 +283,7 @@ static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketP
     size_t sharedBytes = mainBytes + maximumFrames * 2 * slots.count * sizeof(float);
     if (![slots isKindOfClass:NSArray.class] || slots.count > 16 || !std::isfinite(rate) || rate < 8000 || rate > 384000) throw std::runtime_error("Invalid plug-in rack configuration.");
     savedStates = [NSMutableDictionary dictionary]; editors = [NSMutableDictionary dictionary];
+    editorPositions = [NSMutableDictionary dictionary];
     for (NSDictionary* slot in slots) {
         NSString* format = slot[@"plugin"][@"format"];
         emit(@{@"event": @"loading", @"slotID": slot[@"id"] ?: @"", @"name": slot[@"plugin"][@"name"] ?: @"Plug-in"});
@@ -322,11 +406,20 @@ static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketP
 #endif
             if ([command[@"command"] isEqual:@"quit"]) { snapshot(); _exit(0); }
             if ([command[@"command"] isEqual:@"snapshot"] || [command[@"command"] isEqual:@"closeEditors"]) {
+                NSMutableArray<NSDictionary*>* closingEditors = [NSMutableArray array];
+                if ([command[@"command"] isEqual:@"closeEditors"]) {
+                    for (CTPluginEditor* editor in editors.allValues)
+                        [closingEditors addObject:@{@"editor": editor, @"revision": @(editor.presentationRevision)}];
+                }
                 // Allow the audio worker to consume the last UI parameter edit
                 // before taking a processor-state snapshot, including at rest.
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
                     snapshot();
-                    if ([command[@"command"] isEqual:@"closeEditors"]) for (CTPluginEditor* editor in editors.allValues) [editor.window close];
+                    for (NSDictionary* target in closingEditors) {
+                        CTPluginEditor* editor = target[@"editor"];
+                        if (!editor.closed && editor.presentationRevision == [target[@"revision"] unsignedIntegerValue])
+                            [editor.window close];
+                    }
                     NSString* response = command[@"response"];
                     if ([response isKindOfClass:NSString.class] && [response hasPrefix:@"snapshot-"]) {
                         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 40 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ emit(@{@"event": response}); });
@@ -337,8 +430,16 @@ static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketP
                 NSString* identifier = command[@"slotID"];
                 for (NSUInteger i = 0; i < slots.count; ++i) if ([slots[i][@"id"] isEqual:identifier]) {
                     CTPluginEditor* editor = editors[identifier];
-                    if (!editor) { editor = [CTPluginEditor new]; editor.index = i; editors[identifier] = editor; openEditorCount = (unsigned)editors.count; [editor open]; }
-                    else { [editor.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
+                    if (!editor || editor.closed) {
+                        editor = [CTPluginEditor new]; editor.index = i;
+                        editor.position = [command[@"position"] isKindOfClass:NSDictionary.class] ? command[@"position"] : editorPositions[identifier];
+                        editors[identifier] = editor; openEditorCount = (unsigned)editors.count; [editor open];
+                    }
+                    else {
+                        // A new open request supersedes a queued delayed close.
+                        ++editor.presentationRevision;
+                        [editor.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
+                    }
                 }
             }
         }

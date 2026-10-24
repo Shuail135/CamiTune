@@ -36,7 +36,6 @@ struct SidebarRow: Equatable {
             else { ungrouped.append(profile) }
         }
         var rows = [
-            SidebarRow(kind: .navigation(.applications), title: "App Audio"),
             SidebarRow(kind: .heading, title: "Output Profiles"),
         ]
         if profiles.isEmpty {

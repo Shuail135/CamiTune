@@ -139,6 +139,10 @@ private struct GainControlLayout: Layout {
         Cache(sizes: subviews.map { $0.sizeThatFits(.unspecified) })
     }
     func updateCache(_ cache: inout Cache, subviews: Subviews) { cache = makeCache(subviews: subviews) }
+    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect,
+        proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGFloat? { nil }
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect,
+        proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGFloat? { nil }
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
         arrangement(width: proposal.width, sizes: cache.sizes).size
     }

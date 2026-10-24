@@ -48,9 +48,10 @@ template<class T> static T* query(FUnknown* object) {
     return result;
 }
 
-class MemoryStream final : public IBStream {
+class MemoryStream final : public IBStream, public ISizeableStream {
     std::atomic<uint32> refs{1};
     int64 position = 0;
+    bool writeFailed = false;
 public:
     std::vector<uint8_t> bytes;
     explicit MemoryStream(NSData* data = nil) {
@@ -58,34 +59,51 @@ public:
         if (data.length) bytes.assign((const uint8_t*)data.bytes, (const uint8_t*)data.bytes + data.length);
     }
     tresult PLUGIN_API queryInterface(const TUID id, void** result) override {
-        if (equalID(id, IBStream::iid) || equalID(id, FUnknown::iid)) { *result = this; addRef(); return kResultOk; }
-        *result = nullptr; return kNoInterface;
+        if (equalID(id, IBStream::iid) || equalID(id, FUnknown::iid)) *result = static_cast<IBStream*>(this);
+        else if (equalID(id, ISizeableStream::iid)) *result = static_cast<ISizeableStream*>(this);
+        else { *result = nullptr; return kNoInterface; }
+        addRef(); return kResultOk;
     }
     uint32 PLUGIN_API addRef() override { return ++refs; }
     uint32 PLUGIN_API release() override { auto n = --refs; if (!n) delete this; return n; }
     tresult PLUGIN_API read(void* buffer, int32 count, int32* readCount) override {
         if (readCount) *readCount = 0;
-        if (!buffer || count < 0 || position < 0 || position > (int64)bytes.size()) return kInvalidArgument;
-        auto n = std::min<int64>(count, bytes.size() - position);
+        if ((!buffer && count) || count < 0) return kInvalidArgument;
+        auto n = std::min<int64>(count, std::max<int64>(0, (int64)bytes.size() - position));
         if (n) memcpy(buffer, bytes.data() + position, n);
         position += n; if (readCount) *readCount = (int32)n;
-        return n == count ? kResultOk : kResultFalse;
+        // Like the SDK memory stream, EOF is a successful short read. Readers
+        // use readCount to distinguish EOF from an actual I/O error.
+        return kResultOk;
     }
     tresult PLUGIN_API write(void* buffer, int32 count, int32* written) override {
         if (written) *written = 0;
-        if (!buffer || count < 0 || position < 0 || position + count > maximumStateBytes) return kInvalidArgument;
+        if (writeFailed || (!buffer && count) || count < 0 || count > (int64)maximumStateBytes - position) {
+            writeFailed = true; return kInvalidArgument;
+        }
         bytes.resize(std::max<size_t>(bytes.size(), position + count));
         if (count) memcpy(bytes.data() + position, buffer, count);
         position += count; if (written) *written = count; return kResultOk;
     }
     tresult PLUGIN_API seek(int64 offset, int32 mode, int64* result = nullptr) override {
-        int64 next = offset + (mode == kIBSeekCur ? position : mode == kIBSeekEnd ? bytes.size() : 0);
-        if (next < 0 || next > maximumStateBytes) return kInvalidArgument;
+        if (mode != kIBSeekSet && mode != kIBSeekCur && mode != kIBSeekEnd) return kInvalidArgument;
+        int64 base = mode == kIBSeekCur ? position : mode == kIBSeekEnd ? (int64)bytes.size() : 0;
+        if (offset < -base || offset > (int64)maximumStateBytes - base) return kInvalidArgument;
+        int64 next = base + offset;
         position = next; if (result) *result = next; return kResultOk;
     }
     tresult PLUGIN_API tell(int64* result) override { if (!result) return kInvalidArgument; *result = position; return kResultOk; }
-    NSData* data() const { return [NSData dataWithBytes:bytes.data() length:bytes.size()]; }
+    tresult PLUGIN_API getStreamSize(int64& size) override { size = (int64)bytes.size(); return kResultOk; }
+    tresult PLUGIN_API setStreamSize(int64 size) override {
+        if (writeFailed || size < 0 || size > maximumStateBytes) { writeFailed = true; return kInvalidArgument; }
+        bytes.resize((size_t)size); return kResultOk;
+    }
+    NSData* data() const { return writeFailed ? nil : [NSData dataWithBytes:bytes.data() length:bytes.size()]; }
 };
+struct ReleaseStateStream {
+    void operator()(MemoryStream* stream) const { stream->release(); }
+};
+using StateStream = std::unique_ptr<MemoryStream, ReleaseStateStream>;
 
 class Attributes final : public IAttributeList {
     std::atomic<uint32> refs{1};
@@ -295,6 +313,7 @@ class VSTEffect final : public Effect, public IHostApplication, public IComponen
     IComponent* component = nullptr; IAudioProcessor* processor = nullptr; IEditController* controller = nullptr;
     IConnectionPoint* componentConnection = nullptr; IConnectionPoint* controllerConnection = nullptr;
     IPlugView* view = nullptr; NSView* editorContainer = nil;
+    bool viewAttached = false, resizingView = false;
     bool separateController = false, componentInitialized = false, controllerInitialized = false, active = false, processing = false; double rate; int64 sampleTime = 0;
     std::atomic<int32> restartFlags{0};
     ParameterObserver parameterObserver;
@@ -467,9 +486,9 @@ public:
         requestedSidechain = [slot[@"sidechainBus"] isKindOfClass:NSNumber.class] ? [slot[@"sidechainBus"] intValue] : -1;
         FUID id; if (!id.fromString([slot[@"plugin"][@"id"] UTF8String])) throw std::runtime_error("Invalid VST3 identity.");
         if (module.factory->createInstance(id, IComponent::iid, (void**)&component) != kResultOk || !component) throw std::runtime_error("The VST3 effect could not be created.");
+        component->setIoMode(kSimple);
         if (component->initialize(static_cast<IHostApplication*>(this)) != kResultOk) throw std::runtime_error("The VST3 effect could not initialize.");
         componentInitialized = true;
-        component->setIoMode(kSimple);
         processor = query<IAudioProcessor>(component);
         if (!processor) throw std::runtime_error("This VST3 does not provide an audio processor.");
         controller = query<IEditController>(component);
@@ -492,13 +511,16 @@ public:
         if (encoded.length) {
             NSDictionary* saved = [NSPropertyListSerialization propertyListWithData:encoded options:NSPropertyListImmutable format:nil error:nil];
             if (![saved isKindOfClass:NSDictionary.class] || ![saved[@"component"] isKindOfClass:NSData.class]) throw std::runtime_error("The VST3 preset could not be read.");
-            MemoryStream* stream = new MemoryStream(saved[@"component"]);
-            auto restored = component->setState(stream); stream->seek(0, IBStream::kIBSeekSet);
-            if (controller) controller->setComponentState(stream); stream->release();
+            StateStream stream(new MemoryStream(saved[@"component"]));
+            auto restored = component->setState(stream.get()); stream->seek(0, IBStream::kIBSeekSet);
+            if (restored == kResultOk && controller) controller->setComponentState(stream.get());
             if (restored != kResultOk) throw std::runtime_error("The VST3 rejected its saved preset.");
-            if (controller && [saved[@"controller"] isKindOfClass:NSData.class]) { auto s = new MemoryStream(saved[@"controller"]); controller->setState(s); s->release(); }
+            if (controller && [saved[@"controller"] isKindOfClass:NSData.class]) { StateStream s(new MemoryStream(saved[@"controller"])); controller->setState(s.get()); }
         } else if (controller) {
-            auto stream = new MemoryStream; component->getState(stream); stream->seek(0, IBStream::kIBSeekSet); controller->setComponentState(stream); stream->release();
+            StateStream stream(new MemoryStream);
+            if (component->getState(stream.get()) == kResultOk && stream->data()) {
+                stream->seek(0, IBStream::kIBSeekSet); controller->setComponentState(stream.get());
+            }
         }
         if (controller) {
             parameterCount = std::min<int>(ParameterChanges::capacity, std::max(0, controller->getParameterCount()));
@@ -522,7 +544,12 @@ public:
         if (processor->setupProcessing(setup) != kResultOk) throw std::runtime_error("The VST3 could not prepare audio processing.");
         if (component->setActive(true) != kResultOk) throw std::runtime_error("The VST3 could not activate audio processing.");
         active = true;
-        if (processor->setProcessing(true) != kResultOk) throw std::runtime_error("The VST3 could not start audio processing.");
+        const auto startResult = processor->setProcessing(true);
+        // The SDK's AudioEffect default returns kNotImplemented for this
+        // notification. Activation and the initial render still validate the
+        // processor; an unimplemented notification is not a startup failure.
+        if (startResult != kResultOk && startResult != kNotImplemented)
+            throw std::runtime_error("The VST3 could not start audio processing (result " + std::to_string(startResult) + ").");
         processing = true;
         latencyFrames = processor->getLatencySamples(); uint32 samples = processor->getTailSamples();
         tail = samples == kInfiniteTail ? 10 : std::min(10.0, samples / rate);
@@ -576,8 +603,11 @@ public:
     tresult PLUGIN_API notifyUnitByBusChange() override { programsChanged = true; return kResultOk; }
     tresult PLUGIN_API resizeView(IPlugView* candidate, ViewRect* rect) override {
         if (!rect || candidate != view || !editorContainer || rect->getWidth() < 1 || rect->getHeight() < 1 || rect->getWidth() > 4096 || rect->getHeight() > 4096) return kInvalidArgument;
+        if (resizingView) return kResultOk;
+        resizingView = true;
         [editorContainer.window setContentSize:NSMakeSize(rect->getWidth(), rect->getHeight())];
-        [editorContainer setFrameSize:NSMakeSize(rect->getWidth(), rect->getHeight())]; view->onSize(rect); return kResultOk;
+        [editorContainer setFrameSize:NSMakeSize(rect->getWidth(), rect->getHeight())];
+        view->onSize(rect); resizingView = false; return kResultOk;
     }
     bool render(float* const* input, float** output, uint32_t frames) override {
         takeParameterChanges();
@@ -673,11 +703,20 @@ public:
     void setSidechain(float* const* stereo) override { sidechain = stereo; }
     double tailSeconds() override { return tail; }
     NSData* saveState() override {
-        auto componentState = new MemoryStream; auto result = component->getState(componentState);
-        if (result != kResultOk) { componentState->release(); return nil; }
-        NSMutableDictionary* saved = [NSMutableDictionary dictionaryWithObject:componentState->data() forKey:@"component"]; componentState->release();
-        if (controller) { auto s = new MemoryStream; if (controller->getState(s) == kResultOk) saved[@"controller"] = s->data(); s->release(); }
-        return [NSPropertyListSerialization dataWithPropertyList:saved format:NSPropertyListBinaryFormat_v1_0 options:0 error:nil];
+        StateStream componentState(new MemoryStream); auto result = component->getState(componentState.get());
+        if (result != kResultOk) return nil;
+        NSData* componentData = componentState->data();
+        if (!componentData) throw std::runtime_error("The plug-in preset exceeded the size limit. The previous saved preset was kept.");
+        NSMutableDictionary* saved = [NSMutableDictionary dictionaryWithObject:componentData forKey:@"component"];
+        if (controller) {
+            StateStream s(new MemoryStream); auto result = controller->getState(s.get());
+            NSData* controllerData = s->data();
+            if (!controllerData) throw std::runtime_error("The plug-in editor preset exceeded the size limit. The previous saved preset was kept.");
+            if (result == kResultOk) saved[@"controller"] = controllerData;
+        }
+        NSData* encoded = [NSPropertyListSerialization dataWithPropertyList:saved format:NSPropertyListBinaryFormat_v1_0 options:0 error:nil];
+        if (encoded.length > maximumStateBytes) throw std::runtime_error("The plug-in preset exceeded the size limit. The previous saved preset was kept.");
+        return encoded;
     }
     NSArray<NSDictionary*>* parameters() override {
         NSMutableArray* result = [NSMutableArray array]; if (!controller) return result;
@@ -749,19 +788,30 @@ public:
         }
     }
     void setParameter(uint64_t id, double value) override { if (controller) { controller->setParamNormalized((ParamID)id, value); performEdit((ParamID)id, value); } }
-    void editor(void (^completion)(NSView*)) override {
-        if (!controller) { completion(nil); return; }
+    void editor(NSView* parent, EditorCompletion completion) override {
+        if (!controller) { completion(nil, nil); return; }
         if (!view) view = controller->createView(ViewType::kEditor);
-        if (!view || view->isPlatformTypeSupported(kPlatformTypeNSView) != kResultOk) { closeEditor(); completion(nil); return; }
-        ViewRect rect{}; view->getSize(&rect);
-        if (rect.getWidth() < 1 || rect.getHeight() < 1 || rect.getWidth() > 4096 || rect.getHeight() > 4096) { closeEditor(); completion(nil); return; }
-        editorContainer = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, rect.getWidth(), rect.getHeight())];
+        if (!view) { completion(nil, nil); return; }
+        if (view->isPlatformTypeSupported(kPlatformTypeNSView) != kResultOk) {
+            closeEditor(); completion(nil, @"This plug-in's native editor does not support macOS views."); return;
+        }
+        editorContainer = parent;
         view->setFrame(this);
-        if (view->attached((__bridge void*)editorContainer, kPlatformTypeNSView) != kResultOk) { closeEditor(); completion(nil); return; }
-        completion(editorContainer);
+        // Some editors cannot report a size until attached, and may request a
+        // resize from inside attached(). The real window and frame callback
+        // must both exist before that call.
+        if (view->attached((__bridge void*)editorContainer, kPlatformTypeNSView) != kResultOk) {
+            closeEditor(); completion(nil, @"The plug-in's native editor could not attach to its window. Try opening it again."); return;
+        }
+        viewAttached = true;
+        ViewRect rect{};
+        if (view->getSize(&rect) == kResultOk && rect.getWidth() > 0 && rect.getHeight() > 0
+            && rect.getWidth() <= 4096 && rect.getHeight() <= 4096) resizeView(view, &rect);
+        completion(editorContainer, nil);
     }
     void closeEditor() override {
-        if (view) { if (editorContainer) view->removed(); view->setFrame(nullptr); view->release(); view = nullptr; }
+        if (view) { if (viewAttached) view->removed(); view->setFrame(nullptr); view->release(); view = nullptr; }
+        viewAttached = false; resizingView = false;
         editorContainer = nil;
     }
 };

@@ -28,12 +28,16 @@ final class PluginRackManager: ObservableObject {
         var sampleRate: Double { Double(format.sampleRate) }
         var rack: PluginRack
         let requestedRack: PluginRack
+        let blockFrames: Int
         var session: PluginHostSession?
-        init(profileID: UUID, format: AudioFormatDescriptor, rack: PluginRack) {
+        var needsReload = false
+        init(profileID: UUID, format: AudioFormatDescriptor, rack: PluginRack, blockFrames: Int = PluginHostSession.maximumFrames) {
             self.profileID = profileID; self.format = format.signalSignature; self.rack = rack; self.requestedRack = rack
+            self.blockFrames = blockFrames
         }
         func matches(_ plan: AudioRuntimePlan, allowRequested: Bool = false) -> Bool {
-            profileID == plan.intent.id && format == plan.dspInputFormat.signalSignature
+            !needsReload && profileID == plan.intent.id && format == plan.dspInputFormat.signalSignature
+                && blockFrames == (plan.usesExclusivePluginOutput ? plan.processingGraph.chunkSize : PluginHostSession.maximumFrames)
                 && (rack.audioConfiguration == (plan.renderConfiguration.pluginRack ?? PluginRack()).audioConfiguration
                     || (allowRequested && requestedRack.audioConfiguration == (plan.renderConfiguration.pluginRack ?? PluginRack()).audioConfiguration)) && session?.errorMessage == nil
         }
@@ -45,11 +49,16 @@ final class PluginRackManager: ObservableObject {
     private let sidechains: PluginSidechainHub
     var stateChanged: ((UUID, UUID, Data) -> Void)?
     var editorClosed: ((UUID, UUID) -> Void)?
+    var linkedEditorChanged: ((UUID) -> Void)?
     var midiLearned: ((UUID, PluginMIDIMapping) -> Void)?
     private var controlModels: [UUID: PluginControlsModel] = [:]
     private var midiModels: [UUID: PluginMIDIStatus] = [:]
     private var inspecting: Set<UUID> = []
-    private var nativeEditors: Set<UUID> = []
+    // Track the owning session as well as the slot so a retired host cannot
+    // close an editor that has already moved to the replacement rack.
+    private var nativeEditors: [UUID: UUID] = [:]
+    private var closingNativeEditors: Set<UUID> = []
+    private var editorPositions: [UUID: [String: Double]] = [:]
     private var active: Prepared?
     private var pending: Prepared?
     // Keep the old prepared rack alive through transactional rollback.
@@ -67,7 +76,8 @@ final class PluginRackManager: ObservableObject {
         if previous?.matches(plan, allowRequested: true) == true { pending = previous; return }
         if pending?.matches(plan, allowRequested: true) == true, !(plan.renderConfiguration.pluginRack ?? PluginRack()).isProcessing || pending?.session != nil { return }
         generation &+= 1; let revision = generation
-        let candidate = Prepared(profileID: plan.intent.id, format: plan.dspInputFormat, rack: (plan.renderConfiguration.pluginRack ?? PluginRack()))
+        let candidate = Prepared(profileID: plan.intent.id, format: plan.dspInputFormat, rack: (plan.renderConfiguration.pluginRack ?? PluginRack()),
+            blockFrames: plan.usesExclusivePluginOutput ? plan.processingGraph.chunkSize : PluginHostSession.maximumFrames)
         pending = candidate
         guard candidate.rack.isProcessing else { return }
         statuses[candidate.profileID] = Status(message: "Loading plug-ins…", loading: true,
@@ -93,13 +103,19 @@ final class PluginRackManager: ObservableObject {
         let candidate: Prepared?
         if pending?.matches(plan, allowRequested: true) == true { candidate = pending }
         else if previous?.matches(plan, allowRequested: true) == true { candidate = previous }
-        else if !(plan.renderConfiguration.pluginRack ?? PluginRack()).isProcessing { candidate = Prepared(profileID: plan.intent.id, format: plan.dspInputFormat, rack: (plan.renderConfiguration.pluginRack ?? PluginRack())) }
+        else if !(plan.renderConfiguration.pluginRack ?? PluginRack()).isProcessing {
+            candidate = Prepared(profileID: plan.intent.id, format: plan.dspInputFormat, rack: (plan.renderConfiguration.pluginRack ?? PluginRack()),
+                blockFrames: plan.usesExclusivePluginOutput ? plan.processingGraph.chunkSize : PluginHostSession.maximumFrames)
+        }
         else { return active?.session }
         let old = active
+        let oldSlots = nativeEditors.compactMap { slotID, ownerID in ownerID == old?.id ? slotID : nil }
+        let openSlots = oldSlots.filter { !closingNativeEditors.contains($0) }
         old?.session?.configureMIDI(.init(), enabled: false)
         old?.session?.setSidechainsEnabled(false)
         old?.session?.closeEditors()
         active = candidate; previous = old; pending = nil
+        for id in oldSlots { nativeEditors[id] = nil; closingNativeEditors.remove(id) }
         sidechainInputs.configure(candidate?.rack.activeSlots.compactMap(\.sidechain) ?? [])
         if let old, old.profileID != candidate?.profileID { statuses[old.profileID]?.active = false }
         if let candidate {
@@ -108,6 +124,11 @@ final class PluginRackManager: ObservableObject {
             candidate.session?.setSidechainsEnabled(true)
             statuses[candidate.profileID] = Status(latencyMilliseconds: Double(candidate.session?.latencyFrames ?? 0) * 1000 / candidate.sampleRate,
                 active: candidate.session != nil)
+            if candidate.profileID == old?.profileID, let session = candidate.session {
+                for id in openSlots where candidate.rack.activeSlots.contains(where: { $0.id == id }) {
+                    presentEditor(slotID: id, owner: candidate, session: session)
+                }
+            }
         }
         for editor in editors.values {
             configureEditorMIDI(editor, enabled: editor.profileID == candidate?.profileID)
@@ -147,19 +168,20 @@ final class PluginRackManager: ObservableObject {
     func openEditor(slot: AudioPluginSlot, profile: DeviceProfile, controlsOnly: Bool = false) async throws {
         guard openingEditors.insert(slot.id).inserted else { return }
         defer { openingEditors.remove(slot.id) }
-        func present(_ session: PluginHostSession) {
+        func present(_ session: PluginHostSession, owner: Prepared) {
             if controlsOnly {
                 inspecting.insert(slot.id)
                 session.control(["command": "parameters", "slotID": slot.id.uuidString])
-            } else { nativeEditors.insert(slot.id); session.openEditor(slotID: slot.id) }
+            } else { presentEditor(slotID: slot.id, owner: owner, session: session) }
         }
         let format = try ActiveAudioRoute(profile: profile).dspInputFormat.signalSignature
         if let active, active.profileID == profile.id, active.format == format,
            active.rack.activeSlots.contains(where: { $0.id == slot.id }), let session = active.session,
            session.errorMessage == nil {
-            present(session); return
+            present(session, owner: active); return
         }
-        if let editor = editors[slot.id], editor.format == format, let session = editor.session { present(session); return }
+        if let editor = editors[slot.id], editor.format == format, let session = editor.session,
+           session.errorMessage == nil { present(session, owner: editor); return }
         editors[slot.id]?.session?.closeEditors()
         var enabled = slot; enabled.isEnabled = true
         let editor = Prepared(profileID: profile.id, format: format, rack: PluginRack(isEnabled: true, slots: [enabled], midi: profile.pluginRack.midi))
@@ -167,8 +189,16 @@ final class PluginRackManager: ObservableObject {
         do {
             editor.session = try await makeSession(editor, editorOnly: true)
             configureEditorMIDI(editor, enabled: active == nil || active?.profileID == profile.id)
-            if let session = editor.session { present(session) }
+            if let session = editor.session { present(session, owner: editor) }
         } catch { editors[slot.id] = nil; throw error }
+    }
+
+    private func presentEditor(slotID: UUID, owner: Prepared, session: PluginHostSession) {
+        nativeEditors[slotID] = owner.id
+        closingNativeEditors.remove(slotID)
+        var command: [String: Any] = ["command": "editor", "slotID": slotID.uuidString]
+        if let position = editorPositions[slotID] { command["position"] = position }
+        session.control(command)
     }
 
     func controls(for slotID: UUID) -> PluginControlsModel {
@@ -234,13 +264,13 @@ final class PluginRackManager: ObservableObject {
         cancelLearn(slotID: slotID)
         control("endParameters", slotID: slotID)
         inspecting.remove(slotID)
-        if !nativeEditors.contains(slotID) { editors[slotID] = nil }
+        if nativeEditors[slotID] == nil { editors[slotID] = nil }
     }
     func closeControls(slotID: UUID) async -> Bool {
         if let owner = editors[slotID] ?? active { await flushEditors(profileID: owner.profileID, close: false) }
         cancelLearn(slotID: slotID); control("endParameters", slotID: slotID)
         inspecting.remove(slotID)
-        if !nativeEditors.contains(slotID) { editors[slotID] = nil; return true }
+        if nativeEditors[slotID] == nil { editors[slotID] = nil; return true }
         return false
     }
 
@@ -256,11 +286,11 @@ final class PluginRackManager: ObservableObject {
     }
 
     private func makeSession(_ prepared: Prepared, editorOnly: Bool = false) async throws -> PluginHostSession {
-        let rack = prepared.rack, rate = prepared.sampleRate, token = prepared.id
+        let rack = prepared.rack, rate = prepared.sampleRate, token = prepared.id, blockFrames = prepared.blockFrames
         let hub = sidechains
         let roles = prepared.format.channels.map { $0.role ?? .unknown }
         return try await Task.detached(priority: .userInitiated) { [weak self] in
-            try PluginHostSession(rack: rack, sampleRate: rate, channelRoles: roles, editorOnly: editorOnly, sidechainHub: hub) { [weak self] event in
+            try PluginHostSession(rack: rack, sampleRate: rate, channelRoles: roles, editorOnly: editorOnly, blockFrames: blockFrames, sidechainHub: hub) { [weak self] event in
                 Task { @MainActor [weak self] in self?.receive(event, token: token) }
             }
         }.value
@@ -269,6 +299,16 @@ final class PluginRackManager: ObservableObject {
     private func receive(_ event: [String: Any], token: UUID) {
         guard let owner = ([active, pending] + editors.values.map(Optional.some)).compactMap({ $0 }).first(where: { $0.id == token }) else { return }
         switch event["event"] as? String {
+        case "editorClosing":
+            guard let text = event["slotID"] as? String, let id = UUID(uuidString: text),
+                  nativeEditors[id] == owner.id else { return }
+            closingNativeEditors.insert(id)
+        case "editorPosition":
+            guard let text = event["slotID"] as? String, let id = UUID(uuidString: text),
+                  nativeEditors[id] == owner.id,
+                  let position = event["position"] as? [String: Double],
+                  let x = position["x"], let y = position["y"], x.isFinite, y.isFinite else { return }
+            editorPositions[id] = ["x": x, "y": y]
         case "ready":
             for value in event["capabilities"] as? [[String: Any]] ?? [] {
                 guard let text = value["slotID"] as? String, let id = UUID(uuidString: text) else { continue }
@@ -331,14 +371,30 @@ final class PluginRackManager: ObservableObject {
             stateChanged?(owner.profileID, id, data)
         case "editorClosed":
             guard let text = event["slotID"] as? String, let id = UUID(uuidString: text) else { return }
+            guard nativeEditors[id] == owner.id else { return }
+            // A native editor may load samples/presets that have no parameter
+            // events. Prepare new linked copies from the complete captured
+            // preset instead of mutating live render instances on the UI thread.
+            var reloadLinked = false
+            if event["requiresReload"] as? Bool == true,
+               let encoded = event["state"] as? String, let data = Data(base64Encoded: encoded),
+               data.count <= PluginRack.maximumStateBytes,
+               let index = owner.rack.slots.firstIndex(where: { $0.id == id }) {
+                owner.rack.slots[index].state = data
+                stateChanged?(owner.profileID, id, data)
+                owner.needsReload = true
+                reloadLinked = owner === active
+            }
             if controls(for: id).mappingActive {
                 cancelLearn(slotID: id)
                 control("endParameters", slotID: id)
                 inspecting.remove(id)
             }
             editorClosed?(owner.profileID, id)
-            nativeEditors.remove(id)
+            nativeEditors[id] = nil
+            closingNativeEditors.remove(id)
             if editors[id] === owner, !inspecting.contains(id) { editors[id] = nil }
+            if reloadLinked { linkedEditorChanged?(owner.profileID) }
         default: break
         }
     }

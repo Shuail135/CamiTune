@@ -91,19 +91,19 @@ enum SystemDiagnostics {
             },
             check("S08", "Runtime", "Runtime session and engine") {
                 guard state.isActive else { return .init(status: .skipped, summary: "CamiTune is not processing audio") }
-                return .init(status: state.activeSession != nil && state.dsp.isRunning ? .passed : .failed,
-                             summary: state.dsp.isRunning ? "Engine is running" : "Engine is not running")
+                return .init(status: state.activeSession != nil && state.outputEngineIsRunning ? .passed : .failed,
+                             summary: state.outputEngineIsRunning ? "Output engine is running" : "Output engine is not running")
             },
             check("S09", "Runtime", "Audio delivery and PCM pipeline") {
                 guard state.isActive else { return .init(status: .skipped, summary: "CamiTune is not processing audio") }
                 var status = state.meters.status
                 status.isActive = state.isActive
-                status.engineIsRunning = state.dsp.isRunning
+                status.engineIsRunning = state.outputEngineIsRunning
                 status.transportError = state.driverTransport.runtimeError
                 status.route = AudioRouteDiagnostics(transport: state.driverTransport.statistics, router: state.pcmRouter.statistics)
                 return pipelineObservation(status)
             },
-            check("S10", "Runtime", "DSP telemetry") {
+            check("S10", "Runtime", "Output telemetry") {
                 var status = state.meters.status
                 status.isActive = state.isActive
                 return telemetryObservation(status)
@@ -138,20 +138,20 @@ enum SystemDiagnostics {
                        } ?? "None"),
                        .init(name: "Last recovery uptime (ns)", value: route.pcmQueue.lastRecoveryUptime.map(String.init) ?? "None"),
                        .init(name: "Last recovery queue / incoming / dropped", value: "\(route.pcmQueue.lastRecoveryQueuedFrames) / \(route.pcmQueue.lastRecoveryIncomingFrames) / \(route.pcmQueue.lastRecoveryDroppedFrames) frames @ \(route.pcmQueue.lastRecoverySampleRate) Hz")],
-            details: "Delivery counters are cumulative for the current runtime. DSP state and load are assessed only while telemetry is fresh; RPC availability is reported separately.")
+            details: "Delivery counters are cumulative for the current runtime. Output state and load are assessed only while telemetry is fresh; telemetry availability is reported separately.")
     }
 
     static func telemetryObservation(_ status: AudioRuntimeStatus, at now: Date = Date()) -> DiagnosticObservation {
         let assessment = status.telemetryAssessment(at: now)
         var evidence = [DiagnosticEvidence(name: "Polling", value: status.telemetryPollingActive ? "Active" : "Paused"),
-                        .init(name: "Last successful diagnostic RPC", value: status.lastTelemetryUpdatedAt?.ISO8601Format() ?? "None")]
+                        .init(name: "Last output status update", value: status.lastTelemetryUpdatedAt?.ISO8601Format() ?? "None")]
         if status.hasFreshTelemetry(at: now) {
-            evidence += [.init(name: "DSP engine state", value: status.engineState),
-                         .init(name: "DSP stop reason", value: status.stopReason),
-                         .init(name: "DSP processing load", value: "\(status.processingLoadPercent)%")]
+            evidence += [.init(name: "Output engine state", value: status.engineState),
+                         .init(name: "Output stop reason", value: status.stopReason),
+                         .init(name: "Engine processing load", value: status.processingLoadPercent.map { "\($0)%" } ?? "Unavailable")]
         }
         return .init(status: diagnosticStatus(assessment.health),
-                     summary: assessment.reasons.isEmpty ? "DSP diagnostic RPC is current" : assessment.explanation,
+                     summary: assessment.reasons.isEmpty ? "Output telemetry is current" : assessment.explanation,
                      evidence: evidence)
     }
 

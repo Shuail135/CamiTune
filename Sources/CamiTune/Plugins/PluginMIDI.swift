@@ -79,6 +79,16 @@ final class PluginControlsModel: ObservableObject {
 
 @MainActor
 extension AppState {
+    func togglePluginKeyboardInput(profileID: UUID, slotID: UUID) async throws {
+        let profile = try historyProfile(profileID)
+        guard profile.pluginRack.slots.contains(where: { $0.id == slotID }) else { return }
+        var midi = profile.pluginRack.midi
+        if !midi.keyboardInputDisabledSlotIDs.insert(slotID).inserted {
+            midi.keyboardInputDisabledSlotIDs.remove(slotID)
+        }
+        try await commitPluginMIDI(midi, profileID: profileID, action: "Change Plug-in Keyboard Input")
+    }
+
     func commitPluginMIDI(_ configuration: PluginMIDIConfiguration, profileID: UUID, action: String) async throws {
         guard profiles.settingsMutationsAllowed else { throw ProfileSettingsError.busy }
         try configuration.validate()

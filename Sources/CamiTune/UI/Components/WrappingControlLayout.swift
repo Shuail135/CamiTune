@@ -5,12 +5,22 @@ struct WrappingControlLayout: Layout {
     var horizontalSpacing: CGFloat = 14
     var verticalSpacing: CGFloat = 8
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        arrangement(width: proposal.width ?? .infinity, subviews: subviews).size
+    struct Cache { var sizes: [CGSize] }
+    func makeCache(subviews: Subviews) -> Cache {
+        Cache(sizes: subviews.map { $0.sizeThatFits(.unspecified) })
+    }
+    func updateCache(_ cache: inout Cache, subviews: Subviews) { cache = makeCache(subviews: subviews) }
+    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect,
+        proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGFloat? { nil }
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect,
+        proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGFloat? { nil }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        arrangement(width: proposal.width ?? .infinity, sizes: cache.sizes).size
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let result = arrangement(width: bounds.width, subviews: subviews)
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        let result = arrangement(width: bounds.width, sizes: cache.sizes)
         for (index, view) in subviews.enumerated() {
             let frame = result.frames[index]
             view.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
@@ -18,14 +28,13 @@ struct WrappingControlLayout: Layout {
         }
     }
 
-    private func arrangement(width: CGFloat, subviews: Subviews) -> (size: CGSize, frames: [CGRect]) {
+    private func arrangement(width: CGFloat, sizes: [CGSize]) -> (size: CGSize, frames: [CGRect]) {
         var frames: [CGRect] = []
         var x: CGFloat = 0
         var y: CGFloat = 0
         var rowHeight: CGFloat = 0
         var usedWidth: CGFloat = 0
-        for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
+        for size in sizes {
             if x > 0 && x + size.width > width {
                 x = 0
                 y += rowHeight + verticalSpacing

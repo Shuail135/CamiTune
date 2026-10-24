@@ -320,25 +320,28 @@ private struct SpectrumFrequencyAxis: View {
     let xRange: ClosedRange<Double>
     let scale: CGFloat
     var body: some View {
-        GeometryReader { geometry in
+        // Axis labels are artwork, not controls. Draw them with the graph so
+        // each animated width does not rebuild eight Text/GeometryReader trees.
+        Canvas(rendersAsynchronously: true) { context, size in
             let frequencies = SpectrumFrequencyTicks.values(in: xRange)
-            let fontSize = SpectrumFrequencyTicks.fontSize(in: xRange, width: geometry.size.width, scale: scale)
-            ForEach(frequencies, id: \.self) { frequency in
-                Text(SpectrumFrequencyTicks.label(frequency))
-                    .overlay {
-                        GeometryReader { label in
-                            if frequency == frequencies.last {
-                                Text("Hz")
-                                    .fixedSize()
-                                    .offset(x: label.size.width + 3 * scale)
-                            }
-                        }
-                    }
+            let fontSize = SpectrumFrequencyTicks.fontSize(in: xRange, width: size.width, scale: scale)
+            for frequency in frequencies {
+                let label = context.resolve(Text(SpectrumFrequencyTicks.label(frequency))
                     .font(.system(size: fontSize).monospacedDigit())
-                    .fixedSize()
-                    .position(x: SpectrumFrequencyTicks.x(frequency, in: xRange, width: geometry.size.width, scale: scale), y: 8 * scale)
+                    .foregroundColor(.secondary))
+                let x = SpectrumFrequencyTicks.x(frequency, in: xRange, width: size.width, scale: scale)
+                context.draw(label, at: CGPoint(x: x, y: 8 * scale))
+                if frequency == frequencies.last {
+                    let labelSize = label.measure(in: CGSize(width: CGFloat.infinity, height: CGFloat.infinity))
+                    let unit = context.resolve(Text("Hz")
+                        .font(.system(size: fontSize).monospacedDigit())
+                        .foregroundColor(.secondary))
+                    context.draw(unit, at: CGPoint(x: x + labelSize.width / 2 + 3 * scale, y: 8 * scale), anchor: .leading)
+                }
             }
         }
-        .foregroundStyle(.secondary)
+        .accessibilityElement()
+        .accessibilityLabel("Frequency in hertz")
+        .accessibilityValue(SpectrumFrequencyTicks.values(in: xRange).map { String(Int($0)) }.joined(separator: ", "))
     }
 }

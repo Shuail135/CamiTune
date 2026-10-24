@@ -147,11 +147,9 @@ final class PluginHostConnection: @unchecked Sendable {
     func control(_ command: [String: Any]) { host?.send(command) }
     func configureMIDI(_ configuration: PluginMIDIConfiguration, enabled: Bool) {
         var value = configuration; value.isEnabled = value.isEnabled && enabled
-        // A saved destination may have been removed, bypassed, or belong to
-        // another helper. Never substitute another slot or restrict mappings.
-        if let destination = value.programChangeSlotID, !slotIDs.contains(destination) {
-            value.programChangeSlotID = nil
-        }
+        // Legacy profiles can retain a program destination, but preset changes
+        // are no longer routed. Keyboard playing and mappings are independent.
+        value.programChangeSlotID = nil
         guard let data = try? JSONEncoder().encode(value), let json = try? JSONSerialization.jsonObject(with: data) else { return }
         host?.send(["command": "configureMIDI", "configuration": json])
     }
@@ -180,10 +178,20 @@ final class PluginHostConnection: @unchecked Sendable {
         sequence &+= 1
         var request = (Self.protocolVersion, UInt32(frames), sequence, UInt32(reset ? 1 : 0))
         let sent = withUnsafeBytes(of: &request) { transfer(UnsafeMutableRawBufferPointer(mutating: $0), writing: true, deadline: deadline) }
+        guard sent == .complete else { fail(sent.message); return false }
         var reply = (UInt32(0), UInt32(0), UInt32(0), UInt32(0))
-        let received = sent && withUnsafeMutableBytes(of: &reply) { transfer($0, writing: false, deadline: deadline) }
-        guard received, reply.0 == Self.protocolVersion, reply.1 == 0, reply.2 == sequence else {
-            fail(reply.1 == 3 ? "A plug-in produced invalid audio. Bypass the rack to continue safely." : "A plug-in crashed, stalled, or could not process audio. Bypass the rack to continue.")
+        let received = withUnsafeMutableBytes(of: &reply) { transfer($0, writing: false, deadline: deadline) }
+        guard received == .complete else { fail(received.message); return false }
+        guard reply.0 == Self.protocolVersion, reply.2 == sequence else {
+            fail("The plug-in host returned an invalid audio response. Reload the rack to continue.")
+            return false
+        }
+        guard reply.1 == 0 else {
+            switch reply.1 {
+            case 2: fail("A plug-in rejected an audio processing request. Bypass or reload the rack to continue.")
+            case 3: fail("A plug-in produced invalid audio. Bypass the rack to continue safely.")
+            default: fail("The plug-in host could not continue processing audio. Bypass or reload the rack to continue.")
+            }
             return false
         }
         buffer.baseAddress!.update(from: memory.assumingMemoryBound(to: Float.self), count: count)
@@ -193,22 +201,39 @@ final class PluginHostConnection: @unchecked Sendable {
     func stop() { host?.stop() }
     func setSidechainsEnabled(_ enabled: Bool) { sidechains.forEach { $0?.setEnabled(enabled) } }
 
-    private func transfer(_ buffer: UnsafeMutableRawBufferPointer, writing: Bool, deadline: UInt64) -> Bool {
+    private enum TransferResult {
+        case complete, timedOut, closed, failed
+
+        var message: String {
+            switch self {
+            case .timedOut: return "The plug-in host timed out while processing audio. Try increasing the audio buffer or reloading the rack."
+            case .closed: return "The plug-in host closed its audio connection unexpectedly. Reload the rack to continue."
+            case .failed, .complete: return "The plug-in audio connection failed. Reload the rack to continue."
+            }
+        }
+    }
+
+    private func transfer(_ buffer: UnsafeMutableRawBufferPointer, writing: Bool, deadline: UInt64) -> TransferResult {
         var offset = 0
         while offset < buffer.count {
             let now = DispatchTime.now().uptimeNanoseconds
-            guard now < deadline else { return false }
+            // Do not start another request after the shared watchdog expires.
+            // For a reply, first drain bytes already queued by the helper: the
+            // parent itself may have been descheduled across the deadline.
+            if writing && now >= deadline { return .timedOut }
             var descriptor = pollfd(fd: socketFD, events: Int16(writing ? POLLOUT : POLLIN), revents: 0)
-            let remaining = Int32(max(1, (deadline - now + 999_999) / 1_000_000))
+            let remaining = now < deadline ? Int32(clamping: (deadline - now + 999_999) / 1_000_000) : 0
             let polled = Darwin.poll(&descriptor, 1, remaining)
             if polled < 0 && errno == EINTR { continue }
-            guard polled > 0, descriptor.revents & Int16(POLLERR | POLLNVAL) == 0 else { return false }
+            if polled == 0 { return .timedOut }
+            guard polled > 0, descriptor.revents & Int16(POLLNVAL) == 0 else { return .failed }
             let pointer = buffer.baseAddress!.advanced(by: offset)
             let count = writing ? Darwin.write(socketFD, pointer, buffer.count - offset) : Darwin.read(socketFD, pointer, buffer.count - offset)
             if count < 0 && (errno == EINTR || errno == EAGAIN) { continue }
-            guard count > 0 else { return false }; offset += count
+            if count == 0 || (count < 0 && (errno == EPIPE || errno == ECONNRESET)) { return .closed }
+            guard count > 0 else { return .failed }; offset += count
         }
-        return true
+        return .complete
     }
 
     private func fail(_ message: String) {

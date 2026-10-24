@@ -41,7 +41,7 @@ struct SettingsView: View {
     @State private var loginItemNotice: LoginItemManager.Notice?
     @AppStorage("hideCloseKeepsRunningHint") private var hideCloseKeepsRunningHint = false
     @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system
-    private let categories = ["General", "Drivers & Components", "Section Layout", "Diagnostics"]
+    private let categories = ["General", "App Audio", "Drivers & Components", "Section Layout", "Diagnostics"]
 
     init(state: AppState) {
         self.state = state
@@ -62,6 +62,9 @@ struct SettingsView: View {
                         .scrollBounceWhenNeeded()
                 case "Drivers & Components":
                     SetupView(state: state, embedded: true)
+                case "App Audio":
+                    ScrollView { PerAppAudioView(state: state) }
+                        .scrollBounceWhenNeeded()
                 case "Section Layout":
                     Picker("Device Type", selection: $type) {
                         ForEach(ProfileEndpointKind.allCases, id: \.self) { Text($0.displayName).tag($0) }
@@ -118,51 +121,33 @@ struct SettingsView: View {
 
     private var generalSettings: some View {
         VStack(alignment: .leading, spacing: 16) {
-            GroupBox {
-                Picker("Appearance", selection: $appearance) {
-                    ForEach(AppAppearance.allCases, id: \.self) { option in
-                        Text(option.displayName).tag(option)
-                    }
+            Picker("Appearance", selection: $appearance) {
+                ForEach(AppAppearance.allCases, id: \.self) { option in
+                    Text(option.displayName).tag(option)
                 }
-                .pickerStyle(.menu)
-                .padding(6)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            GroupBox {
-                Toggle("Start CamiTune at login", isOn: Binding(
-                    get: { loginItem.isEnabled }, set: { loginItemNotice = loginItem.setEnabled($0) }))
-                    .disabled(loginItem.isUpdating)
-                    .padding(6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .alert(loginItemNotice?.title ?? "Login Startup", isPresented: Binding(
-                        get: { loginItemNotice != nil },
-                        set: { if !$0 { loginItemNotice = nil } }), presenting: loginItemNotice) { notice in
-                            if notice.requiresApproval {
-                                Button("Open System Settings") { loginItem.openSystemSettings() }
-                            }
-                            Button("OK", role: .cancel) { }
-                        } message: { notice in
-                            Text(notice.message)
+            .pickerStyle(.menu)
+            .fixedSize()
+            Toggle("Start CamiTune at login", isOn: Binding(
+                get: { loginItem.isEnabled }, set: { loginItemNotice = loginItem.setEnabled($0) }))
+                .disabled(loginItem.isUpdating)
+                .alert(loginItemNotice?.title ?? "Login Startup", isPresented: Binding(
+                    get: { loginItemNotice != nil },
+                    set: { if !$0 { loginItemNotice = nil } }), presenting: loginItemNotice) { notice in
+                        if notice.requiresApproval {
+                            Button("Open System Settings") { loginItem.openSystemSettings() }
                         }
-            }
-            GroupBox {
-                Toggle("Automatically check for updates", isOn: $updateChecker.automaticallyChecksForUpdates)
-                    .padding(6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+                        Button("OK", role: .cancel) { }
+                    } message: { notice in
+                        Text(notice.message)
+                    }
+            Toggle("Automatically check for updates", isOn: $updateChecker.automaticallyChecksForUpdates)
+            Divider().padding(.vertical, 4)
             Text("Confirmations").font(.headline)
-            GroupBox {
-                Toggle("Show profile enabled explanation", isOn: $store.showProfileEnabledExplanation)
-                    .padding(6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            GroupBox {
-                Toggle("Show window closing reminder", isOn: Binding(
-                    get: { !hideCloseKeepsRunningHint },
-                    set: { hideCloseKeepsRunningHint = !$0 }))
-                .padding(6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            Toggle("Show profile enabled explanation", isOn: $store.showProfileEnabledExplanation)
+            Toggle("Show window closing reminder", isOn: Binding(
+                get: { !hideCloseKeepsRunningHint },
+                set: { hideCloseKeepsRunningHint = !$0 }))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 4)

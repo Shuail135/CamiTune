@@ -6,6 +6,7 @@ import AppKit
 struct SectionLayoutEditor: View {
     let type: ProfileEndpointKind
     @Binding var layout: ProfileSectionLayout
+    var isExclusiveOutput = false
     var requiresConfirmation: (ProfileSection) -> Bool = { _ in false }
     @State private var confirmingHide = false
     @State private var pendingLayout: ProfileSectionLayout?
@@ -23,13 +24,28 @@ struct SectionLayoutEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Picker("Default Equalizer", selection: $layout.equalizer) {
-                ForEach(EqualizerPresentation.allCases) { Text($0.title).tag($0) }
+            if isExclusiveOutput {
+                Label("Exclusive mode hides native audio controls. Device Setup always remains visible. App Audio, Plug-ins, and Meters & Status can be shown or hidden without stopping audio. Switch back to Through CamillaDSP to restore your section layout.", systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+                ForEach([ProfileSection.meters, .appAudio, .plugins]) { section in
+                    Toggle("Show \(section.title)", isOn: Binding(
+                        get: { !layout.hidden.contains(section) },
+                        set: { shown in
+                            var updated = layout
+                            if shown { updated.hidden.remove(section) }
+                            else { updated.hidden.insert(section) }
+                            layout = updated
+                        }))
+                }
+            } else {
+                Picker("Default Equalizer", selection: $layout.equalizer) {
+                    ForEach(EqualizerPresentation.allCases) { Text($0.title).tag($0) }
+                }
+                Label("Drag the reorder symbol to arrange sections. Unchecked sections stop processing and keep their saved settings.", systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+                SectionLayoutList(type: type, layout: confirmedLayout)
+                    .frame(minHeight: 280)
             }
-            Label("Drag the reorder symbol to arrange sections. Unchecked sections stop processing and keep their saved settings.", systemImage: "info.circle")
-                .font(.caption).foregroundStyle(.secondary)
-            SectionLayoutList(type: type, layout: confirmedLayout)
-                .frame(minHeight: 280)
         }
         .alert("Disable \(pendingSection?.title ?? "section")?", isPresented: $confirmingHide) {
             Button("Disable", role: .destructive) {

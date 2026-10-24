@@ -10,7 +10,9 @@
 #include <atomic>
 #include <chrono>
 #include <unordered_map>
-#import "fixtures/TestAudioUnit.h"
+#ifdef CAMITUNE_PLUGIN_TESTING
+#import "TestAudioUnit.h"
+#endif
 
 namespace CamiTunePlugins {
 NSArray<NSDictionary*>* scanAU() {
@@ -97,6 +99,7 @@ class AUEffect final : public Effect {
     float* const* sidechain = nullptr;
     NSMutableArray<NSDictionary*>* auxiliaryInputs = [NSMutableArray array];
     NSViewController* viewController = nil;
+    uint64_t editorGeneration = 0;
     double rate, sampleTime = 0;
     struct BufferList { UInt32 count; AudioBuffer buffers[maximumChannels]; };
 public:
@@ -226,7 +229,10 @@ public:
         if (duplicateOutput) for (uint32_t c = 0; c < channels; ++c) std::copy_n(monoOutput.data(), frames, output[c]);
         return true;
     }
-    void reset() override { [unit reset]; sampleTime = 0; }
+    // Reset processing history without reusing a render timestamp. Some Audio
+    // Units cache the last render even across reset and otherwise return an old
+    // (or silent) block when the next request starts at sample zero again.
+    void reset() override { [unit reset]; }
     bool isInstrument() override { return instrument; }
     NSArray<NSDictionary*>* sidechainBuses() override { return auxiliaryInputs; }
     void setSidechain(float* const* stereo) override { sidechain = stereo; }
@@ -308,12 +314,30 @@ public:
             }
         }];
     }
-    void editor(void (^completion)(NSView*)) override {
+    void editor(NSView* parent, EditorCompletion completion) override {
+        const auto generation = ++editorGeneration;
         [unit requestViewControllerWithCompletionHandler:^(NSViewController* controller) {
-            dispatch_async(dispatch_get_main_queue(), ^{ viewController = controller; completion(controller.view); });
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (generation != editorGeneration) return;
+                @try { try {
+                viewController = controller;
+                NSView* content = controller.view;
+                if (content && (content.frame.size.width <= 0 || content.frame.size.height <= 0)) {
+                    NSSize size = controller.preferredContentSize;
+                    if (size.width <= 0 || size.height <= 0) size = parent.bounds.size;
+                    [content setFrameSize:size];
+                }
+                completion(content, nil);
+                } catch (const std::exception& error) {
+                    viewController = nil; completion(nil, @(error.what()));
+                } } @catch (NSException*) {
+                    viewController = nil;
+                    completion(nil, @"The plug-in could not load its native editor. Try opening it again.");
+                }
+            });
         }];
     }
-    void closeEditor() override { viewController = nil; }
+    void closeEditor() override { ++editorGeneration; viewController = nil; }
 };
 std::unique_ptr<Effect> makeAU(NSDictionary* slot, double rate, NSArray<NSString*>* roles) { return std::make_unique<AUEffect>(slot, rate, roles); }
 }

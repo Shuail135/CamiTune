@@ -33,22 +33,23 @@ struct ProfileEditorView: View {
     }
 
     private var layout: ProfileSectionLayout { store.effectiveLayout(for: profile) }
-    private var sections: [ProfileSection] { layout.visibleSections(for: profile) }
+    private var sections: [ProfileSection] { layout.editorSections(for: profile) }
     private func updateVisuals() {
         // EQ bands and per-channel controls also display spectrum/level data.
-        let demand = layout.visualDemand(for: profile.effectiveEndpointKind)
+        let demand = layout.visualDemand(for: profile)
         state.setRuntimeVisuals(profileID: profile.id, active: true,
             meters: demand.meters, spectrum: demand.spectrum)
         if !demand.spectrum { graphModel.cancel() }
     }
 
     private func seedGraphIfNeeded() {
-        if layout.visualDemand(for: profile.effectiveEndpointKind).spectrum {
+        if layout.visualDemand(for: profile).spectrum {
             graphModel.seed(profile: profile, state: state)
         } else { graphModel.cancel() }
     }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 ProfileHeaderLayout {
@@ -115,13 +116,22 @@ struct ProfileEditorView: View {
 
                 ForEach(Array(sections.prefix(preparedSectionCount))) { section in
                     StableEditorSection(revision: ProfileEditorSectionRevision(profile: profile, layout: layout)) {
-                        profileSection(section)
+                        profileSection(section).id(profile.deviceTypeConfigurationKey)
                     }
-                    .id("\(profile.id):\(profile.deviceTypeConfigurationKey):\(section.rawValue)")
+                    .groupBoxStyle(ProfileSectionBoxStyle())
+                    .id(section)
                 }
             }
             .padding(28)
             .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .task(id: commands.appAudioRevealProfileID) {
+            guard commands.appAudioRevealProfileID == profile.id else { return }
+            preparedSectionCount = sections.count
+            await Task.yield()
+            proxy.scrollTo(ProfileSection.appAudio, anchor: .top)
+            commands.appAudioRevealProfileID = nil
+        }
         }
         .disclosureGroupStyle(SectionDisclosureStyle())
         .task(id: sections) {
@@ -158,6 +168,7 @@ struct ProfileEditorView: View {
                 seedGraphIfNeeded()
             }
         }
+        .onChange(of: profile.pluginRack.outputMode) { _ in updateVisuals(); seedGraphIfNeeded() }
         .onChange(of: profile.deviceTypeConfigurationKey) { _ in updateVisuals(); seedGraphIfNeeded() }
         .onChange(of: profile.id) { _ in
             commitProfileRename()
@@ -187,6 +198,8 @@ struct ProfileEditorView: View {
         switch section {
         case .deviceSetup:
             ProfileRoutingAndDeviceView(state: state, coreAudio: coreAudio, profile: $profile, graphModel: graphModel)
+        case .appAudio:
+            PerAppAudioView(state: state, profile: profile)
         case .meters:
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
@@ -315,6 +328,11 @@ struct ProfileEditorView: View {
 /// Keep the status under the name's trailing edge, clamped to its leading edge
 /// for short names. The status uses the existing gap below the header.
 struct ProfileHeaderLayout: Layout {
+    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect,
+        proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect,
+        proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
+
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         subviews.first?.sizeThatFits(proposal) ?? .zero
     }
@@ -342,6 +360,27 @@ private extension HorizontalAlignment {
     }
 
     static let profileNameTrailing = HorizontalAlignment(ProfileNameTrailing.self)
+}
+
+private struct ProfileSectionBoxStyle: GroupBoxStyle {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func makeBody(configuration: Configuration) -> some View {
+        // In light appearance, stay just below the surrounding profile surface.
+        let background = colorScheme == .dark
+            ? Color(.sRGB, red: 53.0 / 255, green: 54.0 / 255, blue: 54.0 / 255, opacity: 1)
+            : Color.black.opacity(0.015)
+        VStack(alignment: .leading, spacing: 8) {
+            configuration.label.font(.headline)
+            configuration.content.frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(8)
+        .background(background, in: RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
+        }
+    }
 }
 
 private struct ProfileEditorSectionRevision: Equatable {

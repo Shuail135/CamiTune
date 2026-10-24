@@ -80,7 +80,8 @@ final class PCMRouter: @unchecked Sendable {
     /// on worker joins. In particular, AppState can await this from MainActor
     /// without freezing SwiftUI for the branch shutdown timeouts below.
     func start(
-        camillaSink: FileHandle,
+        camillaSink: FileHandle? = nil,
+        outputSink: (any PCMOutputSink)? = nil,
         activeRoute: ActiveAudioRoute? = nil,
         renderConfiguration: RenderConfiguration,
         deliveryConfiguration: PCMDeliveryConfiguration,
@@ -92,7 +93,7 @@ final class PCMRouter: @unchecked Sendable {
         analyzerConsumer: AnalyzerConsumer? = nil
     ) async {
         await Task.detached(priority: .userInitiated) { [self] in
-            startSynchronously(camillaSink: camillaSink, activeRoute: activeRoute,
+            startSynchronously(camillaSink: camillaSink, outputSink: outputSink, activeRoute: activeRoute,
                 renderConfiguration: renderConfiguration, deliveryConfiguration: deliveryConfiguration,
                 backendChunkFrames: backendChunkFrames,
                 configurationObserver: configurationObserver, referenceTopology: referenceTopology, pluginProcessor: pluginProcessor,
@@ -103,7 +104,8 @@ final class PCMRouter: @unchecked Sendable {
     /// Only prepared configuration enters the production writer. Fixture defaults
     /// live with diagnostics, rather than providing a second runtime plan path.
     private func startSynchronously(
-        camillaSink: FileHandle,
+        camillaSink: FileHandle?,
+        outputSink: (any PCMOutputSink)?,
         activeRoute: ActiveAudioRoute?,
         renderConfiguration: RenderConfiguration,
         deliveryConfiguration: PCMDeliveryConfiguration,
@@ -116,7 +118,7 @@ final class PCMRouter: @unchecked Sendable {
     ) {
         stop()
         let camillaBranch = CamillaDeliveryPipeline(
-            sink: try? CamillaPCMSink(duplicating: camillaSink.fileDescriptor),
+            sink: outputSink ?? camillaSink.flatMap { try? CamillaPCMSink(duplicating: $0.fileDescriptor) },
             hrtfDatabase: BundledHRTFDatabase.shared, performanceSource: performanceSource, activeRoute: activeRoute,
             renderConfiguration: renderConfiguration, deliveryConfiguration: deliveryConfiguration,
             backendChunkFrames: backendChunkFrames,

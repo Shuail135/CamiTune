@@ -147,13 +147,13 @@ enum AudioRuntimeHealthReason: Sendable, Equatable {
     var summary: String {
         switch self {
         case .runtimeInactive: return "Audio processing is inactive."
-        case .engineUnavailable: return "The CamillaDSP process is not running."
-        case .engineStalled: return "CamillaDSP reports a stalled engine."
-        case .engineStopped(let reason): return "CamillaDSP stop reason: \(reason)."
+        case .engineUnavailable: return "The audio output engine is not running."
+        case .engineStalled: return "The audio output engine has stalled."
+        case .engineStopped(let reason): return "Audio output stopped: \(reason)."
         case .transportFailure(let error): return "Driver transport error: \(error)"
         case .sourceFormatError(let error): return "Source format error: \(error)"
-        case .recentClipping: return "DSP output clipping was detected recently."
-        case .processingOverload(let percent): return String(format: "DSP processing load is %.1f%% (warning threshold: 85%%).", percent)
+        case .recentClipping: return "Final output clipping was detected recently."
+        case .processingOverload(let percent): return String(format: "Audio processing load is %.1f%% (warning threshold: 85%%).", percent)
         case .bridgeDroppedFrames(let count): return "Bridge dropped frames: \(count)."
         case .bridgeOverruns(let count): return "Bridge consumer overruns: \(count)."
         case .clientRegistryOverflows(let count): return "Bridge client registry overflows: \(count)."
@@ -164,11 +164,11 @@ enum AudioRuntimeHealthReason: Sendable, Equatable {
         case .pcmWriteFailures(let count): return "PCM write failures: \(count)."
         case .pcmDeliveryFailure(let error): return error
         case .rejectedSourceFrames(let count): return "Rejected source frames: \(count)."
-        case .telemetryPaused: return "DSP telemetry polling is paused while the profile monitor is not visible."
-        case .telemetryPending: return "Waiting for the first successful DSP diagnostic RPC."
-        case .telemetryStale: return "The last successful DSP diagnostic RPC is more than 2.5 seconds old."
-        case .telemetryUnavailable: return "DSP diagnostics are unavailable."
-        case .telemetryRPCFailed(let error): return "DSP diagnostic RPC failed: \(error)"
+        case .telemetryPaused: return "Audio telemetry polling is paused while the profile monitor is not visible."
+        case .telemetryPending: return "Waiting for the first output status update."
+        case .telemetryStale: return "The last output status update is more than 2.5 seconds old."
+        case .telemetryUnavailable: return "Output status is unavailable."
+        case .telemetryRPCFailed(let error): return "Output status update failed: \(error)"
         }
     }
 }
@@ -277,22 +277,54 @@ struct AudioAddedDelayEstimate: Equatable, Sendable {
     }
 }
 
+/// Shared output observations. Backend adapters supply measurements without
+/// making the monitor depend on their RPC or hardware diagnostic formats.
+struct AudioOutputTelemetry: Sendable {
+    var backend: String
+    var engineState: String
+    var stopReason: String = "None"
+    var processingLoadPercent: Double? = nil
+    var resamplerLoadPercent: Double? = nil
+    var bufferLevelFrames: UInt64
+    var rateAdjustment: Double = 1
+    var clippedSamples: UInt64
+    var sampleRate: Double?
+    var blockFrames: Int?
+    var processingBufferFrames: Int?
+    var underrunFrames: UInt64? = nil
+}
+
+struct AudioLatencyComponents: Equatable {
+    var appMilliseconds: Double?
+    var processingMilliseconds: Double?
+    var playbackMilliseconds: Double?
+
+    var estimate: AudioAddedDelayEstimate? {
+        guard let appMilliseconds, let processingMilliseconds, let playbackMilliseconds else { return nil }
+        return .init(appMilliseconds: appMilliseconds, processingMilliseconds: processingMilliseconds,
+            playbackMilliseconds: playbackMilliseconds)
+    }
+}
+
 struct AudioRuntimeStatus: Equatable, Sendable {
+    var outputBackend = "—"
+    var outputUnderrunFrames: UInt64?
     var isActive = false
     var engineIsRunning: Bool?
     var transportError: String?
     var engineState = "Inactive"
     var stopReason = "None"
-    var processingLoadPercent = 0.0
-    var resamplerLoadPercent = 0.0
-    var dspBufferLevelFrames: UInt64 = 0
-    var dspSampleRate: Double?
-    var dspBlockFrames: Int?
-    var camillaRateAdjustment = 1.0
-    var dspClippedSamples: UInt64 = 0
+    var processingLoadPercent: Double?
+    var resamplerLoadPercent: Double?
+    var outputBufferedFrames: UInt64 = 0
+    var outputSampleRate: Double?
+    var outputBlockFrames: Int?
+    var processingBufferFrames: Int?
+    var outputRateAdjustment = 1.0
+    var outputClippedSamples: UInt64 = 0
     /// Source samples at or above full scale; this does not prove output clipping.
     var sourceClippedSamples: UInt64 = 0
-    /// DSP playback peaks and the backend clip counter only, never source peaks.
+    /// Final playback peaks and the backend clip counter only, never source peaks.
     var clippingIsRecent = false
     var telemetryAvailable = false
     var telemetryPollingActive = false
@@ -312,28 +344,38 @@ struct AudioRuntimeStatus: Equatable, Sendable {
     /// adding queue occupancy here would count those stages twice. The raw
     /// bridge ring stores overlapping client blocks and is not timeline delay.
     func addedDelayEstimate(at now: Date = Date(), tick: PerformanceTick = PerformanceClock.now()) -> AudioAddedDelayEstimate? {
+        latencyComponents(at: now, tick: tick).estimate
+    }
+
+    func latencyComponents(at now: Date = Date(), tick: PerformanceTick = PerformanceClock.now()) -> AudioLatencyComponents {
+        var result = AudioLatencyComponents()
         guard isActive, hasFreshTelemetry(at: now), engineState == "Running",
               engineIsRunning != false, transportError == nil,
               route.deliveryError == nil, route.sourceFormatError == nil,
-              let transit = route.transit, tick >= transit.completedAt,
-              PerformanceClock.milliseconds(transit.completedAt, tick) <= 2_500,
-              transit.milliseconds.isFinite, transit.milliseconds >= 0,
-              let rate = dspSampleRate, rate.isFinite, rate > 0,
-              route.sampleRate.isFinite, abs(route.sampleRate - rate) < 0.5,
-              let block = dspBlockFrames, block > 0 else { return nil }
-        return .init(appMilliseconds: transit.milliseconds,
-                     processingMilliseconds: Double(block) * 1_000 / rate,
-                     playbackMilliseconds: Double(dspBufferLevelFrames) * 1_000 / rate)
+              let rate = outputSampleRate, rate.isFinite, rate > 0,
+              let block = outputBlockFrames, block > 0 else { return result }
+        if let frames = processingBufferFrames, frames >= 0 {
+            result.processingMilliseconds = Double(frames) * 1_000 / rate
+        }
+        result.playbackMilliseconds = Double(outputBufferedFrames) * 1_000 / rate
+        // Transit is wall-clock time, independent of input/output sample rates.
+        // It also exists for locally generated instrument audio with no bridge.
+        if let transit = route.transit, tick >= transit.completedAt,
+           PerformanceClock.milliseconds(transit.completedAt, tick) <= 2_500,
+           transit.milliseconds.isFinite, transit.milliseconds >= 0 {
+            result.appMilliseconds = transit.milliseconds
+        }
+        return result
     }
 
     var effectiveRateAdjustmentPPM: Double {
         if abs(route.rateAdjustmentPPM) >= 0.005 { return route.rateAdjustmentPPM }
         // CamillaDSP reports an adjustment ratio (1.0 means unchanged).
-        guard hasFreshTelemetry(), camillaRateAdjustment.isFinite, camillaRateAdjustment > 0 else { return 0 }
-        return (camillaRateAdjustment - 1) * 1_000_000
+        guard hasFreshTelemetry(), outputRateAdjustment.isFinite, outputRateAdjustment > 0 else { return 0 }
+        return (outputRateAdjustment - 1) * 1_000_000
     }
 
-    /// Audio delivery and RPC observability are independent assessments.
+    /// Audio delivery and telemetry observability are independent assessments.
     var health: AudioRuntimeHealth { pipelineAssessment().health }
 
     func hasFreshTelemetry(at now: Date = Date()) -> Bool {
@@ -347,11 +389,11 @@ struct AudioRuntimeStatus: Equatable, Sendable {
         if engineIsRunning == false { reasons.append(.engineUnavailable) }
         if let transportError { reasons.append(.transportFailure(transportError)) }
         if let error = route.sourceFormatError { reasons.append(.sourceFormatError(error)) }
-        // Cached DSP state/load must not masquerade as a current pipeline fault.
+        // Cached output state/load must not masquerade as a current pipeline fault.
         if hasFreshTelemetry(at: now) {
             if engineState.lowercased() == "stalled" { reasons.append(.engineStalled) }
             if !["none", "done"].contains(stopReason.lowercased()) { reasons.append(.engineStopped(stopReason)) }
-            if processingLoadPercent >= 85 { reasons.append(.processingOverload(processingLoadPercent)) }
+            if let load = processingLoadPercent, load >= 85 { reasons.append(.processingOverload(load)) }
         }
         if clippingIsRecent { reasons.append(.recentClipping) }
         if route.bridgeDroppedFrames > 0 { reasons.append(.bridgeDroppedFrames(route.bridgeDroppedFrames)) }
@@ -391,16 +433,19 @@ struct AudioRuntimeStatus: Equatable, Sendable {
         }
     }
 
-    mutating func recordTelemetry(_ diagnostics: CamillaDSPDiagnostics, at now: Date) {
+    mutating func recordTelemetry(_ diagnostics: AudioOutputTelemetry, at now: Date) {
+        outputBackend = diagnostics.backend
         engineState = diagnostics.engineState
         stopReason = diagnostics.stopReason
         processingLoadPercent = diagnostics.processingLoadPercent
         resamplerLoadPercent = diagnostics.resamplerLoadPercent
-        dspBufferLevelFrames = diagnostics.bufferLevelFrames
-        dspSampleRate = diagnostics.sampleRate
-        dspBlockFrames = diagnostics.blockFrames
-        camillaRateAdjustment = diagnostics.rateAdjustment
-        dspClippedSamples = diagnostics.clippedSamples
+        outputBufferedFrames = diagnostics.bufferLevelFrames
+        outputSampleRate = diagnostics.sampleRate
+        outputBlockFrames = diagnostics.blockFrames
+        processingBufferFrames = diagnostics.processingBufferFrames
+        outputUnderrunFrames = diagnostics.underrunFrames
+        outputRateAdjustment = diagnostics.rateAdjustment
+        outputClippedSamples = diagnostics.clippedSamples
         telemetryAvailable = true
         lastTelemetryUpdatedAt = now
         lastTelemetryError = nil
@@ -416,7 +461,6 @@ final class AudioRuntimeMonitor: ObservableObject {
 
     @Published private(set) var activeSession: AudioRuntimeSession?
     @Published private(set) var levels = SignalLevels.silent
-    @Published private(set) var captureUsesDSPBus = false
     @Published private(set) var status = AudioRuntimeStatus.inactive
 
     var capturePeak: [Double] { levels.capturePeak }
@@ -429,19 +473,19 @@ final class AudioRuntimeMonitor: ObservableObject {
     func setPreviewLevels(_ levels: SignalLevels, profileID: UUID) {
         if activeSession?.profileID != profileID { activeSession = AudioRuntimeSession(profileID: profileID) }
         self.levels = levels
-        if !captureUsesDSPBus { captureUsesDSPBus = true }
     }
 #endif
 
     private var meterPollingTask: Task<Void, Never>?
     private var diagnosticsPollingTask: Task<Void, Never>?
     private var controller: CamillaDSPController?
+    private var directOutput: DirectCoreAudioOutput?
     private var routeDiagnosticsProvider: RouteDiagnosticsProvider?
     private var presentedProfileID: UUID?
     private let presentationGate = RuntimePresentationGate()
-    private var hasReceivedDSPLevels = false
-    private var lastDSPLevelsAt: Date?
-    private var lastDSPClippedSamples: UInt64 = 0
+    private var hasReceivedOutputLevels = false
+    private var lastInputLevelsAt: Date?
+    private var lastOutputClippedSamples: UInt64 = 0
     private var lastClipAt: Date?
     private var lastChannelClipAt: [Int: Date] = [:]
 
@@ -452,11 +496,13 @@ final class AudioRuntimeMonitor: ObservableObject {
     func start(
         controller: CamillaDSPController?,
         session: AudioRuntimeSession,
+        directOutput: DirectCoreAudioOutput? = nil,
         routeDiagnosticsProvider: @escaping RouteDiagnosticsProvider
     ) {
         stop()
         activeSession = session
         self.controller = controller
+        self.directOutput = directOutput
         self.routeDiagnosticsProvider = routeDiagnosticsProvider
         status.isActive = true
         status.engineState = "Starting"
@@ -482,9 +528,30 @@ final class AudioRuntimeMonitor: ObservableObject {
         meterPollingTask = nil
         diagnosticsPollingTask = nil
         status.telemetryPollingActive = false
-        guard let controller,
-              let session = activeSession,
+        guard let session = activeSession,
               presentedProfileID == session.profileID else { return }
+        if let output = directOutput {
+            status.telemetryPollingActive = true
+            status.outputBackend = "Direct Core Audio"
+            meterPollingTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    guard let self, self.isPresented(session) else { return }
+                    let snapshot = output.snapshot(readMeters: true)
+                    self.decayIdleInputLevels()
+                    self.publishOutputLevels(peak: snapshot.peak, rms: snapshot.rms)
+                    self.status.transportError = snapshot.error
+                    self.status.engineIsRunning = snapshot.error == nil
+                    self.publish(.init(backend: "Direct Core Audio", engineState: snapshot.error == nil ? "Running" : "Stopped",
+                        stopReason: snapshot.error ?? "None", bufferLevelFrames: snapshot.bufferedFrames,
+                        clippedSamples: snapshot.clippedSamples, sampleRate: output.sampleRate,
+                        blockFrames: snapshot.callbackFrames, processingBufferFrames: 0,
+                        underrunFrames: snapshot.underrunFrames), now: Date())
+                    do { try await Task.sleep(for: .milliseconds(UIRenderPerformance.meterPollMilliseconds)) } catch { return }
+                }
+            }
+            return
+        }
+        guard let controller else { return }
         status.telemetryPollingActive = true
 
         meterPollingTask = Task { [weak self] in
@@ -492,10 +559,11 @@ final class AudioRuntimeMonitor: ObservableObject {
                 do {
                     let incoming = try await controller.fetchMeters()
                     guard let self, self.isPresented(session) else { return }
-                    self.publishDSPLevels(incoming)
+                    self.publishOutputLevels(peak: incoming.playbackPeak, rms: incoming.playbackRMS)
                 } catch {
                     // A transient WebSocket miss should not tear down audio.
                 }
+                self?.decayIdleInputLevels()
                 try? await Task.sleep(
                     for: .milliseconds(UIRenderPerformance.meterPollMilliseconds)
                 )
@@ -509,7 +577,7 @@ final class AudioRuntimeMonitor: ObservableObject {
                 do {
                     let diagnostics = try await controller.fetchDiagnostics()
                     guard self.isPresented(session) else { return }
-                    self.publish(diagnostics, now: Date())
+                    self.publish(.init(camilla: diagnostics), now: Date())
                 } catch {
                     guard self.isPresented(session) else { return }
                     let now = Date()
@@ -542,6 +610,7 @@ final class AudioRuntimeMonitor: ObservableObject {
         meterPollingTask = nil
         diagnosticsPollingTask = nil
         controller = nil
+        directOutput = nil
         routeDiagnosticsProvider = nil
         activeSession = nil
         resetObservationState()
@@ -549,15 +618,14 @@ final class AudioRuntimeMonitor: ObservableObject {
 
     private func resetObservationState() {
         levels = .silent
-        captureUsesDSPBus = false
         status = .inactive
         if activeSession != nil {
             status.isActive = true
             status.engineState = "Starting"
         }
-        hasReceivedDSPLevels = false
-        lastDSPLevelsAt = nil
-        lastDSPClippedSamples = 0
+        hasReceivedOutputLevels = false
+        lastInputLevelsAt = nil
+        lastOutputClippedSamples = 0
         lastClipAt = nil
         lastChannelClipAt.removeAll()
     }
@@ -568,68 +636,61 @@ final class AudioRuntimeMonitor: ObservableObject {
 
     func ingest(_ snapshot: PCMLevelSnapshot, session: AudioRuntimeSession) {
         guard isPresented(session) else { return }
+        lastInputLevelsAt = Date()
         if snapshot.clippedSamples > 0 {
             status.sourceClippedSamples &+= snapshot.clippedSamples
         }
-        // This tap uses source-channel order, not physical output indices.
-        // Only DSP playback peaks may flag a particular speaker as clipping.
-
-        // CamillaDSP levels include the real DSP capture/playback boundary. The
-        // direct router tap is a fallback when WebSocket metering becomes stale.
-        let dspLevelsAreFresh = lastDSPLevelsAt.map {
-            Date().timeIntervalSince($0) < 0.5
-        } ?? false
-        if !dspLevelsAreFresh {
-            if captureUsesDSPBus { captureUsesDSPBus = false }
-            levels.capturePeak = smooth(
+        // Audio In always describes the shared source boundary, in source order.
+        // Output backends cannot replace these values with their own input bus.
+        levels.capturePeak = smooth(
                 current: levels.capturePeak,
                 target: snapshot.peak,
                 attack: 0.72,
                 release: 0.16
             )
-            levels.captureRMS = smooth(
+        levels.captureRMS = smooth(
                 current: levels.captureRMS,
                 target: snapshot.rms,
                 attack: 0.42,
                 release: 0.20
             )
-        }
         refreshRecentClipping(now: Date())
     }
 
-    private func publishDSPLevels(_ incoming: SignalLevels) {
-        if !captureUsesDSPBus { captureUsesDSPBus = true }
+    func decayIdleInputLevels(now: Date = Date()) {
+        guard let lastInputLevelsAt, now.timeIntervalSince(lastInputLevelsAt) > 0.3 else { return }
+        levels.capturePeak = smooth(current: capturePeak, target: .init(repeating: -150, count: capturePeak.count), attack: 0.72, release: 0.16)
+        levels.captureRMS = smooth(current: captureRMS, target: .init(repeating: -150, count: captureRMS.count), attack: 0.42, release: 0.20)
+    }
+
+    func publishOutputLevels(peak: [Double], rms: [Double]) {
         // The playback peak is updated much more frequently than the cumulative
         // clipped-sample counter. Use it as the immediate overload signal so a
         // short peak above full scale is not missed between diagnostic polls.
         let now = Date()
-        if incoming.playbackExceedsFullScale {
+        if peak.contains(where: { $0.isFinite && $0 > 0 }) {
             lastClipAt = now
         }
-        for (channelIndex, peak) in incoming.playbackPeak.enumerated()
+        for (channelIndex, peak) in peak.enumerated()
             where peak.isFinite && peak > 0 {
             lastChannelClipAt[channelIndex] = now
         }
-        if hasReceivedDSPLevels {
-            levels = SignalLevels(
-                capturePeak: smooth(current: capturePeak, target: incoming.capturePeak, attack: 0.72, release: 0.16),
-                captureRMS: smooth(current: captureRMS, target: incoming.captureRMS, attack: 0.42, release: 0.20),
-                playbackPeak: smooth(current: playbackPeak, target: incoming.playbackPeak, attack: 0.72, release: 0.16),
-                playbackRMS: smooth(current: playbackRMS, target: incoming.playbackRMS, attack: 0.42, release: 0.20)
-            )
+        if hasReceivedOutputLevels {
+            levels.playbackPeak = smooth(current: playbackPeak, target: peak, attack: 0.72, release: 0.16)
+            levels.playbackRMS = smooth(current: playbackRMS, target: rms, attack: 0.42, release: 0.20)
         } else {
-            levels = incoming
-            hasReceivedDSPLevels = true
+            levels.playbackPeak = peak
+            levels.playbackRMS = rms
+            hasReceivedOutputLevels = true
         }
-        lastDSPLevelsAt = now
         refreshRecentClipping(now: now)
     }
 
-    private func publish(_ diagnostics: CamillaDSPDiagnostics, now: Date) {
-        if diagnostics.clippedSamples > lastDSPClippedSamples {
+    func publish(_ diagnostics: AudioOutputTelemetry, now: Date) {
+        if diagnostics.clippedSamples > lastOutputClippedSamples {
             lastClipAt = now
         }
-        lastDSPClippedSamples = diagnostics.clippedSamples
+        lastOutputClippedSamples = diagnostics.clippedSamples
         status.recordTelemetry(diagnostics, at: now)
         publishRouteDiagnostics(now: now)
     }
@@ -654,7 +715,7 @@ final class AudioRuntimeMonitor: ObservableObject {
         attack: Double,
         release: Double
     ) -> [Double] {
-        let channelCount = max(current.count, target.count)
+        let channelCount = target.count
         return (0..<channelCount).map { channel in
             let previous = channel < current.count ? current[channel] : -150
             let next = channel < target.count ? target[channel] : -150

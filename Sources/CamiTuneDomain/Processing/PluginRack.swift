@@ -59,21 +59,31 @@ package struct AudioPluginSlot: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
+package enum PluginOutputMode: String, Codable, CaseIterable, Sendable {
+    case camillaDSP, exclusive
+    package var title: String { self == .exclusive ? "Exclusive" : "Through CamillaDSP" }
+}
+
 package struct PluginRack: Codable, Hashable, Sendable {
     package static let maximumSlots = 16
     package static let maximumStateBytes = 4 * 1024 * 1024
     package var isEnabled: Bool
     package var slots: [AudioPluginSlot]
     package var midi: PluginMIDIConfiguration
-    package init(isEnabled: Bool = false, slots: [AudioPluginSlot] = [], midi: PluginMIDIConfiguration = .init()) {
-        self.isEnabled = isEnabled; self.slots = slots; self.midi = midi
+    package var outputMode: PluginOutputMode
+    package var exclusiveBufferSize: Int
+    package init(isEnabled: Bool = false, slots: [AudioPluginSlot] = [], midi: PluginMIDIConfiguration = .init(), outputMode: PluginOutputMode = .camillaDSP, exclusiveBufferSize: Int = 128) {
+        self.isEnabled = isEnabled; self.slots = slots; self.midi = midi; self.outputMode = outputMode
+        self.exclusiveBufferSize = exclusiveBufferSize
     }
-    private enum CodingKeys: String, CodingKey { case isEnabled, slots, midi }
+    private enum CodingKeys: String, CodingKey { case isEnabled, slots, midi, outputMode, exclusiveBufferSize }
     package init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         isEnabled = try values.decode(Bool.self, forKey: .isEnabled)
         slots = try values.decode([AudioPluginSlot].self, forKey: .slots)
         midi = try values.decodeIfPresent(PluginMIDIConfiguration.self, forKey: .midi) ?? .init()
+        outputMode = try values.decodeIfPresent(PluginOutputMode.self, forKey: .outputMode) ?? .camillaDSP
+        exclusiveBufferSize = try values.decodeIfPresent(Int.self, forKey: .exclusiveBufferSize) ?? 128
     }
     /// MIDI edits change control routing, never the prepared audio processors.
     package var audioConfiguration: PluginRack { var copy = self; copy.midi = .init(); return copy }
@@ -81,7 +91,8 @@ package struct PluginRack: Codable, Hashable, Sendable {
     package var isProcessing: Bool { !activeSlots.isEmpty }
     package func validate() throws {
         try midi.validate()
-        guard slots.count <= Self.maximumSlots, Set(slots.map(\.id)).count == slots.count,
+        guard DeviceProfile.audioBufferSizes.contains(exclusiveBufferSize),
+              slots.count <= Self.maximumSlots, Set(slots.map(\.id)).count == slots.count,
               slots.allSatisfy({ !$0.plugin.id.isEmpty && !$0.plugin.name.isEmpty
                   && ($0.state?.count ?? 0) <= Self.maximumStateBytes
                   && ($0.sidechainBus == nil || (0..<64).contains($0.sidechainBus!))
@@ -100,10 +111,28 @@ package struct PluginMIDIConfiguration: Codable, Hashable, Sendable {
     package var sourceID: Int32? = nil
     /// nil accepts all 16 MIDI channels; this is independent of audio channels.
     package var channel: Int? = nil
-    /// nil ignores program changes; otherwise only this slot receives them.
+    /// Legacy saved destination; program-change messages are no longer routed.
     package var programChangeSlotID: UUID? = nil
+    /// Notes and unmapped controllers can be disabled per slot. Parameter
+    /// mappings and the program-change destination remain independent.
+    package var keyboardInputDisabledSlotIDs: Set<UUID> = []
     package var mappings: [PluginMIDIMapping] = []
     package init() {}
+    private enum CodingKeys: String, CodingKey {
+        case isEnabled, sourceID, channel, programChangeSlotID, keyboardInputDisabledSlotIDs, mappings
+    }
+    package init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        isEnabled = try values.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
+        sourceID = try values.decodeIfPresent(Int32.self, forKey: .sourceID)
+        channel = try values.decodeIfPresent(Int.self, forKey: .channel)
+        programChangeSlotID = try values.decodeIfPresent(UUID.self, forKey: .programChangeSlotID)
+        keyboardInputDisabledSlotIDs = try values.decodeIfPresent(Set<UUID>.self, forKey: .keyboardInputDisabledSlotIDs) ?? []
+        mappings = try values.decodeIfPresent([PluginMIDIMapping].self, forKey: .mappings) ?? []
+    }
+    package func receivesKeyboardInput(slotID: UUID) -> Bool {
+        isEnabled && !keyboardInputDisabledSlotIDs.contains(slotID)
+    }
     package func validate() throws {
         guard channel == nil || (1...16).contains(channel!), mappings.count <= 256,
               Set(mappings.map(\.id)).count == mappings.count,

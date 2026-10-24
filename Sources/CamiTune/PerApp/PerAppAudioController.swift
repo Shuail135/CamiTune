@@ -85,6 +85,7 @@ struct PerAppAudioPacket: Sendable {
 /// PerAppTimelineMixer owns timeline policy and pending PCM storage.
 final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     let pluginSidechains = PluginSidechainHub()
+    @Published private(set) var settingsChangeRevision: UInt64 = 0
     @Published private(set) var applications: [PerAppAudioApplication] = []
     private var playbackContext: PerAppPlaybackContext?
 
@@ -114,6 +115,8 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     private var publishedSaveSequence: UInt64 = 0 // Main-thread delivery only.
     private let settingsStore: PerAppSettingsStore
     let presentationStore: AppPresentationStore
+    @Published private(set) var activePresentationStore: AppPresentationStore
+    private var profilePresentationStores: [UUID: AppPresentationStore] = [:] // stateLock
     private let presentationObservationQueue = DispatchQueue(label: "CamiTune.AppObservations", qos: .utility)
     private let clientRegistry: PerAppClientRegistry
     private let audioMaintenanceQueue = DispatchQueue(
@@ -184,6 +187,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             legacyHistoryURL: audioHistoryURL ?? settingsURL.appendingPathExtension("history")
         )
         self.presentationStore = presentation
+        self.activePresentationStore = presentation
         clientRegistry = PerAppClientRegistry(stateLock: stateLock, monitorsRunningApplications: monitorsRunningApplications)
         persistenceError = settingsStore.loadError
         knownAudioApplicationIDs = presentation.seenIDs
@@ -216,6 +220,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         _ = settingsStore.flush(settingsStore.snapshot)
         presentationObservationQueue.sync {}
         presentationStore.flushPendingSaveSynchronously()
+        for store in profilePresentationStores.values { store.flushPendingSaveSynchronously() }
     }
 
     func updateClients(_ clients: [PerAppDriverClient]) {
@@ -370,10 +375,69 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         return hasAnotherRetry
     }
 
-    func settings(for applicationID: String) -> PerAppAudioSettings {
+    func settings(for applicationID: String, scope: PerAppSettingsScope = .active) -> PerAppAudioSettings {
         stateLock.lock()
         defer { stateLock.unlock() }
-        return settingsStore.settings(for: applicationID)
+        return settingsStore.settings(for: applicationID, scope: scope)
+    }
+
+    @MainActor
+    func presentationStore(for scope: PerAppSettingsScope) -> AppPresentationStore {
+        guard case .local(let id) = resolvedSettingsScope(scope) else { return presentationStore }
+        stateLock.lock()
+        let existing = profilePresentationStores[id]
+        stateLock.unlock()
+        if let existing { return existing }
+        let store = presentationStore.makeProfileStore(for: id)
+        stateLock.lock()
+        profilePresentationStores[id] = store
+        stateLock.unlock()
+        return store
+    }
+
+    private func refreshActivePresentationStore() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.refreshActivePresentationStore() }
+            return
+        }
+        withMainThreadHistory {
+            let store = presentationStore(for: .active)
+            if activePresentationStore !== store { activePresentationStore = store }
+        }
+    }
+
+    private func publishSettingsChange() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.publishSettingsChange() }
+            return
+        }
+        settingsChangeRevision &+= 1
+    }
+
+    func usesGlobalSettings(for profileID: UUID) -> Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return settingsStore.usesGlobalSettings(for: profileID)
+    }
+
+    func resolvedSettingsScope(_ scope: PerAppSettingsScope) -> PerAppSettingsScope {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return settingsStore.resolvedScope(scope)
+    }
+
+    @MainActor
+    func setUsesGlobalSettings(_ global: Bool, for profileID: UUID) {
+        finishPendingAudioInteractions()
+        stateLock.lock()
+        settingsStore.setUsesGlobalSettings(global, for: profileID)
+        let saved = settingsStore.snapshot
+        presentationRevision &+= 1
+        stateLock.unlock()
+        // Seed presentation preferences at the same first switch as audio.
+        if !global { _ = presentationStore(for: .local(profileID)) }
+        refreshActivePresentationStore()
+        schedulePersistence(saved)
+        presentationPublisher.request(.immediate)
+        publishSettingsChange()
     }
 
     func hasProducedAudio(for applicationID: String) -> Bool {
@@ -383,78 +447,101 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             || knownAudioApplicationIDs.contains(applicationID)
     }
 
-    func setPlaybackContext(_ context: PerAppPlaybackContext?) {
+    @MainActor
+    private func finishPendingAudioInteractions() {
+        for target in Array(pendingHistory.keys) {
+            if case let .scopedApplication(id, scope) = target { finishAudioInteraction(for: id, scope: scope) }
+        }
+    }
+
+    func setPlaybackContext(_ context: PerAppPlaybackContext?, profileID: UUID? = nil) {
+        stateLock.lock()
+        let switchingProfile = settingsStore.activeProfileID != profileID
+        stateLock.unlock()
+        if switchingProfile, Thread.isMainThread {
+            withMainThreadHistory { finishPendingAudioInteractions() }
+        }
         stateLock.lock()
         playbackContext = context
+        settingsStore.setActiveProfile(profileID)
+        presentationRevision &+= 1
         stateLock.unlock()
+        refreshActivePresentationStore()
+        presentationPublisher.request(.immediate)
     }
 
     @MainActor weak var history: UndoCoordinator?
-    @MainActor private var pendingHistory: [String: PerAppAudioSettings] = [:]
+    @MainActor private var pendingHistory: [HistoryTarget: PerAppAudioSettings] = [:]
 
-    private func recordAudioEdit(_ id: String, name: String, finished: Bool, edit: () -> Void) {
+    private func recordAudioEdit(_ id: String, scope: PerAppSettingsScope, name: String, finished: Bool, edit: () -> Void) {
         guard Thread.isMainThread else { edit(); return }
+        let scope = resolvedSettingsScope(scope)
+        let target = HistoryTarget.scopedApplication(id, scope)
         withMainThreadHistory {
             guard history?.isReplaying != true else { return }
-            let before = pendingHistory[id] ?? settings(for: id)
-            let key = GestureKey(target: .application(id), control: "audio")
-            if !finished, pendingHistory[id] == nil {
+            let before = pendingHistory[target] ?? settings(for: id, scope: scope)
+            let key = GestureKey(target: target, control: "audio")
+            if !finished, pendingHistory[target] == nil {
                 history?.beginGesture(key: key, actionName: name,
-                    contextName: presentationStore.currentDocument.displayName(for: id), target: .application(id), before: .perAppAudio(before))
+                    contextName: presentationStore(for: scope).currentDocument.displayName(for: id), target: target, before: .perAppAudio(before))
             }
             edit()
-            guard finished else { pendingHistory[id] = before; return }
-            if pendingHistory.removeValue(forKey: id) != nil {
-                history?.endGesture(key: key, after: .perAppAudio(settings(for: id)))
+            guard finished else { pendingHistory[target] = before; return }
+            if pendingHistory.removeValue(forKey: target) != nil {
+                history?.endGesture(key: key, after: .perAppAudio(settings(for: id, scope: scope)))
             } else {
-                history?.record(actionName: name, contextName: presentationStore.currentDocument.displayName(for: id),
-                    target: .application(id), before: .perAppAudio(before), after: .perAppAudio(settings(for: id)),
-                    coalescingKey: name == "Adjust Volume" ? GestureKey(target: .application(id), control: "volume") : nil)
+                history?.record(actionName: name, contextName: presentationStore(for: scope).currentDocument.displayName(for: id),
+                    target: target, before: .perAppAudio(before), after: .perAppAudio(settings(for: id, scope: scope)),
+                    coalescingKey: name == "Adjust Volume" ? GestureKey(target: target, control: "volume") : nil)
             }
         }
     }
     @MainActor
-    func finishAudioInteraction(for id: String) {
-        guard pendingHistory[id] != nil else { return }
-        recordAudioEdit(id, name: "Edit App Audio", finished: true) {
-            replaceSettings(settings(for: id), for: id)
+    func finishAudioInteraction(for id: String, scope: PerAppSettingsScope = .active) {
+        let scope = resolvedSettingsScope(scope)
+        let target = HistoryTarget.scopedApplication(id, scope)
+        guard pendingHistory[target] != nil else { return }
+        recordAudioEdit(id, scope: scope, name: "Edit App Audio", finished: true) {
+            replaceSettings(settings(for: id, scope: scope), for: id, scope: scope)
         }
     }
-    func replaceSettings(_ settings: PerAppAudioSettings, for applicationID: String) {
+    func replaceSettings(_ settings: PerAppAudioSettings, for applicationID: String, scope: PerAppSettingsScope = .active) {
         var validated = settings
         validated.volume = settings.volume.isFinite ? min(max(settings.volume, 0), 1) : 1
-        updateSettings(for: applicationID, resetFilterState: true, resetHeadroom: true) { $0 = validated }
+        updateSettings(for: applicationID, scope: scope, resetFilterState: true, resetHeadroom: true) { $0 = validated }
     }
 
-    func replaceSettingsBatch(_ replacements: [String: PerAppAudioSettings]) {
+    func replaceSettingsBatch(_ replacements: [String: PerAppAudioSettings], scope: PerAppSettingsScope = .active) {
         stateLock.lock()
         for (id, var value) in replacements {
             value.volume = value.volume.isFinite ? min(max(value.volume, 0), 1) : 1
-            settingsStore.update(for: id, invalidatesProcessing: true) { $0 = value }
+            settingsStore.update(for: id, scope: scope, invalidatesProcessing: true) { $0 = value }
         }
         let current = settingsStore.snapshot
         presentationRevision &+= 1
         stateLock.unlock()
         schedulePersistence(current)
+        publishSettingsChange()
         presentationPublisher.request(.immediate)
     }
 
-    func setPlaybackModeOverride(_ mode: PlaybackMode?, for applicationID: String) {
-        recordAudioEdit(applicationID, name: "Change Playback Mode", finished: true) {
-            updateSettings(for: applicationID) { $0.playbackModeOverride = mode }
+    func setPlaybackModeOverride(_ mode: PlaybackMode?, for applicationID: String, scope: PerAppSettingsScope = .active) {
+        recordAudioEdit(applicationID, scope: scope, name: "Change Playback Mode", finished: true) {
+            updateSettings(for: applicationID, scope: scope) { $0.playbackModeOverride = mode }
         }
     }
     
     func setPlaybackModeForAllApplications(_ mode: PlaybackMode) {
+        let scope = resolvedSettingsScope(.active)
         let applicationIDs = applications.map(\.id)
-        let before = Dictionary(uniqueKeysWithValues: applicationIDs.map { ($0, settings(for: $0)) })
+        let before = Dictionary(uniqueKeysWithValues: applicationIDs.map { ($0, settings(for: $0, scope: scope)) })
         let after = before.mapValues { value in
             var updated = value; updated.playbackModeOverride = mode; return updated
         }
-        replaceSettingsBatch(after)
+        replaceSettingsBatch(after, scope: scope)
         if Thread.isMainThread {
             withMainThreadHistory {
-                history?.record(actionName: "Change All App Playback Modes", target: .applicationPresentationDocument,
+                history?.record(actionName: "Change All App Playback Modes", target: .scopedApplications(scope),
                     before: .perAppBatch(before), after: .perAppBatch(after))
             }
         }
@@ -470,11 +557,11 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     func setVolume(
         _ volume: Double,
         for applicationID: String,
-        interactionFinished: Bool = true
+        scope: PerAppSettingsScope = .active, interactionFinished: Bool = true
     ) {
-        recordAudioEdit(applicationID, name: "Adjust Volume", finished: interactionFinished) {
+        recordAudioEdit(applicationID, scope: scope, name: "Adjust Volume", finished: interactionFinished) {
             updateSettings(
-                for: applicationID,
+                for: applicationID, scope: scope,
                 persistChanges: interactionFinished,
                 forcePublication: interactionFinished
             ) {
@@ -499,37 +586,37 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }
     }
 
-    func setMuted(_ muted: Bool, for applicationID: String) {
-        recordAudioEdit(applicationID, name: "Toggle Mute", finished: true) {
-            updateSettings(for: applicationID) { $0.isMuted = muted }
+    func setMuted(_ muted: Bool, for applicationID: String, scope: PerAppSettingsScope = .active) {
+        recordAudioEdit(applicationID, scope: scope, name: "Toggle Mute", finished: true) {
+            updateSettings(for: applicationID, scope: scope) { $0.isMuted = muted }
         }
     }
 
-    func setEQBypassed(_ bypassed: Bool, for applicationID: String) {
-        recordAudioEdit(applicationID, name: "Toggle Equalizer", finished: true) {
+    func setEQBypassed(_ bypassed: Bool, for applicationID: String, scope: PerAppSettingsScope = .active) {
+        recordAudioEdit(applicationID, scope: scope, name: "Toggle Equalizer", finished: true) {
             updateSettings(
-                for: applicationID,
+                for: applicationID, scope: scope,
                 resetFilterState: true,
                 resetHeadroom: true
             ) { $0.eqBypassed = bypassed }
         }
     }
 
-    func setSimpleTone(_ tone: SimpleToneSettings, for applicationID: String, interactionFinished: Bool = true) {
-        recordAudioEdit(applicationID, name: "Adjust Tone", finished: interactionFinished) {
+    func setSimpleTone(_ tone: SimpleToneSettings, for applicationID: String, scope: PerAppSettingsScope = .active, interactionFinished: Bool = true) {
+        recordAudioEdit(applicationID, scope: scope, name: "Adjust Tone", finished: interactionFinished) {
             guard (try? tone.validate()) != nil else { return }
-            updateSettings(for: applicationID, resetFilterState: true, resetHeadroom: true, persistChanges: interactionFinished, forcePublication: interactionFinished, performDeferredCleanup: interactionFinished) { $0.simpleTone = tone }
+            updateSettings(for: applicationID, scope: scope, resetFilterState: true, resetHeadroom: true, persistChanges: interactionFinished, forcePublication: interactionFinished, performDeferredCleanup: interactionFinished) { $0.simpleTone = tone }
         }
     }
 
     func setEqualizerBands(
         _ bands: [EQBand],
         for applicationID: String,
-        interactionFinished: Bool = true
+        scope: PerAppSettingsScope = .active, interactionFinished: Bool = true
     ) {
-        recordAudioEdit(applicationID, name: "Edit App Equalizer", finished: interactionFinished) {
+        recordAudioEdit(applicationID, scope: scope, name: "Edit App Equalizer", finished: interactionFinished) {
             updateSettings(
-                for: applicationID,
+                for: applicationID, scope: scope,
                 resetFilterState: true,
                 resetHeadroom: true,
                 persistChanges: interactionFinished,
@@ -539,10 +626,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }
     }
 
-    func editEqualizer(for applicationID: String, interactionFinished: Bool = true,
+    func editEqualizer(for applicationID: String, scope: PerAppSettingsScope = .active, interactionFinished: Bool = true,
                        _ edit: (inout PerAppAudioSettings) -> Void) {
-        recordAudioEdit(applicationID, name: "Edit App Equalizer", finished: interactionFinished) {
-            updateSettings(for: applicationID, resetFilterState: true, resetHeadroom: true,
+        recordAudioEdit(applicationID, scope: scope, name: "Edit App Equalizer", finished: interactionFinished) {
+            updateSettings(for: applicationID, scope: scope, resetFilterState: true, resetHeadroom: true,
                 persistChanges: interactionFinished, forcePublication: interactionFinished,
                 performDeferredCleanup: interactionFinished) {
                 $0.eqBypassed = false
@@ -834,6 +921,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
     private func updateSettings(
         for applicationID: String,
+        scope: PerAppSettingsScope = .active,
         resetFilterState: Bool = false,
         resetHeadroom: Bool = false,
         persistChanges: Bool = true,
@@ -842,7 +930,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         change: (inout PerAppAudioSettings) -> Void
     ) {
         stateLock.lock()
-        settingsStore.update(for: applicationID,
+        settingsStore.update(for: applicationID, scope: scope,
             invalidatesProcessing: resetFilterState || resetHeadroom, change: change)
         let settingsRevision = settingsStore.revision(for: applicationID)
         let saved = persistChanges ? settingsStore.snapshot : nil
@@ -877,6 +965,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         if let saved {
             schedulePersistence(saved)
         }
+        publishSettingsChange()
         presentationPublisher.request(forcePublication ? .immediate : .meter)
     }
 
@@ -1119,10 +1208,21 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
     private func observeForPresentation(_ observations: [AppPresentationObservation]) {
         guard !observations.isEmpty else { return }
-        let store = presentationStore
+        stateLock.lock()
+        let stores = [presentationStore] + Array(profilePresentationStores.values)
+        stateLock.unlock()
         presentationObservationQueue.async {
-            for observation in observations { store.observeAudioProvenApplication(observation) }
+            for store in stores {
+                for observation in observations { store.observeAudioProvenApplication(observation) }
+            }
         }
+    }
+
+    func persistPresentationHistoryChanges() throws {
+        stateLock.lock()
+        let stores = [presentationStore] + Array(profilePresentationStores.values)
+        stateLock.unlock()
+        for store in stores { try store.persistHistoryChanges() }
     }
 
     func persistHistoryChanges() throws {
@@ -1151,11 +1251,12 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     func flushPendingSaveSynchronously() {
         stateLock.lock()
         let settings = settingsStore.snapshot
+        let presentationStores = [presentationStore] + Array(profilePresentationStores.values)
         stateLock.unlock()
         let error = settingsStore.flush(settings)
         publishPersistenceError(error)
         publicationQueue.sync {}
         presentationObservationQueue.sync {}
-        presentationStore.flushPendingSaveSynchronously()
+        for store in presentationStores { store.flushPendingSaveSynchronously() }
     }
 }

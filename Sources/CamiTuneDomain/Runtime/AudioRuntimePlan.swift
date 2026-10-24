@@ -148,6 +148,21 @@ package struct AudioRuntimePlan: Hashable, Sendable {
     package let hardwareEvidence: RuntimeHardwareEvidence
     package let assets: PreparedRuntimeAssets
     package var hardwareFingerprint: HardwareTopologyFingerprint { hardwareEvidence.fingerprint }
+    package var usesExclusivePluginOutput: Bool { intent.usesExclusivePluginOutput }
+
+    /// Compact plug-in lanes to physical device slots; never guess from labels.
+    package var directOutputChannelMap: [Int] {
+        dspInputFormat.channels.enumerated().map { index, channel in
+            if let output = channel.physicalOutputID { return output.channelIndex }
+            // Personal-listening interfaces keep a stereo processing bus while
+            // selecting arbitrary physical slots (e.g. headphones on 7/8).
+            if physicalEndpointFormat.channels.indices.contains(index),
+               let output = physicalEndpointFormat.channels[index].physicalOutputID {
+                return output.channelIndex
+            }
+            return index
+        }
+    }
 }
 
 package struct AudioRuntimePlanCompiler {

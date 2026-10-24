@@ -22,6 +22,13 @@ struct ResponsiveStackLayout: Layout {
         horizontal.updateCache(&cache.horizontal, subviews: subviews)
         vertical.updateCache(&cache.vertical, subviews: subviews)
     }
+    // This container exports no custom alignment guides. The default Layout
+    // implementation places its children again to derive them, which repeats
+    // expensive graph/editor layout on every animated width change.
+    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect,
+        proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGFloat? { nil }
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect,
+        proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGFloat? { nil }
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
         let proposal = ProposedViewSize(width: proposal.width.flatMap { $0.isFinite ? $0 : nil },
             height: proposal.height.flatMap { $0.isFinite ? $0 : nil })

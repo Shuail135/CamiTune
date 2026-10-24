@@ -275,7 +275,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
     func applyAutomaticBufferIfQuiet() async {
         guard !terminated, !transitionInProgress, reconciliationWorker == nil,
               activeTransaction == nil, !callbacks.settingsBusy(),
-              let old = activeRuntimePlan, old.intent.audioBufferSetting == .automatic,
+              let old = activeRuntimePlan, !old.usesExclusivePluginOutput, old.intent.audioBufferSetting == .automatic,
               !old.processingGraph.playback.exclusive,
               callbacks.profiles().first(where: { $0.id == old.intent.id })?.audioBufferSetting == .automatic,
               case .active(let desired) = desiredRuntime.target, desired.id == old.intent.id else { return }
@@ -495,13 +495,14 @@ final class AudioRuntimeCoordinator: ObservableObject {
     func prepareRuntimePlan(profile: DeviceProfile, reason: String = "validation", parentOperation: PerformanceOperationID? = nil,
                             automaticBufferFrames: Int? = nil) async throws -> AudioRuntimePlan {
         var profile = profile
-        if profile.audioBufferSetting == .automatic {
+        if !profile.usesExclusivePluginOutput, profile.audioBufferSetting == .automatic {
             // Ordinary edits keep the current size. Only the explicit, guarded
             // silence transition supplies an override for an owned session.
             let frames = automaticBufferFrames ?? activeRuntimePlan.flatMap { current -> Int? in
                 guard current.intent.id == profile.id,
                       current.intent.outputDeviceUID == profile.outputDeviceUID,
                       current.intent.sampleRate == profile.sampleRate,
+                      current.usesExclusivePluginOutput == profile.usesExclusivePluginOutput,
                       current.intent.processingChannelCount == profile.processingChannelCount else { return nil }
                 return current.processingGraph.chunkSize
             } ?? runtimeServices.automaticBufferSize(profile)
@@ -549,6 +550,10 @@ final class AudioRuntimeCoordinator: ObservableObject {
     }
 
     private func applyPlanGraph(_ plan: AudioRuntimePlan, operation: PerformanceOperation? = nil) async throws {
+        if plan.usesExclusivePluginOutput {
+            actualGraphUpdateSummary = "Direct plug-in output, applied revision \(plan.revision.generation)"
+            return
+        }
         try await runtimeServices.applyGraph(plan.processingGraph)
         operation?.mark("backend acknowledged")
         let kind = runtimeServices.graphUpdateDescription() ?? "Acknowledged (backend kind not reported)"
@@ -636,7 +641,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
         runtimeServices.commitPluginRack(plan)
         runtimeServices.applyRenderConfiguration(plan.renderConfiguration)
         runtimeServices.applyPCMDeliveryConfiguration(plan.deliveryConfiguration)
-        perAppAudio.setPlaybackContext(plan.playbackContext)
+        perAppAudio.setPlaybackContext(plan.playbackContext, profileID: plan.revision.profileID)
     }
 
 
@@ -652,13 +657,13 @@ final class AudioRuntimeCoordinator: ObservableObject {
         guard profile.isEnabled else { throw AppState.AppError.profileDisabled(profile.name) }
         await runtimeServices.refreshDependencies(); try checkCurrent(intent.generation)
         operation?.mark("dependencies checked")
-        guard runtimeServices.engineAvailable() else { throw AppState.AppError.missingCamillaDSP }
         let supported = await runtimeServices.presentationSupported(); try checkCurrent(intent.generation)
         guard supported else { throw AppState.AppError.outdatedRoutingDriver }
         guard runtimeServices.bridgeLayout() != nil else { throw AppState.AppError.unsupportedRoutingLayout }
         let plan: AudioRuntimePlan
         if let supplied = supplied ?? intent.preparedPlan { plan = supplied }
         else { plan = try await prepareRuntimePlan(profile: profile, reason: "activation", parentOperation: operation?.id) }
+        guard plan.usesExclusivePluginOutput || runtimeServices.engineAvailable() else { throw AppState.AppError.missingCamillaDSP }
         try checkCurrent(intent.generation)
         try await AudioRuntimePlanPreparer().validateCurrent(plan, services: runtimeServices); try checkCurrent(intent.generation)
         guard let output = await runtimeServices.resolveOutput(plan.hardwareEvidence.output.uid) else {
@@ -706,11 +711,16 @@ final class AudioRuntimeCoordinator: ObservableObject {
             try await runtimeServices.setRate(bridge.id, sampleRate); try current()
             operation?.mark("sample rates configured")
             phase("Starting engine", status: .activating)
-            try await acquire(.engine, owner: owner) { try await runtimeServices.startEngine() }; try current()
-            operation?.mark("Camilla process ready")
-            runtimeServices.resetEngine()
-            let outputs = try await runtimeServices.playbackDevices(); try current()
-            guard outputs.contains(plan.hardwareEvidence.output.uid) else { throw AppState.AppError.camillaDSPCoreAudioUIDUnsupported }
+            if plan.usesExclusivePluginOutput {
+                try await acquire(.engine, owner: owner) { try await runtimeServices.startDirectOutput(plan) }; try current()
+                operation?.mark("Direct Core Audio output ready")
+            } else {
+                try await acquire(.engine, owner: owner) { try await runtimeServices.startEngine() }; try current()
+                operation?.mark("Camilla process ready")
+                runtimeServices.resetEngine()
+                let outputs = try await runtimeServices.playbackDevices(); try current()
+                guard outputs.contains(plan.hardwareEvidence.output.uid) else { throw AppState.AppError.camillaDSPCoreAudioUIDUnsupported }
+            }
             operation?.mark("playback UID verified")
             phase("Applying backend", status: .activating)
             try await applyPlanGraph(plan, operation: operation); try current()
@@ -725,7 +735,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
             phase("Starting PCM", status: .activating)
             try await acquire(.pcm, owner: owner) { try await runtimeServices.startPCM(plan, owner.publicSession) }; try current()
             operation?.mark("PCM writer ready")
-            perAppAudio.setPlaybackContext(plan.playbackContext)
+            perAppAudio.setPlaybackContext(plan.playbackContext, profileID: plan.revision.profileID)
             phase("Starting transport", status: .activating)
             var transportError: Error?
             var connected = false
@@ -860,6 +870,14 @@ final class AudioRuntimeCoordinator: ObservableObject {
         let old = owner.appliedPlan
         let delta = compareRuntimePlans(from: old, to: candidate, reason: reason, parentOperation: operation?.id)
         if delta.isNoOp { return }
+        if candidate.usesExclusivePluginOutput && old.usesExclusivePluginOutput && delta.engine.changed {
+            if case .automaticBuffer = intent.source {
+                guard await runtimeServices.automaticBufferIsQuiet() else { throw CancellationError() }
+                runtimeServices.automaticBufferWillChange()
+            }
+            try await replacePipeline(candidate, intent: intent, reason: "directOutputBufferChange")
+            return
+        }
         if case .automaticBuffer = intent.source {
             var comparable = candidate.processingGraph
             comparable.chunkSize = old.processingGraph.chunkSize

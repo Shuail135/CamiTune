@@ -1,10 +1,22 @@
 import Foundation
 import Darwin
 
+package protocol PCMOutputSink: AnyObject, Sendable {
+    /// Process and deliver incrementally when the hardware has a small runway.
+    var processingBlockFrames: Int? { get }
+    func write(_ bytes: Data) throws
+    func cancel()
+    func finish()
+}
+package extension PCMOutputSink {
+    var processingBlockFrames: Int? { nil }
+    func cancel() {}
+}
+
 /// One PCM writer owns this sink from its first write through finish().
 /// The engine manager retains its original descriptor. A bounded join may return
 /// while a write is blocked, but must never close this worker's duplicate.
-package final class CamillaPCMSink: @unchecked Sendable {
+package final class CamillaPCMSink: PCMOutputSink, @unchecked Sendable {
     private var handle: FileHandle?
 
     package init(duplicating descriptor: Int32) throws {

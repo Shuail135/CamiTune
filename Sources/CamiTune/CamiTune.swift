@@ -331,6 +331,7 @@ final class CamiTunePresentationCoordinator {
             controller.sizingOptions = []
             let created = CamiTuneMainWindow(contentViewController: controller)
             created.configureContentLayout()
+            created.configureSidebarToolbar(commands: commands)
             created.setContentSize(NSSize(width: 1_000, height: 700))
             created.isReleasedWhenClosed = false
             created.tabbingMode = .disallowed
@@ -394,15 +395,88 @@ final class CamiTunePresentationCoordinator {
 
 
 @MainActor
-final class CamiTuneMainWindow: NSWindow {
+final class CamiTuneMainWindow: NSWindow, NSToolbarDelegate {
     static let minimumContentSize = NSSize(width: 800, height: 620)
+    private static let sidebarItemIdentifier = NSToolbarItem.Identifier("CamiTune.ToggleSidebar")
+    private static let titleItemIdentifier = NSToolbarItem.Identifier("CamiTune.WindowTitle")
+    private weak var sidebarCommands: MainWindowCommandCoordinator?
+    private var sidebarSubscription: AnyCancellable?
+    private var sidebarToolbarItem: NSToolbarItem?
+
+    func configureSidebarToolbar(commands: MainWindowCommandCoordinator) {
+        sidebarCommands = commands
+        let toolbar = NSToolbar(identifier: "CamiTune.MainWindow")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        toolbar.centeredItemIdentifiers = [Self.titleItemIdentifier]
+        self.toolbar = toolbar
+        toolbarStyle = .unifiedCompact
+        sidebarSubscription = commands.$context.sink { [weak self] context in
+            self?.updateSidebarToolbar(context)
+        }
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [Self.sidebarItemIdentifier, .sidebarTrackingSeparator, Self.titleItemIdentifier, .flexibleSpace]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        if itemIdentifier == Self.titleItemIdentifier {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            let label = NSTextField(labelWithString: "CamiTune")
+            label.font = .titleBarFont(ofSize: 0)
+            label.textColor = .labelColor
+            let title = NSStackView(views: [label])
+            title.orientation = .horizontal
+            title.alignment = .centerY
+            title.spacing = 6
+            item.view = title
+            item.label = "CamiTune"
+            item.autovalidates = false
+            item.isEnabled = true
+            item.visibilityPriority = .high
+            return item
+        }
+        guard itemIdentifier == Self.sidebarItemIdentifier else { return nil }
+        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+        item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Sidebar")
+            .flatMap { $0.withSymbolConfiguration(.init(pointSize: 16, weight: .regular)) }
+        item.image?.size = NSSize(width: 16, height: 16)
+        // Keep this item before the sidebar separator, beside the traffic lights.
+        item.isNavigational = false
+        item.toolTip = ""
+        item.target = self
+        item.action = #selector(toggleProfileSidebar(_:))
+        item.autovalidates = false
+        sidebarToolbarItem = item
+        if let context = sidebarCommands?.context { updateSidebarToolbar(context) }
+        return item
+    }
+
+    private func updateSidebarToolbar(_ context: MainWindowCommandCoordinator.Context) {
+        sidebarToolbarItem?.label = context.sidebarToggleTitle
+        sidebarToolbarItem?.paletteLabel = context.sidebarToggleTitle
+        sidebarToolbarItem?.isEnabled = context.canToggleSidebar
+    }
+
+    @objc private func toggleProfileSidebar(_ sender: Any?) {
+        sidebarCommands?.send(.toggleSidebar)
+    }
 
     func configureContentLayout() {
         title = "CamiTune"
-        // Let AppKit reserve the title/toolbar area, including its traffic-light
-        // buttons. A full-size hosting view can outgrow its safe area when the
-        // window is shortened and SwiftUI enforces a larger minimum frame.
-        styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        // The sidebar material reaches the top of the window. Its tracking
+        // separator keeps the app title in the detail pane, past the sidebar.
+        styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        titleVisibility = .hidden
+        titlebarAppearsTransparent = true
+        titlebarSeparatorStyle = .none
         contentMinSize = Self.minimumContentSize
         if let contentView {
             // AppKit ignores contentMinSize for Auto Layout windows. These two

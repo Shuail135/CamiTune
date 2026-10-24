@@ -3,6 +3,38 @@ import SwiftUI
 
 private let applicationOrderType = NSPasteboard.PasteboardType("com.camitune.application-order")
 
+/// This overlay alone observes pointer movement; its native row host stays intact.
+struct MenuAppDropIndicator: View {
+    @ObservedObject var feedback: MenuAppDropFeedback
+    var applicationID: String? = nil
+    var section: AppAudioSection? = nil
+    var sectionAppend = true
+    var highlightsArea = false
+
+    private var target: MenuAppDropTarget? {
+        guard let target = feedback.target else { return nil }
+        if let applicationID {
+            return target.applicationID == applicationID ? target : nil
+        }
+        return target == MenuAppDropTarget(after: sectionAppend, section: section) ? target : nil
+    }
+
+    var body: some View {
+        let target = target
+        // Section headers insert at the start (bottom edge); footers append
+        // at the end (top edge). Application rows use their hovered half.
+        let bottom = applicationID == nil ? !sectionAppend : target?.after == true
+        Rectangle().fill(Color.accentColor)
+            .frame(height: 2)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: bottom ? .bottom : .top)
+            .background(highlightsArea ? Color.accentColor.opacity(0.10) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 6))
+            .opacity(target == nil ? 0 : 1)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
 /// Only this identity-sized view is a source. Sliders/buttons remain in their
 /// ordinary SwiftUI hit regions, outside its mouse handling.
 struct MenuAppDragSource: NSViewRepresentable {

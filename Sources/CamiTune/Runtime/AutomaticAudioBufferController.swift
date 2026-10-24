@@ -84,6 +84,8 @@ final class AutomaticAudioBufferController: ObservableObject {
                     "outputVolumeScalar", "lockOutputVolume", "autoActivateWhenProfileDeviceSelected", "isEnabled",
                     "deviceTypeConfigurations", "playbackModesByEndpoint", "speakerVerification"] { value[key] = nil }
         var rack = profile.pluginRack
+        // The exclusive buffer is dormant when this controller tunes CamillaDSP.
+        rack.exclusiveBufferSize = 128
         rack.slots = rack.activeSlots
         rack.isEnabled = true
         guard let rackData = try? JSONEncoder().encode(rack),
@@ -103,12 +105,13 @@ final class AutomaticAudioBufferController: ObservableObject {
     }
 
     func begin(profile: DeviceProfile, now: Date = Date()) {
-        guard let key = Self.setupKey(for: profile) else { end(); return }
+        guard !profile.usesExclusivePluginOutput, let key = Self.setupKey(for: profile) else { end(); return }
         if context?.profileID != profile.id { end() }
         let record = records[key].flatMap { now.timeIntervalSince($0.updated) < 30 * 86400 ? $0 : nil }
         context = Context(profileID: profile.id, key: key, currentFrames: profile.chunkSize, started: now,
             lastObserved: now, droppedFrames: 0,
-            policy: .init(frames: record?.frames ?? profile.chunkSize, minimumFrames: record?.minimumFrames ?? 128))
+            policy: .init(frames: record?.frames ?? profile.chunkSize,
+                minimumFrames: record?.minimumFrames ?? 128))
         publish()
     }
     func end() {

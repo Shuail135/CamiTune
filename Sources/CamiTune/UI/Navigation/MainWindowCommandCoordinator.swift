@@ -7,6 +7,7 @@ import SwiftUI
 /// presentation facts cross this bridge; AppState remains the runtime owner.
 @MainActor
 final class MainWindowCommandCoordinator: ObservableObject {
+    @Published var appAudioRevealProfileID: UUID?
     @Published var settingsCategory = "General"
     struct Context: Equatable {
         var destination: SidebarDestination = .empty
@@ -21,6 +22,8 @@ final class MainWindowCommandCoordinator: ObservableObject {
         var sidebarVisible = true
 
         var canNavigate: Bool { !modalActive && !transitionInProgress }
+        var canToggleSidebar: Bool { mainWindowVisible && canNavigate }
+        var sidebarToggleTitle: String { sidebarVisible ? "Hide Sidebar" : "Show Sidebar" }
         var canEditProfile: Bool {
             guard let profileID else { return false }
             return canNavigate && mainWindowVisible && destination == .profile(profileID)
@@ -67,6 +70,8 @@ final class MainWindowCommandCoordinator: ObservableObject {
         refresh()
         guard context.canNavigate, request == nil else { return false }
         switch intent {
+        case .toggleSidebar:
+            guard context.canToggleSidebar else { return false }
         case .rename(let id), .profileSettings(let id):
             guard context.canEditProfile, context.profileID == id else { return false }
         default: break
@@ -140,9 +145,11 @@ struct CamiTuneCommands: Commands {
                 .disabled(!coordinator.context.mainWindowVisible || coordinator.context.modalActive)
         }
         CommandGroup(replacing: .sidebar) {
-            Button(coordinator.context.sidebarVisible ? "Hide Sidebar" : "Show Sidebar") {
+            Button(coordinator.context.sidebarToggleTitle) {
                 coordinator.send(.toggleSidebar)
-            }.disabled(!coordinator.context.canNavigate)
+            }
+            .keyboardShortcut("s", modifiers: [.control, .command])
+            .disabled(!coordinator.context.canToggleSidebar)
             Divider()
             Button("App Audio") { coordinator.send(.appAudio) }
                 .disabled(!coordinator.context.canNavigate)

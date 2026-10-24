@@ -2,6 +2,8 @@ import CamiTuneDomain
 import Foundation
 
 enum HistoryTarget: Hashable, Sendable {
+    case scopedAppPresentation(String, PerAppSettingsScope), scopedAppPresentationDocument(PerAppSettingsScope)
+    case scopedApplication(String, PerAppSettingsScope), scopedApplications(PerAppSettingsScope)
     case profile(UUID), profileChannel(UUID, Int), application(String)
     case applicationPresentation(String), applicationPresentationDocument, profileOrganization
     case referenceCorrection(UUID), speakerSystem(UUID)

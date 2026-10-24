@@ -7,11 +7,18 @@ struct MenuAppDropTarget: Equatable {
     var section: AppAudioSection? = nil
 }
 
+/// Pointer tracking changes only the drop artwork, not the hosted audio controls.
+@MainActor
+final class MenuAppDropFeedback: ObservableObject {
+    @Published fileprivate(set) var target: MenuAppDropTarget?
+}
+
 @MainActor
 final class MenuAppReorderCoordinator: ObservableObject {
     let store: AppPresentationStore
     @Published private(set) var draggedApplicationID: String?
-    @Published private(set) var dropTarget: MenuAppDropTarget?
+    let feedback = MenuAppDropFeedback()
+    var dropTarget: MenuAppDropTarget? { feedback.target }
     @Published var showingMoreApps = false
     @Published private(set) var hoveringBridge = false
     private var hoveringPopover = false
@@ -34,8 +41,8 @@ final class MenuAppReorderCoordinator: ObservableObject {
     }
 
     func updateTarget(_ target: MenuAppDropTarget?) {
-        guard draggedApplicationID != nil else { return }
-        dropTarget = target
+        guard draggedApplicationID != nil, dropTarget != target else { return }
+        feedback.target = target
     }
 
     @discardableResult
@@ -92,15 +99,16 @@ final class MenuAppReorderCoordinator: ObservableObject {
     }
 
     func endDrag() {
+        updateTarget(nil)
+        guard draggedApplicationID != nil else { return }
         draggedApplicationID = nil
-        dropTarget = nil
         scheduleHover()
     }
 
     func cancel() {
         hoverTask?.cancel()
+        updateTarget(nil)
         draggedApplicationID = nil
-        dropTarget = nil
         hoveringBridge = false
         hoveringPopover = false
         showingMoreApps = false

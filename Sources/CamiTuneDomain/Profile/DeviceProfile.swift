@@ -39,7 +39,7 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
     package var lockOutputVolume: Bool = false
     package var outputVolumeScalar: Double = 0.0625
     package var sampleRate: Int = 48_000
-    package static let audioBufferSizes = [128, 256, 512, 1024, 2048]
+    package static let audioBufferSizes = [32, 64, 128, 256, 512, 1024, 2048]
     /// The preference is separate from the positive, resolved engine size.
     package var chunkSize: Int = 1024 {
         didSet { usesGlobalAudioBuffer = false; audioBufferSetting = .fixed(chunkSize) }

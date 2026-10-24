@@ -1,4 +1,3 @@
-import CamiTuneDomain
 import Foundation
 import Darwin
 
@@ -49,6 +48,11 @@ final class PluginHostProcess: @unchecked Sendable {
         process.standardInput = input
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
+        // A helper may exit between queuing a command and writing it. Protect
+        // this descriptor rather than changing SIGPIPE for the whole app.
+        guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+            throw PluginHostError(message: "Could not prepare the plug-in control connection.")
+        }
         do { try process.run() }
         catch {
             if selected == .x86_64 && PluginArchitecture.native == .arm64 {
@@ -100,7 +104,7 @@ final class PluginHostProcess: @unchecked Sendable {
             if finished {
                 throw PluginHostError(message: translatedIntel && !receivedEvent
                     ? "The Intel plug-in helper could not start. Check that Apple’s Rosetta support is installed, then try again."
-                    : "The plug-in host closed unexpectedly. The plug-in may be incompatible with this Mac.")
+                    : "The plug-in host closed unexpectedly. Try loading the plug-in again.")
             }
             if !condition.wait(until: deadline) { throw PluginHostError(message: "The plug-in took too long to respond. It has been stopped.") }
         }

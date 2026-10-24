@@ -5,86 +5,109 @@ import SwiftUI
 @MainActor
 struct PerAppAudioView: View {
     @ObservedObject var state: AppState
-    let controller: PerAppAudioController
+    let profile: DeviceProfile?
+    private let controller: PerAppAudioController
     @StateObject private var audioPresentation: PerAppAudioPresentation
-    @ObservedObject var presentation: AppPresentationStore
-    @State private var showingOrder = false
-    @StateObject private var reorder: MenuAppReorderCoordinator
 
-    init(state: AppState) {
+    init(state: AppState, profile: DeviceProfile? = nil) {
         self.state = state
+        self.profile = profile
         controller = state.perAppAudio
         _audioPresentation = StateObject(wrappedValue: PerAppAudioPresentation(controller: state.perAppAudio))
-        presentation = state.perAppAudio.presentationStore
-        _reorder = StateObject(wrappedValue: MenuAppReorderCoordinator(store: state.perAppAudio.presentationStore))
-    }
-
-    private var activeApplications: [PerAppAudioApplication] {
-        audioPresentation.applications.filter(\.isActive)
-    }
-
-    private var activeProfile: DeviceProfile? {
-        state.profiles.profiles.first { $0.id == state.activeProfileID }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("App Audio").font(.largeTitle.bold())
-                    Text("Press ⌘ and drag an app to reorder.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button { showingOrder = true } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 20, weight: .regular))
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 32, height: 32)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("App Order")
-            }
-            .padding(.horizontal, 28)
-            .padding(.top, 28)
+        let scope = controller.resolvedSettingsScope(profile.map { .profile($0.id) } ?? .global)
+        ScopedPerAppAudioView(state: state, profile: profile, scope: scope,
+            audioPresentation: audioPresentation, presentation: controller.presentationStore(for: scope))
+            .id(scope)
+            .onAppear { controller.setMeterPresentationActive(true, source: "main") }
+            .onDisappear { controller.setMeterPresentationActive(false, source: "main") }
+    }
+}
 
-            if let error = audioPresentation.persistenceError ?? presentation.persistenceError {
-                Text(error).font(.caption).foregroundStyle(.orange).padding(.horizontal, 28)
-            }
-            if !state.isActive {
-                Label("Activate a profile to control application audio", systemImage: "info.circle")
-                    .font(.callout).foregroundStyle(.secondary).padding(.horizontal, 28)
-            }
-            if activeApplications.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: "speaker.slash").font(.largeTitle)
-                    Text("No application audio detected").font(.headline)
-                    Text("Play audio in an application to add it here.").font(.callout)
+@MainActor
+private struct ScopedPerAppAudioView: View {
+    @ObservedObject var state: AppState
+    let profile: DeviceProfile?
+    let scope: PerAppSettingsScope
+    @ObservedObject var audioPresentation: PerAppAudioPresentation
+    @ObservedObject var presentation: AppPresentationStore
+    @State private var showingOrder = false
+    @StateObject private var reorder: MenuAppReorderCoordinator
+    private var controller: PerAppAudioController { state.perAppAudio }
+
+    init(state: AppState, profile: DeviceProfile?, scope: PerAppSettingsScope,
+         audioPresentation: PerAppAudioPresentation, presentation: AppPresentationStore) {
+        self.state = state
+        self.profile = profile
+        self.scope = scope
+        self.audioPresentation = audioPresentation
+        self.presentation = presentation
+        _reorder = StateObject(wrappedValue: MenuAppReorderCoordinator(store: presentation))
+    }
+
+    private var applications: [PerAppAudioApplication] {
+        let rows = profile == nil
+            ? audioPresentation.editableApplications(in: presentation.snapshot)
+            : audioPresentation.applications.filter(\.isActive)
+        return rows.map { application in
+            var application = application
+            application.settings = controller.settings(for: application.id, scope: scope)
+            return application
+        }
+    }
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("App Audio").font(.title3.bold())
+                    Spacer()
+                    Button { showingOrder = true } label: {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 20, weight: .regular))
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("App Order")
+                    if let profile {
+                        JoinedSegmentedControl(options: [true, false], selection: Binding(
+                            get: { controller.usesGlobalSettings(for: profile.id) },
+                            set: { controller.setUsesGlobalSettings($0, for: profile.id) }
+                        ), title: { $0 ? "Global" : "This Profile" })
+                        .frame(width: 260)
+                        .accessibilityLabel("App Audio scope")
+                    }
                 }
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                PerAppAudioList(applications: activeApplications, controller: controller,
-                    meters: audioPresentation,
-                    presentation: presentation, reorder: reorder,
-                    playbackContext: activeProfile.map(PerAppPlaybackContext.init(profile:)),
-                    sampleRate: Double(activeProfile?.sampleRate ?? 48_000),
-                    controlsEnabled: state.isActive && !state.transitionInProgress)
-                    .padding(.horizontal, 28)
-                    .padding(.bottom, 20)
-            }
+                Label("Press ⌘ and drag an app to reorder.", systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let error = audioPresentation.persistenceError ?? presentation.persistenceError {
+                    Text(error).font(.caption).foregroundStyle(.orange)
+                }
+                if applications.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "speaker.slash").font(.largeTitle)
+                        Text("No application audio detected").font(.headline)
+                        Text("Play audio in an application to add it here.").font(.callout)
+                    }
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 24)
+                } else {
+                    PerAppAudioList(applications: applications, controller: controller,
+                        meters: audioPresentation, presentation: presentation, reorder: reorder,
+                        playbackContext: profile.map(PerAppPlaybackContext.init(profile:)),
+                        sampleRate: Double(profile?.sampleRate ?? 48_000), controlsEnabled: !state.transitionInProgress,
+                        scope: scope, allowsStoredModeSelection: profile == nil, scrolls: false)
+                        .id(scope)
+                }
+            }.padding(6)
         }
-        .frame(maxWidth: 1000, maxHeight: .infinity, alignment: .topLeading)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
         .sheet(isPresented: $showingOrder) { AppOrderView(store: presentation, controller: controller) }
-        .onAppear { controller.setMeterPresentationActive(true, source: "main") }
-        .onDisappear {
-            controller.setMeterPresentationActive(false, source: "main")
-            reorder.cancel()
-        }
+        .onDisappear { reorder.cancel() }
     }
 }
 
@@ -92,7 +115,6 @@ struct PerAppAudioView: View {
 /// inspected with temporary application fixtures without starting audio routing.
 @MainActor
 struct PerAppAudioList: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let applications: [PerAppAudioApplication]
     let controller: PerAppAudioController
     let meters: PerAppAudioPresentation
@@ -101,17 +123,20 @@ struct PerAppAudioList: View {
     let playbackContext: PerAppPlaybackContext?
     let sampleRate: Double
     let controlsEnabled: Bool
+    var scope: PerAppSettingsScope = .active
+    var allowsStoredModeSelection = false
+    var scrolls = true
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(AppAudioSection.allCases) { section in
-                    applicationSection(section)
-                }
-            }
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: presentation.snapshot)
+        if scrolls {
+            ScrollView { rows }.scrollBounceWhenNeeded()
+        } else { rows }
+    }
+
+    private var rows: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(AppAudioSection.allCases) { section in applicationSection(section) }
         }
-        .scrollBounceWhenNeeded()
     }
 
     private func applicationSection(_ section: AppAudioSection) -> some View {
@@ -134,10 +159,8 @@ struct PerAppAudioList: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(height: 32)
-            .overlay(alignment: .bottom) {
-                if reorder.dropTarget == MenuAppDropTarget(after: false, section: section) {
-                    Rectangle().fill(Color.accentColor).frame(height: 2).allowsHitTesting(false)
-                }
+            .overlay {
+                MenuAppDropIndicator(feedback: reorder.feedback, section: section, sectionAppend: false)
             }
         } footer: {
             MenuAppDropBridge(section: section, coordinator: reorder) {
@@ -147,17 +170,13 @@ struct PerAppAudioList: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                     .padding(.horizontal, 10)
-                    .background(reorder.dropTarget == MenuAppDropTarget(after: true, section: section)
-                        ? Color.accentColor.opacity(0.10) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 6))
             }
-            .frame(height: ordered.isEmpty ? 52 : 20)
-            .overlay(alignment: .top) {
-                if reorder.dropTarget == MenuAppDropTarget(after: true, section: section) {
-                    Rectangle().fill(Color.accentColor).frame(height: 2).allowsHitTesting(false)
-                }
+            // Keep a compact append target after the last row, with full room
+            // for the drop guidance when the section has no applications.
+            .frame(height: ordered.isEmpty ? 52 : 8)
+            .overlay {
+                MenuAppDropIndicator(feedback: reorder.feedback, section: section, highlightsArea: true)
             }
-            .padding(.bottom, 24)
         }
     }
 
@@ -171,7 +190,7 @@ struct PerAppAudioList: View {
                             .frame(minWidth: 120, idealWidth: 200, maxWidth: 200, alignment: .leading)
                         HStack(spacing: 8) {
                             Button {
-                                controller.setMuted(!application.settings.isMuted, for: application.id)
+                                controller.setMuted(!application.settings.isMuted, for: application.id, scope: scope)
                             } label: {
                                 Image(systemName: application.settings.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
                                     .frame(width: 20)
@@ -180,7 +199,7 @@ struct PerAppAudioList: View {
                             .accessibilityLabel("\(application.settings.isMuted ? "Unmute" : "Mute") \(name)")
                             LiveApplicationVolumeSlider(meter: meters.meter(for: application.id),
                                 volume: application.settings.volume, isMuted: application.settings.isMuted) { volume, finished in
-                                controller.setVolume(volume, for: application.id, interactionFinished: finished)
+                                controller.setVolume(volume, for: application.id, scope: scope, interactionFinished: finished)
                             }
                             .frame(minWidth: 100, maxWidth: .infinity).frame(height: 24)
                             .accessibilityLabel("\(name) volume")
@@ -204,7 +223,8 @@ struct PerAppAudioList: View {
                             .accessibilityValue("\(application.settings.isEqualizerActive ? "Active" : "Inactive"), \(expanded.wrappedValue ? "expanded" : "collapsed")")
                             if playbackContext?.showsModeControls != false {
                                 PerAppPlaybackModeMenu(application: application, displayedName: name,
-                                    controller: controller, context: playbackContext)
+                                    controller: controller, context: playbackContext, scope: scope,
+                                    allowsStoredSelection: allowsStoredModeSelection)
                                     .frame(width: 30)
                             }
                         }
@@ -215,7 +235,7 @@ struct PerAppAudioList: View {
                 .frame(height: 64)
                 if expanded.wrappedValue {
                     PerApplicationEQControls(applicationID: application.id, displayedName: name, settings: application.settings,
-                        sampleRate: sampleRate, controller: controller)
+                        sampleRate: sampleRate, controller: controller, presentationStore: presentation, scope: scope)
                         .equatable()
                         .disabled(!controlsEnabled)
                         .padding(12)
@@ -240,10 +260,8 @@ struct PerAppAudioList: View {
                 }
             }
             .opacity(reorder.draggedApplicationID == application.id ? 0.6 : 1)
-            .overlay(alignment: reorder.dropTarget?.after == true ? .bottom : .top) {
-                if reorder.dropTarget?.applicationID == application.id {
-                    Rectangle().fill(Color.accentColor).frame(height: 2).allowsHitTesting(false)
-                }
+            .overlay {
+                MenuAppDropIndicator(feedback: reorder.feedback, applicationID: application.id)
             }
         }
     }
@@ -346,25 +364,27 @@ private struct PerApplicationEQControls: View, Equatable {
     let settings: PerAppAudioSettings
     let sampleRate: Double
     let controller: PerAppAudioController
+    let scope: PerAppSettingsScope
     @State private var editorProfileID = UUID()
     @State private var bands: [EQBand]
     @State private var toneIsEditing = false
     @State private var bandGainIsEditing = false
     @State private var automaticSystemHeadroomDB: Double?
 
-    init(applicationID: String, displayedName: String, settings: PerAppAudioSettings, sampleRate: Double, controller: PerAppAudioController) {
-        _presentationStore = ObservedObject(wrappedValue: controller.presentationStore)
+    init(applicationID: String, displayedName: String, settings: PerAppAudioSettings, sampleRate: Double, controller: PerAppAudioController, presentationStore: AppPresentationStore, scope: PerAppSettingsScope = .active) {
+        _presentationStore = ObservedObject(wrappedValue: presentationStore)
         _simpleTone = State(initialValue: settings.simpleTone)
         self.applicationID = applicationID
         self.displayedName = displayedName
         self.settings = settings
         self.sampleRate = sampleRate
         self.controller = controller
+        self.scope = scope
         _bands = State(initialValue: settings.equalizerBands)
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.applicationID == rhs.applicationID && lhs.displayedName == rhs.displayedName && lhs.sampleRate == rhs.sampleRate
+        lhs.scope == rhs.scope && lhs.applicationID == rhs.applicationID && lhs.displayedName == rhs.displayedName && lhs.sampleRate == rhs.sampleRate
             && lhs.settings.eqBypassed == rhs.settings.eqBypassed
             && lhs.settings.equalizerBands == rhs.settings.equalizerBands
             && lhs.settings.simpleTone == rhs.settings.simpleTone
@@ -397,7 +417,7 @@ private struct PerApplicationEQControls: View, Equatable {
                 .frame(width: 260)
                 Toggle("Enable equalizer for \(displayedName)", isOn: Binding(
                     get: { !settings.eqBypassed },
-                    set: { controller.setEQBypassed(!$0, for: applicationID) }
+                    set: { controller.setEQBypassed(!$0, for: applicationID, scope: scope) }
                 ))
                 .labelsHidden()
                 .toggleStyle(.switch)
@@ -416,16 +436,16 @@ private struct PerApplicationEQControls: View, Equatable {
                     Spacer()
                     SectionResetButton("Reset Tone") {
                         simpleTone = SimpleToneSettings()
-                        controller.editEqualizer(for: applicationID) { $0.simpleTone = simpleTone }
+                        controller.editEqualizer(for: applicationID, scope: scope) { $0.simpleTone = simpleTone }
                     }
                     .disabled(simpleTone.isNeutral)
                 }
                 SimpleEQControlsView(settings: Binding(get: { simpleTone }, set: { tone in
                     simpleTone = tone
-                    controller.editEqualizer(for: applicationID, interactionFinished: !toneIsEditing) { $0.simpleTone = tone }
+                    controller.editEqualizer(for: applicationID, scope: scope, interactionFinished: !toneIsEditing) { $0.simpleTone = tone }
                 }), onEditingChanged: { editing in
                     toneIsEditing = editing
-                    if !editing { controller.finishAudioInteraction(for: applicationID) }
+                    if !editing { controller.finishAudioInteraction(for: applicationID, scope: scope) }
                 })
             }
             if presentation == .both { Divider() }
@@ -450,13 +470,13 @@ private struct PerApplicationEQControls: View, Equatable {
                             profileID: editorProfileID, responsePoints: [], setKind: EQEditorSupport.setKind,
                             columnWidth: columnWidth, showsSpectrumLevels: false, onGainEditingChanged: { editing in
                                 bandGainIsEditing = editing
-                                if !editing { controller.finishAudioInteraction(for: applicationID) }
+                                if !editing { controller.finishAudioInteraction(for: applicationID, scope: scope) }
                             })
                     }
                 }
             }
         }
-        .onDisappear { controller.finishAudioInteraction(for: applicationID) }
+        .onDisappear { controller.finishAudioInteraction(for: applicationID, scope: scope) }
         .onChange(of: settings.simpleTone) { if !toneIsEditing { simpleTone = $0 } }
         .onChange(of: settings.equalizerBands) { updated in
             guard !bandGainIsEditing else { return }
@@ -483,7 +503,7 @@ private struct PerApplicationEQControls: View, Equatable {
     private func setBands(_ updated: [EQBand]) {
         guard updated.allSatisfy({ $0.frequency.isFinite && $0.frequency > 0 && $0.frequency < sampleRate / 2 }) else { return }
         bands = updated
-        controller.editEqualizer(for: applicationID, interactionFinished: !bandGainIsEditing) { $0.equalizerBands = updated }
+        controller.editEqualizer(for: applicationID, scope: scope, interactionFinished: !bandGainIsEditing) { $0.equalizerBands = updated }
     }
 }
 

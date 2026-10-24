@@ -1,7 +1,7 @@
 import CamiTuneDomain
 import Foundation
 
-/// Meter indices describe their actual boundary: compact DSP input vs hardware output.
+/// Audio In uses source order; Audio Out uses physical hardware output indices.
 struct MultichannelMeterLayout: Equatable {
     struct Row: Identifiable, Equatable {
         var id: String
@@ -20,20 +20,37 @@ struct MultichannelMeterLayout: Equatable {
         }
     }
 
-    var sourceChannels: [Row]?
+    var sourceChannels: [Row]
     var groups: [Row]
     var channels: [Row]
     var usesGroups: Bool
-    var requiresDSPCapture: Bool
 
     init(profile: DeviceProfile) {
         let configured = profile.configuredProcessingChannels
         let route = try? ActiveAudioRoute(profile: profile)
         let inputs = route?.dspInputFormat.channels ?? []
-        if route?.usesSourceProcessingBus == true {
-            sourceChannels = inputs.enumerated().map { index, channel in
-                Row(id: "source:\(index)", label: channel.role == .unknown ? "Source \(index + 1)" : (channel.role?.displayName ?? "Source \(index + 1)"), captureIndices: [index], playbackIndices: [])
-            }
+        let sourceRoles = route?.sourceFormat.channels.map(\.role)
+            ?? ProfileRoutingDescriptor.sourceLayout(for: profile).roles.map(Optional.some)
+        // The bridge may expose a surround bus even for a stereo output.
+        // Show only the physical setup's roles, preserving the original source
+        // indices so hiding channels never changes which signal a meter reads.
+        let physicalRoles = Set(configured.map(\.role).filter { $0 != .unknown })
+        let routing = (try? profile.processingRuntimeProfile())?.effectiveMultichannel.routing
+        let outputs = Set(configured.map(\.physicalOutputID))
+        let routedSources = routing.map { settings in
+            Set(settings.routes.filter { outputs.contains($0.destination) && !$0.muted }.map(\.sourceChannel))
+        } ?? []
+        let visibleSources = sourceRoles.enumerated().filter { index, role in
+            if routing?.enabled == true { return routedSources.contains(index) }
+            guard let role, role != .unknown, !physicalRoles.isEmpty else { return index < configured.count }
+            return physicalRoles.contains(role)
+        }
+        sourceChannels = visibleSources.map { index, role in
+            let label: String
+            if visibleSources.count == 2, role == .left { label = "L" }
+            else if visibleSources.count == 2, role == .right { label = "R" }
+            else { label = role == .unknown ? "Source \(index + 1)" : (role?.displayName ?? "Source \(index + 1)") }
+            return Row(id: "source:\(index)", label: label, captureIndices: [index], playbackIndices: [])
         }
         func captureIndex(_ channel: ConfiguredProcessingChannel) -> Int? {
             if route?.usesPhysicalSpeakerBus == true {
@@ -43,7 +60,6 @@ struct MultichannelMeterLayout: Equatable {
         }
         let usesGroups = profile.usesGroupedProcessingPresentation
         self.usesGroups = usesGroups
-        requiresDSPCapture = profile.hasPhysicalSpeakerRoute && (usesGroups || inputs.map(\.role) != [.left, .right])
         channels = configured.map { channel in
             let label: String
             if !usesGroups && configured.count == 2, channel.role == .left { label = "L" }

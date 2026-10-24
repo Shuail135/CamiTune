@@ -63,7 +63,7 @@ public:
     void midi(const MIDIMessage& message) override { inner->midi(message); }
     void clearMIDI() override { inner->clearMIDI(); }
     void syncParameters() override { inner->syncParameters(); }
-    void editor(void (^completion)(NSView*)) override { inner->editor(completion); }
+    void editor(NSView* parent, EditorCompletion completion) override { inner->editor(parent, completion); }
     void closeEditor() override { inner->closeEditor(); }
     bool flushParameters() override { return inner->flushParameters(); }
     void idle() override { inner->idle(); }
@@ -185,12 +185,11 @@ public:
     void midi(const MIDIMessage& message) override { for (auto& copy : copies) copy.effect->midi(message); }
     void clearMIDI() override { for (auto& copy : copies) copy.effect->clearMIDI(); }
     void syncParameters() override { copies[0].effect->syncParameters(); }
-    void editor(void (^completion)(NSView*)) override {
-        // Native editors can change private assets/state outside parameter
-        // events. A shared parameter editor guarantees that a linked rack never
-        // edits just one speaker. Full presets are restored into every copy
-        // during preparation; native multichannel instances retain their UI.
-        completion(nil);
+    void editor(NSView* parent, EditorCompletion completion) override {
+        // Parameter edits already reach every copy through the mailbox. On
+        // close, the app prepares a replacement rack from the captured full
+        // preset, so private assets/programs also reach every channel safely.
+        copies[0].effect->editor(parent, completion);
     }
     void closeEditor() override { copies[0].effect->closeEditor(); }
     void idle() override {

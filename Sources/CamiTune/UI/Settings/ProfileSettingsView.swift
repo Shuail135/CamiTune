@@ -53,6 +53,11 @@ struct ProfileSettingsView: View {
         (try? draft.candidate()) != draft.original || draft.activation != draft.originalActivation
     }
     private var needsSpeakerConfiguration: Bool { (try? draft.preview().needsSpeakerConfiguration) == true }
+    private var isExclusiveOutput: Bool {
+        var preview = (try? draft.preview()) ?? draft.original
+        preview.inheritedSectionLayouts = store.layoutDefaults
+        return preview.usesExclusivePluginOutput
+    }
     private var audioBufferSelection: Binding<AudioBufferSetting> {
         Binding(get: { draft.audioBufferOverride ?? draft.original.audioBufferSetting },
                 set: { draft.audioBufferOverride = $0 })
@@ -158,13 +163,13 @@ struct ProfileSettingsView: View {
                     case "Section Layout":
                         SectionLayoutEditor(type: draft.selectedType, layout: Binding(
                             get: { draft.sectionLayout ?? store.defaultLayout(for: draft.selectedType) },
-                            set: { draft.sectionLayout = $0 }), requiresConfirmation: { section in
+                            set: { draft.sectionLayout = $0 }), isExclusiveOutput: isExclusiveOutput, requiresConfirmation: { section in
                                 guard var preview = try? draft.preview() else { return true }
                                 preview.inheritedSectionLayouts = store.layoutDefaults
                                 return state.sectionNeedsDisableConfirmation(section, profile: preview)
                             })
                         SectionResetButton("Reset to Global Defaults") { draft.sectionLayout = nil }
-                            .disabled(draft.sectionLayout == nil)
+                            .disabled(draft.sectionLayout == nil || isExclusiveOutput)
                     case "Speaker & Listening Position":
                         ScrollViewReader { proxy in
                             ScrollView { speakerConfiguration }

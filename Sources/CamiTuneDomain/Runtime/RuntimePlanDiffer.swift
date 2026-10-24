@@ -26,7 +26,8 @@ package struct RuntimePlanDiffer: Sendable {
                 sampleRateChanged: old.sourceFormat.sampleRate != new.sourceFormat.sampleRate
                     || old.dspInputFormat.sampleRate != new.dspInputFormat.sampleRate,
                 sourceChannelLayoutChanged: old.sourceFormat.signalSignature.channels != new.sourceFormat.signalSignature.channels,
-                routingSemanticsChanged: old.route.usesPhysicalSpeakerBus != new.route.usesPhysicalSpeakerBus
+                routingSemanticsChanged: old.usesExclusivePluginOutput != new.usesExclusivePluginOutput
+                    || old.route.usesPhysicalSpeakerBus != new.route.usesPhysicalSpeakerBus
                     || old.route.usesSourceProcessingBus != new.route.usesSourceProcessingBus
                     || old.route.usesDiscreteSource != new.route.usesDiscreteSource),
             physicalRoute: .init(outputDeviceUIDChanged: old.hardwareEvidence.output.uid != new.hardwareEvidence.output.uid,

@@ -15,7 +15,6 @@ enum SidebarDestination: Hashable, Sendable {
 
     static func restore(_ saved: String?, profileIDs: Set<UUID>, fallbackProfileID: UUID?) -> Self {
         switch saved {
-        case "applications": return .applications
         case "settings", "global-settings", "default-profiles": return .settings
         default:
             if let saved, let id = UUID(uuidString: saved), profileIDs.contains(id) { return .profile(id) }
@@ -27,6 +26,7 @@ enum SidebarDestination: Hashable, Sendable {
 
 @MainActor
 struct ContentView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let state: AppState
     private let history: UndoCoordinator
     private let preferences: UserDefaults
@@ -48,6 +48,8 @@ struct ContentView: View {
             profileIDs: Set(state.profiles.profiles.map(\.id)),
             fallbackProfileID: state.profiles.selectedProfileID)
         self._selection = State(initialValue: restored)
+        self._columnVisibility = State(initialValue:
+            preferences.object(forKey: "mainWindowSidebarVisible") as? Bool == false ? .detailOnly : .all)
     }
 
     var body: some View {
@@ -58,30 +60,62 @@ struct ContentView: View {
                 selection: $selection,
                 onAddOutput: beginAddingOutput
             )
+            .transaction { $0.animation = nil }
         } detail: {
-            ContentDetailView(
-                state: state,
-                profileStore: state.profiles,
-                coreAudio: state.coreAudio,
-                selection: selection
-            )
+            GeometryReader { geometry in
+                ContentDetailView(
+                    state: state,
+                    profileStore: state.profiles,
+                    coreAudio: state.coreAudio,
+                    selection: selection
+                )
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .clipped()
+            }
+            .overlay(alignment: .top) {
+                Divider()
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+            // The split view owns the slide. Editor controls should lay out
+            // at their current width without starting nested animations.
+            .transaction { $0.animation = nil }
         }
         .navigationSplitViewStyle(.balanced)
         .disclosureGroupStyle(SectionDisclosureStyle())
         .environmentObject(commands)
         .environment(\.undoCommandRouter, state.undoCommands)
         .modifier(HistoryReplayInteractionGate(history: history))
-        .onAppear { commands.selection = selection }
-        .onChange(of: columnVisibility) { commands.sidebarVisible = $0 != .detailOnly }
+        .onAppear {
+            commands.selection = selection
+            commands.sidebarVisible = columnVisibility != .detailOnly
+        }
+        .onChange(of: columnVisibility) { visibility in
+            let visible = visibility != .detailOnly
+            commands.sidebarVisible = visible
+            preferences.set(visible, forKey: "mainWindowSidebarVisible")
+        }
         .onReceive(commands.$request) { request in
             guard let request else { return }
             switch request.intent {
             case .settings: selection = .settings
-            case .appAudio: selection = .applications
+            case .appAudio:
+                if let id = state.profiles.selectedProfileID ?? state.activeProfileID ?? state.profiles.profiles.first?.id {
+                    selection = .profile(id)
+                    commands.appAudioRevealProfileID = id
+                } else {
+                    commands.settingsCategory = "App Audio"
+                    selection = .settings
+                }
             case .addOutput: Task { await beginAddingOutput() }
             case .openSetup:
                 state.setupPresentation.isPresented = true
-            case .toggleSidebar: columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+            case .toggleSidebar:
+                // Animate the split-view visibility transaction so SwiftUI
+                // keeps its native panes and saved visibility synchronized.
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.6)) {
+                    columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+                }
             case .rename, .profileSettings: return // The selected editor owns inline edit and its settings sheet.
             }
             commands.consume(request.id)
