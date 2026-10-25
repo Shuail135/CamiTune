@@ -5,6 +5,9 @@ import SwiftUI
 private struct RoomPlotSeries: Sendable {
     var channel: Int
     var dashed = false
+    var target = false
+    var curve: RoomPredictionCurve?
+    var hidden = false
     var points: [SIMD2<Double>]
 }
 private func roomChannelColor(_ channel: Int) -> Color {
@@ -25,14 +28,19 @@ struct RoomCorrectionAnalysisView: View {
     @State private var series: [RoomPlotSeries] = []
     @State private var timingAvailable = false
     @StateObject private var operation = UIBackgroundOperation<[RoomPlotSeries]>()
-    private let modes = ["Frequency", "Positions", "Impulse", "Phase", "Group Delay"]
+    private var modes: [String] {
+        editor.source.kind == .recorder ? ["Frequency", "Positions", "Impulse"]
+            : ["Frequency", "Positions", "Impulse", "Phase", "Group Delay"]
+    }
     private var supportsSmoothing: Bool { view == "Frequency" || view == "Positions" }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             JoinedSegmentedControl(options: modes, selection: $view, title: { $0 })
                 .frame(maxWidth: .infinity)
                 .accessibilityLabel("Analysis")
+                .accessibilityValue(view)
                 .uiInteractionAnchor("room-analysis-mode")
+                .uiInteractionAnchor("room-analysis-modes-\(modes.count)")
             if view == "Positions", let session = editor.session {
                 WrappingControlLayout {
                     ForEach(Array(session.positions.enumerated()), id: \.element.id) { i, position in
@@ -40,16 +48,11 @@ struct RoomCorrectionAnalysisView: View {
                     }
                 }
             }
-            if ["Impulse", "Phase", "Group Delay"].contains(view) && !timingAvailable {
-                Text("Timing is not reliable for this recording. Frequency and position analysis remain available.").foregroundStyle(.secondary)
-            } else {
-                RoomAnalysisPlot(series: series, logarithmic: view != "Impulse", label: view == "Impulse" ? "Time (ms)" : "Frequency (Hz)")
-                    .frame(height: 230)
-                if ["Impulse", "Phase", "Group Delay"].contains(view), (editor.session?.measurementAnalysisVersion ?? 1) >= 2 {
-                    Text("Peak-relative timing; not a speaker-alignment measurement. Unreliable frequencies are omitted.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
+            RoomAnalysisPlot(series: ["Impulse", "Phase", "Group Delay"].contains(view) && !timingAvailable ? [] : series,
+                logarithmic: view != "Impulse", label: view == "Impulse" ? "Time (ms)" : "Frequency (Hz)")
+                .frame(height: 230)
+                .uiInteractionAnchor("room-analysis-plot")
+                .uiInteractionAnchor("room-analysis-view-\(view)")
             WrappingControlLayout {
                 ForEach(editor.session?.context.topology.endpoints ?? [], id: \.id) { endpoint in
                     channelToggle(endpoint.id.channelIndex, title: endpoint.displayName)
@@ -72,11 +75,11 @@ struct RoomCorrectionAnalysisView: View {
                 if editor.comparison != nil { Toggle("Compare previous session", isOn: $comparingSessions) }
             }.font(.caption)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if editor.session == nil { Text("Measure a listening position to view its response.").foregroundStyle(.secondary) }
         }
         .onAppear { refresh() }
         .onChange(of: operation.isRunning) { loadingChanged($0) }
         .onChange(of: editor.revision) { _ in refresh() }
+        .onChange(of: modes) { _ in refresh() }
         .onChange(of: view) { _ in refresh() }
         .onChange(of: hiddenChannels) { _ in refresh() }
         .onChange(of: smoothing) { _ in refresh() }
@@ -87,18 +90,13 @@ struct RoomCorrectionAnalysisView: View {
         .onDisappear { operation.cancel(); loadingChanged(false) }
     }
     private func channelToggle(_ channel: Int, title: String) -> some View {
-        Button {
-            if hiddenChannels.contains(channel) { hiddenChannels.remove(channel) }
-            else { hiddenChannels.insert(channel) }
-        } label: {
-            Label(title, systemImage: "minus")
-                .foregroundStyle(hiddenChannels.contains(channel) ? Color.secondary.opacity(0.4) : roomChannelColor(channel))
-        }
-        .buttonStyle(.plain)
-        .accessibilityValue(hiddenChannels.contains(channel) ? "Hidden" : "Shown")
+        ResponseCurveToggle(title: title, color: roomChannelColor(channel), isVisible: Binding(
+            get: { !hiddenChannels.contains(channel) },
+            set: { if $0 { hiddenChannels.remove(channel) } else { hiddenChannels.insert(channel) } }))
         .uiInteractionAnchor("room-analysis-channel-\(channel)")
     }
     private func refresh() {
+        if !modes.contains(view) { view = "Frequency" }
         guard let session = editor.session else {
             operation.cancel()
             series = []; timingAvailable = false
@@ -189,14 +187,24 @@ private struct RoomAnalysisPlot: View {
                 let minY = points.map(\.y).min()! - 0.1, maxY = points.map(\.y).max()! + 0.1
                 // Tick labels are centered on their grid lines. Inset the plot
                 // so the first and last labels stay inside the canvas.
-                let plot = CGRect(x: 35, y: 10, width: max(1, size.width - 40), height: max(1, size.height - 20))
+                let plot = CGRect(x: 35, y: 10, width: max(1, size.width - 50), height: max(1, size.height - 35))
                 for i in 0...4 {
                     let y = plot.minY + plot.height * Double(i) / 4
                     var line = Path(); line.move(to: .init(x: plot.minX, y: y)); line.addLine(to: .init(x: plot.maxX, y: y))
                     context.stroke(line, with: .color(.secondary.opacity(0.2)))
                     context.draw(Text((maxY - (maxY - minY) * Double(i) / 4).formatted(.number.precision(.fractionLength(1)))).font(.system(size: 9)), at: .init(x: 15, y: y))
                 }
-                for line in series {
+                let ticks = logarithmic ? [20.0, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
+                    : (0...4).map { minX + (maxX - minX) * Double($0) / 4 }
+                var lastLabelX = -Double.infinity
+                for tick in ticks where x(tick) >= minX && x(tick) <= maxX {
+                    let location = plot.minX + (x(tick) - minX) / max(0.001, maxX - minX) * plot.width
+                    guard location - lastLabelX >= 28 else { continue }
+                    lastLabelX = location
+                    let label = logarithmic && tick >= 1000 ? "\((tick / 1000).formatted())k" : tick.formatted(.number.precision(.fractionLength(0)))
+                    context.draw(Text(label).font(.system(size: 9)), at: .init(x: location, y: plot.maxY + 12))
+                }
+                for line in series where !line.hidden {
                     var path = Path()
                     var continuing = false
                     for p in line.points {
@@ -205,10 +213,76 @@ private struct RoomAnalysisPlot: View {
                         if continuing { path.addLine(to: point) } else { path.move(to: point) }
                         continuing = true
                     }
-                    context.stroke(path, with: .color(roomChannelColor(line.channel)), style: StrokeStyle(lineWidth: 1.3, dash: line.dashed ? [4, 3] : []))
+                    context.stroke(path, with: .color(line.curve?.color ?? (line.target ? .secondary : roomChannelColor(line.channel))), style: StrokeStyle(lineWidth: 1.3, dash: line.target ? [1, 3] : (line.dashed ? [4, 3] : [])))
                 }
             }
             Text(label).font(.caption).foregroundStyle(.secondary)
         }.accessibilityLabel("Room measurement \(label) chart")
+    }
+}
+
+/// Predicted magnitude only; a fresh acoustic capture is required to verify it.
+struct RoomCorrectionPredictionView: View {
+    let result: RoomCorrectionResult
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach((result.predictions ?? [:]).keys.sorted(), id: \.self) { channel in
+                if let points = result.predictions?[channel], !points.isEmpty {
+                    RoomChannelPredictionView(channel: channel, points: points, calibrated: result.analysisPolicy == .calibrated)
+                }
+            }
+        }
+    }
+}
+
+private enum RoomPredictionCurve: String, CaseIterable, Sendable {
+    case measured, predicted, reference
+    var color: Color {
+        switch self {
+        case .measured: return .secondary
+        case .predicted: return .green
+        case .reference: return .blue
+        }
+    }
+    func title(calibrated: Bool) -> String {
+        self == .reference ? (calibrated ? "Target" : "Reference") : rawValue.capitalized
+    }
+    func value(_ point: RoomCorrectionPrediction) -> Double {
+        switch self {
+        case .measured: return point.measuredDB
+        case .predicted: return point.correctedDB
+        case .reference: return point.targetDB
+        }
+    }
+}
+
+private struct RoomChannelPredictionView: View {
+    let channel: Int
+    let points: [RoomCorrectionPrediction]
+    let calibrated: Bool
+    @State private var visible = Set(RoomPredictionCurve.allCases)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Channel \(channel + 1) · relative level (dB)").font(.caption)
+            // Retain every curve in the scale calculation, including when all
+            // curves are hidden, so legend clicks do not move the plot axes.
+            RoomAnalysisPlot(series: RoomPredictionCurve.allCases.map { curve in
+                .init(channel: channel, dashed: curve == .measured, target: curve == .reference,
+                    curve: curve, hidden: !visible.contains(curve),
+                    points: points.map { SIMD2($0.frequency, $0.reliability > 0.4 ? curve.value($0) : .nan) })
+            }, logarithmic: true, label: "Frequency (Hz)")
+                .frame(height: 150)
+                .accessibilityValue(RoomPredictionCurve.allCases.filter { visible.contains($0) }
+                    .map { $0.title(calibrated: calibrated) }.joined(separator: ", "))
+                .uiInteractionAnchor("room-prediction-\(channel)")
+            WrappingControlLayout {
+                ForEach(RoomPredictionCurve.allCases, id: \.self) { curve in
+                    ResponseCurveToggle(title: curve.title(calibrated: calibrated), color: curve.color,
+                        isVisible: Binding(get: { visible.contains(curve) },
+                            set: { if $0 { visible.insert(curve) } else { visible.remove(curve) } }))
+                        .uiInteractionAnchor("room-prediction-\(channel)-\(curve.rawValue)")
+                }
+            }.font(.caption).frame(maxWidth: .infinity, alignment: .center)
+        }
     }
 }

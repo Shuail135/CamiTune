@@ -34,7 +34,7 @@ struct PluginRackView: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 6) {
-                    Text("Plug-ins").font(.title3.bold())
+                    Text("Plug-ins(Beta)").font(.title3.bold())
                     DeviceCorrectionHelpIcon(title: "Plug-ins", message: "Support AU and VST3 plugins.")
                         .uiInteractionAnchor("plugin-rack-help")
                     Spacer().overlay(alignment: .leading) {

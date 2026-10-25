@@ -60,7 +60,8 @@ def commands(root, source, tool, configuration, without_tests):
     if tool in ("xcode", "both"):
         yield ["xcodebuild", "-project", str(source / "CamiTune.xcodeproj"), "-scheme", "CamiTune",
                "-configuration", configuration.title(), "-destination", "generic/platform=macOS",
-               "-derivedDataPath", str(xcode_cache), "CODE_SIGNING_ALLOWED=NO", "ONLY_ACTIVE_ARCH=YES", "build"]
+               "-derivedDataPath", str(xcode_cache), "CODE_SIGNING_ALLOWED=NO", "ONLY_ACTIVE_ARCH=YES"] \
+            + (["COMPILER_INDEX_STORE_ENABLE=NO"] if without_tests else []) + ["build"]
 
 
 def run(command, source, environment):
@@ -94,6 +95,8 @@ def main():
     parser.add_argument("--configuration", choices=("debug", "release"), default="debug")
     parser.add_argument("--without-tests", action="store_true",
                         help="Verify without a Tests folder; delete the temporary checkout and caches afterward.")
+    parser.add_argument("--disable-swift-sandbox", action="store_true",
+                        help="Disable SwiftPM's nested manifest sandbox when the host already sandboxes the build.")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     signal.signal(signal.SIGTERM, interrupted)
@@ -104,6 +107,8 @@ def main():
     try:
         with verification_lock(root), source_directory(root, args.without_tests) as source:
             for command in commands(root, source, args.tool, args.configuration, args.without_tests):
+                if args.disable_swift_sandbox and command[0] == "swift":
+                    command.insert(2, "--disable-sandbox")
                 run(command, source, environment)
     except KeyboardInterrupt:
         return 130

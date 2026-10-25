@@ -28,7 +28,7 @@ struct SetupView: View {
                             await dependencies.installCamillaDSP(preparing: state.prepareForDependencyRepair)
                         }
                     },
-                    uninstallTitle: "Uninstall CamillaDSP",
+                    uninstallTitle: "Uninstall",
                     uninstall: {
                         Task {
                             await dependencies.uninstallCamillaDSP(preparing: state.prepareForDependencyRepair)
@@ -45,7 +45,7 @@ struct SetupView: View {
                             await dependencies.installAudioDriver(preparing: state.prepareForDependencyRepair)
                         }
                     },
-                    uninstallTitle: "Uninstall Driver",
+                    uninstallTitle: "Uninstall",
                     uninstall: {
                         Task {
                             await dependencies.uninstallAudioDriver(preparing: state.prepareForDependencyRepair)

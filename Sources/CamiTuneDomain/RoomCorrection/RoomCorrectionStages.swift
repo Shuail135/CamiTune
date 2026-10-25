@@ -58,6 +58,17 @@ extension DeviceProfile {
               let result = seat.roomCorrectionResult,
               result.isChannelProcessingImport == true || result.optimizerVersion < 3,
               result.context.topology.deviceUID == outputDeviceUID else { return base }
+        if let imported = result.importedChannelChains {
+            // Restore the measured baseline only when the complete imported
+            // output remains untouched. An edit becomes new user processing.
+            guard imported.allSatisfy({ channel, chain in
+                (base.channels.first { $0.index == channel }?.chain ?? .init()) == chain
+            }), let original = result.context.importBaselineProcessing else { return base }
+            for i in base.channels.indices where imported[base.channels[i].index] != nil {
+                base.channels[i].chain = original.channels.first { $0.index == base.channels[i].index }?.chain ?? .init()
+            }
+            return base
+        }
         struct Replacement { var channel: Int; var stage: Int; var original: ProcessingStage? }
         var replacements: [Replacement] = []
         for channel in configuredProcessingChannels {
@@ -88,29 +99,39 @@ extension DeviceProfile {
         return base
     }
 
-    /// Apply the global EQ/tone and level controls while measuring, without FIR
-    /// or user channel/group processing. Routing and driver protection stay active.
+    /// Only the per-channel EQ/FIR slots replaced by import are bypassed.
+    /// Global and group processing and channel gains/delays remain measured.
     private func roomMeasurementPlaybackProcessing(_ baseline: ProcessingProfile) -> ProcessingProfile {
         var playback = baseline
-        playback.global.stages.removeAll { if case .convolution = $0.processor { return true }; return false }
-        playback.channels = configuredProcessingChannels.map {
-            .init(index: $0.index, role: $0.role, chain: .init())
+        playback.channels = configuredProcessingChannels.map { channel in
+            .init(index: channel.index, role: channel.role,
+                  chain: baseline.channels.first { $0.index == channel.index }?.chain ?? .init())
         }.sorted { $0.index < $1.index }
-        playback.groups = []
+        for i in playback.channels.indices {
+            playback.channels[i].chain.stages.removeAll {
+                switch $0.processor { case .equalizer, .convolution: return true; default: return false }
+            }
+        }
         return playback
     }
 
     package func roomMeasurementProfile() throws -> DeviceProfile {
         var profile = self
         let playback = roomMeasurementPlaybackProcessing(try roomMeasurementBaseline())
-        // Physical chains are authoritative during normalization; clearing only
-        // processing.channels would allow the saved channel filters back in.
-        profile.physicalChannelProcessing = Dictionary(uniqueKeysWithValues:
-            configuredProcessingChannels.map { ($0.physicalOutputID, ProcessingChain()) })
+        profile.physicalChannelProcessing = Dictionary(uniqueKeysWithValues: configuredProcessingChannels.map { channel in
+            (channel.physicalOutputID, playback.channels.first { $0.index == channel.index }?.chain ?? .init())
+        })
         profile.replaceProcessing(playback)
         profile.spatialSettings.seating?.roomCorrectionEnabled = false
         profile.synchronizeListeningPositionCorrection()
         return profile
+    }
+
+    package func roomVerificationContext() throws -> RoomMeasurementContext {
+        var context = try roomMeasurementContext()
+        context.processing = try resolvedProcessing()
+        context.importBaselineProcessing = nil
+        return context
     }
 
     /// Reset only room correction for the selected listening position. Speaker
@@ -135,6 +156,7 @@ extension DeviceProfile {
         let playback = roomMeasurementPlaybackProcessing(baseline)
         let seat = effectiveSpatialSettings.seating
         var context = RoomMeasurementContext(topology: topology, listener: .init(x: seat?.roomX ?? 0, y: seat?.roomY ?? 0, z: 0), processing: playback)
+        context.revision = 2
         context.importBaselineProcessing = baseline
         context.multichannel = multichannel
         return context

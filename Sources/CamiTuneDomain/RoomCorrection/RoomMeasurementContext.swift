@@ -16,6 +16,9 @@ package struct RoomMeasurementContext: Codable, Hashable, Sendable {
     package func canReprocess(to current: Self) -> Bool {
         var old = self
         old.topology.sampleRate = current.topology.sampleRate
+        // Revision 2 retains more processing during measurement. Reuse older
+        // captures only when their actual acoustic path is still identical.
+        if old.revision == 1 && current.revision == 2 { old.revision = 2 }
         return old == current
     }
 }
@@ -29,8 +32,11 @@ extension RoomMeasurementContext {
             result.stages = source.stages.compactMap { stage in
                 guard stage.isEnabled else { return nil }
                 var stage = stage
+                stage.id = identity
+                if case .gain(let gain) = stage.processor, gain.gainDB == 0 { return nil }
+                if case .delay(let delay) = stage.processor, delay.milliseconds == 0 { return nil }
                 if case .equalizer(var equalizer) = stage.processor {
-                    equalizer.bands = equalizer.bands.filter(\.enabled).map {
+                    equalizer.bands = equalizer.bands.filter { $0.enabled && !($0.kind.usesGain && ($0.gain ?? 0) == 0) }.map {
                         EQBand(id: identity, kind: $0.kind, frequency: $0.frequency,
                             gain: $0.gain, q: $0.q, bandwidth: $0.bandwidth)
                     }

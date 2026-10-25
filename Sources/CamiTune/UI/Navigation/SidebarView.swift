@@ -176,7 +176,7 @@ struct SidebarView: View {
                 .background {
                     if selection == .settings {
                         RoundedRectangle(cornerRadius: 6)
-                            .fill(Color.accentColor.opacity(0.18))
+                            .fill(Color.accentColor.opacity(0.05))
                     }
                 }
             }

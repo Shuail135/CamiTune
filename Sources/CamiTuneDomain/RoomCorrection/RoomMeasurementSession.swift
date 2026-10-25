@@ -85,7 +85,11 @@ package struct RoomMeasurementBlock: Codable, Hashable, Sendable, Identifiable {
     package var positionID: UUID
     package var channel: Int
     package var isRepeat: Bool
-    /// Actual digital test gain, independent of an approximate phone SPL reading.
+    /// Full-range output carrying codes when the sweep output is a subwoofer.
+    /// Nil retains the original same-output signal for existing recordings.
+    package var markerChannel: Int?
+    /// Total digital gain relative to the original signal, including any base-level
+    /// adjustment. This is independent of the slider's zero point or an SPL reading.
     /// Absent in older recordings, which used the original 0 dB signal.
     package var playbackGainDB: Double? = nil
     /// Monotonic first-frame production time; a search hint, not an acoustic
@@ -121,6 +125,7 @@ package struct RoomMeasurementSession: Codable, Sendable, Identifiable {
     package var measurementAnalysisVersion = 1
     package var roomAnalysisVersion = 1
     package var analysisIssues: [RoomMeasurementIssue]?
+    package var requiresRepeatedPositions: Bool?
     package init(context: RoomMeasurementContext, source: RoomMeasurementSource, positions: [RoomMeasurementPosition]) {
         self.context = context; self.source = source; self.positions = positions
     }
@@ -134,7 +139,7 @@ extension RoomMeasurementSession {
     package func measuredMicrophoneChannels(at position: RoomMeasurementPosition) -> Set<Int> {
         Set(position.observations.compactMap { observation in
             guard observation.hasUsableMagnitude else { return nil }
-            if position.isMain {
+            if position.isMain || requiresRepeatedPositions == true {
                 guard observation.repeatDifferenceDB != nil,
                       blocks.contains(where: { $0.positionID == position.id && $0.channel == observation.channel && !$0.isRepeat }),
                       blocks.contains(where: { $0.positionID == position.id && $0.channel == observation.channel && $0.isRepeat }) else { return nil }
@@ -167,6 +172,11 @@ extension RoomMeasurementSession {
     }
     package func validate() throws {
         try context.topology.validate()
+        guard blocks.allSatisfy({ block in
+            block.markerChannel.map { channel in
+                context.topology.endpoints.contains { $0.id.channelIndex == channel && !$0.isSubwooferLike && $0.connectionState != .disabledByUser }
+            } ?? true
+        }) else { throw RoomCorrectionError.invalidSession }
         try source.calibration?.validateForRoomMeasurement()
         for observation in positions.flatMap(\.observations) { try observation.captureEvidence?.validate() }
         guard measurementFormatVersion == 1, measurementSignalVersion == 1,

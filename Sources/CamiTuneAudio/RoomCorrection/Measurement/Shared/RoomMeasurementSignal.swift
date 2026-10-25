@@ -3,11 +3,24 @@ import Foundation
 
 package struct RoomMeasurementSignal: Sendable {
     package static let volumeRangeDB: ClosedRange<Double> = -24...RoomMeasurementBlock.playbackGainRangeDB.upperBound
-    /// About -23 dBFS RMS before master volume; every new take stores its actual gain.
-    package static let defaultVolumeDB = 12.0
+    /// The slider starts at unity relative to the current test signal.
+    package static let defaultVolumeDB = 0.0
     package static let maximumSourcePeak: Float = 0.25
     /// Preserve the reference used to reconstruct and analyze existing recordings.
     private static let referencePeak = 0.025
+    /// Raise the base test signal by 6 dB (about -29 dBFS RMS before master volume).
+    private static let baseGainDB = 6.0
+    /// Store the total gain relative to the historical reference, including the
+    /// louder base signal. Old takes retain exactly their original waveform.
+    package static func playbackGainDB(forVolumeDB volumeDB: Double) -> Double {
+        baseGainDB + volumeDB
+    }
+    /// Express the processing graph's output ceiling in slider coordinates.
+    package static func boundedVolumeDB(_ requested: Double, graph: ProcessingGraph) throws -> Double {
+        guard requested.isFinite else { throw RoomCorrectionError.invalidSettings }
+        let volume = min(volumeRangeDB.upperBound, max(volumeRangeDB.lowerBound, requested))
+        return try boundedGainDB(playbackGainDB(forVolumeDB: volume), graph: graph) - baseGainDB
+    }
     /// Leave 12 dB of output margin below clipping and limiter onset anywhere in the active graph.
     package static func boundedGainDB(_ requested: Double, graph: ProcessingGraph) throws -> Double {
         guard requested.isFinite,
@@ -78,6 +91,6 @@ package struct RoomMeasurementSignal: Sendable {
         }
     }
     package func clip(topology: SpeakerTopology) -> SpatialCalibrationClip? {
-        SpatialCalibrationClip(roomMeasurement: samples, physicalOutput: .init(deviceUID: topology.deviceUID, channelIndex: block.channel), topology: topology)
+        SpatialCalibrationClip(roomMeasurement: samples, physicalOutput: .init(deviceUID: topology.deviceUID, channelIndex: block.channel), topology: topology, markerChannel: block.markerChannel)
     }
 }

@@ -8,18 +8,15 @@ package struct RoomFIRDesigner {
     package func design(bands: [EQBand], sampleRate: Double, settings: RoomCorrectionSettings) throws -> [Float] {
         try settings.validate(sampleRate: sampleRate)
         let limit = settings.latencyLimitMS ?? 20
-        var length = settings.filterLength ?? 2048
-        if settings.filterLength == nil && settings.phase != .minimum {
-            while length > 256 && Double(length / 2) / sampleRate * 1000 > limit { length /= 2 }
-        }
-        if settings.filterLength == nil && settings.phase == .minimum {
-            for candidate in [2048, 4096, 8192, 16384, 32768] {
+        if settings.filterLength == nil {
+            for candidate in Self.lengths(sampleRate: sampleRate, settings: settings) {
                 var attempt = settings; attempt.filterLength = candidate
                 do { return try design(bands: bands, sampleRate: sampleRate, settings: attempt) }
-                catch RoomCorrectionError.latencyLimit { continue }
+                catch RoomCorrectionError.filterAccuracy { continue }
             }
-            throw RoomCorrectionError.latencyLimit
+            throw RoomCorrectionError.filterAccuracy
         }
+        let length = settings.filterLength!
         try Task.checkCancellation()
         let delay = settings.phase == .minimum ? 0 : length / 2
         guard Double(delay) / sampleRate * 1000 <= limit else { throw RoomCorrectionError.latencyLimit }
@@ -69,8 +66,14 @@ package struct RoomFIRDesigner {
         for i in 1..<size / 2 {
             let actualDB = 10 * log10(max(1e-20, Double(check[i] * check[i] + checkI[i] * checkI[i])))
             let desiredDB = Double(desiredLog[i]) * 20 / log(10)
-            guard abs(actualDB - desiredDB) < 0.15 else { throw RoomCorrectionError.latencyLimit }
+            guard abs(actualDB - desiredDB) < 0.15 else { throw RoomCorrectionError.filterAccuracy }
         }
         return real
+    }
+    package static func lengths(sampleRate: Double, settings: RoomCorrectionSettings) -> [Int] {
+        if let length = settings.filterLength { return [length] }
+        return [256, 512, 1024, 2048, 4096, 8192, 16384, 32768].filter {
+            settings.phase == .minimum ? $0 >= 2048 : Double($0 / 2) / sampleRate * 1000 <= (settings.latencyLimitMS ?? 20)
+        }
     }
 }

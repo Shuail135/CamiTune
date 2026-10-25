@@ -200,15 +200,9 @@ struct CorrectionResponseGraph: View {
     }
 
     private func overlayToggle(_ curve: CorrectionGraphCurve, color: Color) -> some View {
-        Button {
-            if visibility.wrappedValue.contains(curve) {
-                visibility.wrappedValue.remove(curve)
-            } else {
-                visibility.wrappedValue.insert(curve)
-            }
-        } label: {
-            Label(presentation.label(for: curve), systemImage: "minus").foregroundStyle(visibility.wrappedValue.contains(curve) ? color : Color.secondary.opacity(0.4))
-        }.buttonStyle(.plain).accessibilityValue(visibility.wrappedValue.contains(curve) ? "Shown" : "Hidden")
+        ResponseCurveToggle(title: presentation.label(for: curve), color: color, isVisible: Binding(
+            get: { visibility.wrappedValue.contains(curve) },
+            set: { if $0 { visibility.wrappedValue.insert(curve) } else { visibility.wrappedValue.remove(curve) } }))
     }
 
     private func responsePath(
@@ -287,6 +281,21 @@ struct CorrectionResponseGraph: View {
         return rounded > 0 ? "+\(rounded)" : "\(rounded)"
     }
 
+}
+
+struct ResponseCurveToggle: View {
+    let title: String
+    let color: Color
+    @Binding var isVisible: Bool
+    var body: some View {
+        Button { isVisible.toggle() } label: {
+            Label(title, systemImage: "minus")
+                .foregroundStyle(isVisible ? color : Color.secondary.opacity(0.4))
+        }
+        .buttonStyle(.plain)
+        .textSelection(.disabled)
+        .accessibilityValue(isVisible ? "Shown" : "Hidden")
+    }
 }
 
 enum CorrectionGraphDisplay {

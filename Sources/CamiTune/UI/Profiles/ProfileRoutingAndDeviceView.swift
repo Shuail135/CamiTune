@@ -73,8 +73,6 @@ struct ProfileRoutingAndDeviceView: View {
                 activationRow(.manual, title: "Only when I activate it in CamiTune")
                 if let owner = state.profiles.automaticProfileID(forPhysicalDeviceUID: profile.outputDeviceUID),
                    owner != profile.id, let other = state.profiles.profiles.first(where: { $0.id == owner }) {
-                    Text("\(Text(profile.outputDeviceName).fontWeight(.semibold)) currently starts \(Text(other.name).fontWeight(.semibold)). Selecting the first option makes this profile the default for that output.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
             }.padding(6)
         }

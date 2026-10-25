@@ -28,6 +28,7 @@ struct RoomCorrectionImportPlan {
         let available = Set(profile.configuredProcessingChannels.map(\.index))
         guard result.optimizerVersion == RoomCorrectionResult.currentOptimizerVersion,
               result.firGeneratorVersion == RoomCorrectionResult.currentFIRGeneratorVersion,
+              result.context == (try profile.roomMeasurementContext()),
               result.context.topology.deviceUID == profile.outputDeviceUID,
               result.context.topology.sampleRate == Double(profile.sampleRate),
               result.channelFIR.values.allSatisfy({ $0.asset.sampleRate == profile.sampleRate }),
@@ -39,15 +40,20 @@ struct RoomCorrectionImportPlan {
     private func replacingFilters(in original: ProcessingProfile) -> ProcessingProfile {
         var processing = original
         processing.removeRoomStages()
-        for channel in channels where bands[channel.index] != nil || result.channelFIR[channel.index] != nil {
+        for channel in channels {
             if !processing.channels.contains(where: { $0.index == channel.index }) {
                 processing.channels.append(.init(index: channel.index, role: channel.role))
             }
             let index = processing.channels.firstIndex { $0.index == channel.index }!
+            let existingID = processing.channels[index].chain.stages.first {
+                if case .equalizer = $0.processor { return true }; return false
+            }?.id
+            // These slots were bypassed during measurement on every output,
+            // including channels for which unity correction was approved.
+            processing.channels[index].chain.stages.removeAll {
+                switch $0.processor { case .equalizer, .convolution: return true; default: return false }
+            }
             if let filters = bands[channel.index] {
-                let existingID = processing.channels[index].chain.stages.first {
-                    if case .equalizer = $0.processor { return true }; return false
-                }?.id
                 // An ordinary editor identity, distinct from automatic room stages.
                 let identity = existingID ?? UUID(uuidString: String(format: "CA117B75-0000-4000-0001-%012X", channel.index))!
                 processing.channels[index].chain.setEqualizer(filters, stageID: identity)
@@ -62,13 +68,16 @@ struct RoomCorrectionImportPlan {
         guard let context = try? profile.roomMeasurementContext(), context == result.context,
               let processing = try? profile.resolvedProcessing() else { return false }
         guard !processing.channels.flatMap({ $0.chain.stages }).contains(where: { ProcessingProfile.isRoomStage($0.id) }) else { return false }
-        return channels.allSatisfy { channel in
-            if let filters = bands[channel.index], processing.settings(forChannel: channel.index)?.bands != filters { return false }
-            if let fir = result.channelFIR[channel.index] {
-                let imported = processing.convolution(forChannel: channel.index)
-                if imported?.isEnabled != true || imported?.processor != fir { return false }
+        if let imported = result.importedChannelChains {
+            return imported.allSatisfy { channel, chain in
+                (processing.channels.first { $0.index == channel }?.chain ?? .init()) == chain
             }
-            return true
+        }
+        guard let baseline = try? profile.roomMeasurementBaseline() else { return false }
+        let expected = replacingFilters(in: baseline)
+        return channels.allSatisfy { channel in
+            (processing.channels.first { $0.index == channel.index }?.chain ?? .init())
+                == (expected.channels.first { $0.index == channel.index }?.chain ?? .init())
         }
     }
 
@@ -78,23 +87,21 @@ struct RoomCorrectionImportPlan {
         for channel in channels {
             var types: [String] = []
             let stages = processing.channels.first { $0.index == channel.index }?.chain.stages ?? []
-            if bands[channel.index] != nil, stages.contains(where: {
+            if stages.contains(where: {
                 guard !ProcessingProfile.isRoomStage($0.id) else { return false }
                 if case .equalizer(let eq) = $0.processor { return !eq.bands.isEmpty }; return false
             }) { types.append("per-channel EQ") }
-            if result.channelFIR[channel.index] != nil, stages.contains(where: {
+            if stages.contains(where: {
                 guard !ProcessingProfile.isRoomStage($0.id) else { return false }
                 if case .convolution = $0.processor { return true }; return false
             }) { types.append("FIR") }
             if !types.isEmpty { replacements.append("\(channel.displayName): \(types.joined(separator: " and "))") }
         }
-        return replacements.isEmpty ? nil : "Import will replace the existing values for:\n\n" + replacements.joined(separator: "\n")
+        return replacements.isEmpty ? nil : "Measurement bypassed these channel filters. Import replaces both EQ and FIR slots with the calculated correction, clearing a slot when no filter is needed:\n\n" + replacements.joined(separator: "\n")
     }
 
     func applying(to profile: DeviceProfile) throws -> DeviceProfile {
-        // Import transfers the calculated filters to compatible output channels.
-        // Changes to editor settings or listening geometry do not invalidate that
-        // transfer; output, channel and sample-rate compatibility is checked above.
+        // Revalidate the measured acoustic context at the final commit boundary.
         try Self.validateOutput(result: result, profile: profile)
         var candidate = profile
         candidate.captureLegacyPhysicalChannels()
@@ -106,7 +113,11 @@ struct RoomCorrectionImportPlan {
         }
         candidate.replaceProcessing(processing)
         var seat = candidate.effectiveSpatialSettings.seating ?? .init(outputDeviceUID: candidate.outputDeviceUID)
-        seat.roomCorrectionResult = result; seat.roomCorrectionSettings = result.settings
+        var imported = result
+        imported.importedChannelChains = Dictionary(uniqueKeysWithValues: channels.map { channel in
+            (channel.index, processing.channels.first { $0.index == channel.index }?.chain ?? .init())
+        })
+        seat.roomCorrectionResult = imported; seat.roomCorrectionSettings = result.settings
         // Once imported, the channel editors own these filters. Materializing
         // the result again would both hide the controls and double the correction.
         seat.roomCorrectionEnabled = false; seat.roomCorrectionBands = []

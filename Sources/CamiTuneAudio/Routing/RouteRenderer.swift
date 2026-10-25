@@ -83,6 +83,10 @@ package final class RouteRenderer {
 
     /// Reads only immutable route values; safe for the control-side admission check.
     package func acceptsCalibrationClip(_ clip: SpatialCalibrationClip) -> Bool {
+        if let reference = clip.measurementReferenceOutput {
+            guard referenceTopology?.endpoints.contains(where: { $0.id == reference && !$0.isSubwooferLike && $0.connectionState != .disabledByUser }) == true,
+                  activeRoute.map({ route in route.dspInputFormat.channels.contains { $0.physicalOutputID == reference } }) ?? true else { return false }
+        }
         if let activeRoute, clip.sampleRate != Double(activeRoute.dspInputFormat.sampleRate) { return false }
         if let physical = clip.physicalOutput {
             guard physical.deviceUID == referenceTopology?.deviceUID,

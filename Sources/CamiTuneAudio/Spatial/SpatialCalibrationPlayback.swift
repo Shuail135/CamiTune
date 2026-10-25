@@ -7,6 +7,7 @@ package struct SpatialCalibrationClip: Sendable {
     package let sampleRate: Double
     package let isAcousticMeasurement: Bool
     package var physicalOutput: PhysicalOutputID? = nil
+    package var measurementReferenceOutput: PhysicalOutputID? = nil
     package var physicalLayout: LPCMChannelLayout? = nil
     package var channelCount: Int { physicalLayout?.channelCount ?? 2 }
     package var virtualSpeakerRole: ChannelRole? = nil
@@ -167,7 +168,7 @@ package struct SpatialCalibrationClip: Sendable {
         samples = result
     }
 
-    package init?(roomMeasurement: [Float], physicalOutput: PhysicalOutputID, topology: SpeakerTopology, repeatsUntilStopped: Bool = false) {
+    package init?(roomMeasurement: [Float], physicalOutput: PhysicalOutputID, topology: SpeakerTopology, repeatsUntilStopped: Bool = false, markerChannel: Int? = nil) {
         guard (try? topology.validate()) != nil, physicalOutput.deviceUID == topology.deviceUID,
               topology.endpoints.contains(where: { $0.id == physicalOutput && $0.connectionState != .disabledByUser }),
               (8000...192000).contains(topology.sampleRate), !roomMeasurement.isEmpty,
@@ -175,11 +176,20 @@ package struct SpatialCalibrationClip: Sendable {
               roomMeasurement.allSatisfy({ $0.isFinite && abs($0) <= RoomMeasurementSignal.maximumSourcePeak }) else { return nil }
         self.sampleRate = topology.sampleRate; self.isAcousticMeasurement = true; self.physicalOutput = physicalOutput
         self.repeatsUntilStopped = repeatsUntilStopped
+        if let markerChannel {
+            guard topology.endpoints.contains(where: { $0.id.channelIndex == markerChannel && !$0.isSubwooferLike && $0.connectionState != .disabledByUser }) else { return nil }
+            measurementReferenceOutput = .init(deviceUID: topology.deviceUID, channelIndex: markerChannel)
+        }
         var roles = [ChannelRole](repeating: .unknown, count: topology.declaredChannelCount)
         for endpoint in topology.endpoints { roles[endpoint.id.channelIndex] = endpoint.role }
         self.physicalLayout = LPCMChannelLayout(coreAudioTag: 0, roles: roles)
         var interleaved = [Float](repeating: 0, count: roomMeasurement.count * roles.count)
-        for i in roomMeasurement.indices { interleaved[i * roles.count + physicalOutput.channelIndex] = roomMeasurement[i] }
+        for i in roomMeasurement.indices {
+            let time = Double(i) / topology.sampleRate
+            let isMarker = time < RoomMeasurementSignal.sweepStart || time >= RoomMeasurementSignal.endMarkerStart
+            let channel = isMarker ? (markerChannel ?? physicalOutput.channelIndex) : physicalOutput.channelIndex
+            interleaved[i * roles.count + channel] = roomMeasurement[i]
+        }
         self.samples = interleaved
     }
 

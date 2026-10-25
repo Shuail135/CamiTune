@@ -2,6 +2,12 @@ import Foundation
 
 package enum RoomCorrectionMethod: String, Codable, CaseIterable, Sendable { case auto, iir, fir, hybrid }
 package enum RoomFIRPhase: String, Codable, CaseIterable, Sendable { case minimum, linear, mixed }
+package enum RoomCorrectionTarget: String, Codable, CaseIterable, Sendable {
+    case flat, gentle
+    package func gainDB(at frequency: Double) -> Double {
+        self == .flat ? 0 : -0.5 * log2(max(20, frequency) / 1000)
+    }
+}
 package struct RoomCorrectionSettings: Codable, Hashable, Sendable {
     package var method: RoomCorrectionMethod = .auto
     package var lowHz: Double?
@@ -13,6 +19,8 @@ package struct RoomCorrectionSettings: Codable, Hashable, Sendable {
     package var phase: RoomFIRPhase = .minimum
     package var filterLength: Int?
     package var latencyLimitMS: Double?
+    package var target: RoomCorrectionTarget?
+    package var effectiveTarget: RoomCorrectionTarget { target ?? .flat }
     package init() {}
     package func validate(sampleRate: Double) throws {
         guard sampleRate.isFinite, (8000...192000).contains(sampleRate),
@@ -30,8 +38,11 @@ package struct RoomCorrectionSettings: Codable, Hashable, Sendable {
 package enum RoomCorrectionError: LocalizedError {
     case invalidSettings, invalidSession, unreliable, timingUnavailable, latencyLimit, stale, missingBlocks, routeUnavailable, outputMuted, volumeChanged, playbackInterrupted
     case calibrationRequired, calibrationChanged, incompleteMicrophoneMeasurement, inputClipped, microphoneSweepMissing
+    case filterAccuracy, referenceSpeakerRequired
     package var errorDescription: String? {
         switch self {
+        case .referenceSpeakerRequired: return "Subwoofer measurement needs a connected full-range speaker for the identification sounds. Configure one before measuring."
+        case .filterAccuracy: return "The FIR is too short to reproduce the correction accurately. Choose Auto length, allow more latency, or use minimum phase or IIR."
         case .calibrationRequired: return "Choose the microphone and its calibration file before measuring."
         case .calibrationChanged: return "The microphone calibration changed. Reanalyze the saved recording before creating correction."
         case .incompleteMicrophoneMeasurement: return "Measure every speaker at the main position and at least two other positions. Complete or skip the remaining positions before calculating correction."
@@ -63,13 +74,19 @@ package struct RoomCorrectionResult: Codable, Hashable, Sendable {
     package var lowHz: Double
     package var highHz: Double
     package var positionCount: Int
-    package static let currentOptimizerVersion = 5
-    package static let currentFIRGeneratorVersion = 3
+    package static let currentOptimizerVersion = 6
+    package static let currentFIRGeneratorVersion = 4
     package var analysisPolicy: RoomAnalysisPolicy?
     package var channelDiagnostics: [Int: RoomCorrectionDiagnostic]?
     /// Import has transferred the filters to editable channel EQ/FIR slots.
     /// Absent on legacy results and on calculated previews.
     package var isChannelProcessingImport: Bool?
+    /// Exact imported chains, allowing baseline recovery only while unedited.
+    package var importedChannelChains: [Int: ProcessingChain]?
+    package var predictions: [Int: [RoomCorrectionPrediction]]?
+    package var addedDelayMS: Double?
+    package var verification: RoomCorrectionVerificationReport?
+    package var measurementIdentity: RoomCorrectionMeasurementIdentity?
     package var optimizerVersion = currentOptimizerVersion
     package var firGeneratorVersion = currentFIRGeneratorVersion
     package var hasCorrection: Bool {
@@ -79,6 +96,55 @@ package struct RoomCorrectionResult: Codable, Hashable, Sendable {
                  settings: RoomCorrectionSettings, lowHz: Double, highHz: Double, positionCount: Int) {
         self.sessionID = sessionID; self.context = context; self.method = method; self.settings = settings
         self.lowHz = lowHz; self.highHz = highHz; self.positionCount = positionCount
+    }
+}
+
+/// Small, persisted identity for the acquisition that produced a result. New
+/// takes and imports have new IDs/names; calibration and position edits also
+/// invalidate the result without duplicating recorded audio or response bins.
+package struct RoomCorrectionMeasurementIdentity: Codable, Hashable, Sendable {
+    package struct Position: Codable, Hashable, Sendable {
+        var id: UUID
+        var coordinate: SpatialVector3
+        var isMain: Bool
+        var skipped: Bool
+    }
+    var source: RoomMeasurementSource
+    var positions: [Position]
+    var blockIDs: [UUID]
+    var recordings: [String]
+    var analysisVersion: Int
+    package init(session: RoomMeasurementSession) {
+        source = session.source
+        positions = session.positions.map { .init(id: $0.id, coordinate: $0.coordinate, isMain: $0.isMain, skipped: $0.skipped) }
+        blockIDs = session.blocks.map(\.id).sorted { $0.uuidString < $1.uuidString }
+        recordings = session.recordings.map(\.fileName).sorted()
+        analysisVersion = session.measurementAnalysisVersion
+    }
+}
+
+package struct RoomCorrectionVerificationReport: Codable, Hashable, Sendable {
+    package var sessionID: UUID
+    package var measuredAt: Date
+    package var passed: Bool
+    package var comparedResponses: Int
+    package var worstPredictionErrorDB: Double
+    package var reason: String
+    package init(sessionID: UUID, passed: Bool, comparedResponses: Int, worstPredictionErrorDB: Double, reason: String) {
+        self.sessionID = sessionID; measuredAt = Date(); self.passed = passed
+        self.comparedResponses = comparedResponses; self.worstPredictionErrorDB = worstPredictionErrorDB; self.reason = reason
+    }
+}
+
+package struct RoomCorrectionPrediction: Codable, Hashable, Sendable {
+    package var frequency: Double
+    package var measuredDB: Double
+    package var targetDB: Double
+    package var correctedDB: Double
+    package var reliability: Double
+    package init(frequency: Double, measuredDB: Double, targetDB: Double, correctedDB: Double, reliability: Double) {
+        self.frequency = frequency; self.measuredDB = measuredDB; self.targetDB = targetDB
+        self.correctedDB = correctedDB; self.reliability = reliability
     }
 }
 

@@ -23,7 +23,7 @@ struct RoomCorrectionOptimizer {
               calibrated || evidence.effectivePositions >= 2.5 else {
             return output([], candidates: 0, reason: "Insufficient independent listening positions or missing main-seat evidence")
         }
-        let cut = min(calibrated ? 8 : 4, settings.maximumCutDB ?? (calibrated ? 6 : 4))
+        let cut = min(calibrated ? 8 : 1.5, settings.maximumCutDB ?? (calibrated ? 6 : 1.5))
         let boost = calibrated ? min(1, settings.maximumBoostDB ?? 0) : 0
         let maximumQ = min(4, settings.maximumQ ?? 4)
         let calculator = EQResponseCalculator()
@@ -70,15 +70,16 @@ struct RoomCorrectionOptimizer {
             }
             return nil
         }
-        struct Candidate { var index: Int; var q: Double; var excess: Double; var score: Double }
+        struct Candidate { var index: Int; var q: Double; var excess: Double; var score: Double; var kind: EQBand.Kind = .peaking }
         var candidates: [Candidate] = []
         guard points.count >= 3 else { return output([], candidates: 0, reason: "No usable magnitude band") }
         let excess = points.map { $0.centralDB - $0.referenceDB }
         for i in 1..<points.count - 1 {
             let point = points[i], value = excess[i]
-            guard (low...high).contains(point.frequency), point.reliability > 0.4,
-                  (value > 1.5 && value >= excess[i - 1] && value > excess[i + 1])
-                    || (boost > 0 && (-5 ... -1.5).contains(value) && value <= excess[i - 1] && value < excess[i + 1]) else { continue }
+            guard (low...high).contains(point.frequency), point.reliability > 0.4 else { continue }
+            let extremum = (value > 1.5 && value >= excess[i - 1] && value > excess[i + 1])
+                || (boost > 0 && (-5 ... -1.5).contains(value) && value <= excess[i - 1] && value < excess[i + 1])
+            guard extremum || (calibrated && i.isMultiple(of: 8) && (value > 1 || (boost > 0 && (-5 ... -1).contains(value)))) else { continue }
             // A deep null can pull down one baseline flank and create a false
             // positive shoulder. Require an actual turning point in the measured
             // response nearby, not merely a maximum in the detrended residual.
@@ -87,7 +88,7 @@ struct RoomCorrectionOptimizer {
                 if value > 0 { return center > points[k - 1].centralDB + 0.001 && center >= points[k + 1].centralDB }
                 return center < points[k - 1].centralDB - 0.001 && center <= points[k + 1].centralDB
             }
-            guard hasMeasuredPeak else { continue }
+            guard calibrated || hasMeasuredPeak else { continue }
             let eligible = seats.filter { $0.quality[i] > 0.4 }
             let supporters = eligible.filter { $0.excess[i] * value > 0 && abs($0.excess[i]) > 1 }
             let availableWeight = eligible.reduce(0) { $0 + $1.weight }
@@ -109,13 +110,16 @@ struct RoomCorrectionOptimizer {
             let leftHz = left > 0 ? crossing(left - 1, left) : points[left].frequency
             let rightHz = right + 1 < points.count ? crossing(right, right + 1) : points[right].frequency
             let octaves = log2(rightHz / leftHz)
-            guard octaves >= 0.125, octaves <= 1 else { continue }
-            let q = min(maximumQ, max(0.5, point.frequency / max(1, rightHz - leftHz)))
+            guard calibrated || (octaves >= 0.125 && octaves <= 1) else { continue }
+            let q = min(maximumQ, max(calibrated ? 0.3 : 0.5, point.frequency / max(1, rightHz - leftHz)))
             candidates.append(.init(index: i, q: q, excess: value, score: abs(value) * point.reliability / (1 + point.spreadDB)))
+            if calibrated && point.frequency <= 400 {
+                candidates.append(.init(index: i, q: 0.707, excess: value, score: abs(value) * point.reliability / (1 + point.spreadDB), kind: .lowShelf))
+            }
         }
         candidates.sort { $0.score == $1.score ? $0.index < $1.index : $0.score > $1.score }
         let candidateCount = candidates.count
-        candidates = Array(candidates.prefix(24))
+        candidates = Array(candidates.prefix(calibrated ? 64 : 24))
         var rejections: [String: Int] = [:]
         var bands: [EQBand] = [], combined = zero, used = Set<Int>()
         for iteration in 0..<min(calibrated ? 8 : 5, settings.filterCount ?? (calibrated ? 8 : 5)) {
@@ -125,8 +129,8 @@ struct RoomCorrectionOptimizer {
             for candidate in candidates where !used.contains(candidate.index) {
                 let i = candidate.index, remaining = candidate.excess + combined[i]
                 let budget = remaining > 0 ? cut : boost
-                let initialGain = max(-cut, min(boost, -remaining * points[i].reliability * 0.8))
-                for q in Set([candidate.q, min(maximumQ, candidate.q * 0.75), min(maximumQ, candidate.q * 1.25)]).sorted() {
+                let initialGain = max(-cut, min(boost, -remaining * points[i].reliability * (candidate.kind == .lowShelf ? 1.6 : 0.8)))
+                for q in Set(candidate.kind == .lowShelf ? [min(maximumQ, 0.707)] : [candidate.q, min(maximumQ, candidate.q * 0.75), min(maximumQ, candidate.q * 1.25)]).sorted() {
                     // Search down to the minimum meaningful gain. Stopping at
                     // 25% misses safe small cuts when the initial target is large.
                     var scales: [Double] = [], scale = 1.0
@@ -137,10 +141,10 @@ struct RoomCorrectionOptimizer {
                     for scale in scales {
                         let gain = initialGain * scale
                         guard abs(gain) >= 0.45,
-                              bands.filter({ (($0.gain ?? 0) < 0) == (gain < 0) }).reduce(abs(gain), { $0 + abs($1.gain ?? 0) }) <= budget + 0.001 else { continue }
+                              (calibrated || bands.filter({ (($0.gain ?? 0) < 0) == (gain < 0) }).reduce(abs(gain), { $0 + abs($1.gain ?? 0) }) <= budget + 0.001) else { continue }
                         // Stable coefficient identities make repeated analysis byte-comparable.
                         let id = UUID(uuidString: String(format: "CA117B74-%04X-4000-%04X-%012X", channel, iteration, i))!
-                        let band = EQBand(id: id, kind: .peaking, frequency: points[i].frequency, gain: gain, q: q)
+                        let band = EQBand(id: id, kind: candidate.kind, frequency: points[i].frequency, gain: gain, q: q)
                         let gains = points.indices.map { combined[$0] + calculator.gainDB(at: points[$0].frequency,
                             parsed: .init(preampDB: 0, bands: [band]), sampleRate: rate) }
                         if let reason = rejection(gains) { rejections[reason, default: 0] += 1; continue }
@@ -152,9 +156,15 @@ struct RoomCorrectionOptimizer {
             guard let best else { break }
             bands.append(best.band); combined = best.gains; used.insert(best.index)
         }
+        if calibrated && bands.isEmpty && candidateCount == 0 {
+            let usable = points.filter { (low...high).contains($0.frequency) && $0.reliability > 0.4 }
+            if usable.count >= 24 && usable.allSatisfy({ abs($0.centralDB - $0.referenceDB) <= 1 }) {
+                return output([], candidates: 0, reason: "Measured response is already within 1 dB of the target over the reliable correction band")
+            }
+        }
         let reason = rejections.keys.sorted {
             rejections[$0] == rejections[$1] ? $0 < $1 : rejections[$0]! > rejections[$1]!
-        }.first ?? "No repeatable bass peak has enough reliable surrounding detail and support across positions"
+        }.first ?? (calibrated ? "No supported improvement within the selected target and limits" : "No bass excess can be separated confidently from recorder coloration and noise")
         return output(bands, candidates: candidateCount, reason: bands.isEmpty
             ? reason
             : "Limited correction supported by measured listening positions")

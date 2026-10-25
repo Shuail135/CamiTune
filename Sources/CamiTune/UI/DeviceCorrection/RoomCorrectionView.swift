@@ -30,9 +30,9 @@ struct RoomCorrectionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Room Correction").font(.title3.bold())
+                Text("Room Correction(Beta)").font(.title3.bold())
                 DeviceCorrectionHelpIcon(title: "Room correction",
-                    message: "Measures how your room affects your speakers at several listening positions and calculate for a more balanced sound. Import the correction to apply those filters to your speaker channels. Suggest use after auto eq applied.")
+                    message: "Measure the speaker response at your listening positions, review the graphs, then calculate and import the filters. Import replaces the channel EQ and FIR slots.")
                 Spacer()
             }
             tabs
@@ -51,11 +51,18 @@ struct RoomCorrectionView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .uiInteractionAnchor("room-workflow-guidance")
             }
+            if editor.isVerifying {
+                if editor.tab == .measure {
+                    Text(editor.verificationMessage).font(.caption).foregroundStyle(.secondary)
+                }
+                Button("Back to correction") { editor.endVerification() }.disabled(editor.busy)
+            }
             if let error = editor.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
             Divider()
             navigation
         }
-        .onAppear { editor.load(profile: profile, app: state) }
+        .onAppear { editor.load(profile: profile, app: state); editor.normalizeCorrectionSettings() }
+        .onChange(of: editor.source.kind) { _ in editor.normalizeCorrectionSettings() }
         .onDisappear { importPanel?.cancel(nil); editor.close() }
         .onChange(of: saved?.id) { _ in editor.selectSeat(profile: profile, app: state) }
         .onChange(of: isVisible) { visible in
@@ -89,7 +96,8 @@ struct RoomCorrectionView: View {
     }
 
     private var showsStatus: Bool {
-        !editor.status.isEmpty && !["Room Correction ON", "Room Correction OFF", "Measurements ready"].contains(editor.status)
+        editor.tab == .measure && !editor.status.isEmpty
+            && !["Room Correction ON", "Room Correction OFF", "Measurements ready"].contains(editor.status)
     }
 
     private var importedRecording: RoomRecordingReference? {
@@ -123,7 +131,7 @@ struct RoomCorrectionView: View {
 
     private enum ImportKind { case recording, calibration }
     private func chooseFile(_ kind: ImportKind) {
-        guard !editor.busy, importPanel == nil else { return }
+        guard !editor.busy, !editor.isVerifying, importPanel == nil else { return }
         NSApp.keyWindow?.makeFirstResponder(nil)
         let panel = NSOpenPanel()
         panel.title = kind == .recording ? "Import Recording" : "Choose Microphone Calibration"
@@ -251,6 +259,9 @@ struct RoomCorrectionView: View {
                 .disabled(!editor.canCalculate)
                 .uiInteractionAnchor("room-correction-create")
                 .accessibilityIdentifier("room-correction-create")
+                if editor.canVerify(profile: profile) {
+                    Button("Verify Applied Response") { editor.startVerification(profile: profile) }
+                }
                 Button("Import") {
                     NSApp.keyWindow?.makeFirstResponder(nil)
                     do {
@@ -298,9 +309,9 @@ struct RoomCorrectionView: View {
     }
     private var recordingSelection: some View {
         Picker("Recording", selection: Binding(get: { editor.source.kind }, set: { editor.setSourceKind($0, profile: profile) })) {
-            Text("Simple(Phone or Others Microphone)").tag(RoomMeasurementSource.Kind.recorder)
+            Text("Simple (Phone or Uncalibrated Microphone)").tag(RoomMeasurementSource.Kind.recorder)
             Text("Microphone with Calibration").tag(RoomMeasurementSource.Kind.microphone)
-        }.pickerStyle(.radioGroup).disabled(editor.busy).uiInteractionAnchor("room-recording-type")
+        }.pickerStyle(.radioGroup).disabled(editor.busy || editor.isVerifying).uiInteractionAnchor("room-recording-type")
     }
     private var measure: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -312,7 +323,7 @@ struct RoomCorrectionView: View {
                             guard let id else { return "Choose microphone" }
                             return editor.microphones.first { $0.id == id }?.name ?? "\(editor.source.deviceName) (not connected)"
                         })
-                        .frame(width: 280, alignment: .leading).disabled(editor.busy || editor.hasMicrophoneCaptures)
+                        .frame(width: 280, alignment: .leading).disabled(editor.busy || editor.isVerifying || editor.hasMicrophoneCaptures)
                         .uiInteractionAnchor("room-microphone-selection")
                     Button { editor.refreshMicrophones() } label: {
                         Image(systemName: "arrow.clockwise").frame(width: 22, height: 22)
@@ -326,9 +337,9 @@ struct RoomCorrectionView: View {
                         .lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
                         .uiInteractionAnchor("room-calibration-name")
                     Button(editor.source.calibration == nil ? "Choose…" : "Change…") { chooseFile(.calibration) }
-                        .uiInteractionAnchor("room-calibration-import").disabled(editor.busy)
+                        .uiInteractionAnchor("room-calibration-import").disabled(editor.busy || editor.isVerifying)
                     DeviceCorrectionHelpIcon(title: "Microphone calibration",
-                        message: "Use the calibration file supplied for your microphone. Match its orientation to the file.")
+                        message: "Use the calibration file for this microphone and input channel. Match its orientation to the file. Use a stand, keep the room quiet, and disable input gain automation and voice/noise processing.")
                 }
             }
             if editor.session != nil {
@@ -352,9 +363,11 @@ struct RoomCorrectionView: View {
                         .disabled(editor.busy && !editor.testingSound)
                         .uiInteractionAnchor("room-test-sound")
                         .accessibilityLabel(editor.testingSound ? "Stop Sound" : "Test Sound")
-                        DeviceCorrectionHelpIcon(title: "Test sound", message: editor.source.kind == .microphone
-                                ? "Plays each measurement speaker in turn at the sweep level. Adjust Test volume for a clear recording without clipping. DBFS shows recording level, not sound pressure (SPL)."
-                                : "Plays each measurement speaker in turn at the sweep level. Check the playback volume before measuring. Aim for approximately 75 dB SPL. (Download sound meter on phone)")
+                        DeviceCorrectionHelpIcon(title: "Test sound",
+                            message: "Volume should aim for roughly 20–30 dB above background noise."
+                                + (editor.source.kind == .microphone
+                                    ? "dBFS shows microphone recording level. Leave at least 6 dB of input peak headroom."
+                                    : "Use a decibel meter app if you don't have physical one."))
                     }
                     if editor.source.kind == .microphone {
                         if let level = editor.microphoneLevel, editor.busy {
@@ -486,7 +499,7 @@ struct RoomCorrectionView: View {
         if !position.observations.isEmpty || !session.recordings.isEmpty {
             let expected = Set(session.context.topology.endpoints.map { $0.id.channelIndex })
             let measured = Set(position.observations.filter(\.hasUsableMagnitude).map(\.channel)).intersection(expected)
-            return !expected.isEmpty && measured == expected ? "Ready" : "\(measured.count)/\(expected.count) speakers ready"
+            return !expected.isEmpty && measured == expected ? "Analyzed" : "\(measured.count)/\(expected.count) speakers analyzed"
         }
         return editor.hasPlayed(position, in: session) ? "Sound played" : "Not measured"
     }
@@ -599,35 +612,38 @@ struct RoomCorrectionView: View {
                 .accessibilityLabel(title)
         }
     }
+    private var calibratedCorrection: Bool { editor.source.kind == .microphone }
     private var correction: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let result = editor.calculatedResult {
-                if !result.hasCorrection {
-                    Text("No correction passed the quality checks. Audio is unchanged.").font(.callout).foregroundStyle(.secondary)
-                }
-            }
             Text("Correction Method").font(.callout)
-            JoinedSegmentedControl(options: RoomCorrectionMethod.allCases, selection: $editor.settings.method,
-                title: { $0 == .auto ? "Auto" : ($0 == .hybrid ? "Hybrid" : $0.rawValue.uppercased()) })
-                .frame(width: 260).disabled(editor.busy)
+            JoinedSegmentedControl(options: [RoomCorrectionMethod.auto, .iir, .fir], selection: $editor.settings.method,
+                title: { $0 == .auto ? "Auto (IIR)" : $0.rawValue.uppercased() })
+                .frame(width: 260).disabled(editor.busy || editor.isVerifying)
                 .accessibilityLabel("Correction Method")
                 .uiInteractionAnchor("room-correction-method")
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                GridRow { Text("Correction Range · Low"); limit("Low frequency", $editor.settings.lowHz, values: [20, 25, 40, 60, 80], unit: "Hz") }
-                GridRow { Text("High"); limit("High frequency", $editor.settings.highHz, values: [300, 500, 800, 1500, 3000, 8000], unit: "Hz") }
-                GridRow { Text("Maximum Boost"); limit("Maximum Boost", $editor.settings.maximumBoostDB, values: [0, 0.5, 1, 2, 3], unit: "dB") }
-                GridRow { Text("Maximum Cut"); limit("Maximum Cut", $editor.settings.maximumCutDB, values: [3, 6, 8, 12], unit: "dB") }
-                GridRow { Text("Maximum Q"); limit("Maximum Q", $editor.settings.maximumQ, values: [1, 2, 4, 6, 10], unit: "") }
-                GridRow { Text("Filter Count"); integerLimit("Filter Count", $editor.settings.filterCount, values: [3, 5, 8, 12, 20]) }
-                if editor.settings.method == .fir || editor.settings.method == .hybrid {
-                    GridRow { Text("Phase"); RoomCorrectionMenu(label: "Phase", selection: $editor.settings.phase, options: RoomFIRPhase.allCases, title: { $0.rawValue.capitalized }, showsLabel: false).frame(width: 120).uiInteractionAnchor("room-correction-phase") }
-                    GridRow { Text("Filter Length"); integerLimit("Filter Length", $editor.settings.filterLength, values: [512, 1024, 2048, 4096, 8192, 16384]) }
-                    GridRow { Text("Latency Limit"); limit("Latency Limit", $editor.settings.latencyLimitMS, values: [5, 10, 20, 50, 100, 200], unit: "ms") }
+                if calibratedCorrection {
+                    GridRow {
+                        Text("Target")
+                        RoomCorrectionMenu(label: "Target", selection: Binding(get: { editor.settings.effectiveTarget }, set: { editor.settings.target = $0 }),
+                            options: RoomCorrectionTarget.allCases, title: { $0 == .flat ? "Flat" : "Gentle · −0.5 dB/octave" }, showsLabel: false)
+                    }
                 }
-            }.disabled(editor.busy)
+                GridRow { Text("Correction Range · Low"); limit("Low frequency", $editor.settings.lowHz, values: calibratedCorrection ? [20, 25, 40, 60, 80] : [45, 60, 80], unit: "Hz") }
+                GridRow { Text("High"); limit("High frequency", $editor.settings.highHz, values: calibratedCorrection ? [300, 500, 800, 1500, 3000, 8000] : [150, 200, 300], unit: "Hz") }
+                GridRow { Text("Maximum Boost"); limit("Maximum Boost", $editor.settings.maximumBoostDB, values: calibratedCorrection ? [0, 0.5, 1] : [0], unit: "dB") }
+                GridRow { Text("Maximum Cut"); limit("Maximum Cut", $editor.settings.maximumCutDB, values: calibratedCorrection ? [1, 3, 6, 8] : [0.5, 1, 1.5], unit: "dB") }
+                GridRow { Text("Maximum Q"); limit("Maximum Q", $editor.settings.maximumQ, values: [1, 2, 4], unit: "") }
+                GridRow { Text("Filter Count"); integerLimit("Filter Count", $editor.settings.filterCount, values: calibratedCorrection ? [3, 5, 8] : [3, 5]) }
+                if editor.settings.method == .fir {
+                    GridRow { Text("Phase"); RoomCorrectionMenu(label: "Phase", selection: $editor.settings.phase, options: RoomFIRPhase.allCases, title: { $0.rawValue.capitalized }, showsLabel: false).frame(width: 120).uiInteractionAnchor("room-correction-phase") }
+                    GridRow { Text("Filter Length"); integerLimit("Filter Length", $editor.settings.filterLength, values: [256, 512, 1024, 2048, 4096, 8192, 16384, 32768]) }
+                    GridRow { Text("Added Delay Limit"); limit("Latency Limit", $editor.settings.latencyLimitMS, values: [5, 10, 20, 50, 100, 200], unit: "ms") }
+                }
+            }.disabled(editor.busy || editor.isVerifying)
             DisclosureGroup(isExpanded: $correctionDetailsExpanded) {
                 RoomCorrectionResultDetails(result: editor.calculatedResult,
-                    legacyBands: saved?.roomCorrectionBands ?? [])
+                    legacyBands: saved?.roomCorrectionBands ?? [], verificationCurrent: editor.verificationIsCurrent(profile: profile))
                     .uiInteractionAnchor("room-correction-details")
             } label: {
                 Text("Calculation").uiInteractionAnchor("room-correction-calculation")
@@ -650,6 +666,7 @@ struct RoomCorrectionView: View {
 private struct RoomCorrectionResultDetails: View {
     let result: RoomCorrectionResult?
     let legacyBands: [EQBand]
+    var verificationCurrent = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -657,8 +674,17 @@ private struct RoomCorrectionResultDetails: View {
             if let result {
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
                     GridRow { Text("Method"); Text(methodTitle(result.method)) }
+                    if let delay = result.addedDelayMS {
+                        GridRow { Text("Added filter delay"); Text("\(delay.formatted(.number.precision(.fractionLength(2)))) ms on all channels") }
+                    }
                     GridRow { Text("Frequency range"); Text("\(result.lowHz.formatted(.number.precision(.fractionLength(0))))–\(result.highHz.formatted(.number.precision(.fractionLength(0)))) Hz") }
                 }.font(.callout)
+                if let verification = result.verification, verificationCurrent {
+                    Text(verification.passed ? "Verification passed" : "Verification failed").font(.callout)
+                    Text("Worst prediction error: \(verification.comparedResponses > 0 ? verification.worstPredictionErrorDB.formatted(.number.precision(.fractionLength(2))) + " dB RMS" : "unavailable") · \(verification.comparedResponses) responses · \(verification.measuredAt.formatted())")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                RoomCorrectionPredictionView(result: result)
                 if !result.hasCorrection {
                     Text("No filters were generated.").foregroundStyle(.secondary)
                 }
@@ -684,7 +710,7 @@ private struct RoomCorrectionResultDetails: View {
             } else if !legacyBands.isEmpty {
                 bands(legacyBands, title: "All speakers · IIR equalizer")
             } else {
-                Text("Calculate room correction to see the filters for your speakers.")
+                Text("No calculated filters.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -697,7 +723,7 @@ private struct RoomCorrectionResultDetails: View {
         case .auto: return "Auto"
         case .iir: return "IIR equalizer"
         case .fir: return "FIR convolution"
-        case .hybrid: return "Hybrid · IIR + FIR"
+        case .hybrid: return "IIR (legacy Hybrid)"
         }
     }
 

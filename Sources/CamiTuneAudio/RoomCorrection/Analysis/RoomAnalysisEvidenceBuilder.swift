@@ -31,7 +31,7 @@ struct RoomChannelEvidence: Sendable {
 /// Measurement quality, spatial support and correction decisions stay separate.
 /// Neither the acquisition label nor absent legacy diagnostics imply calibration.
 struct RoomAnalysisEvidenceBuilder {
-    func build(session: RoomMeasurementSession, channel: Int) throws -> RoomChannelEvidence {
+    func build(session: RoomMeasurementSession, channel: Int, settings: RoomCorrectionSettings = .init()) throws -> RoomChannelEvidence {
         let geometry = RoomGeometrySnapshot(session: session)
         let positions = geometry.positions.filter {
             $0.observations.first { $0.channel == channel }?.hasUsableMagnitude == true
@@ -57,6 +57,11 @@ struct RoomAnalysisEvidenceBuilder {
             if !representatives.contains(coordinate) { representatives.append(coordinate) }
             coordinateByID[position.id] = coordinate
         }
+        let calibrated = try RoomAnalysisPolicy.resolve(session.source) == .calibrated
+        let isSubwoofer = session.context.topology.endpoints.first { $0.id.channelIndex == channel }?.isSubwooferLike == true
+        let anchorRange: ClosedRange<Double> = isSubwoofer ? 40...120 : 500...2000
+        let anchorBins = main.bins.filter { anchorRange.contains($0.frequency) && $0.reliability > 0.4 && $0.snrDB > 20 }
+        let anchor = median(anchorBins.map { $0.magnitudeDB - settings.effectiveTarget.gainDB(at: $0.frequency) })
         var seats: [RoomSeatEvidence] = []
         for position in positions {
             try Task.checkCancellation()
@@ -82,9 +87,12 @@ struct RoomAnalysisEvidenceBuilder {
                 guard let bin = interpolate(observation.bins, at: frequency) else {
                     seat.magnitudes.append(0); seat.excess.append(0); seat.quality.append(0); continue
                 }
-                let baseline = trend(observation.bins, at: frequency, repeatEnvelope: session.source.calibration == nil)
+                let baseline: Double? = calibrated
+                    ? (anchorBins.count >= 12 ? anchor + offset + settings.effectiveTarget.gainDB(at: frequency) : nil)
+                    : trend(observation.bins, at: frequency, repeatEnvelope: true)
                 var quality = min(bin.reliability, max(0, min(1, (bin.snrDB - 8) / 24))) * repeatTrust
                 if baseline == nil { quality = 0 }
+                if session.requiresRepeatedPositions == true && observation.repeatDifferenceDB == nil { quality = 0 }
                 if let calibration = session.source.calibration, !calibration.coversRoomFrequency(frequency) { quality = 0 }
                 // Captures without provenance are still useful, with reduced confidence.
                 if observation.captureEvidence == nil { quality *= 0.9 }
@@ -97,6 +105,18 @@ struct RoomAnalysisEvidenceBuilder {
         let secondaryWeight = seats.filter { !$0.isMain }.reduce(0) { $0 + $1.weight }
         for i in seats.indices {
             seats[i].weight = seats[i].isMain ? (secondaryWeight > 0 ? 0.5 : 1) : 0.5 * seats[i].weight / secondaryWeight
+        }
+        if !calibrated {
+            // A stable microphone feature appears at every seat. Remove the
+            // common positive component before considering spatially supported
+            // excess. Repeat agreement cannot establish microphone flatness.
+            for i in frequencies.indices {
+                let supported = seats.filter { $0.quality[i] > 0.4 }.map { $0.excess[i] }
+                let common = max(0, supported.min() ?? 0)
+                for s in seats.indices where seats[s].excess[i] > 0 {
+                    seats[s].excess[i] = max(0, seats[s].excess[i] - common - 1.0)
+                }
+            }
         }
         let primary = seats.first { $0.isMain }!
         let points = frequencies.indices.map { i -> RoomAnalysisPoint in

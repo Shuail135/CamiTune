@@ -608,21 +608,10 @@ struct SubwooferControlView: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Subwoofer Control").font(.title3.bold())
-                    Spacer()
-                    Button(action: onOpenSettings) {
-                        Image(systemName: "gearshape")
-                            .font(.system(size: 20, weight: .regular))
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 32, height: 32)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel("Subwoofer Settings")
+                Text("Subwoofer Control").font(.title3.bold())
+                Button("Bass Management", action: onOpenSettings)
+                    .buttonStyle(.link)
                     .accessibilityHint("Opens the subwoofer channel’s bass management in Speaker & Listening Position.")
-                }
                 JoinedSegmentedControl(options: SubwooferControlMode.allCases,
                     selection: controlBinding(\.mode), title: { $0.title })
                     .accessibilityLabel("Subwoofer mode")
