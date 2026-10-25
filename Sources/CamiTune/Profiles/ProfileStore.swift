@@ -186,6 +186,12 @@ final class ProfileStore: ObservableObject {
     private var pendingPersistence: Task<Void, Never>?
     @Published private(set) var hasDurableCommit = false
     private var activeDurableCommit: ProfileDurableCommit?
+    private struct PendingPluginState {
+        let plugin: AudioPluginDescriptor
+        let previousState: Data?
+        var state: Data
+    }
+    private var pendingPluginStates: [UUID: [UUID: PendingPluginState]] = [:]
     private(set) var deferredAutosaveNeeded = false
     private var stopping = false
     private var terminalDrainCompleted = false
@@ -245,7 +251,7 @@ final class ProfileStore: ObservableObject {
             }
         }
         selectedProfileID = profile.id
-        return profile
+        return profiles.first { $0.id == profile.id }
     }
 
     /// Persist before publication, selection, or exposing a routing endpoint.
@@ -606,6 +612,42 @@ final class ProfileStore: ObservableObject {
         profiles[index] = profile
     }
 
+    /// Host notifications can arrive while settings own the durable document.
+    /// Coalesce only the preset, and never overwrite an explicit replacement or
+    /// resurrect a removed slot when that transaction finishes.
+    func capturePluginState(profileID: UUID, slotID: UUID, data: Data) {
+        guard !stopping, data.count <= PluginRack.maximumStateBytes,
+              var profile = profiles.first(where: { $0.id == profileID }),
+              let index = profile.pluginRack.slots.firstIndex(where: { $0.id == slotID }) else { return }
+        let slot = profile.pluginRack.slots[index]
+        if activeDurableCommit != nil {
+            pendingPluginStates[profileID, default: [:]][slotID] = .init(
+                plugin: slot.plugin, previousState: slot.state, state: data)
+            return
+        }
+        guard slot.state != data else { return }
+        profile.pluginRack.slots[index].state = data
+        update(profile)
+    }
+
+    @discardableResult
+    private func mergePendingPluginStates(into document: inout ProfileDocument) -> Bool {
+        let pending = pendingPluginStates
+        pendingPluginStates.removeAll()
+        var changed = false
+        for profileIndex in document.profiles.indices {
+            guard let states = pending[document.profiles[profileIndex].id] else { continue }
+            for slotIndex in document.profiles[profileIndex].pluginRack.slots.indices {
+                let slot = document.profiles[profileIndex].pluginRack.slots[slotIndex]
+                guard let update = states[slot.id], slot.plugin == update.plugin,
+                      slot.state == update.previousState, slot.state != update.state else { continue }
+                document.profiles[profileIndex].pluginRack.slots[slotIndex].state = update.state
+                changed = true
+            }
+        }
+        return changed
+    }
+
     private func load() {
         if let stored = repository.loadedDocument {
             audioBufferDefault = stored.audioBufferDefault
@@ -713,6 +755,13 @@ final class ProfileStore: ObservableObject {
         activeDurableCommit = .init(mutation: mutation, ticket: ticket); hasDurableCommit = true
         defer {
             activeDurableCommit = nil; hasDurableCommit = false
+            if !stopping {
+                var latest = document
+                if mergePendingPluginStates(into: &latest) {
+                    publishDocument(latest)
+                    deferredAutosaveNeeded = true
+                }
+            }
             if deferredAutosaveNeeded && !stopping {
                 deferredAutosaveNeeded = false; save()
             }
@@ -766,6 +815,7 @@ final class ProfileStore: ObservableObject {
             guard let merged = try? active.mutation.applying(to: final) else { return }
             final = merged
         }
+        mergePendingPluginStates(into: &final)
         libraryRevision = .init(rawValue: libraryRevision.rawValue + 1)
         publishPersistence(repository.submit(final, source: libraryRevision, kind: .shutdownFlush).waitSynchronously())
         repository.drainSynchronously()

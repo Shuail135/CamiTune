@@ -111,10 +111,7 @@ extension AppState {
     }
 
     func capturePluginState(profileID: UUID, slotID: UUID, data: Data) {
-        guard var profile = try? historyProfile(profileID), let index = profile.pluginRack.slots.firstIndex(where: { $0.id == slotID }),
-              data.count <= PluginRack.maximumStateBytes, profile.pluginRack.slots[index].state != data else { return }
-        profile.pluginRack.slots[index].state = data
-        profiles.update(profile)
+        profiles.capturePluginState(profileID: profileID, slotID: slotID, data: data)
     }
 
     func openPluginEditor(slot: AudioPluginSlot, profile: DeviceProfile) async throws {

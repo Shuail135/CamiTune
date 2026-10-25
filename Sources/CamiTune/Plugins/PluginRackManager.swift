@@ -165,6 +165,27 @@ final class PluginRackManager: ObservableObject {
         if let profileID = active?.profileID { await flushEditors(profileID: profileID, close: true) }
     }
 
+    /// Termination only. All current hosts share one bounded wait, including
+    /// editors for inactive profiles. Their control readers do not need the UI
+    /// actor; publish the captured presets synchronously before disk is drained.
+    func flushForTermination() {
+        let owners = ([active] + editors.values.map(Optional.some)).compactMap { $0 }
+        let deadline = Date().addingTimeInterval(1.5)
+        let requests = owners.map { ($0, $0.session?.beginSnapshot(close: true) ?? []) }
+        for (owner, snapshots) in requests {
+            for snapshot in snapshots {
+                for (id, data) in snapshot.finish(deadline) {
+                    stateChanged?(owner.profileID, id, data)
+                }
+            }
+        }
+    }
+
+    func stopForTermination() {
+        stop()
+        editors.removeAll()
+    }
+
     func openEditor(slot: AudioPluginSlot, profile: DeviceProfile, controlsOnly: Bool = false) async throws {
         guard openingEditors.insert(slot.id).inserted else { return }
         defer { openingEditors.remove(slot.id) }

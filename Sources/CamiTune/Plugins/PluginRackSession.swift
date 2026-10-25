@@ -82,12 +82,16 @@ final class PluginHostSession: PluginAudioProcessor, @unchecked Sendable {
         connections.forEach { $0.configureMIDI(configuration, enabled: enabled) }
     }
     func snapshot(close: Bool) async -> [UUID: Data] {
-        await withTaskGroup(of: [UUID: Data].self) { group in
-            for connection in connections { group.addTask { await connection.snapshot(close: close) } }
+        let requests = beginSnapshot(close: close)
+        return await Task.detached(priority: .userInitiated) {
+            let deadline = Date().addingTimeInterval(1.5)
             var result: [UUID: Data] = [:]
-            for await states in group { result.merge(states) { _, new in new } }
+            for request in requests { result.merge(request.finish(deadline)) { _, new in new } }
             return result
-        }
+        }.value
+    }
+    func beginSnapshot(close: Bool) -> [PluginHostConnection.SnapshotRequest] {
+        connections.map { $0.beginSnapshot(close: close) }
     }
     func process(_ samples: inout [Float], sampleRate: Double, reset: Bool) -> Bool {
         guard errorMessage == nil, sampleRate == self.sampleRate, samples.count.isMultiple(of: channelCount) else { return false }

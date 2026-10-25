@@ -133,6 +133,8 @@ final class AppUpdateChecker: ObservableObject {
 
     func checkOnLaunch() async {
         guard automaticallyChecksForUpdates else { return }
+        if let reminderDate = defaults.object(forKey: Keys.remindAfter) as? Date,
+           Date() < reminderDate { return }
         await fetchLatestRelease()
     }
 

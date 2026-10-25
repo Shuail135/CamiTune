@@ -154,13 +154,21 @@ final class PluginHostConnection: @unchecked Sendable {
         host?.send(["command": "configureMIDI", "configuration": json])
     }
 
-    func snapshot(close: Bool) async -> [UUID: Data] {
-        guard let host, errorMessage == nil else { return [:] }
+    struct SnapshotRequest: Sendable {
+        let finish: @Sendable (Date) -> [UUID: Data]
+    }
+
+    /// Send to every helper before waiting. The control reader updates the
+    /// cache without MainActor, including during the terminal save barrier.
+    func beginSnapshot(close: Bool) -> SnapshotRequest {
+        guard let host, errorMessage == nil else { return .init { _ in [:] } }
         let response = "snapshot-\(UUID().uuidString)"
         host.send(["command": close ? "closeEditors" : "snapshot", "response": response])
-        do { _ = try await Task.detached(priority: .userInitiated) { try host.wait(for: response, timeout: 1.5) }.value }
-        catch { eventHandler(["event": "snapshotError", "message": error.localizedDescription]) }
-        return currentStates()
+        return .init { deadline in
+            do { _ = try host.wait(for: response, timeout: max(0, deadline.timeIntervalSinceNow)) }
+            catch { self.eventHandler(["event": "snapshotError", "message": error.localizedDescription]) }
+            return self.currentStates()
+        }
     }
     private func currentStates() -> [UUID: Data] { state.lock(); defer { state.unlock() }; return savedStates }
 

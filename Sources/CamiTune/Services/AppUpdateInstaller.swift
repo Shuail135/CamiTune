@@ -187,6 +187,22 @@ enum AppUpdateInstaller {
             throw Failure(message: "The update could not be installed. Your previous version has been restored. Please try again. \(error.localizedDescription)")
         }
     }
+
+    /// The caller must stop applications using the target before restoring it.
+    /// Preserve the failed update as well until the previous app acknowledges
+    /// reopening. Every failed move leaves a recoverable application on disk.
+    static func restorePreviousApplication(_ request: Request, fileManager: FileManager = .default) throws {
+        guard fileManager.fileExists(atPath: request.backup.path) else {
+            throw Failure(message: "The previous application is no longer available at \(request.backup.path).")
+        }
+        let hasTarget = fileManager.fileExists(atPath: request.target.path)
+        if hasTarget { try fileManager.moveItem(at: request.target, to: request.candidate) }
+        do { try fileManager.moveItem(at: request.backup, to: request.target) }
+        catch {
+            if hasTarget { try? fileManager.moveItem(at: request.candidate, to: request.target) }
+            throw Failure(message: "The previous app could not be restored automatically. It is saved at \(request.backup.path). Close CamiTune, then move it back to \(request.target.path). \(error.localizedDescription)")
+        }
+    }
 }
 
 @MainActor
@@ -197,6 +213,7 @@ private final class AppUpdateInstallerWindow: NSObject, NSApplicationDelegate, O
     @Published private(set) var detail = "Preparing the update. CamiTune will close briefly and reopen automatically. Audio will pause during the restart."
     @Published private(set) var finished = false
     @Published private(set) var canOpen = false
+    @Published private(set) var canRestore = false
     private var installed = false
 
     init(request: AppUpdateInstaller.Request) { self.request = request }
@@ -238,7 +255,6 @@ private final class AppUpdateInstallerWindow: NSObject, NSApplicationDelegate, O
             detail = "Keep this window open. CamiTune will reopen automatically when the update is complete."
             try await Task.detached { try AppUpdateInstaller.replaceApplication(request) }.value
             installed = true
-            try AppUpdateInstaller.recordResult(request, succeeded: true, message: "")
             await reopen()
         } catch {
             AppUpdateInstaller.clearActive(request)
@@ -259,8 +275,14 @@ private final class AppUpdateInstallerWindow: NSObject, NSApplicationDelegate, O
         detail = installed ? "CamiTune \(request.version) is installed. Waiting for its window to open."
             : "Opening your previous version of CamiTune. You can try the update again from the app."
         canOpen = false
+        canRestore = false
         finished = false
         do {
+            // Each launch attempt needs its own acknowledgement; a previous
+            // failed/rolled-back launch must not complete a later attempt.
+            if FileManager.default.fileExists(atPath: request.marker("reopened").path) {
+                try FileManager.default.removeItem(at: request.marker("reopened"))
+            }
             try AppUpdateInstaller.markActive(request, replacing: false)
             let configuration = NSWorkspace.OpenConfiguration()
             // The updater is running from the old bundle with the same bundle
@@ -281,15 +303,62 @@ private final class AppUpdateInstallerWindow: NSObject, NSApplicationDelegate, O
                 }
                 try await Task.sleep(for: .milliseconds(100))
             }
+            if installed {
+                do { try AppUpdateInstaller.recordResult(request, succeeded: true, message: "") }
+                catch {
+                    AppUpdateInstaller.clearActive(request)
+                    showRecovery(title: "CamiTune reopened", message: "The update opened successfully, but its completion could not be saved. \(error.localizedDescription)")
+                    return
+                }
+            }
             try? FileManager.default.removeItem(at: request.backup)
+            try? FileManager.default.removeItem(at: request.candidate)
             AppUpdateInstaller.clearActive(request)
             try? FileManager.default.removeItem(at: request.directory.deletingLastPathComponent())
             finished = true
             DispatchQueue.main.async { NSApp.terminate(nil) }
         } catch {
+            if installed {
+                await restorePreviousVersion(reason: error.localizedDescription)
+            } else {
+                AppUpdateInstaller.clearActive(request)
+                showRecovery(title: "CamiTune could not reopen",
+                    message: "Click Open CamiTune to try again, or open it from Finder. \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func restorePreviousVersion(reason: String) async {
+        let request = self.request
+        heading = "Restoring the previous version"
+        detail = "The update could not reopen. Restoring your previous CamiTune application."
+        finished = false; canOpen = false; canRestore = false
+        do {
+            try AppUpdateInstaller.markActive(request, replacing: true)
+            // Never move a bundle beneath a running audio application. A
+            // stalled/vetoed quit leaves both versions intact and offers retry.
+            let helperPID = ProcessInfo.processInfo.processIdentifier
+            let applications = NSWorkspace.shared.runningApplications.filter {
+                $0.processIdentifier != helperPID
+                    && $0.bundleURL?.standardizedFileURL == request.target.standardizedFileURL
+            }
+            for application in applications where !application.isTerminated { application.terminate() }
+            let deadline = Date().addingTimeInterval(5)
+            while applications.contains(where: { !$0.isTerminated }) {
+                guard Date() < deadline else {
+                    throw AppUpdateInstaller.Failure(message: "Close the new CamiTune application, then choose Restore Previous Version. Your previous app is saved at \(request.backup.path).")
+                }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            try await Task.detached { try AppUpdateInstaller.restorePreviousApplication(request) }.value
+            installed = false
+            try AppUpdateInstaller.recordResult(request, succeeded: false,
+                message: "CamiTune \(request.version) could not reopen. Your previous version has been restored. \(reason)")
+            await reopen()
+        } catch {
             AppUpdateInstaller.clearActive(request)
-            showRecovery(title: installed ? "CamiTune \(request.version) is installed" : "CamiTune could not reopen",
-                message: "Click Open CamiTune to try again, or open it from Finder. \(error.localizedDescription)")
+            try? AppUpdateInstaller.recordResult(request, succeeded: false, message: error.localizedDescription)
+            showRecovery(title: "Update recovery needs attention", message: error.localizedDescription)
         }
     }
 
@@ -298,12 +367,17 @@ private final class AppUpdateInstallerWindow: NSObject, NSApplicationDelegate, O
         detail = message
         finished = true
         canOpen = Darwin.kill(request.parentPID, 0) != 0 && FileManager.default.fileExists(atPath: request.target.path)
+        canRestore = installed && FileManager.default.fileExists(atPath: request.backup.path)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func openApplication() {
         Task { await reopen() }
+    }
+
+    func restoreApplication() {
+        Task { await restorePreviousVersion(reason: "The update did not finish reopening.") }
     }
 
     func closeInstaller() { NSApp.terminate(nil) }
@@ -326,6 +400,9 @@ private struct AppUpdateInstallerContent: View {
             if controller.finished {
                 Button("Close") { controller.closeInstaller() }
                 Spacer()
+                if controller.canRestore {
+                    Button("Restore Previous Version") { controller.restoreApplication() }
+                }
                 if controller.canOpen {
                     Button("Open CamiTune") { controller.openApplication() }
                         .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)

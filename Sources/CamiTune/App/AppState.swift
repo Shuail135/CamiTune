@@ -182,6 +182,7 @@ final class AppState: NSObject, ObservableObject {
     private let volumeBridge = VolumeHandoffService()
     private var monitorTimer: Timer?
     private var startupConfigurationTask: Task<Void, Never>?
+    private var hasShutdown = false
     private var sessionToneDrafts: [UUID: SimpleToneSettings] = [:]
     private var sessionEQDrafts: [UUID: String] = [:]
     private var sessionEQDraftsReplaceDeviceCorrection: Set<UUID> = []
@@ -1468,13 +1469,17 @@ final class AppState: NSObject, ObservableObject {
     }
 
     func shutdownSynchronously() {
+        guard !hasShutdown else { return }
+        hasShutdown = true
         automaticBufferTask?.cancel(); automaticBufferTask = nil
         monitorTimer?.invalidate(); monitorTimer = nil
         startupConfigurationTask?.cancel(); startupConfigurationTask = nil
         cancelMultichannelAutosaves()
         pluginReorderApplies.cancelPending()
+        pluginRackManager.flushForTermination()
         profiles.shutdownSynchronously()
         runtimeCoordinator.shutdownSynchronously()
+        pluginRackManager.stopForTermination()
         perAppAudio.flushPendingSaveSynchronously()
     }
 
