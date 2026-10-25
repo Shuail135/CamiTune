@@ -37,6 +37,7 @@ struct ContentView: View {
     @State private var selection: SidebarDestination
     @State private var showingOutputPicker = false
     @State private var pendingOutputUID: String?
+    @State private var pendingOutputFolderID: UUID?
 
     init(state: AppState, commands: MainWindowCommandCoordinator? = nil, preferences: UserDefaults = .standard) {
         self.commands = commands ?? MainWindowCommandCoordinator()
@@ -58,7 +59,7 @@ struct ContentView: View {
                 state: state,
                 profileStore: state.profiles,
                 selection: $selection,
-                onAddOutput: beginAddingOutput
+                onAddOutput: { folderID in await beginAddingOutput(in: folderID) }
             )
             .transaction { $0.animation = nil }
         } detail: {
@@ -131,9 +132,13 @@ struct ContentView: View {
         .sheet(isPresented: $showingOutputPicker) {
             AddOutputProfileSheet(state: state, initialUID: pendingOutputUID,
                 onCancel: cancelAddingOutput) { id in
+                    if let folderID = pendingOutputFolderID {
+                        state.profiles.assignProfiles(ids: [id], toFolder: folderID)
+                    }
                     selection = .profile(id)
                     showingOutputPicker = false
                     pendingOutputUID = nil
+                    pendingOutputFolderID = nil
                 }
         }
         .modifier(SetupPresentationModifier(state: state, presentation: state.setupPresentation))
@@ -142,8 +147,9 @@ struct ContentView: View {
         .modifier(AppUpdatePresentationModifier(updateChecker: state.updateChecker))
     }
 
-    private func beginAddingOutput() async {
+    private func beginAddingOutput(in folderID: UUID? = nil) async {
         guard !discoveringOutput, !showingOutputPicker else { return }
+        pendingOutputFolderID = folderID
         discoveringOutput = true
         commands.modalReservation = true
         defer { discoveringOutput = false }
@@ -160,6 +166,7 @@ struct ContentView: View {
     private func cancelAddingOutput() {
         showingOutputPicker = false
         pendingOutputUID = nil
+        pendingOutputFolderID = nil
     }
 
 }

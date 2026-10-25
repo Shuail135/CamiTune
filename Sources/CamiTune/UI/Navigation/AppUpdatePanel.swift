@@ -61,7 +61,7 @@ struct AppUpdateProgressView: View {
         case .ready: return "Ready to install"
         case .restarting: return "Restarting CamiTune"
         case .failed: return "Update could not finish"
-        case .completed: return "Update complete"
+        case .completed: return "What’s new"
         }
     }
 
@@ -100,7 +100,7 @@ struct AppUpdateProgressView: View {
                 explanation(checker.failureMessage)
             case .completed:
                 status("CamiTune is up to date.", working: false)
-                explanation("The update is complete and the app is ready to use.")
+                AppChangelogView()
             }
         } actions: {
             switch checker.phase {
@@ -156,6 +156,54 @@ struct AppUpdateProgressView: View {
 
     private func explanation(_ message: String) -> some View {
         Text(message).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+@MainActor
+enum AppChangelogWindow {
+    private static var window: NSWindow?
+
+    static func show() {
+        if window == nil {
+            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            let content = AppUpdatePanel(title: "Changelog", subtitle: version.map { "CamiTune \($0)" } ?? "CamiTune") {
+                AppChangelogView()
+            } actions: {
+                Spacer()
+                Button("Done") { window?.close() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            let created = NSWindow(contentViewController: NSHostingController(rootView: content))
+            created.title = "CamiTune Changelog"
+            created.styleMask = [.titled, .closable, .miniaturizable]
+            created.isReleasedWhenClosed = false
+            created.center()
+            window = created
+        }
+        if window?.isMiniaturized == true { window?.deminiaturize(nil) }
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+/// Release notes are authored by the user and shipped with this exact app version.
+/// Loading once avoids file reads during presentation updates and works offline.
+private struct AppChangelogView: View {
+    private static let notes: NSAttributedString = {
+#if SWIFT_PACKAGE
+        let bundle = Bundle.module
+#else
+        let bundle = Bundle.main
+#endif
+        let text = bundle.url(forResource: "CHANGELOG", withExtension: "md")
+            .flatMap { try? String(contentsOf: $0, encoding: .utf8) }?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return ChangelogMarkdown.render(text.isEmpty ? "No release notes were provided for this version." : text)
+    }()
+
+    var body: some View {
+        ChangelogTextView(content: Self.notes)
+            .frame(height: 280)
     }
 }
 

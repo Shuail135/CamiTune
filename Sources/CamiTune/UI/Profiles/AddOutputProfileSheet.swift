@@ -360,7 +360,7 @@ struct AddOutputProfileSheet: View {
                     HStack {
                         HStack(spacing: 6) {
                             Text("Buffer Size")
-                            DeviceCorrectionHelpIcon(title: "Buffer size", message: "Reduce buffer size to reduce latency. Increase if hearing crack sounds.")
+                            DeviceCorrectionHelpIcon(title: "Buffer size", message: "Reduce buffer size to reduce latency. Increase if hearing crack sounds. Automatic learns during use and applies changes the next time you activate the profile after stopping it or switching away.")
                         }
                         Spacer()
                         Picker("Audio Buffer", selection: Binding(

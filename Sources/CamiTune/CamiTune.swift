@@ -142,7 +142,7 @@ private enum AppLicense {
         let alert = NSAlert()
         alert.icon = NSApp.applicationIconImage
         alert.messageText = "CamiTune — GPL-3.0-only"
-        alert.informativeText = "Copyright © 2026 CamiTune contributors. This program is free software and comes with ABSOLUTELY NO WARRANTY. The complete license and third-party notices are included in the application bundle and source repository."
+        alert.informativeText = "Copyright © 2026 CamiTune contributors. CamiTune is distributed under GPL-3.0."
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         _ = alert.runModal()

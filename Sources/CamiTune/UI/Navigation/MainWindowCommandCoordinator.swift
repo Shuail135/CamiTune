@@ -183,6 +183,7 @@ struct CamiTuneCommands: Commands {
             }
         }
         CommandGroup(replacing: .help) {
+            Button("Open Changelog") { AppChangelogWindow.show() }
             Button("Open Setup…") { coordinator.send(.openSetup) }
                 .disabled(!coordinator.context.canNavigate)
         }

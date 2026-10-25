@@ -79,7 +79,6 @@ struct SpeakerSystemView: View {
                         .disabled(editingLocked)
                     if draft.endpoints[index].function == .subwoofer,
                        draft.endpoints[index].connectionState != .disabledByUser {
-                        Divider()
                         BassManagementControlsView(profile: bassProfile, selectedSubwoofer: draft.endpoints[index].id,
                             bass: $bass, testGainDB: subwooferTestGain(draft.endpoints[index].id))
                             .disabled(editingLocked)

@@ -21,6 +21,7 @@ var packageTargets: [Target] = [
         path: "Sources/CamiTune",
         exclude: ["UI/README.md"],
         resources: [
+            .copy("CHANGELOG.md"),
             .copy("icon.png"),
             .copy("DeviceCorrectionTargets"),
             .copy("SpatialAssets")
@@ -34,7 +35,7 @@ let localTests = ProcessInfo.processInfo.environment["CAMITUNE_LOCAL_TESTS"] ?? 
 let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
 let supportPath = "Tests/CamiTuneTestSupport"
 let hasTestSupport = FileManager.default.fileExists(atPath: packageRoot.appendingPathComponent(supportPath).path)
-if ["1", "room", "correction", "diagnostics", "profile-ui", "multichannel"].contains(localTests), hasTestSupport {
+if ["1", "room", "correction", "diagnostics", "profile-ui", "multichannel", "fir"].contains(localTests), hasTestSupport {
     packageTargets.append(.target(name: "CamiTuneTestSupport",
         dependencies: ["CamiTune", "CamiTuneDomain", "CamiTuneAudio", "SystemAudioBridgeC"], path: supportPath))
 }
@@ -42,7 +43,7 @@ let localSuites: [(name: String, modes: [String], excludes: [String])] = [
     ("RoomCorrectionRegression", ["1", "room"], ["Fixtures", "README.md"]),
     ("DeviceCorrectionRegression", ["1", "correction"], ["Fixtures", "SpeakerEQCoreTests.rs"]),
     ("MultichannelTests", ["1", "multichannel"], []),
-    ("CamiTuneTests", ["1"], []),
+    ("CamiTuneTests", ["1", "fir"], []),
     ("ProfileUIRegression", ["1", "profile-ui"], []),
     ("DiagnosticsRegression", ["1", "diagnostics"], [])
 ]
@@ -54,7 +55,7 @@ for suite in localSuites where suite.modes.contains(localTests) && hasTestSuppor
         path: path, exclude: suite.excludes))
 }
 for (name, modes, dependency) in [
-    ("CamiTuneDomainTests", ["1", "domain", "modules"], "CamiTuneDomain"),
+    ("CamiTuneDomainTests", ["1", "domain", "modules", "fir"], "CamiTuneDomain"),
     ("CamiTuneAudioTests", ["1", "audio", "modules"], "CamiTuneAudio")
 ] where modes.contains(localTests) {
     let path = "Tests/\(name)"

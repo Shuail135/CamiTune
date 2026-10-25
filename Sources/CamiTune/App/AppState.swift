@@ -78,22 +78,6 @@ final class AppState: NSObject, ObservableObject {
     lazy var automaticBuffers = AutomaticAudioBufferController(cache: profiles.automaticAudioBufferCache,
         persist: { [weak self] in self?.profiles.automaticAudioBufferCache = $0 })
     private var automaticBufferTask: Task<Void, Never>?
-    @MainActor private final class PreparedBufferEngine {
-        let revision: RuntimeIntentRevision
-        let token: AudioBufferHandoffToken
-        let manager: CamillaDSPManager
-        let controller: CamillaDSPController
-        var sink: CamillaPCMSink?
-        var clocks: [AudioClockObservation] = []
-        var clock: CamillaPlaybackClock?
-        var levels: SignalLevels?
-        init(plan: AudioRuntimePlan, token: AudioBufferHandoffToken, manager: CamillaDSPManager) {
-            revision = plan.revision; self.token = token; self.manager = manager
-            controller = CamillaDSPController(manager: manager)
-        }
-    }
-    private var preparedBufferEngine: PreparedBufferEngine?
-    private var retiringBufferEngine: CamillaDSPManager?
     private var runtimeObservation: AnyCancellable?
     lazy var runtimeCoordinator: AudioRuntimeCoordinator = {
         let owner = AudioRuntimeCoordinator(services: runtimeServices, perAppAudio: perAppAudio,
@@ -964,127 +948,7 @@ final class AppState: NSObject, ObservableObject {
                     clockEpoch: directSnapshot?.clock?.epoch ?? clock?.epoch,
                     underrunFrames: directSnapshot?.underrunFrames ?? clock?.underrunFrames,
                     droppedFrames: self.pcmRouter.statistics.camillaDroppedFrames)
-                if self.automaticBuffers.hasPendingChange(profileID: profile.id),
-                   !self.isSavingProfileSettings, !self.runtimeCoordinator.hasLiveApplyWork,
-                   self.pcmRouter.isQuietForBufferChange(seconds: self.runtimeCoordinator.automaticBufferQuietSeconds) {
-                    await self.runtimeCoordinator.applyAutomaticBufferIfQuiet()
-                }
             }
-        }
-    }
-
-    private func audioIsQuietForAutomaticBuffer() async -> Bool {
-        guard !isSavingProfileSettings, spatialCalibrationContext == nil,
-              let session = activeSession?.id, let revision = acknowledgedPlanRevision,
-              let graph = runtimeCoordinator.appliedProcessingGraph else { return false }
-        let seconds = runtimeCoordinator.automaticBufferQuietSeconds
-        guard pcmRouter.isQuietForBufferChange(seconds: seconds),
-              driverTransport.runtimeError == nil else { return false }
-        if let directOutput {
-            let snapshot = directOutput.snapshot()
-            return snapshot.error == nil && snapshot.clock != nil && snapshot.silentSeconds >= seconds
-                && snapshot.bufferedFrames == 0
-        }
-        // Use unsmoothed historical peaks, independently of whether meters are
-        // visible. Silence in the input alone does not exclude DSP/effect tails.
-        guard let levels = try? await dsp.rpc.signalLevels(since: 3),
-              let clock = try? await dsp.rpc.playbackClock() else { return false }
-        return !Task.isCancelled && activeSession?.id == session && acknowledgedPlanRevision == revision
-            && !isSavingProfileSettings && spatialCalibrationContext == nil
-            && pcmRouter.isQuietForBufferChange(seconds: seconds)
-            && AutomaticAudioBufferController.confirmsSilentOutput(levels, clock: clock, graph: graph)
-    }
-
-    private func prepareAutomaticBufferEngine(_ plan: AudioRuntimePlan) async throws {
-        guard preparedBufferEngine == nil, retiringBufferEngine == nil,
-              !plan.processingGraph.playback.exclusive,
-              let token = pcmRouter.bufferHandoffToken(seconds: runtimeCoordinator.automaticBufferQuietSeconds),
-              let session = activeSession?.id else { throw CancellationError() }
-        let generation = runtimeCoordinator.liveApplyRequestRevision
-        let original = dsp
-        let prepared = PreparedBufferEngine(plan: plan, token: token, manager: original.makeStandby())
-        preparedBufferEngine = prepared
-        func current() -> Bool {
-            !Task.isCancelled && preparedBufferEngine === prepared && dsp === original
-                && activeSession?.id == session && runtimeCoordinator.liveApplyRequestRevision == generation
-                && !isSavingProfileSettings && spatialCalibrationContext == nil && pcmRouter.acceptsBufferHandoff(token)
-        }
-        try await prepared.manager.start(binary: dependencies.camillaDSPBinary, shouldContinue: current)
-        guard current(), prepared.manager.isRunning else { throw CancellationError() }
-        try await prepared.controller.applyGraph(plan.processingGraph)
-        guard current() else { throw CancellationError() }
-        let sink = try CamillaPCMSink(duplicating: prepared.manager.audioInputHandle().fileDescriptor)
-        prepared.sink = sink
-        let silence = Data(count: plan.processingGraph.chunkSize * plan.dspInputFormat.channelCount * MemoryLayout<Float>.size)
-        let interval = Double(plan.processingGraph.chunkSize) / Double(plan.processingGraph.sampleRate)
-        let deadline = PerformanceClock.now().advanced(seconds: 3)
-        // Prime only the standby with complete zero blocks, paced at its rate.
-        // The old writer continues to accept and process every source sample.
-        while PerformanceClock.now() < deadline {
-            guard current(), prepared.manager.isRunning else { throw CancellationError() }
-            try await Task.detached(priority: .userInitiated) {
-                try sink.writeForPreparation(silence, deadline: PerformanceClock.now().advanced(seconds: 0.25))
-            }.value
-            try await Task.sleep(for: .seconds(interval))
-            if let clock = try await prepared.manager.rpc.playbackClock() {
-                prepared.clocks.append(clock.observation(received: PerformanceClock.now()))
-                if let first = prepared.clocks.first,
-                   first.epoch == clock.epoch, clock.sampleTime - first.sampleTime >= clock.nominalRate * 0.6 { break }
-            }
-        }
-        // No preparation audio remains in front of the next real block.
-        let drainDeadline = PerformanceClock.now().advanced(seconds: 1)
-        while PerformanceClock.now() < drainDeadline {
-            guard current(), prepared.manager.isRunning else { throw CancellationError() }
-            let levels = try await prepared.manager.rpc.signalLevels()
-            if let clock = try await prepared.manager.rpc.playbackClock(), clock.bufferedFrames == 0,
-               AutomaticAudioBufferController.confirmsSilentOutput(levels, clock: clock, graph: plan.processingGraph) {
-                prepared.clocks.append(clock.observation(received: PerformanceClock.now()))
-                var drift = AudioClockDrift(started: PerformanceClock.now())
-                if drift.replaceOutput(with: prepared.clocks, now: PerformanceClock.now()) {
-                    prepared.clock = clock; prepared.levels = levels
-                    return
-                }
-            }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        throw CancellationError()
-    }
-
-    private func commitAutomaticBufferEngine(_ plan: AudioRuntimePlan) -> Bool {
-        guard let prepared = preparedBufferEngine, prepared.revision == plan.revision,
-              prepared.manager.isRunning,
-              let sink = prepared.sink, let levels = prepared.levels, let clock = prepared.clock,
-              let session = activeSession,
-              AutomaticAudioBufferController.confirmsSilentOutput(levels, clock: clock, graph: plan.processingGraph),
-              let oldSink = pcmRouter.replaceBackendIfQuiet(sink, token: prepared.token, plan: plan,
-                clocks: prepared.clocks, quietSeconds: runtimeCoordinator.automaticBufferQuietSeconds) else { return false }
-        // No await after the writer switches: transfer engine ownership and
-        // observation sources in this same MainActor turn.
-        prepared.sink = nil
-        let retired = dsp
-        retired.stopClockObservations()
-        dsp = prepared.manager; dspController = prepared.controller
-        dsp.promoteStandby()
-        preparedBufferEngine = nil; retiringBufferEngine = retired
-        oldSink.finish()
-        dsp.observePlaybackClock(session: session.id, consumer: pcmRouter.playbackClockConsumer())
-        meters.start(controller: dspController, session: session, routeDiagnosticsProvider: { [driverTransport, pcmRouter] in
-            AudioRouteDiagnostics(transport: driverTransport.statistics, router: pcmRouter.statistics)
-        })
-        return true
-    }
-
-    private func discardAutomaticBufferEngine() async {
-        let pending = preparedBufferEngine; preparedBufferEngine = nil
-        if let pending {
-            await pending.manager.stop()
-            pending.sink?.finish(); pending.sink = nil
-        }
-        let retired = retiringBufferEngine
-        if let retired {
-            await retired.stop()
-            if retiringBufferEngine === retired { retiringBufferEngine = nil }
         }
     }
 
@@ -1248,6 +1112,24 @@ final class AppState: NSObject, ObservableObject {
                 await setAutomaticProfile(for: profile.outputDevice, profileID: nil)
             }
             await setAutoActivateWhenProfileDeviceSelected(id: profileID, enabled: false)
+        }
+    }
+
+    func profileDeactivationRequiresConfirmation(profileID: UUID) -> Bool {
+        guard !profiles.hasDurableCommit,
+              let profile = profiles.profiles.first(where: { $0.id == profileID }) else { return false }
+        return profiles.activationMode(for: profile) == .physicalOutput
+    }
+
+    /// Shared by profile controls in the sidebar and menus.
+    func setProfileRuntimeActive(profileID: UUID, active: Bool, physicalOutputConfirmed: Bool = false) async {
+        guard !transitionInProgress, spatialCalibrationContext == nil,
+              let profile = profiles.profiles.first(where: { $0.id == profileID }) else { return }
+        if active {
+            guard profile.isEnabled, !(isActive && activeProfileID == profileID) else { return }
+            await activate(profile: profile)
+        } else {
+            await deactivateProfileFromMenu(profileID: profileID, physicalOutputConfirmed: physicalOutputConfirmed)
         }
     }
 
@@ -1587,8 +1469,6 @@ final class AppState: NSObject, ObservableObject {
 
     func shutdownSynchronously() {
         automaticBufferTask?.cancel(); automaticBufferTask = nil
-        preparedBufferEngine?.manager.forceStopAndWait()
-        retiringBufferEngine?.forceStopAndWait()
         monitorTimer?.invalidate(); monitorTimer = nil
         startupConfigurationTask?.cancel(); startupConfigurationTask = nil
         cancelMultichannelAutosaves()
@@ -1666,6 +1546,10 @@ extension AppState {
                 }.value
                 directOutput = output; directOutputError = nil
             },
+            directOutputNeedsRecovery: { [unowned self] in
+                guard let output = directOutput, driverTransport.runtimeError == nil else { return false }
+                return output.snapshot().error != nil || pcmRouter.statistics.camillaWriteFailures > 0
+            },
             preparePluginRack: { [unowned self] in try await pluginRackManager.prepare($0) },
             commitPluginRack: { [unowned self] in pcmRouter.setPluginProcessor(pluginRackManager.commit($0)) },
             currentVolumeLease: { [volumeBridge] in volumeBridge.currentLease },
@@ -1681,11 +1565,6 @@ extension AppState {
             volumeMasterControl: { [volumeBridge] in volumeBridge.currentLease?.controlSession.driverConsumer() },
             updateTransportControl: { [driverTransport] in driverTransport.updateControlDeviceObjectID($0, consumer: $1) },
             automaticBufferSize: { [unowned self] in automaticBuffers.recommendedFrames(for: $0) },
-            automaticBufferIsQuiet: { [unowned self] in await audioIsQuietForAutomaticBuffer() },
-            automaticBufferWillChange: { [unowned self] in automaticBuffers.noteChangeAttempt() },
-            prepareAutomaticBuffer: { [unowned self] in try await prepareAutomaticBufferEngine($0) },
-            commitAutomaticBuffer: { [unowned self] in commitAutomaticBufferEngine($0) },
-            discardAutomaticBuffer: { [unowned self] in await discardAutomaticBufferEngine() },
             synchronous: .init(
                 stopTransport: { [driverTransport] in driverTransport.stop() },
                 stopPCM: { [unowned self] in pcmRouter.stop(); pluginRackManager.stop() },

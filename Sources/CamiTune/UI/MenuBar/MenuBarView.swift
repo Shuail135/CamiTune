@@ -100,14 +100,13 @@ final class MenuBarViewModel: ObservableObject {
     var profile: DeviceProfile? {
         let store = state.profiles
         if let actionProfile {
-            return store.profiles.first { $0.id == actionProfile.id } ?? actionProfile
+            return store.profiles.first { $0.id == actionProfile.id && $0.isEnabled }
         }
-        let output = state.coreAudio.defaultOutputUID
-        let candidates = [state.activeProfileID,
-            output.flatMap(ProfileRoutingDescriptor.profileID(from:)),
-            output.flatMap { store.automaticProfileID(forPhysicalDeviceUID: $0) },
-            store.selectedProfileID]
-        return candidates.compactMap { id in store.profiles.first { $0.id == id } }.first
+        // When stopped, follow the main app's selection rather than routing policy.
+        let candidates = [state.isActive ? state.activeProfileID : nil, store.selectedProfileID]
+        return candidates.compactMap { id in
+            store.profiles.first { $0.id == id && $0.isEnabled }
+        }.first
     }
 
     var isActive: Bool { state.isActive && state.activeProfileID == profile?.id }
@@ -139,8 +138,9 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     func setRuntimeActive(_ enabled: Bool) {
-        guard !actionInFlight, !state.transitionInProgress, let profile else { return }
-        if !enabled && !state.profiles.hasDurableCommit && state.profiles.activationMode(for: profile) == .physicalOutput {
+        guard !actionInFlight, !state.transitionInProgress,
+              state.spatialCalibrationContext == nil, let profile else { return }
+        if !enabled && state.profileDeactivationRequiresConfirmation(profileID: profile.id) {
             pendingOffProfileID = profile.id
             return
         }
@@ -158,12 +158,8 @@ final class MenuBarViewModel: ObservableObject {
         beginAction(profile: profile)
         Task {
             defer { finishAction() }
-            if enabled {
-                guard let current = state.profiles.profiles.first(where: { $0.id == profileID }) else { return }
-                await state.activate(profile: current)
-            } else {
-                await state.deactivateProfileFromMenu(profileID: profileID, physicalOutputConfirmed: confirmed)
-            }
+            await state.setProfileRuntimeActive(profileID: profileID, active: enabled,
+                physicalOutputConfirmed: confirmed)
         }
     }
 
@@ -176,8 +172,7 @@ final class MenuBarViewModel: ObservableObject {
         beginAction(profile: profile)
         Task {
             defer { finishAction() }
-            guard let current = state.profiles.profiles.first(where: { $0.id == id && $0.isEnabled }) else { return }
-            await state.activate(profile: current)
+            await state.setProfileRuntimeActive(profileID: id, active: true)
         }
     }
 

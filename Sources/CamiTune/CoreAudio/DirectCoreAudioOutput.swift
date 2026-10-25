@@ -23,6 +23,7 @@ package final class DirectCoreAudioOutput: PCMOutputSink, @unchecked Sendable {
     package let deviceID: AudioDeviceID
     package let requestedFrames: Int
     package var processingBlockFrames: Int? { requestedFrames }
+    package var pacesContinuousRendering: Bool { true }
     package let bufferFrames: Int
     package let inputChannels: Int
     package let outputChannels: Int
@@ -120,6 +121,10 @@ package final class DirectCoreAudioOutput: PCMOutputSink, @unchecked Sendable {
     }
 
     deinit { stop() }
+
+    package func waitForInstrumentCapacity(frames: Int) throws {
+        try storage.waitForInstrumentCapacity(frames: frames, initialCallbackFrames: bufferFrames)
+    }
 
     package func write(_ bytes: Data) throws {
         // Source packets may be larger than the hardware buffer. Mapping is

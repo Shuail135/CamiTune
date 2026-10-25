@@ -24,7 +24,7 @@ struct PluginMIDIInputView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 Text("MIDI input")
-                DeviceCorrectionHelpIcon(title: "MIDI input", message: "Enable notes, controllers and MIDI mappings across this profile’s plug-ins. Each mapping targets its assigned plug-in. The keyboard icons control notes and unmapped controllers for individual plug-ins.")
+                DeviceCorrectionHelpIcon(title: "MIDI input", message: "Activate midi control by clicking the keyboard symbol in the plugin row.")
                 Toggle("MIDI input", isOn: Binding(get: { profile.pluginRack.midi.isEnabled }, set: { value in edit { $0.isEnabled = value } }))
                     .labelsHidden().toggleStyle(.switch).uiInteractionAnchor("plugin-midi-enabled")
                 Spacer(minLength: 0)
@@ -96,9 +96,6 @@ struct PluginMIDIInputButton: View {
         .disabled(saving || !profile.pluginRack.midi.isEnabled || !profile.pluginRack.isEnabled || !slot.isEnabled)
         .accessibilityLabel("Keyboard input for \(slot.plugin.name)")
         .accessibilityValue(selected ? "On" : "Off")
-        .help(selected
-            ? "Keyboard input is on for \(slot.plugin.name). Click to stop notes and unmapped controllers for this plug-in. Saved MIDI mappings remain active."
-            : "Enable notes and unmapped controllers for \(slot.plugin.name). Requires MIDI input and this plug-in to be enabled. Saved MIDI mappings work independently.")
         .uiInteractionAnchor("plugin-midi-input-\(slot.id)")
     }
 }

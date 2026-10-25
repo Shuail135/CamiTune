@@ -1,3 +1,4 @@
+import CamiTuneAudio
 import CamiTuneDomain
 import Foundation
 import Combine
@@ -43,6 +44,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
     private var suppressedAutoUID: String?
     private var manualStopBarrier: RuntimeIntentGeneration?
     private var automaticActivationRetry: AutomaticActivationRetryState?
+    private var lastDirectOutputRecovery: PerformanceTick?
     private var routingMonitorInFlight = false
     private var observedPhysicalOutputUIDs: Set<String>?
     private struct PhysicalOutputConnection {
@@ -85,23 +87,6 @@ final class AudioRuntimeCoordinator: ObservableObject {
     var runtimePlanSummary: String { ownedSession?.acknowledgedPlan?.summary ?? "No runtime plan has been acknowledged." }
     private var activeRuntimePlan: AudioRuntimePlan? { ownedSession?.appliedPlan }
     var appliedProcessingGraph: ProcessingGraph? { activeRuntimePlan?.processingGraph }
-    /// Sum is deliberately conservative for parallel filters as well as serial
-    /// ones. A long delayed FIR lobe must not be mistaken for an ended tail.
-    var automaticBufferQuietSeconds: Double {
-        guard let plan = activeRuntimePlan else { return .infinity }
-        var seconds = 3.0
-        for processor in plan.processingGraph.processors {
-            switch processor.implementation {
-            case .delay(let milliseconds, _): seconds += milliseconds / 1000
-            case .convolution(let convolution):
-                guard let asset = plan.assets.impulseResponses.values.first(where: { $0.url.path == convolution.filePath }),
-                      asset.metadata.sampleRate > 0, asset.metadata.frameCount > 0 else { return .infinity }
-                seconds += Double(asset.metadata.frameCount) / Double(asset.metadata.sampleRate)
-            default: break
-            }
-        }
-        return seconds
-    }
     var appliedProfile: DeviceProfile? { activeRuntimePlan?.intent }
     var activeDeliveryConfiguration: PCMDeliveryConfiguration? { activeRuntimePlan?.deliveryConfiguration }
     var activeSampleRate: Int? { ownedSession?.appliedPlan.sourceFormat.sampleRate }
@@ -269,35 +254,6 @@ final class AudioRuntimeCoordinator: ObservableObject {
         await reconciliationWorker?.value
     }
 
-    /// Only this explicit path may unpin Automatic in a running session. Plan
-    /// preparation and both silence reads can suspend, so recheck ownership and
-    /// user intent after each one. Ordinary edits remain pinned.
-    func applyAutomaticBufferIfQuiet() async {
-        guard !terminated, !transitionInProgress, reconciliationWorker == nil,
-              activeTransaction == nil, !callbacks.settingsBusy(),
-              let old = activeRuntimePlan, !old.usesExclusivePluginOutput, old.intent.audioBufferSetting == .automatic,
-              !old.processingGraph.playback.exclusive,
-              callbacks.profiles().first(where: { $0.id == old.intent.id })?.audioBufferSetting == .automatic,
-              case .active(let desired) = desiredRuntime.target, desired.id == old.intent.id else { return }
-        let generation = desiredRuntime.generation
-        let frames = runtimeServices.automaticBufferSize(old.intent)
-        guard AutomaticAudioBufferPolicy.sizes.contains(frames), frames != old.intent.chunkSize,
-              await runtimeServices.automaticBufferIsQuiet() else { return }
-        func stillCurrent() -> Bool {
-            !terminated && !callbacks.settingsBusy() && activeTransaction == nil && reconciliationWorker == nil
-                && desiredRuntime.generation == generation && activeRuntimePlan?.revision == old.revision
-                && callbacks.profiles().first(where: { $0.id == old.intent.id })?.audioBufferSetting == .automatic
-        }
-        guard stillCurrent() else { return }
-        do {
-            let candidate = try await prepareRuntimePlan(profile: old.intent, reason: "automaticBuffer",
-                automaticBufferFrames: frames)
-            guard stillCurrent() else { return }
-            _ = submit(target: .active(candidate.intent), source: .automaticBuffer, preparedPlan: candidate,
-                reportErrors: false, reason: "automaticBufferAtSilence")
-            await reconciliationWorker?.value
-        } catch { /* Optional tuning never interrupts the running setup. */ }
-    }
     @discardableResult
     private func submitStop(manual: Bool, restoreOutput: Bool, reason: RuntimeStopReason,
                             parent: PerformanceOperationID? = nil, operation: PerformanceOperation? = nil,
@@ -492,18 +448,14 @@ final class AudioRuntimeCoordinator: ObservableObject {
             if desiredRuntime.generation == intent.generation && endpointRequests.isEmpty { break }
         }
     }
-    func prepareRuntimePlan(profile: DeviceProfile, reason: String = "validation", parentOperation: PerformanceOperationID? = nil,
-                            automaticBufferFrames: Int? = nil) async throws -> AudioRuntimePlan {
+    func prepareRuntimePlan(profile: DeviceProfile, reason: String = "validation", parentOperation: PerformanceOperationID? = nil) async throws -> AudioRuntimePlan {
         var profile = profile
         if !profile.usesExclusivePluginOutput, profile.audioBufferSetting == .automatic {
-            // Ordinary edits keep the current size. Only the explicit, guarded
-            // silence transition supplies an override for an owned session.
-            let frames = automaticBufferFrames ?? activeRuntimePlan.flatMap { current -> Int? in
-                guard current.intent.id == profile.id,
-                      current.intent.outputDeviceUID == profile.outputDeviceUID,
-                      current.intent.sampleRate == profile.sampleRate,
-                      current.usesExclusivePluginOutput == profile.usesExclusivePluginOutput,
-                      current.intent.processingChannelCount == profile.processingChannelCount else { return nil }
+            // Keep the active profile's size through silence, edits and runtime
+            // restarts. Consume learned recommendations only after the profile
+            // has been deactivated or another profile has taken over.
+            let frames = activeRuntimePlan.flatMap { current -> Int? in
+                guard current.intent.id == profile.id, !current.usesExclusivePluginOutput else { return nil }
                 return current.processingGraph.chunkSize
             } ?? runtimeServices.automaticBufferSize(profile)
             profile.resolveAutomaticAudioBuffer(frames: frames)
@@ -868,44 +820,15 @@ final class AudioRuntimeCoordinator: ObservableObject {
         operation?.mark("graph prepared"); try checkCurrent(intent.generation)
         guard let owner = ownedSession else { throw CancellationError() }
         let old = owner.appliedPlan
+        if case .recovery = intent.source, intent.reason == "directOutputRecovery",
+           old.usesExclusivePluginOutput, candidate.usesExclusivePluginOutput {
+            try await replacePipeline(candidate, intent: intent, reason: intent.reason)
+            return
+        }
         let delta = compareRuntimePlans(from: old, to: candidate, reason: reason, parentOperation: operation?.id)
         if delta.isNoOp { return }
         if candidate.usesExclusivePluginOutput && old.usesExclusivePluginOutput && delta.engine.changed {
-            if case .automaticBuffer = intent.source {
-                guard await runtimeServices.automaticBufferIsQuiet() else { throw CancellationError() }
-                runtimeServices.automaticBufferWillChange()
-            }
             try await replacePipeline(candidate, intent: intent, reason: "directOutputBufferChange")
-            return
-        }
-        if case .automaticBuffer = intent.source {
-            var comparable = candidate.processingGraph
-            comparable.chunkSize = old.processingGraph.chunkSize
-            comparable.camillaQueueLimit = old.processingGraph.camillaQueueLimit
-            guard comparable == old.processingGraph, !old.processingGraph.playback.exclusive,
-                  !delta.transport.changed, !delta.physicalRoute.changed, !delta.endpoint.changed,
-                  !delta.renderer.changed else { throw CancellationError() }
-            runtimeServices.automaticBufferWillChange()
-            do {
-                // Keep capture, PCM, plug-ins and volume live while the standby
-                // engine starts. Failure or resumed audio leaves them untouched.
-                try await runtimeServices.prepareAutomaticBuffer(candidate)
-                try checkCurrent(intent.generation)
-                try await AudioRuntimePlanPreparer().validateCurrent(candidate, services: runtimeServices)
-                guard await runtimeServices.automaticBufferIsQuiet() else { throw CancellationError() }
-                try checkCurrent(intent.generation)
-                guard !callbacks.settingsBusy(), owns(owner.ownershipID),
-                      callbacks.profiles().first(where: { $0.id == profile.id })?.audioBufferSetting == .automatic,
-                      runtimeServices.commitAutomaticBuffer(candidate) else { throw CancellationError() }
-                // Commit and acknowledgement must not suspend between routing
-                // the first block to the new sink and publishing its plan.
-                acknowledge(candidate)
-                actualGraphUpdateSummary = "Prepared engine handoff at silence, applied revision \(candidate.revision.generation)"
-            } catch {
-                await runtimeServices.discardAutomaticBuffer()
-                throw error
-            }
-            await runtimeServices.discardAutomaticBuffer()
             return
         }
         if delta.requirements.requiresFullRuntimeRestart || delta.requirements.requiresTransportRestart || delta.requirements.requiresPCMRestart {
@@ -1394,6 +1317,28 @@ final class AudioRuntimeCoordinator: ObservableObject {
                 guard observationGeneration == desiredRuntime.generation, observationOwner == currentOwnershipID else { return }
             }
             if let runtimeError = runtimeServices.transportError() {
+                // A submitted user action may not have entered its first phase
+                // yet. Let that newer intent finish before responding to a fault
+                // from the currently owned output.
+                if ownedSession?.appliedPlan.usesExclusivePluginOutput == true,
+                   runtimeServices.directOutputNeedsRecovery(), reconciliationWorker != nil { return }
+                // Reopen a stalled direct device through the same serialized
+                // retirement/activation path as an explicit profile activation.
+                // A repeated failure remains visible instead of looping forever.
+                let now = PerformanceClock.now()
+                if let owner = ownedSession, owner.appliedPlan.usesExclusivePluginOutput,
+                   runtimeServices.directOutputNeedsRecovery(),
+                   callbacks.profiles().contains(where: {
+                       $0.id == owner.publicSession.profileID && $0.isEnabled
+                           && $0.outputDeviceUID == owner.appliedPlan.intent.outputDeviceUID
+                   }),
+                   lastDirectOutputRecovery.map({ PerformanceClock.milliseconds($0, now) >= 30_000 }) ?? true {
+                    lastDirectOutputRecovery = now
+                    _ = submit(target: .active(owner.appliedPlan.intent), source: .recovery,
+                        reportErrors: true, reason: "directOutputRecovery")
+                    await reconciliationWorker?.value
+                    return
+                }
                 errorMessage = runtimeError
                 await deactivate(manual: false, performanceReason: "transportFailure")
                 return

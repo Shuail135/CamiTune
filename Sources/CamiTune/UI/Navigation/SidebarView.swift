@@ -125,11 +125,12 @@ struct SidebarView: View {
     let state: AppState
     @ObservedObject var profileStore: ProfileStore
     @Binding var selection: SidebarDestination
-    let onAddOutput: @MainActor () async -> Void
+    let onAddOutput: @MainActor (UUID?) async -> Void
 
     @State private var expandedFolders: Set<UUID> = []
     @State private var inlineEditRequest: SidebarInlineEditRequest?
     @State private var folderDeletion: FolderDeletionRequest?
+    @State private var pendingOffProfileID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -209,11 +210,27 @@ struct SidebarView: View {
                 }
             }
         }
+        .alert("Deactivate Profile?", isPresented: Binding(
+            get: { pendingOffProfileID != nil },
+            set: { if !$0 { pendingOffProfileID = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { pendingOffProfileID = nil }
+            Button("Deactivate") {
+                guard let id = pendingOffProfileID else { return }
+                pendingOffProfileID = nil
+                Task { await state.setProfileRuntimeActive(profileID: id, active: false, physicalOutputConfirmed: true) }
+            }
+        } message: {
+            Text("Automatic activation will change from Physical output to Profile audio device. Audio will return to the original physical output.")
+        }
     }
 
     private func handleAction(_ action: SidebarAction) {
         switch action {
-        case .addOutput: Task { await onAddOutput() }
+        case .addOutput: Task { await onAddOutput(nil) }
+        case .addProfileInFolder(let id):
+            expandedFolders.insert(id)
+            Task { await onAddOutput(id) }
         case .toggleFolder(let id):
             if !expandedFolders.insert(id).inserted { expandedFolders.remove(id) }
         case .newFolder(let ids):
@@ -229,9 +246,12 @@ struct SidebarView: View {
             }
         case .renameProfile(let id):
             inlineEditRequest = SidebarInlineEditRequest(target: .profile(id))
-        case .toggleProfile(let id):
-            if let profile = profileStore.profiles.first(where: { $0.id == id }) {
-                Task { await state.setProfileEnabled(id: id, enabled: !profile.isEnabled) }
+        case .setProfileActive(let id, let active):
+            guard !state.transitionInProgress, state.spatialCalibrationContext == nil else { return }
+            if !active && state.profileDeactivationRequiresConfirmation(profileID: id) {
+                pendingOffProfileID = id
+            } else {
+                Task { await state.setProfileRuntimeActive(profileID: id, active: active) }
             }
         case .deleteProfile(let id):
             Task {
@@ -306,7 +326,7 @@ private struct SidebarInlineEditRequest {
 
 private enum SidebarAction {
     case addOutput, toggleFolder(UUID), newFolder(Set<UUID>), renameFolder(UUID), removeFolder(UUID)
-    case renameProfile(UUID), toggleProfile(UUID), deleteProfile(UUID)
+    case addProfileInFolder(UUID), renameProfile(UUID), setProfileActive(UUID, Bool), deleteProfile(UUID)
     case moveItem(ProfileRootItem, Int)
 }
 
@@ -664,33 +684,41 @@ private struct NativeProfileSidebar: NSViewRepresentable {
 
         func menu(for row: Int) -> NSMenu {
             let menu = NSMenu()
+            menu.autoenablesItems = false
             menuActions = []
-            func add(_ title: String, _ action: SidebarAction) {
+            func add(_ title: String, _ action: SidebarAction, enabled: Bool = true) {
                 let item = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
+                item.isEnabled = enabled
                 item.target = self
                 item.tag = menuActions.count
                 menuActions.append(action)
                 menu.addItem(item)
             }
             guard displayedRows.indices.contains(row) else {
+                add("New Profile", .addOutput)
                 add("New Folder", .newFolder([]))
                 return menu
             }
             switch displayedRows[row].kind {
             case .folder(let id):
-                let ids = selectedIDs()
-                add(ids.isEmpty ? "New Folder" : "New Folder with Selection", .newFolder(ids))
+                add("New Profile in Folder", .addProfileInFolder(id))
+                menu.addItem(.separator())
                 add("Rename Folder", .renameFolder(id))
                 add("Delete Folder…", .removeFolder(id))
             case .profile(let id):
                 var ids = selectedIDs()
                 if !ids.contains(id) { ids = [id] }
-                add(displayedRows[row].enabled ? "Disable Profile" : "Enable Profile", .toggleProfile(id))
+                let state = parent.state
+                let active = state.isActive && state.activeProfileID == id
+                add(active ? "Deactivate Profile" : "Activate Profile", .setProfileActive(id, !active),
+                    enabled: !state.transitionInProgress && state.spatialCalibrationContext == nil
+                        && (active || displayedRows[row].enabled))
                 menu.addItem(.separator())
                 add("Rename", .renameProfile(id))
                 add("New Folder with Selection", .newFolder(ids))
                 add("Delete", .deleteProfile(id))
             default:
+                add("New Profile", .addOutput)
                 add("New Folder", .newFolder([]))
             }
             return menu

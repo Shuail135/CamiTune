@@ -237,8 +237,7 @@ struct ProfileEditorView: View {
         case .multichannel:
             if profile.hasPhysicalSpeakerRoute { MultichannelProcessingView(state: state, profile: $profile) }
         case .subwooferControl:
-            SubwooferControlView(state: state, store: state.profiles, profile: profile,
-                onOpenSettings: { settingsDestination = .subwoofer })
+            SubwooferControlView(state: state, store: state.profiles, profile: profile)
         case .perChannel:
             PerChannelProcessingView(state: state, profile: $profile)
         case .convolution:

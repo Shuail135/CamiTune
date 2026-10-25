@@ -134,7 +134,7 @@ struct ProfileSettingsView: View {
                 ResponsiveStackLayout(minimumHorizontalWidth: 420, horizontalSpacing: 12, verticalSpacing: 6) {
                     HStack(spacing: 6) {
                         Text("Buffer Size")
-                        DeviceCorrectionHelpIcon(title: "Buffer Size", message: "Smaller buffers need more processing power but reduce latency, increase the size if audio crackles.")
+                        DeviceCorrectionHelpIcon(title: "Buffer Size", message: "Smaller buffers need more processing power but reduce latency, increase the size if audio crackles. Automatic learns during use and applies changes the next time you activate the profile after stopping it or switching away.")
                     }
                     Picker("Audio Buffer", selection: audioBufferSelection) {
                         Text("Automatic").tag(AudioBufferSetting.automatic)

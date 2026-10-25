@@ -5,7 +5,6 @@ import SwiftUI
 struct ConvolutionControl: View {
     let title: String?
     let context: ConvolutionEditingContext
-    let applicationDescription: String
     @Binding var convolution: ConvolutionProcessor?
     @Binding var isEnabled: Bool
     let onCommit: @MainActor () -> Void
@@ -16,6 +15,7 @@ struct ConvolutionControl: View {
     @State private var analyzedAssetID: UUID?
     @State private var channelResponses: [ImpulseResponseChannelAnalysis] = []
     @State private var responseError: String?
+    @State private var expandedChannels: Set<Int> = []
 
     private var supportsCorrespondingChannels: Bool {
         if case .profile = context.target { return true }
@@ -66,8 +66,9 @@ struct ConvolutionControl: View {
                 if value.usesCorrespondingChannels {
                     mappingControls(value)
                 } else {
-                    Text(applicationDescription).font(.caption).foregroundStyle(.secondary)
-                    channelDetails(name: "WAV Channel \(value.impulseChannel + 1)", channel: value.impulseChannel, asset: value.asset)
+                    channelDetails(name: "WAV Channel \(value.impulseChannel + 1)", channel: value.impulseChannel, asset: value.asset) {
+                        EmptyView()
+                    }
                 }
                 if value.asset.sampleRate != context.sampleRate {
                     Label("This WAV does not match the profile's \(context.sampleRate) Hz rate. Replace it before activation.", systemImage: "exclamationmark.triangle.fill")
@@ -110,8 +111,7 @@ struct ConvolutionControl: View {
             ForEach(ImpulseResponseAssignmentPlanner().editableAssignments(for: value, channels: context.channels)) { assignment in
                 let name = context.channels.first { $0.index == assignment.outputChannel }?.displayName
                     ?? "Output \(assignment.outputChannel + 1)"
-                channelDetails(name: name, channel: assignment.impulseChannel, asset: value.asset, controlsWidth: 226)
-                    .overlay(alignment: .topTrailing) {
+                channelDetails(name: name, channel: assignment.impulseChannel, asset: value.asset, output: assignment.outputChannel) {
                         HStack(spacing: 12) {
                             Picker("WAV source for \(name)", selection: Binding(get: { assignment.impulseChannel }, set: { source in
                                 editMapping(output: assignment.outputChannel) { $0.impulseChannel = source }
@@ -141,8 +141,13 @@ struct ConvolutionControl: View {
         onCommit()
     }
 
-    private func channelDetails(name: String, channel: Int, asset: ImpulseResponseAsset, controlsWidth: CGFloat = 0) -> some View {
-        DisclosureGroup {
+    private func channelDetails<Trailing: View>(name: String, channel: Int, asset: ImpulseResponseAsset,
+        output: Int = -1, @ViewBuilder controls: @escaping () -> Trailing) -> some View {
+        // Keep expansion attached to the output when lazy rows leave the viewport
+        // or a different WAV source is selected for the same speaker.
+        DisclosureGroup(isExpanded: Binding(get: { expandedChannels.contains(output) }, set: { expanded in
+            if expanded { expandedChannels.insert(output) } else { expandedChannels.remove(output) }
+        })) {
             if !(0..<asset.channelCount).contains(channel) {
                 Label("Select a valid WAV source to see its response.", systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
             } else if analyzedAssetID == asset.id, channelResponses.indices.contains(channel) {
@@ -156,9 +161,8 @@ struct ConvolutionControl: View {
             Text(name)
                 .font(.subheadline.weight(.semibold))
                 .frame(minHeight: 32, alignment: .leading)
-                .padding(.trailing, controlsWidth > 0 ? controlsWidth + 12 : 0)
         }
-        .disclosureGroupStyle(SectionDisclosureStyle())
+        .disclosureGroupStyle(SectionDisclosureStyle(trailing: controls))
     }
 
     private func analyzeResponse() {
@@ -222,14 +226,10 @@ private struct ConvolutionChannelResponse: View {
         VStack(alignment: .leading, spacing: 8) {
             WrappingControlLayout {
                 Text("Peak gain: \(analysis.peakGainDB, format: .number.precision(.fractionLength(2))) dB")
-                Group {
-                    if let latency = analysis.latencyMilliseconds {
-                        Text("Latency: \(latency, format: .number.precision(.fractionLength(2))) ms")
-                    } else {
-                        Text("Latency: Unavailable")
-                    }
+                if let latency = analysis.latencyMilliseconds {
+                    Text("Latency: \(latency, format: .number.precision(.fractionLength(2))) ms")
+                        .help("Estimated delay to the impulse response's largest absolute sample. Excludes device and processing-buffer latency.")
                 }
-                .help("Estimated delay to the impulse response's largest absolute sample. Excludes device and processing-buffer latency.")
             }
             .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)

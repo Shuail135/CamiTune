@@ -8,6 +8,7 @@ struct AudioRuntimeServices {
     var startDirectOutput: (AudioRuntimePlan) async throws -> Void = { _ in
         throw ProfileSettingsError.runtime("Direct plug-in output is unavailable in this runtime.")
     }
+    var directOutputNeedsRecovery: () -> Bool = { false }
     var preparePluginRack: (AudioRuntimePlan) async throws -> Void = { _ in }
     var commitPluginRack: (AudioRuntimePlan) -> Void = { _ in }
     /// Optional pure configuration injection for controlled developer comparisons.
@@ -24,11 +25,6 @@ struct AudioRuntimeServices {
     var volumeMasterControl: () -> MasterControl? = { nil }
     var updateTransportControl: (UInt32, @escaping MasterControl) -> Void = { _, _ in }
     var automaticBufferSize: (DeviceProfile) -> Int = { AutomaticAudioBufferPolicy.startingFrames(sampleRate: $0.sampleRate) }
-    var automaticBufferIsQuiet: () async -> Bool = { false }
-    var automaticBufferWillChange: () -> Void = {}
-    var prepareAutomaticBuffer: (AudioRuntimePlan) async throws -> Void = { _ in }
-    var commitAutomaticBuffer: (AudioRuntimePlan) -> Bool = { _ in false }
-    var discardAutomaticBuffer: () async -> Void = {}
     var synchronous: SynchronousRuntimeServices
     var holdAudibility: (VolumeHandoffLease?) -> Void = { _ in }
     var permitAudibility: (VolumeHandoffLease?) -> Void = { _ in }

@@ -25,8 +25,8 @@ package enum AudioBufferSetting: Hashable, Sendable, Codable, ExpressibleByInteg
     }
 }
 
-/// Observations can only change a recommendation. The runtime decides when to
-/// use it at verified silence or at the start of a session.
+/// Observations can only change a recommendation. The runtime uses it on the
+/// next activation after the profile is no longer in use.
 package struct AutomaticAudioBufferPolicy: Sendable {
     package struct Evidence: Sendable {
         package var audioSeconds: Double
@@ -80,8 +80,8 @@ package struct AutomaticAudioBufferPolicy: Sendable {
         // evidence for lowering latency. Leave generous headroom for a smaller
         // block's higher overhead and signal-dependent third-party processing.
         let hasHeadroom = combined < 0.30 && evidence.pluginLoad < 0.25
-        // A queued reduction may wait for a quiet gap. Revoke it if active
-        // processing has become too expensive before that gap arrives.
+        // A queued reduction waits until the profile is no longer in use.
+        // Revoke it if processing becomes too expensive before then.
         if validDSP, !hasHeadroom, recommendedFrames < currentFrames {
             recommendedFrames = currentFrames
         }

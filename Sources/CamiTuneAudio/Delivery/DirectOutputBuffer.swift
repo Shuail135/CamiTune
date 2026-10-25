@@ -29,6 +29,29 @@ package final class DirectOutputBuffer: @unchecked Sendable {
     package func waitForCallback(after renderedFrames: UInt64, timeoutNanoseconds: UInt64) {
         cmt_output_ring_wait(ring, renderedFrames, timeoutNanoseconds)
     }
+    /// Sole writer. Keep the existing two-callback preroll while following the
+    /// device clock, including when another client changes the callback size.
+    /// Never render MIDI ahead merely to fill the ring's storage capacity.
+    package func waitForInstrumentCapacity(frames: Int, initialCallbackFrames: Int) throws {
+        var previous = snapshot().renderedFrames
+        var progress = PerformanceClock.now()
+        while true {
+            guard accepting else { throw CancellationError() }
+            let value = snapshot()
+            let callback = value.callbackFrames > 0 ? Int(value.callbackFrames) : initialCallbackFrames
+            if Int(value.bufferedFrames) + frames <= max(frames, callback * 2) { return }
+            let now = PerformanceClock.now()
+            if value.renderedFrames != previous { previous = value.renderedFrames; progress = now }
+            let remaining = 0.25 - PerformanceClock.milliseconds(progress, now) / 1000
+            guard remaining > 0 else { throw OutputFailure.stalled }
+            waitForCallback(after: value.renderedFrames, timeoutNanoseconds: UInt64(remaining * 1_000_000_000))
+        }
+    }
+
+    private enum OutputFailure: LocalizedError {
+        case stalled
+        var errorDescription: String? { "The output device stopped consuming audio." }
+    }
     package func push(_ samples: UnsafePointer<Float>, frames: Int) -> Int {
         guard frames > 0, frames <= Int(UInt32.max) else { return 0 }
         return Int(cmt_output_ring_push(ring, samples, UInt32(frames)))

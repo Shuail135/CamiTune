@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CA7400000000000000000101 = {isa = PBXBuildFile; fileRef = CA7400000000000000000201; };
+		CA7400000000000000000100 = {isa = PBXBuildFile; fileRef = CA7400000000000000000200; };
 		C4A268A994F7996E7FC14B0A = {isa = PBXBuildFile; fileRef = 84BFF11A115B28A1EE1E27ED; };
 		CA7300000000000000000101 = {isa = PBXBuildFile; fileRef = CA7300000000000000000201; };
 		CA7300000000000000000100 = {isa = PBXBuildFile; fileRef = CA7300000000000000000200; };
@@ -1062,6 +1064,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CA7400000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChangelogMarkdown.swift; sourceTree = "<group>"; };
+		CA7400000000000000000200 = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CHANGELOG.md; sourceTree = "<group>"; };
 		84BFF11A115B28A1EE1E27ED = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BiquadCoefficients.swift; sourceTree = "<group>"; };
 		CA7300000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectCoreAudioOutput.swift; sourceTree = "<group>"; };
 		CA7300000000000000000200 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectOutputBuffer.swift; sourceTree = "<group>"; };
@@ -2940,6 +2944,7 @@
 				F4954A91479FDFCD4959E39C,
 				67B1EB01B195F34F0294962D,
 				CA119B900000000000000011,
+				CA7400000000000000000200,
 			);
 			sourceTree = "<group>";
 		};
@@ -3214,6 +3219,7 @@
 			sourceTree = "<group>";
 			children = (
 				CA7200000000000000000201,
+				CA7400000000000000000201,
 				2CCC7DB8DC22E3DAD74403E8,
 				C918E1BD8F850B389F1EE5F9,
 				14C9869259F14FE6380CCFA1,
@@ -3973,6 +3979,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				CA119B900000000000000001,
+				CA7400000000000000000100,
 			    0062E4974A58EB2758A2CE55,
 			    7CE88B8CE13150BBE1A42C9F,
 			    775A2740F97C52ECC2C51113,
@@ -4083,6 +4090,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				CA7200000000000000000101,
+				CA7400000000000000000101,
 				CA7200000000000000000100,
 
 				59D66A1B25CC4424EB38AA39,

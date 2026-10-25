@@ -524,7 +524,7 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
             writerBusy = true
             if queue.isEmpty, calibrationPlayback == nil, instrumentClockNeeded() {
                 let now = DispatchTime.now().uptimeNanoseconds
-                if nextInstrumentTick > now {
+                if !sink.pacesContinuousRendering && nextInstrumentTick > now {
                     writerBusy = false
                     condition.wait(until: Date().addingTimeInterval(Double(nextInstrumentTick - now) / 1_000_000_000))
                     condition.unlock()
@@ -543,6 +543,22 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
                     // at most 4 ms more idle MIDI wait than the old cadence.
                     // Real source packets still interrupt this wait at once.
                     frames = min(256, backendChunkFrames + max(0, Int(backendSampleRate * 0.004)))
+                }
+                if sink.pacesContinuousRendering {
+                    // Wait before MIDI/render work, with no control lock held.
+                    // Hardware consumption replaces the independent wall timer;
+                    // a notification's already-delivered duration is never waited
+                    // a second time when its producer ends.
+                    writerBusy = false
+                    condition.unlock()
+                    do { try sink.waitForInstrumentCapacity(frames: frames) }
+                    catch { failWrite(error); return }
+                    condition.lock()
+                    guard !stopping, queue.isEmpty, instrumentClockNeeded() else {
+                        condition.unlock()
+                        continue
+                    }
+                    writerBusy = true
                 }
                 wasGeneratingInstrument = true
                 instrumentStopPadding = false
@@ -569,7 +585,7 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
                     try sink.write(generated.withUnsafeBytes { Data($0) })
                     recordTransit(received: started)
                     backendRemainderFrames = (backendRemainderFrames + frames) % backendChunkFrames
-                } catch { failWrite(); return }
+                } catch { failWrite(error); return }
                 continue
             }
             if queue.isEmpty, calibrationPlayback == nil, pluginTailFrames > 0 {
@@ -583,7 +599,7 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
                 do {
                     try sink.write(silence.withUnsafeBytes { Data($0) })
                     recordBackendWrite(frames: frames)
-                } catch { failWrite(); return }
+                } catch { failWrite(error); return }
                 continue
             }
             if calibrationPlayback != nil, Date() < nextCalibrationFrameDate {
@@ -626,7 +642,7 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
                             recordBackendWrite(frames: tail.frameCount)
                         }
                     } catch is CancellationError { return }
-                    catch { failWrite(); return }
+                    catch { failWrite(error); return }
                     var tailFrames = 0
                     if var tail = rateStage.finish(discard: discard), !tail.interleaved.isEmpty {
                         processPlugins(&tail.interleaved, sampleRate: tail.sampleRate, reset: discard)
@@ -636,7 +652,7 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
                             recordBackendWrite(frames: tail.frameCount)
                             tailFrames = tail.frameCount
                         }
-                        catch { failWrite(); return }
+                        catch { failWrite(error); return }
                     }
                     // Stdin has no END framing. On macOS Camilla's reader waits
                     // for a full chunk, so complete only the final known chunk.
@@ -661,7 +677,7 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
                         do {
                             try sink.write(silence.withUnsafeBytes { Data($0) })
                             recordBackendWrite(frames: frames)
-                        } catch { failWrite(); return }
+                        } catch { failWrite(error); return }
                         remaining -= frames
                     }
                     // Renderer history has drained and retired before resampler
@@ -839,7 +855,7 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
                 }
                 calibrationCompletion?()
             } catch {
-                failWrite()
+                failWrite(error)
                 return
             }
         }
@@ -864,11 +880,12 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
         condition.unlock()
     }
 
-    private func recordWriteFailure() {
+    private func recordWriteFailure(_ error: Error? = nil) {
         condition.lock()
         deliveryStatistics.writeFailures &+= 1
         condition.unlock()
-        recordDeliveryFailure("Audio paused: the audio output stopped accepting samples. Restart the audio session to recover.")
+        let detail = error.map { " \($0.localizedDescription)" } ?? ""
+        recordDeliveryFailure("Audio paused: the audio output stopped accepting samples.\(detail)")
     }
 
     private func recordDeliveryFailure(_ message: String) {
@@ -886,13 +903,15 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
         condition.unlock()
     }
 
-    private func failWrite() {
+    private func failWrite(_ error: Error) {
         let performance = performanceSource.snapshot()
         condition.lock()
+        // Cancellation during an intentional retirement is not an output fault.
+        guard !stopping else { condition.unlock(); return }
         stopping = true
         resetQueue(reason: .runtimeReset, performance: performance)
         condition.unlock()
-        recordWriteFailure()
+        recordWriteFailure(error)
     }
 
 

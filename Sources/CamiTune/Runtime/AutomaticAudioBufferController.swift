@@ -2,11 +2,10 @@ import CamiTuneAudio
 import CamiTuneDomain
 import CryptoKit
 import Foundation
-import Darwin
 
 /// Learns off the audio thread. Recommendations are persisted separately from
-/// user preferences. The runtime may consume them at verified silence or when
-/// preparing a new audio session; learning never modifies PCM.
+/// user preferences. The runtime consumes them on the next activation after
+/// the profile is no longer in use; learning never modifies the active buffer or PCM.
 @MainActor
 final class AutomaticAudioBufferController: ObservableObject {
     struct Status: Equatable {
@@ -34,33 +33,6 @@ final class AutomaticAudioBufferController: ObservableObject {
     private var records: [String: Record]
     private var context: Context?
     private let persist: (Data) -> Void
-    private var lastChangeAttempt = Date.distantPast
-
-    func hasPendingChange(profileID: UUID, now: Date = Date()) -> Bool {
-        guard let status = statuses[profileID], now.timeIntervalSince(lastChangeAttempt) >= 30 else { return false }
-        return status.currentFrames != status.nextFrames
-    }
-    func noteChangeAttempt(now: Date = Date()) { lastChangeAttempt = now }
-
-    /// The engine represents exact zero as -1000 dB. A meter floor such as
-    /// -150 dB, a muted UI meter, empty telemetry, or a stalled clock is not proof.
-    nonisolated static func confirmsSilentOutput(_ levels: SignalLevels, clock: CamillaPlaybackClock,
-                                     graph: ProcessingGraph, nowHostTime: UInt64 = mach_absolute_time()) -> Bool {
-        guard levels.capturePeak.count == graph.inputFormat.channelCount,
-              levels.playbackPeak.count == graph.outputFormat.channelCount,
-              !levels.capturePeak.isEmpty, !levels.playbackPeak.isEmpty,
-              (levels.capturePeak + levels.playbackPeak).allSatisfy({ $0 == -1000 }),
-              clock.epoch > 0, clock.timestampFlags & 3 == 3, clock.sampleTime.isFinite,
-              clock.nominalRate == Double(graph.sampleRate), clock.hostTime > 0, clock.hostTime <= nowHostTime,
-              let buffered = clock.bufferedFrames, buffered >= 0,
-              let callback = clock.callbackFrames, callback > 0,
-              (Double(buffered) + Double(callback)) / clock.nominalRate < 0.25 else { return false }
-        var scale = mach_timebase_info_data_t()
-        guard mach_timebase_info(&scale) == KERN_SUCCESS, scale.denom > 0 else { return false }
-        let age = Double(nowHostTime - clock.hostTime) * Double(scale.numer) / Double(scale.denom) / 1e9
-        return age <= 0.25
-    }
-
     init(cache: Data? = nil, persist: @escaping (Data) -> Void = { _ in }) {
         self.persist = persist
         let decoded = cache.flatMap { try? JSONDecoder().decode([String: Record].self, from: $0) } ?? [:]
