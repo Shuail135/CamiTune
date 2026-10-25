@@ -24,7 +24,9 @@ final class AppUpdateChecker: ObservableObject {
     }
 
     var installedVersion: String { Self.currentVersion }
-    var isPresentingUpdate: Bool { availableUpdate != nil || phase != .idle }
+    // The installer owns progress during restart. Leaving our sheet attached
+    // would both duplicate its window and prevent AppKit from terminating us.
+    var isPresentingUpdate: Bool { phase != .restarting && (availableUpdate != nil || phase != .idle) }
     var canRetry: Bool { currentUpdate != nil }
 
     private enum Keys {
@@ -104,6 +106,7 @@ final class AppUpdateChecker: ObservableObject {
     private var currentUpdate: AvailableAppUpdate?
     private var updateTask: Task<Void, Never>?
     private var downloadID: UUID?
+    private var installationStarted = false
 
     init(defaults: UserDefaults = .standard, session: URLSession = .shared) {
         self.defaults = defaults
@@ -200,10 +203,20 @@ final class AppUpdateChecker: ObservableObject {
     }
 
     func installAndRestart() {
-        guard [.ready, .failed].contains(phase), let preparedUpdate, let updateVersion else { return }
+        guard [.ready, .failed].contains(phase), preparedUpdate != nil, updateVersion != nil else { return }
         phase = .restarting
+    }
+
+    /// Start only after SwiftUI has finished dismissing the update sheet.
+    /// Scheduling Quit on the next run-loop turn is not enough: the sheet's
+    /// dismissal animation can still be in progress and veto termination.
+    func updatePresentationDidDismiss() {
+        guard phase == .restarting, !installationStarted,
+              let preparedUpdate, let updateVersion else { return }
+        installationStarted = true
         updateTask = Task { [weak self] in
             guard let self else { return }
+            defer { self.installationStarted = false }
             do {
                 // The helper must be visible and ready before this process quits.
                 // A normal Quit never installs a merely downloaded update.

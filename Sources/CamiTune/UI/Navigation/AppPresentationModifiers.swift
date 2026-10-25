@@ -29,7 +29,8 @@ struct AppUpdatePresentationModifier: ViewModifier {
     @ObservedObject var updateChecker: AppUpdateChecker
 
     func body(content: Content) -> some View {
-        content.sheet(isPresented: Binding(get: { updateChecker.isPresentingUpdate }, set: { _ in })) {
+        content.sheet(isPresented: Binding(get: { updateChecker.isPresentingUpdate }, set: { _ in }),
+                      onDismiss: { updateChecker.updatePresentationDidDismiss() }) {
             AppUpdateProgressView(checker: updateChecker)
                 .interactiveDismissDisabled(true)
         }
