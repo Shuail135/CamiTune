@@ -29,10 +29,13 @@ final class RoomCorrectionEditorState: ObservableObject {
     @Published var recorderPositionCount: RoomRecorderPositionCount = .five
     @Published var microphonePositionCount: RoomRecorderPositionCount = .nine
     @Published private(set) var microphoneLevel: MicrophoneInputLevel?
-    @Published private(set) var testingSound = false
-    @Published private(set) var measuring = false
-    @Published private(set) var importingRecording = false
-    @Published private(set) var correctionInProgress = false
+    private enum Activity { case idle, working, levelCheck, measurement, recordingImport, correction }
+    @Published private var activity: Activity = .idle
+    var busy: Bool { activity != .idle }
+    var testingSound: Bool { activity == .levelCheck }
+    var measuring: Bool { activity == .measurement }
+    var importingRecording: Bool { activity == .recordingImport }
+    var correctionInProgress: Bool { activity == .correction }
     @Published private(set) var playingOutput: PhysicalOutputID?
     @Published private(set) var profileIsActive = false
     @Published private(set) var measurementOpen = false
@@ -50,8 +53,7 @@ final class RoomCorrectionEditorState: ObservableObject {
     }
     @Published var status = ""
     @Published var error: String?
-    @Published private(set) var busy = false
-    @Published private(set) var comparing = false
+    var comparing: Bool { comparisonPlayback != nil }
     @Published private(set) var revision = 0
     @Published private(set) var calculatedResult: RoomCorrectionResult?
     @Published private(set) var isVerifying = false
@@ -259,15 +261,13 @@ final class RoomCorrectionEditorState: ObservableObject {
         }
         return hasMeasurements ? "Measurements ready" : ""
     }
-    private func run(_ action: @escaping @MainActor () async throws -> Void) {
+    private func run(_ activity: Activity = .working, _ action: @escaping @MainActor () async throws -> Void) {
         guard !busy else { return }
-        busy = true; error = nil
+        self.activity = activity; error = nil
         task = Task { [weak self] in
             guard let self else { return }
             defer {
-                self.busy = false; self.testingSound = false; self.measuring = false
-                self.importingRecording = false
-                self.correctionInProgress = false
+                self.activity = .idle
                 self.playingOutput = nil
                 self.savingSessionSetup = false
                 self.levelCheckCeilingDB = nil; self.task = nil; self.revision += 1
@@ -554,13 +554,11 @@ final class RoomCorrectionEditorState: ObservableObject {
         let planned = preview ? [] : plannedBlocks(selectedChannel: selectedChannel)
         let channels = measurementChannels.filter { initial.source.kind == .recorder || selectedChannel == nil || $0 == selectedChannel }
         let requestedGain = testVolumeDB
-        testingSound = preview
-        measuring = !preview
         let positionLabel = "Position \(positionIndex + 1) of \(initial.positions.count)"
         status = "Preparing sound · \(positionLabel)"
         let selectedSource = source
         let store = measurementStore
-        run { [self] in
+        run(preview ? .levelCheck : .measurement) { [self] in
             if !preview && initial.source.kind == .microphone {
                 guard selectedSource.deviceID != nil, let calibration = selectedSource.calibration else {
                     throw RoomCorrectionError.calibrationRequired
@@ -792,9 +790,8 @@ final class RoomCorrectionEditorState: ObservableObject {
         guard !busy, !isVerifying else { return }
         guard let snapshot = session, !snapshot.blocks.isEmpty else { error = "Play the measurement positions before importing the recording."; return }
         let store = measurementStore
-        importingRecording = true
         status = "Analyzing recording…"
-        run { [self] in
+        run(.recordingImport) { [self] in
             session = try await worker(committing: true) {
                 let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
                 let decoded = try RoomMeasurementStore.read(url)
@@ -914,9 +911,8 @@ final class RoomCorrectionEditorState: ObservableObject {
         let settings = settings
         let selectedSource = source
         let store = measurementStore
-        correctionInProgress = true
         status = "Calculating correction…"
-        run { [self] in
+        run(.correction) { [self] in
             let snapshot = try await worker(committing: true) { try store.updatingSource(selectedSource, in: snapshot) }
             self.session = snapshot
             try Task.checkCancellation()
@@ -969,9 +965,8 @@ final class RoomCorrectionEditorState: ObservableObject {
 
     func importCorrection(profile: DeviceProfile) {
         guard canImport, let result = calculatedResult else { return }
-        correctionInProgress = true
         status = "Importing correction…"
-        run { [self] in
+        run(.correction) { [self] in
             guard let app, app.profiles.settingsMutationsAllowed else { throw ProfileSettingsError.busy }
             let saved = try app.historyProfile(profile.id)
             let current = try app.applyingSessionEQDrafts(to: saved)
@@ -1035,7 +1030,7 @@ final class RoomCorrectionEditorState: ObservableObject {
                 guard app.runtimeCoordinator.appliedProfile?.effectiveSpatialSettings.seating?.roomCorrectionEnabled == enabled else { throw RoomCorrectionError.routeUnavailable }
             }
             try await validateCommit(current, app: app)
-            publishRoomProfile(current, app: app); comparing = false
+            publishRoomProfile(current, app: app); comparisonPlayback = nil
             status = enabled ? "Room Correction ON" : "Room Correction OFF"
         }
     }
@@ -1067,34 +1062,18 @@ final class RoomCorrectionEditorState: ObservableObject {
             settings = .init(); positionIndex = 0; recorderPositionCount = .five; microphonePositionCount = .nine
             microphoneLevel = nil
             testVolumeDB = RoomMeasurementSignal.defaultVolumeDB; testVolumeMaximumDB = RoomMeasurementSignal.volumeRangeDB.upperBound
-            testingSound = false; levelCheckCeilingDB = nil; comparing = false; measurementOpen = false
+            levelCheckCeilingDB = nil; comparisonPlayback = nil; measurementOpen = false
             status = ""; error = nil; tab = .measure
         }
     }
-    func clearCorrection(profile: DeviceProfile) {
-        run { [self] in
-            guard let app else { return }
-            var current = app.profiles.profiles.first(where: { $0.id == profile.id }) ?? profile
-            current.spatialSettings.seating?.roomCorrectionResult = nil
-            current.spatialSettings.seating?.roomCorrectionBands = []
-            current.spatialSettings.seating?.roomCorrectionEnabled = false
-            current.processing.removeRoomStages()
-            if app.activeProfileID == current.id {
-                await app.apply(profile: current)
-                guard app.runtimeCoordinator.appliedProfile?.effectiveSpatialSettings.seating?.roomCorrectionEnabled == false else { throw RoomCorrectionError.routeUnavailable }
-            }
-            try await validateCommit(current, app: app)
-            publishRoomProfile(current, app: app); comparing = false
-            status = "Correction removed. Measurements retained."
-        }
-    }
+
     private struct ComparisonPlayback {
         let id = UUID()
         let profileID: UUID
         let sessionID: UUID
         let graph: ProcessingGraph
     }
-    private var comparisonPlayback: ComparisonPlayback?
+    @Published private var comparisonPlayback: ComparisonPlayback?
     private var comparisonRestoreTask: Task<Void, Never>?
     private static let comparisonRestoreFailure = "The saved room correction could not be restored. Reactivate this profile to restore its saved processing."
 
@@ -1105,7 +1084,7 @@ final class RoomCorrectionEditorState: ObservableObject {
         guard let app, app.activeSession?.id == playback.sessionID,
               app.activeProfileID == playback.profileID,
               app.runtimeCoordinator.appliedProcessingGraph == playback.graph else {
-            comparisonPlayback = nil; comparing = false
+            comparisonPlayback = nil
             return
         }
     }
@@ -1151,7 +1130,7 @@ final class RoomCorrectionEditorState: ObservableObject {
             clearComparisonForRuntimeChange()
             throw ProfileSettingsError.runtime(Self.comparisonRestoreFailure)
         }
-        if comparisonPlayback?.id == playback.id { comparisonPlayback = nil; comparing = false }
+        if comparisonPlayback?.id == playback.id { comparisonPlayback = nil }
         if error == Self.comparisonRestoreFailure { error = nil }
     }
 
@@ -1223,7 +1202,6 @@ final class RoomCorrectionEditorState: ObservableObject {
                   let graph = app.runtimeCoordinator.appliedProcessingGraph else { throw RoomCorrectionError.routeUnavailable }
             let playback = ComparisonPlayback(profileID: profile.id, sessionID: appliedSession.id, graph: graph)
             comparisonPlayback = playback
-            comparing = true
             do {
                 try Task.checkCancellation()
                 guard let latest = app.profiles.profiles.first(where: { $0.id == profile.id }),

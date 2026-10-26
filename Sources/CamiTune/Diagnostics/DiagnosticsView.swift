@@ -356,7 +356,7 @@ private struct DiagnosticsRuntimeView: View {
     private func refresh() {
         switch section {
         case "Timeline Mixer":
-            snapshot = state.perAppAudio.timelineStatisticsSnapshot().map { $0.summary + "\n\nReorder policy\n" + $0.policySummary }
+            snapshot = state.perAppAudio.timelineStatisticsSnapshot().map { $0.summary + "\n\nCompletion policy\n" + $0.policySummary }
                 ?? "Mixer is processing audio; snapshot unavailable. Choose Refresh to try again."
         case "Profile Repository": snapshot = state.profiles.repositorySummary
         case "CoreAudio & Volume Handoff":

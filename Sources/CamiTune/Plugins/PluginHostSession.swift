@@ -25,7 +25,6 @@ final class PluginHostConnection: @unchecked Sendable {
     private var failure: String?
     private var reportedLatency = 0
     private var reportedTail = 0
-    private var reportedQuietHorizon: Double?
     private var generatesAudio = false
     var requiresContinuousRendering: Bool { state.lock(); defer { state.unlock() }; return generatesAudio && failure == nil }
     private var savedStates: [UUID: Data] = [:]
@@ -33,11 +32,6 @@ final class PluginHostConnection: @unchecked Sendable {
 
     var latencyFrames: Int { state.lock(); defer { state.unlock() }; return reportedLatency }
     var tailFrames: Int { state.lock(); defer { state.unlock() }; return failure == nil ? min(Int(sampleRate * 10), reportedTail + reportedLatency) : 0 }
-    func bufferChangeTailSeconds(sampleRate: Double) -> Double {
-        state.lock(); defer { state.unlock() }
-        guard failure == nil, let reportedQuietHorizon else { return .infinity }
-        return reportedQuietHorizon
-    }
     var errorMessage: String? { state.lock(); defer { state.unlock() }; return failure }
 
     init(rack: PluginRack, sampleRate: Double, channelRoles: [ChannelRole] = [.left, .right], editorOnly: Bool = false,
@@ -123,12 +117,6 @@ final class PluginHostConnection: @unchecked Sendable {
             if let capabilities = event["capabilities"] as? [[String: Any]] { generatesAudio = capabilities.contains { $0["instrument"] as? Bool == true } }
             reportedLatency = min(Int(sampleRate * 10), max(0, event["latencyFrames"] as? Int ?? 0))
             if let seconds = event["tailSeconds"] as? Double, seconds.isFinite { reportedTail = Int(min(10, max(0, seconds)) * sampleRate) }
-            // Helpers cap/represent unknown tails at ten seconds. That bounded
-            // drain estimate must never authorize discarding a longer history.
-            if let tail = event["tailSeconds"] as? Double, tail.isFinite, tail >= 0, tail < 10,
-               let latency = event["latencyFrames"] as? Int, latency >= 0, Double(latency) < sampleRate * 10 {
-                reportedQuietHorizon = tail + Double(latency) / sampleRate
-            } else { reportedQuietHorizon = nil }
             state.unlock()
         case "error": fail(event["message"] as? String ?? "The plug-in stopped responding.")
         case "closed": fail("The plug-in host closed unexpectedly. Bypass the rack or reload it to continue.")

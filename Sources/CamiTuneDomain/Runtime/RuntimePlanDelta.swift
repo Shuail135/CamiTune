@@ -43,7 +43,6 @@ package struct RuntimePlanDelta: Hashable, Sendable {
         let pipeline = route || endpoint.routingDescriptorChanged || transport.changed || renderer.referenceTopologyChanged
         return .init(requiresEndpointMetadataUpdate: endpoint.changed || metadata.profileDisplayNameChanged,
             requiresVolumeSafeHandoff: physicalRoute.outputDeviceUIDChanged || endpoint.uidChanged,
-            requiresTransportRestart: pipeline, requiresPCMRestart: pipeline,
             requiresEngineQuiescence: engine.changed,
             requiresFullRuntimeRestart: pipeline,
             requiresGraphUpdate: graph != .unchanged,
@@ -69,8 +68,6 @@ package struct RuntimeApplyRequirements: Hashable, Sendable {
     package init(
         requiresEndpointMetadataUpdate: Bool,
         requiresVolumeSafeHandoff: Bool,
-        requiresTransportRestart: Bool,
-        requiresPCMRestart: Bool,
         requiresEngineQuiescence: Bool,
         requiresFullRuntimeRestart: Bool,
         requiresGraphUpdate: Bool,
@@ -79,8 +76,6 @@ package struct RuntimeApplyRequirements: Hashable, Sendable {
     ) {
         self.requiresEndpointMetadataUpdate = requiresEndpointMetadataUpdate
         self.requiresVolumeSafeHandoff = requiresVolumeSafeHandoff
-        self.requiresTransportRestart = requiresTransportRestart
-        self.requiresPCMRestart = requiresPCMRestart
         self.requiresEngineQuiescence = requiresEngineQuiescence
         self.requiresFullRuntimeRestart = requiresFullRuntimeRestart
         self.requiresGraphUpdate = requiresGraphUpdate
@@ -90,18 +85,16 @@ package struct RuntimeApplyRequirements: Hashable, Sendable {
 
     package let requiresEndpointMetadataUpdate: Bool
     package let requiresVolumeSafeHandoff: Bool
-    package let requiresTransportRestart: Bool
-    package let requiresPCMRestart: Bool
+    package var requiresTransportRestart: Bool { requiresFullRuntimeRestart }
+    package var requiresPCMRestart: Bool { requiresFullRuntimeRestart }
     package let requiresEngineQuiescence: Bool
     package let requiresFullRuntimeRestart: Bool
     package let requiresGraphUpdate: Bool
     package let requiresRenderConfigurationUpdate: Bool
     package let requiresPCMDeliveryUpdate: Bool
 
-    /// Stage 5 executes quiescence conservatively through existing teardown/start.
-    /// The classified requirement remains distinct for Stage 6's lifecycle owner.
-    package var usesExistingRestartPath: Bool {
-        requiresFullRuntimeRestart || requiresTransportRestart || requiresPCMRestart || requiresEngineQuiescence
+    package var requiresRestart: Bool {
+        requiresFullRuntimeRestart || requiresEngineQuiescence
     }
 }
 
@@ -311,24 +304,19 @@ extension RuntimePlanDelta {
     }
 }
 
-/// Cross-session transfer is deliberately disabled. This decision consumes the
-/// authoritative delta; it does not compare profiles or affect in-session patches.
-package enum RuntimeResourceReuseDecision: Equatable, Sendable {
-    package enum RestartReason: String, Sendable {
-        case endpointChanged, physicalRouteChanged, transportChanged, backendChanged
-        case deliveryChanged, rendererTopologyChanged, reuseNotQualified
-    }
-    case cleanRestart(RestartReason)
+package enum RuntimeRestartReason: String, Sendable {
+    case endpointChanged, physicalRouteChanged, transportChanged, backendChanged
+    case deliveryChanged, rendererTopologyChanged, reuseNotQualified
 
-    package static func evaluate(_ delta: RuntimePlanDelta) -> Self {
-        if delta.endpoint.uidChanged || delta.endpoint.routingDescriptorChanged { return .cleanRestart(.endpointChanged) }
-        if delta.physicalRoute.changed { return .cleanRestart(.physicalRouteChanged) }
+    package static func classify(_ delta: RuntimePlanDelta) -> Self {
+        if delta.endpoint.uidChanged || delta.endpoint.routingDescriptorChanged { return .endpointChanged }
+        if delta.physicalRoute.changed { return .physicalRouteChanged }
         if delta.transport.changed || delta.transport.sampleRateChanged || delta.transport.sourceChannelLayoutChanged {
-            return .cleanRestart(.transportChanged)
+            return .transportChanged
         }
-        if delta.engine.changed { return .cleanRestart(.backendChanged) }
-        if delta.pcmDeliveryChanged { return .cleanRestart(.deliveryChanged) }
-        if delta.renderer.referenceTopologyChanged { return .cleanRestart(.rendererTopologyChanged) }
-        return .cleanRestart(.reuseNotQualified)
+        if delta.engine.changed { return .backendChanged }
+        if delta.pcmDeliveryChanged { return .deliveryChanged }
+        if delta.renderer.referenceTopologyChanged { return .rendererTopologyChanged }
+        return .reuseNotQualified
     }
 }

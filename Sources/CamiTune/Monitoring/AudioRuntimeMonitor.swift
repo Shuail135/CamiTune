@@ -79,7 +79,7 @@ struct AudioRouteDiagnostics: Equatable, Sendable {
     init() {}
 
     init(
-        transport: SystemAudioBridgeTransport.Statistics,
+        transport: AudioCaptureStatistics,
         router: PCMRouter.Statistics
     ) {
         transit = router.transit
@@ -483,7 +483,7 @@ final class AudioRuntimeMonitor: ObservableObject {
 
     private var meterPollingTask: Task<Void, Never>?
     private var diagnosticsPollingTask: Task<Void, Never>?
-    private var controller: CamillaDSPController?
+    private var backend: (any AudioProcessingBackend)?
     private var directOutput: DirectCoreAudioOutput?
     private var routeDiagnosticsProvider: RouteDiagnosticsProvider?
     private var presentedProfileID: UUID?
@@ -499,14 +499,14 @@ final class AudioRuntimeMonitor: ObservableObject {
     }
 
     func start(
-        controller: CamillaDSPController?,
+        backend: (any AudioProcessingBackend)?,
         session: AudioRuntimeSession,
         directOutput: DirectCoreAudioOutput? = nil,
         routeDiagnosticsProvider: @escaping RouteDiagnosticsProvider
     ) {
         stop()
         activeSession = session
-        self.controller = controller
+        self.backend = backend
         self.directOutput = directOutput
         self.routeDiagnosticsProvider = routeDiagnosticsProvider
         status.isActive = true
@@ -557,13 +557,13 @@ final class AudioRuntimeMonitor: ObservableObject {
             }
             return
         }
-        guard let controller else { return }
+        guard let backend else { return }
         status.telemetryPollingActive = true
 
         meterPollingTask = Task { [weak self] in
             while !Task.isCancelled {
                 do {
-                    let incoming = try await controller.fetchMeters()
+                    let incoming = try await backend.fetchMeters()
                     guard let self, self.isPresented(session) else { return }
                     self.publishOutputLevels(peak: incoming.playbackPeak, rms: incoming.playbackRMS)
                 } catch {
@@ -581,9 +581,9 @@ final class AudioRuntimeMonitor: ObservableObject {
                 guard let self, self.isPresented(session) else { return }
                 self.publishRouteDiagnostics(now: Date())
                 do {
-                    let diagnostics = try await controller.fetchDiagnostics()
+                    let diagnostics = try await backend.fetchTelemetry()
                     guard self.isPresented(session) else { return }
-                    self.publish(.init(camilla: diagnostics), now: Date())
+                    self.publish(diagnostics, now: Date())
                 } catch {
                     guard self.isPresented(session) else { return }
                     let now = Date()
@@ -621,7 +621,7 @@ final class AudioRuntimeMonitor: ObservableObject {
         diagnosticsPollingTask?.cancel()
         meterPollingTask = nil
         diagnosticsPollingTask = nil
-        controller = nil
+        backend = nil
         directOutput = nil
         routeDiagnosticsProvider = nil
         activeSession = nil

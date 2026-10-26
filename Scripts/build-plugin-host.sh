@@ -7,7 +7,7 @@ PLUGIN_MODE="${CONFIGURATION:-Debug}"
 PLUGIN_FIXTURES="$PLUGIN_ROOT/Tests/PluginHostRegression/fixtures"
 PLUGIN_TEST_SOURCES=()
 mkdir -p "$PLUGIN_BUILD"
-PLUGIN_FLAGS=(-std=c++17 -O2 -mmacosx-version-min=13.0 -I"$PLUGIN_SOURCE/vendor" -framework AppKit -framework AVFoundation -framework AudioUnit -framework AudioToolbox -framework CoreAudioKit -framework CoreAudio -framework CoreMIDI -framework CoreFoundation)
+PLUGIN_FLAGS=(-std=c++17 -O2 -mmacosx-version-min=13.0 -I"$PLUGIN_SOURCE/vendor" -framework AppKit -framework Accelerate -framework AVFoundation -framework AudioUnit -framework AudioToolbox -framework CoreAudioKit -framework CoreAudio -framework CoreMIDI -framework CoreFoundation)
 if [[ "$PLUGIN_MODE" == "Debug" && "${CAMITUNE_PLUGIN_TESTING:-0}" == "1" && -f "$PLUGIN_FIXTURES/TestAudioUnit.mm" && -f "$PLUGIN_FIXTURES/TestAudioUnit.h" && -f "$PLUGIN_FIXTURES/FixtureEffect.h" ]]; then
     PLUGIN_FLAGS+=(-DCAMITUNE_PLUGIN_TESTING=1 -I"$PLUGIN_FIXTURES")
     PLUGIN_TEST_SOURCES+=("$PLUGIN_FIXTURES/TestAudioUnit.mm")

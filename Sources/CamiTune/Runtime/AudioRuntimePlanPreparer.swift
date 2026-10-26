@@ -85,7 +85,7 @@ struct AudioRuntimePlanPreparer {
         let input = PreparedRuntimeInputs(revision: revision, preparedAt: Date(), profile: profile,
             hardware: hardware, assets: assets, deliveryConfiguration: services.deliveryConfiguration?(profile))
         let plan = try await Task.detached(priority: .userInitiated) { try AudioRuntimePlanCompiler().compile(input) }.value
-        _ = try plan.profileRoutingDescriptor.formatPayload()
+        try services.captureBackend.validatePlan(plan)
         phase("pure compile")
         return plan
     }
@@ -101,11 +101,7 @@ struct AudioRuntimePlanPreparer {
         guard await services.supportsRate(output.id, Double(sampleRate)) else {
             throw AppState.AppError.unsupportedSampleRate(sampleRate, output.name)
         }
-        if let bridge = await services.resolveBridge() {
-            guard await services.supportsRate(bridge.id, Double(sampleRate)) else {
-                throw AppState.AppError.unsupportedSampleRate(sampleRate, bridge.name)
-            }
-        } else { throw AppState.AppError.missingRoutingDriver }
+        try await services.captureBackend.validateSource(sampleRate: sampleRate)
         let topology: SpeakerTopology?
         if needsTopology { topology = try await services.probeTopology(output) }
         else { topology = nil }
@@ -169,7 +165,6 @@ struct AudioRuntimePlanPreparer {
         let plan = try AudioRuntimePlanCompiler().compile(.init(revision: revision ?? .init(profileID: profile.id, generation: 0),
             preparedAt: Date(), profile: profile, hardware: hardware,
             assets: PreparedRuntimeAssets.prepare(profile: profile, directory: assetDirectory)))
-        _ = try plan.profileRoutingDescriptor.formatPayload()
         return plan
     }
 }

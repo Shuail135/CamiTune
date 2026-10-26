@@ -69,15 +69,12 @@ ICON_PARTIAL_INFO="$BUILD_ROOT/AppIcon-PartialInfo.plist"
     -DkDevice_Name='"System Audio Bridge"' \
     -DkManufacturer_Name='"System Audio Bridge contributors"' \
     -DkDevice_IsHidden=true \
-    -DkDevice_HasInput=false \
     -DkDevice_HasOutput=true \
-    -DkDevice2_HasInput=false \
     -DkDevice2_HasOutput=true \
     -DkNumber_Of_Channels="$CHANNELS" \
     -DSABR_CHANNEL_LAYOUT_TAG="$SABR_LAYOUT_TAG_VALUE" \
     "$SCRIPT_DIR/Driver/SystemAudioBridge.c" \
     "$SCRIPT_DIR/Driver/SystemAudioBridgeDriverTransport.c" \
-    -framework Accelerate \
     -framework CoreAudio \
     -framework CoreFoundation \
     -o "$BINARY"

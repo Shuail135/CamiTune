@@ -5,6 +5,7 @@
 #include <vector>
 #include <functional>
 #include <stdexcept>
+#include <cmath>
 
 namespace CamiTunePlugins {
 constexpr uint32_t maximumFrames = 2048;
@@ -26,6 +27,15 @@ struct MIDIMessage { uint64_t timestamp = 0; int32_t source = 0; uint8_t status 
 struct AudioRequest { uint32_t version, frames, sequence, reset; };
 struct AudioReply { uint32_t version, status, sequence, reserved; };
 
+inline float sidechainSample(const float* stereo, uint32_t channels, uint32_t channel, uint32_t frame) {
+    if (!stereo || channel >= 2) return 0;
+    float value = stereo[frame * 2 + channel];
+    if (!std::isfinite(value)) value = 0;
+    if (channels != 1) return value;
+    float right = stereo[frame * 2 + 1];
+    return .5f * (value + (std::isfinite(right) ? right : 0));
+}
+
 class Effect {
 public:
     virtual ~Effect() = default;
@@ -36,7 +46,7 @@ public:
     virtual uint32_t instanceCount() { return 1; }
     virtual bool isInstrument() { return false; }
     virtual NSArray<NSDictionary*>* sidechainBuses() { return @[]; }
-    virtual void setSidechain(float* const* stereo) {}
+    virtual void setSidechain(const float* interleavedStereo) {}
     virtual NSData* saveState() = 0;
     virtual NSArray<NSDictionary*>* parameters() = 0;
     virtual void setParameter(uint64_t identifier, double value) = 0;

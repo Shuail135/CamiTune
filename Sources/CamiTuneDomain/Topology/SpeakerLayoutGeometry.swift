@@ -73,11 +73,6 @@ package enum SpeakerLayoutGeometry {
         }
     }
 
-    package static func defaultRole(for endpoint: SpeakerEndpoint, in topology: SpeakerTopology) -> ChannelRole {
-        guard let index = topology.endpoints.firstIndex(where: { $0.id == endpoint.id }) else { return endpoint.role }
-        return layoutRoles(topology)[index]
-    }
-
     /// Accept the displayed defaults when saving setup. An explicit Custom choice
     /// is already confirmed and stays Custom; hardware metadata stays untouched.
     package static func acceptingDefaultRoles(_ topology: SpeakerTopology) -> SpeakerTopology {

@@ -19,23 +19,19 @@ enum LiveRuntimeBaseline {
         guard path.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: path) else {
             throw DiagnosticFailure(message: "Diagnostic engine must be an absolute executable path")
         }
-        let binary = URL(fileURLWithPath: path)
-        state.runtimeServices.startEngine = { [weak state] in
-            guard let state else { throw DiagnosticFailure(message: "Diagnostic runtime retired") }
-            try await state.dsp.start(binary: binary)
+        guard let backend = state.runtimeServices.processingBackend as? CamillaDSPController else {
+            throw DiagnosticFailure(message: "Engine comparison requires the CamillaDSP backend")
         }
+        backend.binary = URL(fileURLWithPath: path)
     }
 
-    /// Stage 10: a long complete metadata soak, with a separate bounded steady
+    /// Live producer-completion soak, with a separate bounded steady
     /// timing capture. Every process belongs to this harness and is cleaned up.
-    static func policySoak(destination: String, silence: String) async throws {
+    static func completionSoak(destination: String, silence: String) async throws {
         let environment = ProcessInfo.processInfo.environment
-        guard let tracePath = environment["CAMITUNE_POLICY_TRACE_PATH"] else {
-            throw DiagnosticFailure(message: "Policy soak requires CAMITUNE_POLICY_TRACE_PATH")
-        }
-        let duration = max(60, min(300, Int(environment["CAMITUNE_POLICY_SOAK_SECONDS"] ?? "120") ?? 120))
-        let stress = environment["CAMITUNE_POLICY_CPU_STRESS"] == "1"
-        let captureTails = environment["CAMITUNE_POLICY_CAPTURE_TAILS"] == "1"
+        let duration = max(60, min(300, Int(environment["CAMITUNE_COMPLETION_SOAK_SECONDS"] ?? "120") ?? 120))
+        let stress = environment["CAMITUNE_COMPLETION_CPU_STRESS"] == "1"
+        let captureTails = environment["CAMITUNE_COMPLETION_CAPTURE_TAILS"] == "1"
         let original = ProfileStore(), box = try DiagnosticWorkspace()
         defer { box.cleanUp() }
         box.profiles.profiles = original.profiles
@@ -61,7 +57,7 @@ enum LiveRuntimeBaseline {
             for second in 0..<duration {
                 if second == 10 || second == 70 { joining = try launch("/usr/bin/afplay", [silence]) }
                 if second == 40 || second == 100 { if joining?.isRunning == true { joining?.terminate() }; joining = nil }
-                if let short = environment["CAMITUNE_POLICY_SHORT_SOUND"] {
+                if let short = environment["CAMITUNE_COMPLETION_SHORT_SOUND"] {
                     if second == 52 && primary.isRunning { primary.terminate() }
                     if [53, 56, 59].contains(second) { _ = try launch("/usr/bin/afplay", [short]) }
                     if second == 61 { primary = try launch("/usr/bin/afplay", [silence]) }
@@ -69,18 +65,17 @@ enum LiveRuntimeBaseline {
                 if second == 20 && stress { for _ in 0..<2 { _ = try launch("/usr/bin/yes", []) } }
                 if second == (captureTails ? 52 : 30) {
                     var options = PerformanceCaptureOptions(); options.duration = captureTails ? 12 : 20; options.warmUp = 0
-                    options.scenario.label = "Stage 10 \(captureTails ? "short-sound tail capture near 52s" : "steady capture near 30s"), \(duration)s target speaker soak; mode \(environment["CAMITUNE_REORDER_MODE"] ?? "production"); controlled afplay clients; CPU stress \(stress)"
+                    options.scenario.label = "Stage 10 \(captureTails ? "short-sound tail capture near 52s" : "steady capture near 30s"), \(duration)s target speaker soak; producer completion; controlled afplay clients; CPU stress \(stress)"
                     state.performanceRecorder.start(options: options, environment: { state.performanceEnvironment() })
                 }
                 try await Task.sleep(for: .seconds(1))
-                if second % 30 == 29 { print("Policy soak: \(second + 1)/\(duration) seconds") }
+                if second % 30 == 29 { print("Completion soak: \(second + 1)/\(duration) seconds") }
             }
             await state.performanceRecorder.stop()
             terminateAll()
             try await Task.sleep(for: .milliseconds(100)) // Let the last real idle tail reach the writer.
             let final = state.perAppAudio.timelineStatisticsSnapshot()
             await state.deactivate()
-            try state.perAppAudio.exportTimelinePolicyTrace(to: URL(fileURLWithPath: tracePath))
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(final).write(to: URL(fileURLWithPath: destination + ".final-policy.json"), options: .atomic)
             guard let result = state.performanceRecorder.baseline, !result.packets.isEmpty, !result.samples.isEmpty else {
@@ -88,10 +83,9 @@ enum LiveRuntimeBaseline {
             }
             try result.json().write(to: URL(fileURLWithPath: destination), options: .atomic)
             try result.report().write(toFile: destination + ".txt", atomically: true, encoding: .utf8)
-            print("Policy soak saved: \(result.packets.count) timed packets; \(final?.reorder.packets ?? 0) total packets; \(result.telemetryDrops) detailed trace drops")
+            print("Completion soak saved: \(result.packets.count) timed packets; \(final?.insertedFrames ?? 0) inserted contribution frames; \(result.telemetryDrops) detailed trace drops")
         } catch {
-            terminateAll(); await state.deactivate(); await state.performanceRecorder.stop(reason: "Policy soak failed")
-            try? state.perAppAudio.exportTimelinePolicyTrace(to: URL(fileURLWithPath: tracePath))
+            terminateAll(); await state.deactivate(); await state.performanceRecorder.stop(reason: "Completion soak failed")
             throw error
         }
     }
@@ -322,7 +316,7 @@ enum LiveRuntimeBaseline {
                     if elapsed == 50 { for p in cpuWorkers where p.isRunning { p.terminate() } }
                 }
                 try await Task.sleep(for: .seconds(1))
-                let deliveryFailure = state.runtimeServices.transportError()
+                let deliveryFailure = (state.captureBackend.runtimeError ?? state.runtimeServices.deliveryError())
                 // This isolated AppState disables background services. Exercise
                 // the same coordinator health path explicitly, even with the
                 // optional presentation telemetry hidden.
@@ -345,7 +339,7 @@ enum LiveRuntimeBaseline {
                 let deadline = PerformanceClock.now().advanced(seconds: 3)
                 while state.pcmRouter.statistics.producerDrains.completedDrains <= priorDrains,
                       PerformanceClock.now() < deadline {
-                    if let error = state.runtimeServices.transportError() { throw DiagnosticFailure(message: error) }
+                    if let error = (state.captureBackend.runtimeError ?? state.runtimeServices.deliveryError()) { throw DiagnosticFailure(message: error) }
                     try diagnosticRequire(state.pcmRouter.statistics.camillaWriteFailures == 0, "Terminal pipe write failed")
                     try await Task.sleep(for: .milliseconds(10))
                 }
@@ -477,7 +471,7 @@ extension LiveRuntimeBaseline {
             state.runtimeCoordinator.handleDefaultOutputChange(uid)
             try await audio.setVolumeWithoutBlockingUI(uid: routingUID, scalar: 0.06)
             // Flush the actual serial volume listener/mirror queue before assertions.
-            try await state.runtimeServices.prepareIncoming()
+            try await state.runtimeCoordinator.prepareIncomingCapture()
             try diagnosticRequire(state.acousticVolumeSnapshot?.audibility == .held && abs((state.acousticVolumeSnapshot?.scalar ?? 1) - 0.06) < 0.01, "Volume change reopened held route or lost the target")
             try await selectDefault(routingUID)
             state.runtimeCoordinator.handleDefaultOutputChange(routingUID)
@@ -489,7 +483,7 @@ extension LiveRuntimeBaseline {
             let renamedDevice = await audio.resolveDeviceWithoutBlockingUI(uid: routingUID)
             try diagnosticRequire(renamedDevice?.name.contains("Stage7") == true, "Endpoint rename was not published")
             try await audio.setVolumeWithoutBlockingUI(uid: routingUID, scalar: 0.07)
-            try await state.runtimeServices.prepareIncoming()
+            try await state.runtimeCoordinator.prepareIncomingCapture()
             try diagnosticRequire(abs((state.acousticVolumeSnapshot?.scalar ?? 1) - 0.07) < 0.01, "Volume control stopped after rename")
             await state.apply(profile: profile)
             report.append("L7.11 active endpoint rename and subsequent volume control: passed\n" + state.runtimeCoordinator.bindingSummary)

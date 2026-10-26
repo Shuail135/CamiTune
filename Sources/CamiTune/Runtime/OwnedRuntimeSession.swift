@@ -5,16 +5,12 @@ struct RuntimeResourceOwnership: OptionSet {
     let rawValue: UInt16
     static let engine = Self(rawValue: 1 << 0)
     static let observations = Self(rawValue: 1 << 1)
-    static let volume = Self(rawValue: 1 << 2)
     static let pcm = Self(rawValue: 1 << 3)
-    static let transport = Self(rawValue: 1 << 4)
     static let spectrum = Self(rawValue: 1 << 5)
 }
 struct OutputRestorationContext {
     var previousDefaultUID: String?
     let physicalOutputUID: String
-    let routingUID: String
-    var defaultOutputWasRedirected = false
 }
 
 /// Module-internal implementation types; instances never leave the coordinator.
@@ -28,26 +24,15 @@ final class OwnedRuntimeSession {
     var acknowledgedPlan: AudioRuntimePlan?
     var restoration: OutputRestorationContext
     var resources: RuntimeResourceOwnership = []
-    var volumeMode: SystemVolumeMode?
-    var volumeLease: VolumeHandoffLease?
-    var binding: CoreAudioRuntimeBinding?
-    var masterControl: AudioRuntimeServices.MasterControl?
-    init(id: RuntimeOwnershipID, plan: AudioRuntimePlan, previousDefaultUID: String?) {
+    let capture: any AudioCaptureSession
+    init(id: RuntimeOwnershipID, plan: AudioRuntimePlan, previousDefaultUID: String?, capture: any AudioCaptureSession) {
+        self.capture = capture
         ownershipID = id; publicSession = AudioRuntimeSession(profileID: plan.revision.profileID)
         appliedPlan = plan
         restoration = .init(previousDefaultUID: previousDefaultUID,
-            physicalOutputUID: plan.hardwareEvidence.output.uid, routingUID: plan.profileRoutingDescriptor.uid)
+            physicalOutputUID: plan.hardwareEvidence.output.uid)
     }
 }
-@MainActor
-final class ProvisionalRuntimeSession {
-    let generation: RuntimeIntentGeneration
-    let owner: OwnedRuntimeSession
-    init(generation: RuntimeIntentGeneration, owner: OwnedRuntimeSession) {
-        self.generation = generation; self.owner = owner
-    }
-}
-
 @MainActor
 final class RuntimeSettingsTransaction {
     let id: RuntimeTransactionID

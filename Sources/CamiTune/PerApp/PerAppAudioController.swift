@@ -17,26 +17,6 @@ struct PerAppAudioApplication: Identifiable, Hashable, Sendable {
     var settings: PerAppAudioSettings
 }
 
-struct PerAppDriverClient: Hashable, Sendable {
-    var deviceObjectID: UInt32 = 0
-    var clientID: UInt32
-    var processID: Int32
-    var bundleID: String?
-    var isActive: Bool
-    var generation: UInt64
-
-    var transportKey: PerAppTransportClientKey {
-        PerAppTransportClientKey(deviceObjectID: deviceObjectID, clientID: clientID)
-    }
-
-    var applicationKey: String {
-        if let bundleID = PerAppClientRegistry.canonicalApplicationBundleID(bundleID) {
-            return bundleID
-        }
-        return "pid:\(processID)"
-    }
-}
-
 struct PerAppAudioPacket: Sendable {
     var deviceObjectID: UInt32
     var clientID: UInt32
@@ -82,7 +62,7 @@ struct PerAppAudioPacket: Sendable {
 
 /// Composes client identity, settings, presentation, and the pre-global-DSP pipeline.
 /// PerAppSettingsStore owns settings; PerAppDSPRuntime owns stream DSP history;
-/// PerAppTimelineMixer owns timeline policy and pending PCM storage.
+/// PerAppTimelineMixer owns summation of producer-completed intervals.
 final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     let pluginSidechains = PluginSidechainHub()
     @Published private(set) var settingsChangeRevision: UInt64 = 0
@@ -171,14 +151,12 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         settingsURL: URL = CamiTunePaths.perAppAudioSettingsURL,
         audioHistoryURL: URL? = nil,
         monitorsRunningApplications: Bool = true,
-        timelinePolicy: TimelineReorderPolicyConfiguration = .developerEnvironment(),
-        timelineClock: TimelinePolicyClock = .live,
         timelineStoragePolicy: TimelineStoragePolicy = .init(maximumPacketFrames: SystemAudioBridgeTransport.maximumPacketFrameCapacity),
         presentationStore: AppPresentationStore? = nil,
         publicationScheduling: PresentationPublicationScheduling? = nil,
         presentationRowsBuilder: @escaping @Sendable (PerAppPresentationInput) -> [PerAppAudioApplication] = { PerAppPresentationSnapshot.makeRows($0) }
     ) {
-        timelineMixer = PerAppTimelineMixer(storagePolicy: timelineStoragePolicy, policyConfiguration: timelinePolicy, clock: timelineClock, policyTrace: TimelinePolicyTrace.developerEnvironment())
+        timelineMixer = PerAppTimelineMixer(storagePolicy: timelineStoragePolicy)
         settingsStore = PerAppSettingsStore(url: settingsURL)
         let presentation = presentationStore ?? AppPresentationStore(
             url: settingsURL.deletingLastPathComponent().appendingPathComponent(
@@ -225,7 +203,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         for store in profilePresentationStores.values { store.flushPendingSaveSynchronously() }
     }
 
-    func updateClients(_ clients: [PerAppDriverClient]) {
+    func updateClients(_ clients: [AudioCaptureClient]) {
         let prepared = PerAppClientRegistry.ClientUpdate(clients)
         let nextClients = prepared.clientsByKey
         stateLock.lock()
@@ -262,7 +240,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
     private func applyResolvedIdentities(
         _ resolved: [PerAppTransportClientKey: ApplicationIdentity],
-        clients: [PerAppDriverClient],
+        clients: [AudioCaptureClient],
         unresolvedActiveKeys: Set<PerAppTransportClientKey>,
         revision: UInt64,
         attempt: Int
@@ -640,64 +618,28 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }
     }
 
-    func ingest(_ packet: PerAppAudioPacket, now: Date? = nil, performance: PacketPerformanceContext? = nil) -> PCMFrame? {
+    struct ProcessedApplicationPacket {
+        let packet: PerAppTimelinePacket
+        let samples: [Float]
+        let performance: PacketPerformanceContext?
+        let processingCompleted: PerformanceTick?
+    }
+
+    func processApplicationPacket(_ packet: PerAppAudioPacket, streamEpoch: UInt64,
+                                  now suppliedNow: Date? = nil,
+                                  performance incomingPerformance: PacketPerformanceContext? = nil,
+                                  mix: (ProcessedApplicationPacket) throws -> TimelineWorkSample?) rethrows -> Bool {
         var processed = packet.interleaved
-        var wake: TimeInterval?
-        return ingest(packet, processed: &processed, now: now, performance: performance, nextWake: &wake)
-    }
-
-    /// Copies the transport's reusable C read buffer directly into the one
-    /// mutable array used for DSP/mixing. This avoids first allocating a
-    /// packet Array and then triggering a second copy-on-write allocation when
-    /// per-app processing mutates it.
-    func ingestTransportPacket(
-        _ metadata: PerAppAudioPacket,
-        samples: UnsafeBufferPointer<Float>,
-        sampleCount: Int,
-        performance: PacketPerformanceContext? = nil
-    ) -> PCMFrame? {
-        ingestTransportPacketWithTimelineWake(metadata, samples: samples, sampleCount: sampleCount, performance: performance).frame
-    }
-
-    func ingestTransportPacketWithTimelineWake(
-        _ metadata: PerAppAudioPacket,
-        samples: UnsafeBufferPointer<Float>,
-        sampleCount: Int,
-        performance: PacketPerformanceContext? = nil
-    ) -> PerAppAudioIngestResult {
-        guard sampleCount >= 0, sampleCount <= samples.count else { return .init(frame: nil, nextTimelineWakeAfter: nil) }
-        var processed = Array<Float>(unsafeUninitializedCapacity: sampleCount) {
-            destination, initializedCount in
-            if sampleCount > 0 {
-                destination.baseAddress!.initialize(
-                    from: samples.baseAddress!,
-                    count: sampleCount
-                )
-            }
-            initializedCount = sampleCount
-        }
-        var wake: TimeInterval?
-        let frame = ingest(metadata, processed: &processed, performance: performance, nextWake: &wake)
-        return .init(frame: frame, nextTimelineWakeAfter: wake)
-    }
-
-    private func ingest(
-        _ packet: PerAppAudioPacket,
-        processed: inout [Float],
-        now suppliedNow: Date? = nil,
-        performance incomingPerformance: PacketPerformanceContext? = nil,
-        nextWake: inout TimeInterval?
-    ) -> PCMFrame? {
         guard (1...32).contains(packet.channelCount),
               packet.channelLayout.channelCount == packet.channelCount,
               packet.sampleRate > 0,
               packet.sampleRate.isFinite,
               processed.count % packet.channelCount == 0,
               let packetStartSampleTime = Self.integerSampleTime(packet.sampleTime) else {
-            return nil
+            return false
         }
         let packetFrameCount = processed.count / packet.channelCount
-        guard packetFrameCount > 0, !packetStartSampleTime.addingReportingOverflow(Int64(packetFrameCount)).overflow else { return nil }
+        guard packetFrameCount > 0, !packetStartSampleTime.addingReportingOverflow(Int64(packetFrameCount)).overflow else { return false }
 
         // The driver publishes the exact (device, client) identity, but its
         // client-registry notification and PCM packet are independent real-time
@@ -737,30 +679,18 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
         audioLock.lock()
 
-        let timelineInstant = timelineMixer.policyInstant()
-
-        // mIOCycleCounter belongs to an IO thread and can restart when that
-        // thread resynchronizes. The output sample timestamp is the shared
-        // device clock, so only a real sample-timeline rewind starts a new
-        // epoch. This clears stale DSP history without ever blacklisting a
-        // client because its cycle ordinal changed.
         let descriptor = PerAppTimelinePacket(deviceObjectID: packet.deviceObjectID,
             cycleCounter: packet.cycleCounter, startSampleTime: packetStartSampleTime, frameCount: packetFrameCount,
             channelCount: packet.channelCount, sampleRate: packet.sampleRate, channelLayout: packet.channelLayout,
             playbackMode: playbackMode)
-        let preparation = timelineMixer.preparePacket(descriptor)
-        guard preparation.isValid else { audioLock.unlock(); return nil }
         processed.withUnsafeBufferPointer {
             pluginSidechains.offer(kind: .application, id: applicationID, samples: $0,
                 channels: packet.channelCount, rate: packet.sampleRate, sampleTime: packet.sampleTime,
                 stream: (UInt64(packet.deviceObjectID) << 32) | UInt64(packet.clientID))
         }
-        if preparation.requiresClientDSPReset {
-            dspRuntime.reset(deviceObjectID: packet.deviceObjectID)
-        }
         var performance = incomingPerformance
         performance?.policyTick = policyTick
-        performance?.identity.streamEpoch = preparation.streamEpoch
+        performance?.identity.streamEpoch = streamEpoch
 
         let sourceDiagnostics = dspRuntime.process(
             &processed, packet: descriptor, clientKey: dspClientKey,
@@ -786,17 +716,16 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         )
         lastMeterUpdateByApplication[applicationID] = now
 
-        let completed = processed.withUnsafeBufferPointer {
-            timelineMixer.mixProcessedPacket(preparation, samples: $0, policyNow: timelineInstant,
-                performance: performance, processingCompleted: processingCompleted)
-        }
-        nextWake = timelineMixer.nextWakeDelay()
-        let reorderEvidence = timelineMixer.lastReorderEvidence
-        let timelineWork = timelineMixer.lastWork
+        let processedPacket = ProcessedApplicationPacket(packet: descriptor, samples: processed,
+            performance: performance, processingCompleted: processingCompleted)
+        let work: TimelineWorkSample?
+        do { work = try mix(processedPacket) }
+        catch { audioLock.unlock(); throw error }
         let presentationLevel = levelsByApplication[applicationID] ?? 0
         audioLock.unlock()
         if let performance, let processingCompleted {
-            performance.capture.append(.packet(.init(identity: performance.identity, received: performance.received, processed: processingCompleted, timeline: timelineWork, reorder: reorderEvidence)))
+            performance.capture.append(.packet(.init(identity: performance.identity, received: performance.received,
+                processed: processingCompleted, timeline: work, reorder: nil)))
         }
 
         var presentationObservation: AppPresentationObservation?
@@ -831,23 +760,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         let publicationStarted = performance.map { _ in PerformanceClock.now() }
         presentationPublisher.request(.meter)
         performance?.capture.recordPresentation("Packet publication request", from: publicationStarted)
-        return completed
-    }
-
-    func flushExpiredMix(now suppliedNow: Date? = nil, policyNow: PerformanceTick? = nil, transportRead: TimelineTransportReadObservation? = nil) -> PerAppMixFlushResult {
-        audioLock.lock()
-        let now = suppliedNow ?? Date()
-        let result = timelineMixer.flushExpired(policyNow: policyNow, transportRead: transportRead)
-        if case .retryAfter = result { audioLock.unlock(); return result }
-        decayLevelsLocked(now: now)
-        let presentationLevels = levelsByApplication
-        audioLock.unlock()
-        stateLock.lock()
-        presentationRevision &+= 1
-        presentationLevelsByApplication = presentationLevels
-        stateLock.unlock()
-        presentationPublisher.request(.meter)
-        return result
+        return true
     }
 
     /// Called only by the transport reader after ordered producer evidence has
@@ -869,20 +782,19 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             var performance = source.performance
             performance?.identity.startSampleTime = source.start
             performance?.identity.frameCount = source.frames
-            _ = ingest(packet, performance: performance)
+            let accepted = try processApplicationPacket(packet, streamEpoch: interval.epoch, performance: performance) { processed in
+                try processed.samples.withUnsafeBufferPointer {
+                    try timelineMixer.addProcessedPacket(processed.packet, samples: $0,
+                        performance: processed.performance, processingCompleted: processed.processingCompleted)
+                }
+                return timelineMixer.lastWork
+            }
+            guard accepted else { throw ProducerCompletionFault(reason: "invalid per-application contribution") }
         }
         audioLock.lock(); defer { audioLock.unlock() }
         var frame = try timelineMixer.finishCompletedInterval(interval)
         frame.sourceReceivedAt = interval.contributions.lazy.map(\.received).min()
         return frame
-    }
-
-    /// Developer harness calls this after deactivation; no PCM callback can own the trace.
-    func exportTimelinePolicyTrace(to url: URL) throws {
-        audioLock.lock()
-        let document = timelineMixer.policyTraceDocument()
-        audioLock.unlock()
-        try document?.export(to: url)
     }
 
     /// UI diagnostics must never wait for the audio lock. String formatting is
@@ -980,10 +892,6 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         return Int64(rounded)
     }
 
-    /// Keep gain continuous at packet boundaries. Applying one scalar to an
-    /// entire block makes interactive volume changes sound like zipper noise.
-
-
     private func decayLevelsLocked(now: Date) {
         for key in levelsByApplication.keys {
             let elapsed = now.timeIntervalSince(lastMeterUpdateByApplication[key] ?? now)
@@ -1037,11 +945,6 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         dates[destinationID] = max(dates[destinationID] ?? .distantPast, source)
     }
 
-    /// Apple ships a small group of document, account, and maintenance apps
-    /// that do not own a media playback path. Hide those idle Dock processes,
-    /// while the presentation snapshot builder still lets direct audio history override
-    /// this conservative classification if macOS changes their behavior.
-
     /// Resolve the process that actually produced a PCM packet to its owning
     /// application. Background/helper processes (Chrome, Electron, WebKit) may
     /// have a prohibited activation policy even though their outer .app owns
@@ -1051,7 +954,6 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     /// Core Audio hosts third-party AudioServerPlugIns in its own service
     /// process. That process is transport plumbing, not an application the
     /// user can control, so it must never become a per-app volume row.
-
 
     /// Browser and Electron audio normally originates in a nested helper
     /// process. Collapse its bundle identifier to the owning application even

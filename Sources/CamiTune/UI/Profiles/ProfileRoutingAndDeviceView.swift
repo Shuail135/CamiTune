@@ -71,9 +71,6 @@ struct ProfileRoutingAndDeviceView: View {
                 activationRow(.physicalOutput, title: "When I select", emphasizedName: profile.outputDeviceName)
                 activationRow(.profileAudioDevice, title: "When I select", emphasizedName: profileRoutingName)
                 activationRow(.manual, title: "Only when I activate it in CamiTune")
-                if let owner = state.profiles.automaticProfileID(forPhysicalDeviceUID: profile.outputDeviceUID),
-                   owner != profile.id, let other = state.profiles.profiles.first(where: { $0.id == owner }) {
-                }
             }.padding(6)
         }
         .disabled(state.transitionInProgress || state.isSavingProfileSettings)

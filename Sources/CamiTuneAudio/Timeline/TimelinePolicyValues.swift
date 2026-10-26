@@ -1,6 +1,8 @@
 import CamiTuneDomain
 import Foundation
 
+// Historical performance-report values. Runtime mixing uses producer completion.
+
 package struct TimelineReorderEvidence: Sendable, Codable, Equatable {
     package init(deviceObjectID: UInt32, streamEpoch: UInt64, sampleRate: Double, packetStartSampleTime: Int64, packetEndSampleTime: Int64, frontierBeforePacket: Int64, packetFrames: Int, largestPacketFrames: Int, reorderDepthFrames: Int, committedEndBeforePacket: Int64? = nil, committedLateFrames: Int, arrivalTick: PerformanceTick, emissionReason: TimelineEmissionReason? = nil, legacyWindowFrames: Int = 0, windowUsedFrames: Int = 0, activeWindowFrames: Int = 0, candidateWindowFrames: Int = 0, shadowLateFrames: Int = 0, predictedLegacyLateFrames: Int = 0, adaptiveLostFrames: Int = 0, adaptivePolicyMiss: Bool = false, shadowAdaptiveMiss: Bool = false, lateAfterIdle: Bool = false, enteredFallback: Bool = false, windowIncreased: Bool = false, windowDecreased: Bool = false, packetSizeReset: Bool = false, fallbackRecovered: Bool = false, runtimeState: TimelineReorderRuntimeState = .warmup) {
         self.deviceObjectID = deviceObjectID
@@ -114,70 +116,9 @@ package struct TimelineReorderCounters: Sendable, Codable {
     package var excludedPackets: UInt64 = 0
     package var idleEmissions: UInt64 = 0
     package var packetEmissions: UInt64 = 0
-    package mutating func record(_ evidence: TimelineReorderEvidence) {
-        shadowMisses += evidence.shadowAdaptiveMiss ? 1 : 0
-        shadowLateFrames += UInt64(evidence.shadowLateFrames)
-        adaptiveMisses += evidence.adaptivePolicyMiss ? 1 : 0
-        adaptiveLostFrames += UInt64(evidence.adaptiveLostFrames)
-        predictedLegacyLateFrames += UInt64(evidence.predictedLegacyLateFrames)
-        fallbackEntries += evidence.enteredFallback ? 1 : 0
-        fallbackRecoveries += evidence.fallbackRecovered ? 1 : 0
-        windowIncreases += evidence.windowIncreased ? 1 : 0
-        windowDecreases += evidence.windowDecreased ? 1 : 0
-        lateAfterIdle += evidence.lateAfterIdle ? 1 : 0
-        packetSizeResets += evidence.packetSizeReset ? 1 : 0
-        packets += 1
-        if evidence.reorderDepthFrames > 0 { reorderedPackets += 1 }
-        maximumDepthFrames = max(maximumDepthFrames, evidence.reorderDepthFrames)
-        if evidence.committedLateFrames > 0 {
-            if evidence.committedLateFrames >= evidence.packetFrames { fullyLatePackets += 1 } else { partiallyLatePackets += 1 }
-            committedLateFrames += UInt64(evidence.committedLateFrames)
-        }
-        if evidence.reorderDepthFrames > 2 * evidence.largestPacketFrames { legacyLimitMisses += 1 }
-    }
     package var summary: String {
         "Packets: \(packets); reordered: \(reorderedPackets); maximum depth: \(maximumDepthFrames) frames\nPartial/full late: \(partiallyLatePackets)/\(fullyLatePackets); committed-late contribution frames: \(committedLateFrames)\nLegacy-limit events: \(legacyLimitMisses); excluded far-stale packets: \(excludedPackets)\nPacket/idle emissions: \(packetEmissions)/\(idleEmissions)\nAdditional shadow/adaptive misses: \(shadowMisses)/\(adaptiveMisses); adaptive lost frames: \(adaptiveLostFrames)\nShadow/legacy-counterfactual late frames: \(shadowLateFrames)/\(predictedLegacyLateFrames)\nFallback entries/recoveries: \(fallbackEntries)/\(fallbackRecoveries); late after idle: \(lateAfterIdle)\nWindow rises/decays: \(windowIncreases)/\(windowDecreases); packet-size resets: \(packetSizeResets)"
     }
-}
-
-package struct TimelineReorderObservation {
-    package init(epoch: UInt64, frontier: Int64? = nil, largestPacketFrames: Int = 0) {
-        self.epoch = epoch
-        self.frontier = frontier
-        self.largestPacketFrames = largestPacketFrames
-    }
-
-    package let epoch: UInt64
-    package var frontier: Int64?
-    package var largestPacketFrames = 0
-    package mutating func observe(_ packet: PerAppTimelinePacket, committedEnd: Int64?, tick: PerformanceTick,
-                          reason: TimelineEmissionReason?) -> TimelineReorderEvidence {
-        let start = packet.startSampleTime, end = start + Int64(packet.frameCount)
-        let before = frontier ?? start
-        largestPacketFrames = max(largestPacketFrames, packet.frameCount)
-        let depth = Self.positiveDistance(before, start)
-        let late = min(packet.frameCount, committedEnd.map { Self.positiveDistance($0, start) } ?? 0)
-        frontier = max(before, end)
-        return .init(deviceObjectID: packet.deviceObjectID, streamEpoch: epoch, sampleRate: packet.sampleRate,
-            packetStartSampleTime: start, packetEndSampleTime: end, frontierBeforePacket: before,
-            packetFrames: packet.frameCount, largestPacketFrames: largestPacketFrames,
-            reorderDepthFrames: depth, committedEndBeforePacket: committedEnd, committedLateFrames: late,
-            arrivalTick: tick, emissionReason: reason)
-    }
-    package static func positiveDistance(_ end: Int64, _ start: Int64) -> Int {
-        guard end > start else { return 0 }
-        let result = end.subtractingReportingOverflow(start)
-        return result.overflow ? Int.max : Int(result.partialValue)
-    }
-}
-
-package struct TimelinePolicyClock: Sendable {
-    package init(now: @escaping @Sendable () -> PerformanceTick) {
-        self.now = now
-    }
-
-    package let now: @Sendable () -> PerformanceTick
-    package static let live = TimelinePolicyClock(now: { PerformanceClock.now() })
 }
 
 package enum TimelineReorderPolicyMode: String, Sendable, Codable { case legacy, shadowAdaptive, adaptive }
@@ -196,18 +137,12 @@ package struct TimelineReorderPolicyConfiguration: Sendable, Codable, Equatable 
     }
 
     package let mode: TimelineReorderPolicyMode
-    // Real multi-client replay exposed one extra block beyond recent depth.
-    // Reserve that block; the two-packet ceiling remains unchanged.
     package var warmupPackets = 128
     package var safetyMarginFraction = 1.0
     package var idleSafetyMarginFraction = 0.25
     package var decayIntervalPackets = 128
     package var decayStepFraction = 0.125
     package var fallbackPackets = 1024
-    // The final stop/tail soak exposed a loss at the unchanged legacy idle
-    // deadline. Adaptive caused no additional loss, but the strict no-overlap-
-    // loss acceptance gate is not satisfied; retain legacy as the default.
-    package static let production = TimelineReorderPolicyConfiguration(mode: .legacy)
 
 }
 

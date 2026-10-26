@@ -140,56 +140,6 @@ struct DeviceCorrectionTargetCatalog {
         )
     }
 
-    func compatibilityMessage(
-        for selection: DeviceCorrectionTargetSelection,
-        sources: [DeviceMeasurementReference],
-        deviceMatchSources: [DeviceMeasurementReference] = []
-    ) -> String {
-        let family = DeviceCorrectionRigFamily.identify(from: sources)
-        let preset = selection.preset
-        if preset == .flat {
-            return "Flat is a diagnostic curve and does not add a named listening preference."
-        }
-        if preset == .custom {
-            guard let targetFamily = selection.customTargetRigIdentity?.family,
-                  targetFamily != .unknown else {
-                return "Choose the fixture used to produce the custom target CSV."
-            }
-            if family == .unknown {
-                return "The target is declared as \(targetFamily.title), but the measurement fixture is unknown and cannot be verified."
-            }
-            if family != targetFamily {
-                return "The target is \(targetFamily.title), but the measurement uses \(family.title). Choose matching data."
-            }
-            return "The custom target and selected measurements both use \(family.title)."
-        }
-        if preset == .deviceMatch {
-            guard selection.deviceMatchTarget != nil else {
-                return "Choose a second device measured on the same form and structured fixture."
-            }
-            return DeviceMatchPlanner.isCompatible(
-                sourceReferences: sources,
-                targetReferences: deviceMatchSources
-            )
-                ? "Both devices use the same form, fixture, coupler, pinna, and calibration group."
-                : "The two devices do not have compatible measurement fixtures and cannot be matched safely."
-        }
-        if family == .unknown, preset != .flat, preset != .custom {
-            return "The imported measurement does not identify its fixture. Choose a measurement with a validated fixture before generating correction."
-        }
-        let only711: Set<DeviceCorrectionTargetPreset> = [
-            .harmanInEar2019V2, .iefNeutral2023, .etymotic
-        ]
-        if family == .bk5128, only711.contains(preset) {
-            return "This preset is defined for IEC 711 measurements and cannot be safely applied to the selected B&K measurement."
-        }
-        if preset == .jm1PopAvgDFTilt || preset == .iefPreference2025
-            || preset == .diffuseFieldReference {
-            return "CamiTune will use the \(family.title) variant for the selected measurements."
-        }
-        return "Designed for \(family.title) measurements."
-    }
-
     private func jm1(
         family: DeviceCorrectionRigFamily,
         tiltDBPerOctave: Double

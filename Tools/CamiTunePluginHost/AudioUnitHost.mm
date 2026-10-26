@@ -96,7 +96,7 @@ class AUEffect final : public Effect {
     bool instrument = false;
     NSInteger mainInputBus = 0, sidechainInput = -1;
     uint32_t sidechainChannels = 0;
-    float* const* sidechain = nullptr;
+    const float* sidechain = nullptr;
     NSMutableArray<NSDictionary*>* auxiliaryInputs = [NSMutableArray array];
     NSViewController* viewController = nil;
     uint64_t editorGeneration = 0;
@@ -203,7 +203,7 @@ public:
         const uint32_t countInputs = inputChannels;
         float* mono = monoInput.data();
         for (uint32_t c = 0; c < sidechainChannels; ++c) for (uint32_t f = 0; f < frames; ++f)
-            sidechainBuffers[c][f] = !sidechain ? 0 : sidechainChannels == 1 ? .5f * (sidechain[0][f] + sidechain[1][f]) : c < 2 ? sidechain[c][f] : 0;
+            sidechainBuffers[c][f] = sidechainSample(sidechain, sidechainChannels, c, f);
         AudioTimeStamp stamp{}; stamp.mFlags = kAudioTimeStampSampleTimeValid; stamp.mSampleTime = sampleTime;
         AudioUnitRenderActionFlags flags = 0;
         auto result = block(&flags, &stamp, frames, 0, (AudioBufferList*)&outputList,
@@ -235,7 +235,7 @@ public:
     void reset() override { [unit reset]; }
     bool isInstrument() override { return instrument; }
     NSArray<NSDictionary*>* sidechainBuses() override { return auxiliaryInputs; }
-    void setSidechain(float* const* stereo) override { sidechain = stereo; }
+    void setSidechain(const float* stereo) override { sidechain = stereo; }
     uint32_t latency() override { double seconds = unit.latency; return std::isfinite(seconds) ? (uint32_t)std::clamp(seconds * rate, 0.0, rate * 10) : 0; }
     double tailSeconds() override { double seconds = unit.tailTime; return std::isfinite(seconds) ? std::clamp(seconds, 0.0, 10.0) : 10; }
     NSData* saveState() override {

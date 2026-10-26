@@ -7,32 +7,8 @@ import SystemAudioBridgeC
 final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
     static var maximumPacketFrameCapacity: Int { Int(sabr_client_transport_default_frame_capacity()) }
 
-    struct Statistics: Sendable {
-        var packetCount: UInt64 = 0
-        var latestPacketFrames: UInt32 = 0
-        var minimumPacketFrames: UInt32 = 0
-        var maximumPacketFrames: UInt32 = 0
-        var bufferedFrames: UInt64 = 0
-        var droppedFrames: UInt64 = 0
-        var consumerOverrunCount: UInt64 = 0
-        var starvationCount: UInt64 = 0
-        var latestChannels: UInt32 = 0
-        var latestChannelLayoutTag: UInt32 = 0
-        var latestSampleRate: Double = 0
-        var clientRegistryOverflowCount: UInt64 = 0
-        var clientUseCountSaturationCount: UInt64 = 0
-        var malformedPacketCount: UInt64 = 0
-        var masterControlGeneration: UInt64 = 0
-        var masterLinearGain: Float = 1
-        var masterMuted = false
-        var ringCapacityFrames: UInt32 = 0
-        var rateAdjustmentPPM: Double = 0
-        var rateMatchBufferedFrames: UInt64 = 0
-        var completion = ProducerCompletionStatistics()
-    }
-
     @Published private(set) var status = "Driver transport idle"
-    @Published private(set) var statistics = Statistics()
+    @Published private(set) var statistics = AudioCaptureStatistics()
     @Published private(set) var runtimeError: String?
 
     private final class WeakOwner: @unchecked Sendable {
@@ -56,8 +32,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         func updateControlBinding(_ id: AudioObjectID, consumer: @escaping @Sendable (Float, Bool) -> Void) {
             controlBindingLock.lock(); storedControlDeviceObjectID = id; storedMasterControlConsumer = consumer; controlBindingLock.unlock()
         }
-        let pcmRouter: PCMRouter
-        let perAppAudio: PerAppAudioController
+        let delivery: AudioCaptureDelivery
         private var storedMasterControlConsumer: @Sendable (Float, Bool) -> Void
         func consumeControl(_ control: SABRClientControlState) -> Bool {
             controlBindingLock.lock()
@@ -72,7 +47,6 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         let channelCapacity: UInt32
         let generation: UInt64
         // Reader-owned values; publication happens on this same worker.
-        let capturesReservationEvidence = ProcessInfo.processInfo.environment["CAMITUNE_POLICY_TRACE_PATH"] != nil
         var packetCount: UInt64 = 0
         var latestPacketFrames: UInt32 = 0
         var minimumPacketFrames: UInt32 = 0
@@ -95,8 +69,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             deviceObjectID: AudioObjectID,
             controlDeviceObjectID: AudioObjectID,
             sourceDeviceObjectID: UInt32,
-            pcmRouter: PCMRouter,
-            perAppAudio: PerAppAudioController,
+            delivery: AudioCaptureDelivery,
             masterControlConsumer: @escaping @Sendable (Float, Bool) -> Void,
             expectedSampleRate: Double,
             channelCapacity: UInt32,
@@ -106,8 +79,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             self.deviceObjectID = deviceObjectID
             self.sourceDeviceObjectID = sourceDeviceObjectID
             self.storedControlDeviceObjectID = controlDeviceObjectID
-            self.pcmRouter = pcmRouter
-            self.perAppAudio = perAppAudio
+            self.delivery = delivery
             self.storedMasterControlConsumer = masterControlConsumer
             self.expectedSampleRate = expectedSampleRate
             self.channelCapacity = channelCapacity
@@ -248,8 +220,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         deviceObjectID: AudioObjectID,
         controlDeviceObjectID: AudioObjectID,
         expectedSampleRate: Double,
-        pcmRouter: PCMRouter,
-        perAppAudio: PerAppAudioController,
+        delivery: AudioCaptureDelivery,
         masterControlConsumer: @escaping @Sendable (Float, Bool) -> Void
     ) async throws {
         let runGeneration = try await Task.detached(priority: .userInitiated) { [self] in
@@ -257,8 +228,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                 deviceObjectID: deviceObjectID,
                 controlDeviceObjectID: controlDeviceObjectID,
                 expectedSampleRate: expectedSampleRate,
-                pcmRouter: pcmRouter,
-                perAppAudio: perAppAudio,
+                delivery: delivery,
                 masterControlConsumer: masterControlConsumer
             )
         }.value
@@ -276,8 +246,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         deviceObjectID: AudioObjectID,
         controlDeviceObjectID: AudioObjectID,
         expectedSampleRate: Double,
-        pcmRouter: PCMRouter,
-        perAppAudio: PerAppAudioController,
+        delivery: AudioCaptureDelivery,
         masterControlConsumer: @escaping @Sendable (Float, Bool) -> Void
     ) throws -> UInt64 {
         switch stopSynchronously(updatePublishedState: false) {
@@ -318,8 +287,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             deviceObjectID: deviceObjectID,
             controlDeviceObjectID: controlDeviceObjectID,
             sourceDeviceObjectID: sourceDeviceID,
-            pcmRouter: pcmRouter,
-            perAppAudio: perAppAudio,
+            delivery: delivery,
             masterControlConsumer: masterControlConsumer,
             expectedSampleRate: expectedSampleRate,
             channelCapacity: channelCapacity,
@@ -468,7 +436,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             let clientGeneration = sabr_client_transport_client_generation(transport)
             if clientGeneration != UInt64.max,
                clientGeneration != lastClientGeneration,
-               publishClients(transport, perAppAudio: context.perAppAudio) {
+               publishClients(transport, delivery: context.delivery) {
                 lastClientGeneration = clientGeneration
             }
 
@@ -510,7 +478,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
 #endif
                     let sampleCount = isPCM ? frames * Int(packet.channelCount) : 0
                     guard sampleCount <= samples.count else { try context.completion.fail("source packet exceeds the negotiated storage") }
-                    let performance = isPCM ? context.pcmRouter.performanceSource.snapshot() : nil
+                    let performance = isPCM ? context.delivery.performanceSource.snapshot() : nil
                     let trace = performance.flatMap { binding -> PacketPerformanceContext? in
                         guard let session = binding.sessionID else { return nil }
                         return .init(capture: binding.capture,
@@ -539,12 +507,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                     try context.completion.checkDeadline(at: tick)
                 }
                 for interval in completed {
-                    if let clock = interval.clock { context.pcmRouter.observeSourceClock(clock) }
-                    if interval.end > interval.start {
-                        let frame = try context.perAppAudio.ingestCompletedInterval(interval)
-                        context.pcmRouter.route(frame)
-                    }
-                    if interval.terminal { context.pcmRouter.finishProducerEpoch() }
+                    try context.delivery.consume(interval)
                     let sourceFormat = SpatialSourceFormat(layout: interval.layout)
                     if reportedSourceFormat != sourceFormat {
                         reportedSourceFormat = sourceFormat
@@ -581,8 +544,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                 // Reader-owned fault shutdown. The writer's existing bounded
                 // stop drops queued PCM and DSP history; the runtime coordinator
                 // observes runtimeError and restores the physical route.
-                context.pcmRouter.stop()
-                context.perAppAudio.resetRuntime()
+                context.delivery.stop()
                 return
             }
 
@@ -611,9 +573,9 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
     private static func publishStatistics(context: RunContext, owner: WeakOwner) {
         var raw = SABRClientTransportStatistics()
         sabr_client_transport_get_statistics(context.transport, &raw)
-        let rateMatching = context.pcmRouter.statistics
+        let rateMatching = context.delivery.statistics
         let modularDistance = raw.writeFrame &- raw.readFrame
-        var value = Statistics(
+        var value = AudioCaptureStatistics(
             packetCount: context.packetCount, latestPacketFrames: context.latestPacketFrames,
             minimumPacketFrames: context.minimumPacketFrames, maximumPacketFrames: context.maximumPacketFrames,
             bufferedFrames: modularDistance <= UInt64(raw.frameCapacity) ? modularDistance : 0,
@@ -651,7 +613,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
     @discardableResult
     private static func publishClients(
         _ transport: SABRClientTransportRef,
-        perAppAudio: PerAppAudioController
+        delivery: AudioCaptureDelivery
     ) -> Bool {
         let capacity = Int(sabr_client_transport_max_clients())
         var rawClients = [SABRClientIdentity](
@@ -666,7 +628,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             )
         }
         guard count != UInt32.max else { return false }
-        let clients = rawClients.prefix(Int(count)).map { raw -> PerAppDriverClient in
+        let clients = rawClients.prefix(Int(count)).map { raw -> AudioCaptureClient in
             var raw = raw
             let bundleID = withUnsafePointer(to: &raw.bundleID) { pointer in
                 pointer.withMemoryRebound(
@@ -677,7 +639,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                     return value.isEmpty ? nil : value
                 }
             }
-            return PerAppDriverClient(
+            return AudioCaptureClient(
                 deviceObjectID: raw.deviceObjectID,
                 clientID: raw.clientID,
                 processID: raw.processID,
@@ -691,7 +653,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         NSLog("[SABRIdentity] roster generation=%llu count=%u entries=%@",
             sabr_client_transport_client_generation(transport), count, roster.joined(separator: ","))
 #endif
-        perAppAudio.updateClients(clients)
+        delivery.updateClients(clients)
         return true
     }
 
@@ -699,7 +661,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         Task { @MainActor [weak self] in
             guard self?.isCurrentGeneration(stoppedGeneration) == true else { return }
             self?.status = "Driver transport idle"
-            self?.statistics = Statistics()
+            self?.statistics = AudioCaptureStatistics()
             self?.runtimeError = nil
         }
     }

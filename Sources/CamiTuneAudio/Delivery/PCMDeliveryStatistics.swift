@@ -1,12 +1,5 @@
 import Foundation
 
-/// A silent writer generation. Any source/effect activity invalidates a pending
-/// backend handoff, even if that activity ends before preparation completes.
-package struct AudioBufferHandoffToken: Equatable, Sendable {
-    let pipelineID: UUID
-    let activity: UInt64
-}
-
 package struct PCMProducerDrainStatistics: Sendable, Codable, Equatable {
     package init(completedDrains: UInt64 = 0, resamplerTailFrames: UInt64 = 0, backendPaddingFrames: UInt64 = 0) {
         self.completedDrains = completedDrains

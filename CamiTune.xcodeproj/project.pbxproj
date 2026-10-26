@@ -7,6 +7,15 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C96D19320E7087E3E03DD3D4 = {isa = PBXBuildFile; fileRef = 04A95E00ABAA859CDF01F240; };
+		BABE599C3D13709BBE9277E7 = {isa = PBXBuildFile; fileRef = 490FA21913172F1B0104FFCA; };
+		D99661F7A376E9811A258E2F = {isa = PBXBuildFile; fileRef = B4831F7E8FC920D93EBE743A; };
+		AC1DC95202D420B593FAF3BA = {isa = PBXBuildFile; fileRef = 61A3B42A4DDF0CDDC6A2157E; };
+		597E5BAEF57649B8F1A68023 = {isa = PBXBuildFile; fileRef = 7F2B4751798619A9083D3410; };
+		1AD68E0529D137735D910203 = {isa = PBXBuildFile; fileRef = 5F2DB70C62F4290841ACB9DA; };
+		1ACE3EC212B3B3671EAA99CB = {isa = PBXBuildFile; fileRef = ADE390CAE805629EAD700440; };
+		FBCA71D5C09F25D3E15CA094 = {isa = PBXBuildFile; fileRef = B540B0F9622A9721764AEA05; };
+		E4FE79635D0F1EF2DD5EEE24 = {isa = PBXBuildFile; fileRef = 94AE47B843498C2A859884EA; };
 		CA7400000000000000000101 = {isa = PBXBuildFile; fileRef = CA7400000000000000000201; };
 		CA7400000000000000000100 = {isa = PBXBuildFile; fileRef = CA7400000000000000000200; };
 		C4A268A994F7996E7FC14B0A = {isa = PBXBuildFile; fileRef = 84BFF11A115B28A1EE1E27ED; };
@@ -27,7 +36,6 @@
 		95970F5DD7A5E4994367BD3E = {isa = PBXBuildFile; fileRef = 4650A69AEC4E3699F2F5EB60; };
 		BC96A0D2359BECDAF0AAA48A = {isa = PBXBuildFile; fileRef = 65FEE5EAAC2F5910180CF6EC; };
 
-		CA5D00000000000000000104 = {isa = PBXBuildFile; fileRef = CA5D00000000000000000204; };
 		CA5D00000000000000000103 = {isa = PBXBuildFile; fileRef = CA5D00000000000000000203; };
 
 		CA5D00000000000000000100 = {isa = PBXBuildFile; fileRef = CA5D00000000000000000200; };
@@ -38,8 +46,6 @@
 
 		CA5B00000000000000000100 = {isa = PBXBuildFile; fileRef = CA5B00000000000000000200; };
 
-		CA5A00000000000000000101 = {isa = PBXBuildFile; fileRef = CA5A00000000000000000201; };
-		CA5A00000000000000000100 = {isa = PBXBuildFile; fileRef = CA5A00000000000000000200; };
 
 		CA5900000000000000000102 = {isa = PBXBuildFile; fileRef = CA5900000000000000000202; };
 
@@ -819,17 +825,9 @@
 			isa = PBXBuildFile;
 			fileRef = 7956BAE7E149463D53E5D70E;
 		};
-		583699F78CE8BD42AB22EE69 = {
-			isa = PBXBuildFile;
-			fileRef = DFC03820EF3BA092FC07A1DF;
-		};
 		D6FC983085BF19E23B967CBD = {
 			isa = PBXBuildFile;
 			fileRef = AF8EBEF1A38828A7489F25C7;
-		};
-		7F90943348BD5247B5AC0EB3 = {
-			isa = PBXBuildFile;
-			fileRef = 81915448735BC9D299713367;
 		};
 		F4497B1295E6F0EB8E324AF0 = {
 			isa = PBXBuildFile;
@@ -1064,6 +1062,15 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		04A95E00ABAA859CDF01F240 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/AudioPlaybackClock.swift"; sourceTree = SOURCE_ROOT; };
+		490FA21913172F1B0104FFCA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Transport/SystemAudioBridgeCaptureBackend.swift"; sourceTree = SOURCE_ROOT; };
+		B4831F7E8FC920D93EBE743A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/AudioCaptureBackend.swift"; sourceTree = SOURCE_ROOT; };
+		61A3B42A4DDF0CDDC6A2157E = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/CoreAudio/AudioInputCapture.swift"; sourceTree = SOURCE_ROOT; };
+		7F2B4751798619A9083D3410 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/AudioCaptureDelivery.swift"; sourceTree = SOURCE_ROOT; };
+		5F2DB70C62F4290841ACB9DA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/Runtime/AudioProcessingBackend.swift"; sourceTree = SOURCE_ROOT; };
+		ADE390CAE805629EAD700440 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneAudio/Delivery/PCMOutputSink.swift"; sourceTree = SOURCE_ROOT; };
+		B540B0F9622A9721764AEA05 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTune/App/ProfileEditing.swift"; sourceTree = SOURCE_ROOT; };
+		94AE47B843498C2A859884EA = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/CamiTuneDomain/Profile/ProfileProcessingDraft.swift"; sourceTree = SOURCE_ROOT; };
 		CA7400000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChangelogMarkdown.swift; sourceTree = "<group>"; };
 		CA7400000000000000000200 = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CHANGELOG.md; sourceTree = "<group>"; };
 		84BFF11A115B28A1EE1E27ED = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BiquadCoefficients.swift; sourceTree = "<group>"; };
@@ -1084,7 +1091,6 @@
 		4650A69AEC4E3699F2F5EB60 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvolutionEditing.swift; sourceTree = "<group>"; };
 		65FEE5EAAC2F5910180CF6EC = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImpulseResponseAssignment.swift; sourceTree = "<group>"; };
 
-		CA5D00000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CamillaPlaybackClock.swift; sourceTree = "<group>"; };
 		CA5D00000000000000000203 = {
 			path = AudioClockDrift.swift;
 			isa = PBXFileReference;
@@ -1120,13 +1126,6 @@
 			sourceTree = "<group>";
 		};
 
-		CA5A00000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePolicyTrace.swift; sourceTree = "<group>"; };
-		CA5A00000000000000000200 = {
-			path = TimelineReorderPolicy.swift;
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			sourceTree = "<group>";
-		};
 
 		CA5900000000000000000202 = {
 			path = TimelineCircularStorage.swift;
@@ -2509,22 +2508,10 @@
 			path = TimelineValues.swift;
 			sourceTree = "<group>";
 		};
-		DFC03820EF3BA092FC07A1DF = {
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			path = TimelinePolicyTrace.swift;
-			sourceTree = "<group>";
-		};
 		AF8EBEF1A38828A7489F25C7 = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
 			path = AdaptiveRateController.swift;
-			sourceTree = "<group>";
-		};
-		81915448735BC9D299713367 = {
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			path = PerAppAudioResults.swift;
 			sourceTree = "<group>";
 		};
 		D09A702F2D7AABE30A6E1443 = {
@@ -2584,7 +2571,7 @@
 		96D0B6C1E49001123109C589 = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
-			path = CamillaDeliveryPipeline.swift;
+			path = PCMDeliveryPipeline.swift;
 			sourceTree = "<group>";
 		};
 		9397937C9BCE49D2BD3079E7 = {
@@ -2898,6 +2885,12 @@
 			isa = PBXGroup;
 			name = CamiTune;
 			children = (
+				04A95E00ABAA859CDF01F240,
+				490FA21913172F1B0104FFCA,
+				B4831F7E8FC920D93EBE743A,
+				61A3B42A4DDF0CDDC6A2157E,
+				7F2B4751798619A9083D3410,
+				5F2DB70C62F4290841ACB9DA,
 
 				58B09B7C7A3F014075CEA44E,
 				FC20F45031CE278A0C6BE755,
@@ -3072,6 +3065,7 @@
 			path = Sources/CamiTuneDomain;
 			isa = PBXGroup;
 			children = (
+				94AE47B843498C2A859884EA,
 				5EDD3897D2F3330C5B755056,
 				CA2026102300000000000101,
 				6D10BBE978C1200B8BAD4018,
@@ -3096,6 +3090,7 @@
 			path = Sources/CamiTuneAudio;
 			isa = PBXGroup;
 			children = (
+				ADE390CAE805629EAD700440,
 				98DCE279CAF9689A6D158478,
 				EE044991044D171AD496385B,
 				CF2026102200000000000002,
@@ -3301,6 +3296,7 @@
 		379F0F8394920582649E3E1E = {
 			isa = PBXGroup;
 			children = (
+				B540B0F9622A9721764AEA05,
 				C587195BCEF3DC3C18C19663,
 				356E5942FA333F1538E02434,
 			);
@@ -3312,7 +3308,6 @@
 			children = (
 				33E9A29DC002A4A4D35C4C60,
 				54AD836F473CDD1C37F2E0B4,
-				CA5D00000000000000000204,
 				AFD924572EA5B9D920D1D8A8,
 			);
 			path = CamillaDSP;
@@ -3415,7 +3410,6 @@
 				CA4500000000000000000202,
 				CA4500000000000000000203,
 				CA4500000000000000000204,
-				CA5A00000000000000000201,
 			);
 			path = Performance;
 			sourceTree = "<group>";
@@ -3555,7 +3549,6 @@
 			children = (
 				CA4500000000000000000200,
 				644A77A01DB2D08F9A29BD97,
-				DFC03820EF3BA092FC07A1DF,
 			);
 			path = Observation;
 			sourceTree = "<group>";
@@ -3606,12 +3599,10 @@
 		A7F3D73B036BA9E0E363C256 = {
 			isa = PBXGroup;
 			children = (
-				81915448735BC9D299713367,
 				CA5900000000000000000200,
 				CA5C00000000000000000200,
 				CA5900000000000000000202,
 				517EFACE3B5A79564B5816F1,
-				CA5A00000000000000000200,
 				7956BAE7E149463D53E5D70E,
 			);
 			path = Timeline;
@@ -4089,6 +4080,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C96D19320E7087E3E03DD3D4,
+				BABE599C3D13709BBE9277E7,
+				D99661F7A376E9811A258E2F,
+				AC1DC95202D420B593FAF3BA,
+				597E5BAEF57649B8F1A68023,
+				1AD68E0529D137735D910203,
+				FBCA71D5C09F25D3E15CA094,
 				CA7200000000000000000101,
 				CA7400000000000000000101,
 				CA7200000000000000000100,
@@ -4261,12 +4259,6 @@
 				CA5800000000000000000101,
 				CA5800000000000000000100,
 
-
-				CA5D00000000000000000104,
-
-
-				CA5A00000000000000000101,
-
 				CA5700000000000000000104,
 				CA5700000000000000000103,
 				CA5700000000000000000102,
@@ -4317,6 +4309,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E4FE79635D0F1EF2DD5EEE24,
 				A0C6A950E853219723D91F9B,
 				CA2026102300000000000102,
 				5AD1E6284C2DEEDABE714779,
@@ -4415,6 +4408,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1ACE3EC212B3B3671EAA99CB,
 				5F0B097FE3387689FC3BAA3F,
 				653821D0BCB2DBFCEA7B5A9B,
 				CF2026102200000000000001,
@@ -4438,12 +4432,9 @@
 				CA5B00000000000000000100,
 				28842FE674F014EB8ACCCCDA,
 				0781B5C4EADE4716E23EAB0A,
-				583699F78CE8BD42AB22EE69,
 				CA5D00000000000000000103,
 				D6FC983085BF19E23B967CBD,
-				7F90943348BD5247B5AC0EB3,
 				CA5900000000000000000102,
-				CA5A00000000000000000100,
 				CA5900000000000000000100,
 				CA5C00000000000000000100,
 				CA5B00000000000000000102,

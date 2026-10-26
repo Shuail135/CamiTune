@@ -7,14 +7,11 @@ package protocol PluginAudioProcessor: AnyObject, Sendable {
     var channelCount: Int { get }
     var tailFrames: Int { get }
     var requiresContinuousRendering: Bool { get }
-    /// Uncapped tail/latency horizon for retiring a silent processing session.
-    func bufferChangeTailSeconds(sampleRate: Double) -> Double
     func process(_ samples: inout [Float], sampleRate: Double, reset: Bool) -> Bool
 }
 package extension PluginAudioProcessor {
     var channelCount: Int { 2 }
     var requiresContinuousRendering: Bool { false }
-    func bufferChangeTailSeconds(sampleRate: Double) -> Double { Double(tailFrames) / sampleRate }
 }
 
 /// Writer-owned output protection, independent of a third-party effect's bypass.

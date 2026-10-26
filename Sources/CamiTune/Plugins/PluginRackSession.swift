@@ -29,11 +29,6 @@ final class PluginHostSession: PluginAudioProcessor, @unchecked Sendable {
     var latencyFrames: Int { connections.reduce(0) { $0 + $1.latencyFrames } }
     var tailFrames: Int { min(Int(sampleRate * 10), connections.reduce(0) { $0 + $1.tailFrames }) }
     var requiresContinuousRendering: Bool { errorMessage == nil && connections.contains { $0.requiresContinuousRendering } }
-    func bufferChangeTailSeconds(sampleRate: Double) -> Double {
-        guard !requiresContinuousRendering else { return .infinity }
-        return connections.reduce(0) { $0 + $1.bufferChangeTailSeconds(sampleRate: sampleRate) }
-    }
-
     init(rack: PluginRack, sampleRate: Double, channelRoles: [ChannelRole] = [.left, .right], editorOnly: Bool = false,
          blockFrames: Int = PluginHostConnection.maximumFrames,
          sidechainHub: PluginSidechainHub? = nil, eventHandler: @escaping @Sendable ([String: Any]) -> Void) throws {

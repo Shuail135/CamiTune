@@ -99,8 +99,8 @@ enum SystemDiagnostics {
                 var status = state.meters.status
                 status.isActive = state.isActive
                 status.engineIsRunning = state.outputEngineIsRunning
-                status.transportError = state.driverTransport.runtimeError
-                status.route = AudioRouteDiagnostics(transport: state.driverTransport.statistics, router: state.pcmRouter.statistics)
+                status.transportError = state.captureBackend.runtimeError
+                status.route = AudioRouteDiagnostics(transport: state.captureBackend.statistics, router: state.pcmRouter.statistics)
                 return pipelineObservation(status)
             },
             check("S10", "Runtime", "Output telemetry") {

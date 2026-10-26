@@ -3,28 +3,19 @@ import Foundation
 
 /// Owns one sink, ordered queue, writer, clock evidence, and delivery statistics.
 /// Retired workers retain their own state until their sink write exits.
-package final class CamillaDeliveryPipeline: @unchecked Sendable {
-    // The writer owns the duplicate through CamillaPCMSink. Control threads
-    // request stop and join; they never close a descriptor beneath a write.
+package final class PCMDeliveryPipeline: @unchecked Sendable {
+    // Only the writer finishes its sink. Control threads cancel and join.
     private var sink: (any PCMOutputSink)?
-    private let pipelineID = UUID()
-    private var activityGeneration: UInt64 = 0
-    private var backendGeneration: UInt64 = 0
     private let performanceSource: PerformanceTraceSource
     private var writerBlockInProgressFrames = 0
     /// Fixed for the engine session; derived from the acknowledged graph.
-    private var backendChunkFrames: Int
+    private let backendChunkFrames: Int
     private let backendSampleRate: Double
     // Writer-owned byte-stream phase; queue recovery must not reset it.
     private var backendRemainderFrames = 0
     private var deliveryStatistics = PCMDeliveryStatistics()
     private var bufferWork = AudioBufferWorkObservation()
     private var bufferWorkGeneration: UInt64 = 0
-    private var quietSince = PerformanceClock.now()
-    private var inputQuietSince = PerformanceClock.now()
-    private var writerBusy = false
-    private var pluginSilentInputSeconds = 0.0
-    private var silentOutputSeconds = 0.0
     private var lastPluginLoad = 0.0
     private var lastPluginFailed = false
     private let condition = NSCondition()
@@ -78,7 +69,7 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
     private var instrumentStopPadding = false
 
     package init(
-        sink: (any PCMOutputSink)?,
+        sink: any PCMOutputSink,
         hrtfDatabase: (any HRTFDatabase)?,
         performanceSource: PerformanceTraceSource,
         activeRoute: ActiveAudioRoute?,
@@ -112,80 +103,14 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
         return result
     }
 
-    /// Exact PCM silence, before system mute/gain, with no queued work or tail.
-    /// An idle/failed writer alone is never evidence of silence.
-    package func isQuietForBufferChange(seconds: Double, now: PerformanceTick = PerformanceClock.now()) -> Bool {
-        condition.lock(); defer { condition.unlock() }
-        return isQuietForBufferChangeLocked(seconds: seconds, now: now)
-    }
-
-    private func isQuietForBufferChangeLocked(seconds: Double, now: PerformanceTick) -> Bool {
-        guard seconds.isFinite, seconds >= 3, !stopping, !workerFinished,
-              !writerBusy, queue.isEmpty, pluginTailFrames == 0, backendRemainderFrames == 0,
-              calibrationID == nil, !measurementHold, !needsPCMDiscontinuityReset,
-              deliveryStatistics.error == nil else { return false }
-        let tail = pluginProcessor?.bufferChangeTailSeconds(sampleRate: backendSampleRate) ?? 0
-        return tail.isFinite && tail >= 0
-            && PerformanceClock.milliseconds(quietSince, now) >= seconds * 1000
-            && PerformanceClock.milliseconds(inputQuietSince, now) >= (seconds + tail) * 1000
-            // Wall time does not drain a delay line when its producer pauses.
-            && pluginSilentInputSeconds >= tail && silentOutputSeconds >= seconds - 3
-    }
-
-    package func bufferHandoffToken(seconds: Double, now: PerformanceTick = PerformanceClock.now()) -> AudioBufferHandoffToken? {
-        condition.lock(); defer { condition.unlock() }
-        guard isQuietForBufferChangeLocked(seconds: seconds, now: now) else { return nil }
-        return .init(pipelineID: pipelineID, activity: activityGeneration)
-    }
-
-    package func acceptsBufferHandoff(_ token: AudioBufferHandoffToken) -> Bool {
-        condition.lock(); defer { condition.unlock() }
-        return token.pipelineID == pipelineID && token.activity == activityGeneration
-            && !stopping && !workerFinished && calibrationID == nil && deliveryStatistics.error == nil
-    }
-
-    /// No writer is in flight while this lock is held. An arriving block either
-    /// invalidates the token before commit, or is delivered wholly to the ready
-    /// replacement. Neither path drops, fades, duplicates or holds source audio.
-    package func replaceBackendIfQuiet(_ replacement: CamillaPCMSink, token: AudioBufferHandoffToken,
-        chunkFrames: Int, configuration: PCMDeliveryConfiguration, clocks: [AudioClockObservation],
-        quietSeconds: Double, now: PerformanceTick = PerformanceClock.now()) -> CamillaPCMSink? {
-        condition.lock(); defer { condition.unlock() }
-        guard token.pipelineID == pipelineID, token.activity == activityGeneration,
-              isQuietForBufferChangeLocked(seconds: quietSeconds, now: now),
-              let retired = sink as? CamillaPCMSink, replacement !== retired,
-              chunkFrames > 0, chunkFrames <= 8192, configuration.queue.isValid,
-              configuration.queue.sampleRate == backendSampleRate,
-              configuration.queue.rateTargetMode == queue.policy?.rateTargetMode else { return nil }
-        var nextClock = clockDrift
-        if configuration.queue.rateTargetMode == .clockTracked,
-           !nextClock.replaceOutput(with: clocks, now: now) { return nil }
-        sink = replacement
-        backendChunkFrames = chunkFrames
-        queue.configure(configuration.queue)
-        clockDrift = nextClock
-        backendGeneration &+= 1
-        activityGeneration &+= 1
-        bufferWorkGeneration &+= 1; bufferWork = .init()
-        return retired
-    }
-
     package func playbackClockConsumer() -> @Sendable (AudioClockObservation) -> Void {
-        condition.lock(); let generation = backendGeneration; condition.unlock()
         return { [weak self] observation in
             guard let self else { return }
             self.condition.lock(); defer { self.condition.unlock() }
-            guard !self.stopping, generation == self.backendGeneration,
+            guard !self.stopping,
                   self.queue.policy?.rateTargetMode == .clockTracked else { return }
             self.clockDrift.observeOutput(observation)
         }
-    }
-
-    /// Returns true for exact silence, without changing the samples.
-    private func observeBufferSignal(_ samples: [Float]) -> Bool {
-        guard samples.contains(where: { $0 != 0 }) else { return true }
-        condition.lock(); quietSince = PerformanceClock.now(); activityGeneration &+= 1; condition.unlock()
-        return false
     }
 
     package func statisticsSnapshot() -> (delivery: PCMDeliveryStatistics, queue: PCMQueueSnapshot) {
@@ -195,7 +120,6 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
 
     package func setDeliveryConfiguration(_ configuration: PCMDeliveryConfiguration) {
         condition.lock(); defer { condition.unlock() }
-        activityGeneration &+= 1
         if queue.policy?.rateTargetMode != configuration.queue.rateTargetMode {
             clockDrift = AudioClockDrift(started: PerformanceClock.now())
         }
@@ -223,9 +147,6 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
     package func setRenderConfiguration(_ configuration: RenderConfiguration) {
         condition.lock(); defer { condition.unlock() }
         bufferWorkGeneration &+= 1; bufferWork = .init()
-        quietSince = PerformanceClock.now(); inputQuietSince = quietSince
-        activityGeneration &+= 1
-        pluginSilentInputSeconds = 0; silentOutputSeconds = 0
         let old = renderConfiguration
         // Preserve the existing reset policy. Renderer-local settings changes
         // continue through the long-lived engine's own update path.
@@ -241,9 +162,6 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
         condition.lock(); defer { condition.unlock() }
         if pluginProcessor === processor { return }
         bufferWorkGeneration &+= 1; bufferWork = .init()
-        quietSince = PerformanceClock.now(); inputQuietSince = quietSince
-        activityGeneration &+= 1
-        pluginSilentInputSeconds = 0; silentOutputSeconds = 0
         pluginProcessor = processor
         pluginResetNeeded = true
         condition.signal()
@@ -252,20 +170,6 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
     /// Called only by the writer. The helper enforces a deadline; failures fade
     /// to silence until the user bypasses or reloads the rack.
     private func processPlugins(_ samples: inout [Float], sampleRate: Double, reset: Bool = false, bypass: Bool = false) {
-        let inputSilent = observeBufferSignal(samples)
-        let seconds = Double(samples.count / expectedOutputChannelCount) / sampleRate
-        condition.lock()
-        let generation = bufferWorkGeneration
-        condition.unlock()
-        defer {
-            let outputSilent = observeBufferSignal(samples)
-            condition.lock()
-            if generation == bufferWorkGeneration {
-                pluginSilentInputSeconds = inputSilent ? pluginSilentInputSeconds + seconds : 0
-                silentOutputSeconds = outputSilent ? silentOutputSeconds + seconds : 0
-            }
-            condition.unlock()
-        }
         condition.lock()
         let processor = pluginProcessor
         let changed = pluginResetNeeded
@@ -293,7 +197,6 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
 
     package func setSpatialSettings(_ settings: SpatialRenderSettings, output: SpatialOutputKind) {
         condition.lock()
-        activityGeneration &+= 1
         renderSettings = settings
         renderOutput = output
         condition.unlock()
@@ -301,7 +204,6 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
 
     package func setSpatialRenderingMode(_ mode: SpatialRenderingMode) {
         condition.lock()
-        activityGeneration &+= 1
         let normalized: SpatialRenderingMode = mode == .standard ? .standard : .spatialAudio
         if mode == .frontStage || mode == .virtualSurround { renderSettings.enabled = true }
         if spatialRenderingMode != normalized {
@@ -338,7 +240,6 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
         condition.lock()
         defer { condition.unlock() }
         guard !stopping, !workerFinished, calibrationID == nil else { return false }
-        activityGeneration &+= 1
         calibrationID = id
         needsContentReset = true
         return true
@@ -397,10 +298,7 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
 
     package func enqueue(_ frame: PCMFrame) {
         let performance = performanceSource.snapshot()
-        let hasSignal = frame.interleaved.contains { $0 != 0 }
-            || frame.playbackModeSamples.values.contains { $0.contains { $0 != 0 } }
         condition.lock()
-        if hasSignal { quietSince = PerformanceClock.now(); inputQuietSince = quietSince; activityGeneration &+= 1 }
         guard !stopping, calibrationPlayback == nil, !measurementHold else {
             condition.unlock()
             return
@@ -498,7 +396,6 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
 
         while true {
             condition.lock()
-            writerBusy = false
             writerBlockInProgressFrames = 0
             func instrumentClockNeeded() -> Bool {
                 producerEnded && calibrationID == nil && !measurementHold
@@ -521,11 +418,9 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
                 condition.unlock()
                 return
             }
-            writerBusy = true
             if queue.isEmpty, calibrationPlayback == nil, instrumentClockNeeded() {
                 let now = DispatchTime.now().uptimeNanoseconds
                 if !sink.pacesContinuousRendering && nextInstrumentTick > now {
-                    writerBusy = false
                     condition.wait(until: Date().addingTimeInterval(Double(nextInstrumentTick - now) / 1_000_000_000))
                     condition.unlock()
                     continue
@@ -549,7 +444,6 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
                     // Hardware consumption replaces the independent wall timer;
                     // a notification's already-delivered duration is never waited
                     // a second time when its producer ends.
-                    writerBusy = false
                     condition.unlock()
                     do { try sink.waitForInstrumentCapacity(frames: frames) }
                     catch { failWrite(error); return }
@@ -558,7 +452,6 @@ package final class CamillaDeliveryPipeline: @unchecked Sendable {
                         condition.unlock()
                         continue
                     }
-                    writerBusy = true
                 }
                 wasGeneratingInstrument = true
                 instrumentStopPadding = false

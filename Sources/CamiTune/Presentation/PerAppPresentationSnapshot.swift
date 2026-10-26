@@ -24,7 +24,7 @@ struct PerAppObservedAudioSource: Sendable {
 /// releasing stateLock, so row construction cannot push COW copies onto ingestion.
 struct PerAppPresentationInput: Sendable {
     let revision: UInt64
-    var clients: [PerAppDriverClient] = []
+    var clients: [AudioCaptureClient] = []
     var identities: [PerAppTransportClientKey: PerAppPresentationIdentity] = [:]
     var workspaceIdentities: [Int32: PerAppPresentationIdentity] = [:]
     var runningApplications: [String: PerAppPresentationIdentity] = [:]

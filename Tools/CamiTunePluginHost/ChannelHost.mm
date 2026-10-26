@@ -50,7 +50,7 @@ public:
     }
     bool isInstrument() override { return true; }
     NSArray<NSDictionary*>* sidechainBuses() override { return inner->sidechainBuses(); }
-    void setSidechain(float* const* stereo) override { inner->setSidechain(stereo); }
+    void setSidechain(const float* stereo) override { inner->setSidechain(stereo); }
     void reset() override { inner->reset(); }
     uint32_t latency() override { return inner->latency(); }
     double tailSeconds() override { return inner->tailSeconds(); }
@@ -181,7 +181,7 @@ public:
     void observeParameters(ParameterObserver value) override { *observer = std::move(value); }
     bool acceptsMIDI() override { return copies[0].effect->acceptsMIDI(); }
     NSArray<NSDictionary*>* sidechainBuses() override { return copies[0].effect->sidechainBuses(); }
-    void setSidechain(float* const* stereo) override { for (auto& copy : copies) copy.effect->setSidechain(stereo); }
+    void setSidechain(const float* stereo) override { for (auto& copy : copies) copy.effect->setSidechain(stereo); }
     void midi(const MIDIMessage& message) override { for (auto& copy : copies) copy.effect->midi(message); }
     void clearMIDI() override { for (auto& copy : copies) copy.effect->clearMIDI(); }
     void syncParameters() override { copies[0].effect->syncParameters(); }

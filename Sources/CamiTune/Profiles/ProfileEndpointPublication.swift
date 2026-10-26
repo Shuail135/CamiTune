@@ -71,7 +71,7 @@ protocol ProfileEndpointPublicationBackend {
 }
 
 enum ProfileEndpointPublication {
-    // CoreAudio's sync migration and worker publisher share one transaction lane.
+    // CoreAudio's shutdown cleanup and worker publisher share one transaction lane.
     private static let lock = NSLock()
 
     static func publish(_ desired: [ProfileEndpointState], using backend: ProfileEndpointPublicationBackend) throws {

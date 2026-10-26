@@ -141,14 +141,6 @@ extension GlobalEqualizerEditorView {
         }
     }
 
-    func profileWithCurrentEQ() -> DeviceProfile {
-        var updated = profile
-        updated.setGlobalEqualizer(preampDB: preampDB, bands: graphicBands)
-        updated.processing.setLimiterEnabled(limiterEnabled)
-        updated.processing.simpleTone = simpleTone
-        return (try? state.applyingSessionEQDrafts(to: updated)) ?? updated
-    }
-
     var canResetEqualizer: Bool {
         preampDB != 0
             || (presentation != .bands && !simpleTone.isNeutral)

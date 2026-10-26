@@ -434,16 +434,6 @@ final class DependencyManager: ObservableObject {
         }
     }
 
-    func validateConfiguration(_ yaml: String) async throws {
-        guard FileManager.default.isExecutableFile(atPath: camillaDSPBinary.path) else {
-            throw SetupError.binaryMissing
-        }
-        try createSupportLayout()
-        let validationURL = supportDirectory.appendingPathComponent("configs/validation.yml")
-        try yaml.write(to: validationURL, atomically: true, encoding: .utf8)
-        _ = try await run(camillaDSPBinary.path, ["--check", validationURL.path])
-    }
-
     private func waitForAudioDriver() async -> Bool {
         for attempt in 0..<30 {
             await coreAudio.refreshWithoutBlockingUI()

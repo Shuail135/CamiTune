@@ -176,8 +176,8 @@ struct SidebarView: View {
                 .contentShape(Rectangle())
                 .background {
                     if selection == .settings {
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color.accentColor.opacity(0.05))
+                        RoundedRectangle(cornerRadius: SidebarSelectionAppearance.cornerRadius)
+                            .fill(Color(nsColor: SidebarSelectionAppearance.color))
                     }
                 }
             }
@@ -356,7 +356,7 @@ private struct NativeProfileSidebar: NSViewRepresentable {
         column.resizingMask = .autoresizingMask
         table.addTableColumn(column)
         table.headerView = nil
-        table.style = .sourceList
+        table.style = .inset
         table.rowHeight = 28
         table.intercellSpacing = NSSize(width: 0, height: 2)
         table.allowsMultipleSelection = true
@@ -598,6 +598,10 @@ private struct NativeProfileSidebar: NSViewRepresentable {
             }
         }
 
+        func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+            SidebarSelectionRowView()
+        }
+
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             let identifier = NSUserInterfaceItemIdentifier("sidebar-cell")
             let cell = (tableView.makeView(withIdentifier: identifier, owner: nil) as? SidebarCell) ?? SidebarCell()
@@ -794,6 +798,26 @@ private final class SidebarTable: NSTableView {
 }
 
 @MainActor
+private enum SidebarSelectionAppearance {
+    static let cornerRadius: CGFloat = 6
+    static var color: NSColor { .controlAccentColor.withAlphaComponent(0.15) }
+}
+
+@MainActor
+private final class SidebarSelectionRowView: NSTableRowView {
+    override var interiorBackgroundStyle: NSView.BackgroundStyle { .normal }
+
+    override func drawSelection(in dirtyRect: NSRect) {
+        SidebarSelectionAppearance.color.setFill()
+        NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 8, dy: 0),
+            xRadius: SidebarSelectionAppearance.cornerRadius,
+            yRadius: SidebarSelectionAppearance.cornerRadius
+        ).fill()
+    }
+}
+
+@MainActor
 private final class SidebarCell: NSTableCellView {
     private let icon = NSImageView()
     private let title = NSTextField(labelWithString: "")
@@ -823,9 +847,6 @@ private final class SidebarCell: NSTableCellView {
         dot.wantsLayer = true
         dot.layer?.cornerRadius = 3
         dot.layer?.backgroundColor = NSColor.systemGreen.cgColor
-        leading = icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2)
-        titleAfterIcon = title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6)
-        headingLeading = title.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2)
         leading = icon.leadingAnchor.constraint(equalTo: leadingAnchor,constant: 2)
         titleAfterIcon = title.leadingAnchor.constraint(equalTo: icon.trailingAnchor,constant: 6)
         headingLeading = title.leadingAnchor.constraint(equalTo: leadingAnchor,constant: 2)

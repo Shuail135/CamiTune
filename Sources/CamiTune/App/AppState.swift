@@ -66,7 +66,6 @@ final class AppState: NSObject, ObservableObject {
     }
     @Published var validationMessage: String = ""
     @Published var warnings: [String] = []
-    @Published private(set) var isValidating = false
     /// Draft edits are intentionally kept out of `objectWillChange`. A slider
     /// can produce dozens of draft writes per second; publishing those through
     /// AppState used to invalidate the entire navigation tree, menu-bar UI,
@@ -80,7 +79,7 @@ final class AppState: NSObject, ObservableObject {
     private var automaticBufferTask: Task<Void, Never>?
     private var runtimeObservation: AnyCancellable?
     lazy var runtimeCoordinator: AudioRuntimeCoordinator = {
-        let owner = AudioRuntimeCoordinator(services: runtimeServices, perAppAudio: perAppAudio,
+        let owner = AudioRuntimeCoordinator(services: runtimeServices, perAppAudio: perAppAudio, captureDelivery: captureDelivery,
             performanceRecorder: performanceRecorder, callbacks: .init(
                 profiles: { [weak self] in self?.profiles.profiles ?? [] },
                 automaticProfile: { [weak self] in self?.profiles.automaticProfile(forPhysicalDeviceUID: $0) },
@@ -134,13 +133,12 @@ final class AppState: NSObject, ObservableObject {
     let profiles: ProfileStore
     let dependencies: DependencyManager
     let loginItem = LoginItemManager()
-    private(set) var dsp: CamillaDSPManager
     private var directOutput: DirectCoreAudioOutput?
     private var directOutputClockTask: Task<Void, Never>?
     private var directOutputError: String?
     var outputEngineIsRunning: Bool {
         if let output = directOutput { return output.snapshot().error == nil }
-        return dsp.isRunning
+        return processingBackend.isRunning
     }
     let meters = AudioRuntimeMonitor()
     let spectrum = SpectrumAnalyzer()
@@ -174,26 +172,17 @@ final class AppState: NSObject, ObservableObject {
         return manager
     }()
     let perAppAudio: PerAppAudioController
-    let driverTransport = SystemAudioBridgeTransport()
+    private let suppliedCaptureBackend: (any AudioCaptureBackend)?
+    lazy var captureBackend: any AudioCaptureBackend = suppliedRuntimeServices?.captureBackend ?? suppliedCaptureBackend ?? makeLiveCaptureBackend()
+    lazy var captureDelivery = AudioCaptureDelivery(router: pcmRouter, applications: perAppAudio)
     let updateChecker = AppUpdateChecker()
 
     private let notifications = NotificationManager()
-    private var dspController: CamillaDSPController
-    private let volumeBridge = VolumeHandoffService()
+    private let processingBackend: any AudioProcessingBackend
     private var monitorTimer: Timer?
     private var startupConfigurationTask: Task<Void, Never>?
     private var hasShutdown = false
-    private var sessionToneDrafts: [UUID: SimpleToneSettings] = [:]
-    private var sessionEQDrafts: [UUID: String] = [:]
-    private var sessionEQDraftsReplaceDeviceCorrection: Set<UUID> = []
-    private var sessionDeviceCorrectionProvenance: [UUID: DeviceCorrectionProfile] = [:]
-    private var sessionClearsDeviceCorrectionProvenance: Set<UUID> = []
-    private var sessionLimiterDrafts: [UUID: Bool] = [:]
-    private var sessionChannelToneDrafts: [UUID: [Int: SimpleToneSettings]] = [:]
-    private var sessionChannelEQDrafts: [UUID: [Int: String]] = [:]
-    private var sessionChannelLimiterDrafts: [UUID: [Int: Bool]] = [:]
-    private var sessionChannelDelayDrafts: [UUID: [Int: Double]] = [:]
-    private var sessionGroupProcessingDrafts: [UUID: [SpeakerGroupID: PerChannelEditorSnapshot]] = [:]
+    var processingDrafts: [UUID: ProfileProcessingDraft] = [:]
     private var requestedRuntimeVisualProfileID: UUID?
     private var requestedMeterVisuals = true
     private var requestedSpectrumVisuals = true
@@ -206,18 +195,18 @@ final class AppState: NSObject, ObservableObject {
         self.init(profiles: ProfileStore(), perAppAudio: PerAppAudioController(), startServices: true)
     }
 
-    init(profiles: ProfileStore, perAppAudio: PerAppAudioController, startServices: Bool = false, runtimeServices: AudioRuntimeServices? = nil) {
+    init(profiles: ProfileStore, perAppAudio: PerAppAudioController, startServices: Bool = false, runtimeServices: AudioRuntimeServices? = nil, captureBackend: (any AudioCaptureBackend)? = nil, processingBackend: (any AudioProcessingBackend)? = nil) {
         precondition(runtimeServices == nil || !startServices)
         self.suppliedRuntimeServices = runtimeServices
         let audio = CoreAudioService(observesHardware: runtimeServices == nil)
-        let dsp = CamillaDSPManager()
+        let dependencies = DependencyManager(coreAudio: audio)
         self.coreAudioService = audio
         self.coreAudio = audio.snapshots
-        self.dsp = dsp
-        self.dspController = CamillaDSPController(manager: dsp)
+        self.suppliedCaptureBackend = captureBackend
+        self.processingBackend = runtimeServices?.processingBackend ?? processingBackend ?? CamillaDSPController(manager: CamillaDSPManager(), binary: dependencies.camillaDSPBinary)
         self.profiles = profiles
         self.perAppAudio = perAppAudio
-        self.dependencies = DependencyManager(coreAudio: audio)
+        self.dependencies = dependencies
         super.init()
         history.restorer = self
         perAppAudio.history = history
@@ -366,10 +355,6 @@ final class AppState: NSObject, ObservableObject {
             performanceReason: performanceReason, parentOperation: parentOperation)
     }
 
-    func eqDraft(for profileID: UUID) -> String? {
-        sessionEQDrafts[profileID]
-    }
-
     /// Spectrum FFT, PCM metering, and telemetry polling are presentation
     /// concerns. The DSP/audio route stays active when no profile editor is on
     /// screen, while these visual-only consumers pause.
@@ -424,217 +409,7 @@ final class AppState: NSObject, ObservableObject {
         return true
     }
 
-    func setEQDraft(_ text: String, for profileID: UUID) {
-        let draftStarted = performanceRecorder.isCapturing ? PerformanceClock.now() : nil
-        guard sessionEQDrafts[profileID] != text else { return }
-        sessionEQDrafts[profileID] = text
-        publishEQDraftChange(for: profileID, started: draftStarted)
-    }
-
-    func markEQDraftAsReplacingDeviceCorrection(for profileID: UUID) {
-        sessionEQDraftsReplaceDeviceCorrection.insert(profileID)
-    }
-
-    func eqDraftReplacesDeviceCorrection(for profileID: UUID) -> Bool {
-        sessionEQDraftsReplaceDeviceCorrection.contains(profileID)
-    }
-
-    func toneDraft(for profileID: UUID) -> SimpleToneSettings? { sessionToneDrafts[profileID] }
-    func setToneDraft(_ tone: SimpleToneSettings, for profileID: UUID) {
-        let draftStarted = performanceRecorder.isCapturing ? PerformanceClock.now() : nil
-        guard sessionToneDrafts[profileID] != tone else { return }
-        sessionToneDrafts[profileID] = tone
-        publishEQDraftChange(for: profileID, started: draftStarted)
-    }
-
-    func limiterDraft(for profileID: UUID) -> Bool? {
-        sessionLimiterDrafts[profileID]
-    }
-
-    func setLimiterDraft(_ enabled: Bool, for profileID: UUID) {
-        guard sessionLimiterDrafts[profileID] != enabled else { return }
-        sessionLimiterDrafts[profileID] = enabled
-        publishEQDraftChange(for: profileID)
-    }
-
-    func setDeviceCorrectionProvenanceDraft(
-        _ correction: DeviceCorrectionProfile?,
-        for profileID: UUID
-    ) {
-        if let correction {
-            sessionDeviceCorrectionProvenance[profileID] = correction
-            sessionClearsDeviceCorrectionProvenance.remove(profileID)
-        } else {
-            sessionDeviceCorrectionProvenance.removeValue(forKey: profileID)
-            sessionClearsDeviceCorrectionProvenance.insert(profileID)
-        }
-    }
-
-    func deviceCorrectionProvenance(
-        for profileID: UUID,
-        persisted: DeviceCorrectionProfile?
-    ) -> DeviceCorrectionProfile? {
-        if let draft = sessionDeviceCorrectionProvenance[profileID] { return draft }
-        if sessionClearsDeviceCorrectionProvenance.contains(profileID) { return nil }
-        return persisted
-    }
-
-    func applyDeviceCorrectionProvenanceDraft(
-        to processing: inout ProcessingProfile,
-        for profileID: UUID
-    ) {
-        if let draft = sessionDeviceCorrectionProvenance[profileID] {
-            processing.globalEqualizerProvenance = draft
-        } else if sessionClearsDeviceCorrectionProvenance.contains(profileID) {
-            processing.globalEqualizerProvenance = nil
-        }
-    }
-
-    func clearEQDraft(for profileID: UUID) {
-        let hadDraft = sessionToneDrafts[profileID] != nil || sessionEQDrafts[profileID] != nil
-            || sessionEQDraftsReplaceDeviceCorrection.contains(profileID)
-            || sessionDeviceCorrectionProvenance[profileID] != nil
-            || sessionClearsDeviceCorrectionProvenance.contains(profileID)
-            || sessionLimiterDrafts[profileID] != nil
-        sessionToneDrafts.removeValue(forKey: profileID)
-        sessionEQDrafts.removeValue(forKey: profileID)
-        sessionEQDraftsReplaceDeviceCorrection.remove(profileID)
-        sessionDeviceCorrectionProvenance.removeValue(forKey: profileID)
-        sessionClearsDeviceCorrectionProvenance.remove(profileID)
-        sessionLimiterDrafts.removeValue(forKey: profileID)
-        if hadDraft { publishEQDraftChange(for: profileID) }
-    }
-
-    func channelToneDraft(for profileID: UUID, channelIndex: Int) -> SimpleToneSettings? {
-        sessionChannelToneDrafts[profileID]?[channelIndex]
-    }
-
-    func groupProcessingDraft(for profileID: UUID, groupID: SpeakerGroupID) -> PerChannelEditorSnapshot? {
-        sessionGroupProcessingDrafts[profileID]?[groupID]
-    }
-
-    func setGroupProcessingDraft(_ snapshot: PerChannelEditorSnapshot, for profileID: UUID, groupID: SpeakerGroupID) {
-        guard sessionGroupProcessingDrafts[profileID]?[groupID] != snapshot else { return }
-        sessionGroupProcessingDrafts[profileID, default: [:]][groupID] = snapshot
-        publishEQDraftChange(for: profileID)
-    }
-
-    func clearGroupProcessingDraft(for profileID: UUID, groupID: SpeakerGroupID) {
-        guard sessionGroupProcessingDrafts[profileID]?.removeValue(forKey: groupID) != nil else { return }
-        if sessionGroupProcessingDrafts[profileID]?.isEmpty == true { sessionGroupProcessingDrafts.removeValue(forKey: profileID) }
-        publishEQDraftChange(for: profileID)
-    }
-
-    func channelEQDraft(for profileID: UUID, channelIndex: Int) -> String? {
-        sessionChannelEQDrafts[profileID]?[channelIndex]
-    }
-
-    func setChannelEQDraft(_ text: String, for profileID: UUID, channelIndex: Int) {
-        guard sessionChannelEQDrafts[profileID]?[channelIndex] != text else { return }
-        sessionChannelEQDrafts[profileID, default: [:]][channelIndex] = text
-        publishEQDraftChange(for: profileID)
-    }
-
-    /// Stores a complete per-channel editor snapshot and emits one draft-change
-    /// notification for the logical edit. Continuous controls use this after
-    /// their debounce so Global EQ/headroom work is not triggered three times.
-    func setChannelProcessingDraft(
-        eqText: String,
-        limiterEnabled: Bool,
-        delayMilliseconds: Double,
-        simpleTone: SimpleToneSettings? = nil,
-        for profileID: UUID,
-        channelIndex: Int
-    ) {
-        var changed = false
-
-        if let simpleTone, sessionChannelToneDrafts[profileID]?[channelIndex] != simpleTone {
-            sessionChannelToneDrafts[profileID, default: [:]][channelIndex] = simpleTone
-            changed = true
-        }
-        if sessionChannelEQDrafts[profileID]?[channelIndex] != eqText {
-            sessionChannelEQDrafts[profileID, default: [:]][channelIndex] = eqText
-            changed = true
-        }
-        if sessionChannelLimiterDrafts[profileID]?[channelIndex] != limiterEnabled {
-            sessionChannelLimiterDrafts[profileID, default: [:]][channelIndex] = limiterEnabled
-            changed = true
-        }
-        if sessionChannelDelayDrafts[profileID]?[channelIndex] != delayMilliseconds {
-            sessionChannelDelayDrafts[profileID, default: [:]][channelIndex] = delayMilliseconds
-            changed = true
-        }
-
-        if changed { publishEQDraftChange(for: profileID) }
-    }
-
-    func channelLimiterDraft(for profileID: UUID, channelIndex: Int) -> Bool? {
-        sessionChannelLimiterDrafts[profileID]?[channelIndex]
-    }
-
-    func setChannelLimiterDraft(
-        _ enabled: Bool,
-        for profileID: UUID,
-        channelIndex: Int
-    ) {
-        guard sessionChannelLimiterDrafts[profileID]?[channelIndex] != enabled else {
-            return
-        }
-        sessionChannelLimiterDrafts[profileID, default: [:]][channelIndex] = enabled
-        publishEQDraftChange(for: profileID)
-    }
-
-    func channelDelayDraft(for profileID: UUID, channelIndex: Int) -> Double? {
-        sessionChannelDelayDrafts[profileID]?[channelIndex]
-    }
-
-    func setChannelDelayDraft(
-        _ milliseconds: Double,
-        for profileID: UUID,
-        channelIndex: Int
-    ) {
-        guard sessionChannelDelayDrafts[profileID]?[channelIndex] != milliseconds else {
-            return
-        }
-        sessionChannelDelayDrafts[profileID, default: [:]][channelIndex] = milliseconds
-        publishEQDraftChange(for: profileID)
-    }
-
-    func clearChannelEQDraft(for profileID: UUID, channelIndex: Int) {
-        let hadDraft = sessionChannelToneDrafts[profileID]?[channelIndex] != nil
-            || sessionChannelEQDrafts[profileID]?[channelIndex] != nil
-            || sessionChannelLimiterDrafts[profileID]?[channelIndex] != nil
-            || sessionChannelDelayDrafts[profileID]?[channelIndex] != nil
-        sessionChannelToneDrafts[profileID]?.removeValue(forKey: channelIndex)
-        if sessionChannelToneDrafts[profileID]?.isEmpty == true {
-            sessionChannelToneDrafts.removeValue(forKey: profileID)
-        }
-        sessionChannelEQDrafts[profileID]?.removeValue(forKey: channelIndex)
-        if sessionChannelEQDrafts[profileID]?.isEmpty == true {
-            sessionChannelEQDrafts.removeValue(forKey: profileID)
-        }
-        sessionChannelLimiterDrafts[profileID]?.removeValue(forKey: channelIndex)
-        if sessionChannelLimiterDrafts[profileID]?.isEmpty == true {
-            sessionChannelLimiterDrafts.removeValue(forKey: profileID)
-        }
-        sessionChannelDelayDrafts[profileID]?.removeValue(forKey: channelIndex)
-        if sessionChannelDelayDrafts[profileID]?.isEmpty == true {
-            sessionChannelDelayDrafts.removeValue(forKey: profileID)
-        }
-        if hadDraft { publishEQDraftChange(for: profileID) }
-    }
-
-    func setGlobalEQHistoryDraft(_ snapshot: GlobalEQHistoryState, for id: UUID) {
-        sessionEQDrafts[id] = EqualizerAPOSerializer().serialize(ParsedEQ(preampDB: snapshot.preampDB, bands: snapshot.bands))
-        sessionLimiterDrafts[id] = snapshot.limiterEnabled
-        sessionToneDrafts[id] = snapshot.simpleTone
-        if snapshot.replacesDeviceCorrection { sessionEQDraftsReplaceDeviceCorrection.insert(id) }
-        else { sessionEQDraftsReplaceDeviceCorrection.remove(id) }
-        setDeviceCorrectionProvenanceDraft(snapshot.deviceCorrectionProvenance, for: id)
-        publishEQDraftChange(for: id)
-    }
-
-    private func publishEQDraftChange(for profileID: UUID, started: PerformanceTick? = nil) {
+    func publishEQDraftChange(for profileID: UUID, started: PerformanceTick? = nil) {
         eqDraftRevision &+= 1
         draftPerformance.removeValue(forKey: profileID)?.finish("coalesced")
         if let operation = performanceRecorder.begin("Live EQ apply", revision: eqDraftRevision, started: started) {
@@ -642,129 +417,6 @@ final class AppState: NSObject, ObservableObject {
             draftPerformance[profileID] = operation
         }
         eqDraftChanges.send(profileID)
-    }
-
-    /// Produces the profile currently being auditioned without persisting drafts.
-    /// Global and per-channel editors both use this so changing one scope cannot
-    /// revert an unsaved draft in another scope.
-    func applyingSessionEQDrafts(to profile: DeviceProfile, replacingGlobalEqualizer: Bool = false) throws -> DeviceProfile {
-        var updated = profile
-        if let tone = sessionToneDrafts[profile.id] { updated.processing.simpleTone = tone }
-        if !replacingGlobalEqualizer, let text = sessionEQDrafts[profile.id] {
-            let parsed = try EqualizerAPOParser().parse(text)
-            updated.setGlobalEqualizer(preampDB: parsed.preampDB, bands: parsed.bands)
-            if sessionEQDraftsReplaceDeviceCorrection.contains(profile.id) {
-                updated.processing.setDeviceCorrection(nil)
-            }
-        }
-        if let limiterEnabled = sessionLimiterDrafts[profile.id] {
-            updated.processing.setLimiterEnabled(limiterEnabled)
-        }
-        if !replacingGlobalEqualizer { applyDeviceCorrectionProvenanceDraft(to: &updated.processing, for: profile.id) }
-        for (id, snapshot) in sessionGroupProcessingDrafts[profile.id] ?? [:] {
-            // Retain drafts if a setup temporarily disables/removes their group.
-            if updated.configuredSpeakerGroups.contains(where: { $0.id == id }) {
-                try updated.setGroupProcessing(id: id, settings: snapshot.processingSettings)
-            }
-        }
-        let channelToneDrafts = sessionChannelToneDrafts[profile.id] ?? [:]
-        let channelEQDrafts = sessionChannelEQDrafts[profile.id] ?? [:]
-        let channelLimiterDrafts = sessionChannelLimiterDrafts[profile.id] ?? [:]
-        let channelDelayDrafts = sessionChannelDelayDrafts[profile.id] ?? [:]
-        let draftedChannelIndexes = Set(channelEQDrafts.keys)
-            .union(channelLimiterDrafts.keys)
-            .union(channelDelayDrafts.keys)
-            .union(channelToneDrafts.keys)
-        for channelIndex in draftedChannelIndexes {
-            let current = try updated.resolvedProcessing().settings(forChannel: channelIndex) ?? .identity
-            let parsed = try channelEQDrafts[channelIndex].map {
-                try EqualizerAPOParser().parse($0)
-            } ?? ParsedEQ(
-                preampDB: current.gainDB,
-                bands: current.bands,
-                warnings: []
-            )
-            let role = updated.processing.channels.first(where: { $0.index == channelIndex })?.role
-                ?? (channelIndex == 0 ? .left : (channelIndex == 1 ? .right : .unknown))
-            try updated.setChannelProcessing(
-                index: channelIndex,
-                role: role,
-                gainDB: parsed.preampDB,
-                bands: parsed.bands,
-                delayMilliseconds: channelDelayDrafts[channelIndex]
-                    ?? current.delayMilliseconds,
-                limiterEnabled: channelLimiterDrafts[channelIndex]
-                    ?? current.limiterEnabled,
-                simpleTone: channelToneDrafts[channelIndex] ?? current.simpleTone
-            )
-        }
-        return updated
-    }
-
-    func validateSetup(profile: DeviceProfile) async {
-        guard !isValidating else { return }
-        isValidating = true
-        validationMessage = "Validating dependencies, devices, sample rate, and CamillaDSP configuration…"
-        defer { isValidating = false }
-        guard let graph = await validate(profile: profile) else { return }
-        do {
-            await dependencies.refreshWithoutBlockingUI()
-            guard profile.usesExclusivePluginOutput || FileManager.default.isExecutableFile(atPath: dependencies.camillaDSPBinary.path) else {
-                throw AppError.missingCamillaDSP
-            }
-            guard let bridge = await coreAudioService.resolveSystemAudioBridgeWithoutBlockingUI() else {
-                throw AppError.missingRoutingDriver
-            }
-            guard await coreAudioService
-                .systemAudioBridgePresentationIsSupportedWithoutBlockingUI() else {
-                throw AppError.outdatedRoutingDriver
-            }
-            guard coreAudioService.installedSystemAudioBridgeChannelLayout != nil else {
-                throw AppError.unsupportedRoutingLayout
-            }
-            guard let output = await coreAudioService.resolveDeviceWithoutBlockingUI(
-                uid: profile.outputDeviceUID
-            ) else {
-                throw AppError.outputMissing(profile.outputDeviceName)
-            }
-            guard !output.isRoutingDevice else { throw AppError.invalidTarget }
-            let rate = Double(profile.sampleRate)
-            guard await coreAudioService.supportsSampleRateWithoutBlockingUI(
-                uid: bridge.id,
-                rate: rate
-            ) else {
-                throw AppError.unsupportedSampleRate(profile.sampleRate, bridge.name)
-            }
-            guard await coreAudioService.supportsSampleRateWithoutBlockingUI(
-                uid: output.id,
-                rate: rate
-            ) else {
-                throw AppError.unsupportedSampleRate(profile.sampleRate, output.name)
-            }
-
-            if profile.usesExclusivePluginOutput {
-                validationMessage = "Ready: direct plug-in output, devices and \(rateDescription(profile.sampleRate)) checked."
-                clearTransientError()
-                return
-            }
-            let configuration = await dspController.configuration(for: graph)
-            try await dependencies.validateConfiguration(configuration.yaml)
-
-            if isActive, activeProfileID == profile.id {
-                let diagnostics = try await dspController.fetchDiagnostics()
-                validationMessage = "Ready: EQ syntax, dependencies, devices, \(rateDescription(profile.sampleRate)), CamillaDSP config, and live engine checked (\(diagnostics.engineState))."
-            } else {
-                validationMessage = "Ready: EQ syntax, dependencies, devices, \(rateDescription(profile.sampleRate)), and CamillaDSP config checked. Activate EQ to test the live audio engine."
-            }
-            clearTransientError()
-        } catch {
-            validationMessage = ""
-            presentError(error, prefix: "Validation failed: ")
-        }
-    }
-
-    private func rateDescription(_ rate: Int) -> String {
-        rate % 1000 == 0 ? "\(rate / 1000) kHz" : String(format: "%.1f kHz", Double(rate) / 1000)
     }
 
     func renameProfile(id: UUID, to requestedName: String) async {
@@ -936,18 +588,15 @@ final class AppState: NSObject, ObservableObject {
                     observedRevision = revision; observedSession = session
                     continue
                 }
-                let directSnapshot = self.directOutput?.snapshot()
-                let load = directSnapshot != nil ? 0 : try? await self.dsp.rpc.processingLoad()
-                let clock = directSnapshot != nil ? nil : try? await self.dsp.rpc.playbackClock()
+                let work = await self.processingBackend.measureWork()
                 guard !Task.isCancelled, self.activeSession?.id == session,
                       self.acknowledgedPlanRevision == revision, !self.transitionInProgress,
                       self.spatialCalibrationContext == nil,
                       self.profiles.profiles.first(where: { $0.id == profile.id })?.audioBufferSetting == .automatic else {
                     observedRevision = nil; continue
                 }
-                self.automaticBuffers.observe(work: self.pcmRouter.takeAudioBufferWork(), dspLoadPercent: load,
-                    clockEpoch: directSnapshot?.clock?.epoch ?? clock?.epoch,
-                    underrunFrames: directSnapshot?.underrunFrames ?? clock?.underrunFrames,
+                self.automaticBuffers.observe(work: self.pcmRouter.takeAudioBufferWork(), dspLoadPercent: work.loadPercent,
+                    clockEpoch: work.clockEpoch, underrunFrames: work.underrunFrames,
                     droppedFrames: self.pcmRouter.statistics.camillaDroppedFrames)
             }
         }
@@ -1064,11 +713,7 @@ final class AppState: NSObject, ObservableObject {
         if changingDeviceType {
             invalidateDeferredEdits()
             clearEQDraft(for: candidate.id)
-            sessionChannelToneDrafts[candidate.id] = nil
-            sessionChannelEQDrafts[candidate.id] = nil
-            sessionChannelLimiterDrafts[candidate.id] = nil
-            sessionChannelDelayDrafts[candidate.id] = nil
-            sessionGroupProcessingDrafts[candidate.id] = nil
+            processingDrafts[candidate.id] = nil
             referenceCorrectionSessions[candidate.id] = nil
             speakerEditSessions[candidate.id] = nil
             multichannelEditSessions[candidate.id] = nil
@@ -1268,49 +913,12 @@ final class AppState: NSObject, ObservableObject {
         pcmRouter.setLevelCheckGain(id: context.id, gain: gain)
     }
 
-    func saveSpatialCalibration(
-        context: SpatialCalibrationContext, name: String, result: SpatialPerceptualCalibration
-    ) -> Bool {
-        guard result.isComplete, spatialCalibrationContext == context,
-              activeSession?.id == context.runtimeSessionID, !transitionInProgress,
-              coreAudio.defaultOutputUID == activeRoutingUID,
-              var profile = profiles.profiles.first(where: { $0.id == context.profileID }),
-              profile.outputDeviceUID == context.outputDeviceUID else { return false }
-        let name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
-        profile.spatialListenerProfile = SpatialListenerProfile(
-            name: name.isEmpty ? "My listening position" : name,
-            outputDeviceUID: context.outputDeviceUID, savedAt: Date(),
-            position: result.position, tuning: result.tuning.validated,
-            completedComparisons: result.comparisonIndex
-        )
-        profiles.update(profile)
-        endSpatialCalibration(id: context.id)
-        Task {
-            do { try await applyHistoryProfileIfActive(profile.id) }
-            catch { presentError(error) }
-        }
-        return true
-    }
-
-    func clearSpatialCalibration(profileID: UUID) {
-        guard spatialCalibrationContext == nil,
-              var profile = profiles.profiles.first(where: { $0.id == profileID }) else { return }
-        profile.spatialListenerProfile = nil
-        profiles.update(profile)
-        if activeProfileID == profileID {
-            Task {
-                do { try await applyHistoryProfileIfActive(profile.id) }
-                catch { presentError(error) }
-            }
-        }
-    }
-
     func holdSpatialMeasurement(context: SpatialCalibrationContext, enabled: Bool) {
         guard spatialCalibrationContext == context else { return }
         pcmRouter.holdSpatialMeasurement(id: context.id, enabled: enabled)
     }
 
-    var acousticVolumeSnapshot: SystemVolumeControlSession.Snapshot? { runtimeServices.currentVolumeLease()?.controlSession.snapshot() }
+    var acousticVolumeSnapshot: SystemVolumeControlSession.Snapshot? { runtimeCoordinator.volumeSnapshot }
 
     func acousticMeasurementIsCurrent(context: SpatialCalibrationContext, processing: ProcessingProfile) -> Bool {
         spatialCalibrationContext == context && isActive && !transitionInProgress && !runtimeCoordinator.hasLiveApplyWork
@@ -1532,13 +1140,22 @@ final class AppState: NSObject, ObservableObject {
 
 // Composition root: adapters share the existing managers; the coordinator owns sequencing.
 extension AppState {
-    var volumeHandoffSummary: String { volumeBridge.diagnosticSummary }
+    var volumeHandoffSummary: String { captureBackend.controlSummary }
     var coreAudioSummary: String {
         "Snapshot revision: \(coreAudio.snapshot.revision) • Outputs: \(coreAudio.outputDevices.count)\nInitial snapshot: \(coreAudio.hasCompletedInitialRefresh)\nFull refreshes: \(coreAudioService.refreshCount) • Coalesced: \(coreAudioService.coalescedRefreshCount) • Recovery: \(coreAudioService.recoveryRefreshCount)\nLast full refresh: \(String(format: "%.2f", coreAudioService.lastRefreshMilliseconds)) ms\n" + coreAudio.diagnostics
     }
+    private func makeLiveCaptureBackend() -> any AudioCaptureBackend {
+        SystemAudioBridgeCaptureBackend(coreAudio: coreAudioService, performanceRecorder: performanceRecorder,
+            onVolume: { [weak self] profileID, ownershipID, scalar in
+                guard let self, self.runtimeCoordinator.owns(ownershipID) else { return }
+                self.profiles.setOutputVolumeScalar(profileID: profileID, scalar: scalar)
+            },
+            onMasterGain: { [pcmRouter] gain, muted in pcmRouter.setSystemMaster(linearGain: gain, muted: muted) },
+            onMirrorFailure: { [weak self] in self?.runtimeCoordinator.reportVolumeMirrorFailure(ownershipID: $0) })
+    }
+
     private func makeLiveRuntimeServices() -> AudioRuntimeServices {
         coreAudioService.performanceRecorder = performanceRecorder
-        volumeBridge.performanceRecorder = performanceRecorder
         return AudioRuntimeServices(
             startDirectOutput: { [unowned self] plan in
                 guard let device = await coreAudioService.resolveDeviceWithoutBlockingUI(uid: plan.hardwareEvidence.output.uid) else {
@@ -1552,40 +1169,24 @@ extension AppState {
                 directOutput = output; directOutputError = nil
             },
             directOutputNeedsRecovery: { [unowned self] in
-                guard let output = directOutput, driverTransport.runtimeError == nil else { return false }
+                guard let output = directOutput, captureBackend.runtimeError == nil else { return false }
                 return output.snapshot().error != nil || pcmRouter.statistics.camillaWriteFailures > 0
             },
             preparePluginRack: { [unowned self] in try await pluginRackManager.prepare($0) },
             commitPluginRack: { [unowned self] in pcmRouter.setPluginProcessor(pluginRackManager.commit($0)) },
-            currentVolumeLease: { [volumeBridge] in volumeBridge.currentLease },
             freshDefaultOutput: { [coreAudioService] in await coreAudioService.readDefaultOutputWithoutBlockingUI() },
-            bindingGeneration: { [coreAudioService] in coreAudioService.deviceGraphGeneration },
-            publishedProfileUIDs: { [coreAudioService] in
-                Set(coreAudioService.outputDevices.lazy.map(\.id).filter(ProfileRoutingDescriptor.isProfileRoutingUID))
-            },
             physicalOutputs: { [coreAudioService] in coreAudioService.physicalOutputDevices },
-            cancelReadiness: { [coreAudioService] in coreAudioService.cancelReadiness() },
-            resolveBinding: { [coreAudioService] in try await coreAudioService.resolveRuntimeBinding(routingUID: $0, physicalUID: $1) },
-            rebindVolume: { [volumeBridge] in try await volumeBridge.rebind($0, binding: $1) },
-            volumeMasterControl: { [volumeBridge] in volumeBridge.currentLease?.controlSession.driverConsumer() },
-            updateTransportControl: { [driverTransport] in driverTransport.updateControlDeviceObjectID($0, consumer: $1) },
             automaticBufferSize: { [unowned self] in automaticBuffers.recommendedFrames(for: $0) },
             synchronous: .init(
-                stopTransport: { [driverTransport] in driverTransport.stop() },
                 stopPCM: { [unowned self] in pcmRouter.stop(); pluginRackManager.stop() },
-                closeEngineInput: { [unowned self] in dsp.closeAudioInput() },
+                closeEngineInput: { [unowned self] in processingBackend.closeInputSynchronously() },
                 stopSpectrum: { [spectrum] in spectrum.stop() },
                 stopEngine: { [unowned self] in
                     directOutputClockTask?.cancel(); directOutputClockTask = nil
                     directOutput?.stop(); directOutput = nil; directOutputError = nil
-                    dsp.forceStopAndWait()
+                    processingBackend.stopSynchronously()
                 },
-                stopVolume: { [volumeBridge] in volumeBridge.stop() },
-                setDefaultOutput: { [coreAudioService] in try coreAudioService.setDefaultOutput(uid: $0) },
-                hideBridge: { [coreAudioService] in try coreAudioService.setSystemAudioBridgePresentation(name: "System Audio Bridge", visible: false) },
-                removeProfileDevices: { [coreAudioService] in coreAudioService.destroyAllProfileRoutingDevices() }),
-            holdAudibility: { [volumeBridge] in volumeBridge.holdAudibility($0) },
-            permitAudibility: { [volumeBridge] in volumeBridge.permitAudibility($0) },
+                setDefaultOutput: { [coreAudioService] in try coreAudioService.setDefaultOutput(uid: $0) }),
             refreshDependencies: { [unowned self] in await dependencies.refreshWithoutBlockingUI() },
             prepareAssets: { profile in
                 let directory = CamiTunePaths.impulseResponsesDirectory
@@ -1593,11 +1194,8 @@ extension AppState {
                     try PreparedRuntimeAssets.prepare(profile: profile, directory: directory)
                 }.value
             },
-            engineAvailable: { [unowned self] in FileManager.default.isExecutableFile(atPath: dependencies.camillaDSPBinary.path) },
-            resolveBridge: { [unowned self] in await coreAudioService.resolveSystemAudioBridgeWithoutBlockingUI() },
-            freshBridge: { [unowned self] in await coreAudioService.freshlyResolvedSystemAudioBridgeWithoutBlockingUI() },
-            presentationSupported: { [unowned self] in await coreAudioService.systemAudioBridgePresentationIsSupportedWithoutBlockingUI() },
-            bridgeLayout: { [unowned self] in coreAudioService.installedSystemAudioBridgeChannelLayout },
+            captureBackend: captureBackend,
+            processingBackend: processingBackend,
             resolveOutput: { [unowned self] in await coreAudioService.resolveDeviceWithoutBlockingUI(uid: $0) },
             probeTopology: { [coreAudioService] output in try await coreAudioService.probeSpeakerTopology(uid: output.id) },
             outputChannelCount: { [coreAudioService] output in try await coreAudioService.outputChannelCount(uid: output.id) },
@@ -1606,70 +1204,33 @@ extension AppState {
             cachedDevice: { [unowned self] in coreAudioService.cachedDevice(uid: $0) },
             hasSnapshot: { [unowned self] in coreAudioService.hasCompletedInitialRefresh },
             nominalRate: { [unowned self] in await coreAudioService.nominalSampleRateWithoutBlockingUI(uid: $0) },
-            synchronizeRouting: { [unowned self] profiles, active, visible, descriptors in
-                let request = try ProfileEndpointPublicationRequest(profiles: profiles, activeProfileID: active,
-                    defaultOutputUID: coreAudio.defaultOutputUID,
-                    connectedOutputUIDs: Set(coreAudio.physicalOutputDevices.map(\.uid)),
-                    additionallyVisible: visible, preparedDescriptors: descriptors)
-                _ = try await coreAudioService.publishProfileEndpoints(request)
-            },
-            waitForRouting: { [unowned self] in await coreAudioService.waitForProfileRoutingDevice(profileID: $0) },
-            hideBridge: { [unowned self] in try await coreAudioService.setSystemAudioBridgePresentationWithoutBlockingUI(name: AudioDeviceInfo.systemAudioBridgeName, visible: false) },
-            setRate: { [unowned self] in try await coreAudioService.setSampleRate(uid: $0, rate: $1) },
             setDefaultOutput: { [unowned self] in try await coreAudioService.setDefaultOutputAndWait(uid: $0) },
-            startEngine: { [unowned self] in try await dsp.start(binary: dependencies.camillaDSPBinary) },
-            resetEngine: { [unowned self] in dspController.resetRuntime() },
-            playbackDevices: { [unowned self] in try await dsp.rpc.availablePlaybackDevices(backend: "CoreAudio").map(\.identifier) },
-            graphUpdateDescription: { [unowned self] in dspController.lastGraphUpdate?.rawValue },
-            applyGraph: { [unowned self] in try await dspController.applyGraph($0, performanceRecorder: performanceRecorder) },
             startObservations: { [unowned self] runtimeSession in
                 meters.start(
-                    controller: directOutput == nil ? dspController : nil,
+                    backend: directOutput == nil ? processingBackend : nil,
                     session: runtimeSession,
                     directOutput: directOutput,
-                    routeDiagnosticsProvider: { [driverTransport, pcmRouter] in
+                    routeDiagnosticsProvider: { [captureBackend, pcmRouter] in
                         AudioRouteDiagnostics(
-                            transport: driverTransport.statistics,
+                            transport: captureBackend.statistics,
                             router: pcmRouter.statistics
                         )
                     }
                 )
             },
-            startVolume: { [unowned self] routing, output, profileID in
-                guard let ownershipID = runtimeCoordinator.currentOwnershipID else { throw CancellationError() }
-                let lease = try await volumeBridge.acquire(
-                    ownershipID: ownershipID,
-                    routingDevice: routing,
-                    physicalUID: output.id,
-                    coreAudio: coreAudioService,
-                    onVolume: { [weak self] volume in
-                        guard let self, self.runtimeCoordinator.owns(ownershipID) else { return }
-                        self.profiles.setOutputVolumeScalar(
-                            profileID: profileID,
-                            scalar: volume
-                        )
-                    },
-                    onMasterGain: { [pcmRouter] linearGain, muted in
-                        pcmRouter.setSystemMaster(
-                            linearGain: linearGain,
-                            muted: muted
-                        )
-                    },
-                    onMirrorFailure: { [weak self] in
-                        self?.runtimeCoordinator.reportVolumeMirrorFailure(ownershipID: ownershipID)
-                    }
-                )
-                let volumeSession = lease.controlSession
-                return volumeSession.driverConsumer()
-            },
-            volumeMode: { [unowned self] in volumeBridge.mode },
             startPCM: { [unowned self] plan, runtimeSession in
                 startAutomaticBufferObservation()
                 pcmRouter.performanceSource.setSession(runtimeSession.id)
                 try await pluginRackManager.prepare(plan)
                 let pluginProcessor = pluginRackManager.commit(plan)
-                await pcmRouter.start(camillaSink: plan.usesExclusivePluginOutput ? nil : try dsp.audioInputHandle(),
-                    outputSink: plan.usesExclusivePluginOutput ? directOutput : nil, activeRoute: plan.route,
+                let sink: any PCMOutputSink
+                if plan.usesExclusivePluginOutput {
+                    guard let output = directOutput else { throw CancellationError() }
+                    sink = output
+                } else {
+                    sink = try processingBackend.makeInputSink()
+                }
+                await pcmRouter.start(sink: sink, activeRoute: plan.route,
                     renderConfiguration: plan.renderConfiguration, deliveryConfiguration: plan.deliveryConfiguration,
                     backendChunkFrames: plan.processingGraph.chunkSize,
                     referenceTopology: plan.referenceTopology,
@@ -1693,54 +1254,38 @@ extension AppState {
                         }
                     }
                 } else if plan.deliveryConfiguration.queue.rateTargetMode == .clockTracked {
-                    dsp.observePlaybackClock(session: runtimeSession.id, consumer: pcmRouter.playbackClockConsumer())
+                    processingBackend.observePlaybackClock(session: runtimeSession.id, consumer: pcmRouter.playbackClockConsumer())
                 }
             },
             applyRenderConfiguration: { [unowned self] in pcmRouter.setRenderConfiguration($0) },
             applyPCMDeliveryConfiguration: { [unowned self] configuration in
                 pcmRouter.setDeliveryConfiguration(configuration)
                 if directOutput == nil, configuration.queue.rateTargetMode == .clockTracked, let session = runtimeCoordinator.activeSession {
-                    dsp.observePlaybackClock(session: session.id, consumer: pcmRouter.playbackClockConsumer())
-                } else { dsp.stopClockObservations() }
+                    processingBackend.observePlaybackClock(session: session.id, consumer: pcmRouter.playbackClockConsumer())
+                } else { processingBackend.stopClockObservations() }
             },
-            startTransport: { [unowned self] currentBridge, routing, sampleRate, masterControl in
-                try await driverTransport.start(
-                    deviceObjectID: currentBridge.objectID,
-                    controlDeviceObjectID: routing.objectID,
-                    expectedSampleRate: sampleRate,
-                    pcmRouter: pcmRouter,
-                    perAppAudio: perAppAudio,
-                    masterControlConsumer: { scalar, muted in
-                        masterControl(scalar, muted)
-                    }
-                )
-            },
-            prepareIncoming: { [unowned self] in try await volumeBridge.prepareIncoming() },
-            startSpectrum: { [unowned self] in await spectrum.start(session: $0, sourceName: "System Audio Bridge") },
-            beginOutgoing: { [unowned self] in await volumeBridge.beginOutgoing() },
+            startSpectrum: { [unowned self] in await spectrum.start(session: $0, sourceName: captureBackend.name) },
             stopObservations: { [unowned self] in meters.stop() },
-            stopTransport: { [unowned self] in await driverTransport.stopWithoutBlockingUI() },
             stopPCM: { [unowned self] in
                 directOutputClockTask?.cancel(); directOutputClockTask = nil
                 automaticBufferTask?.cancel(); automaticBufferTask = nil
                 automaticBuffers.end()
-                dsp.stopClockObservations()
+                processingBackend.stopClockObservations()
                 await pluginRackManager.flushBeforeStopping()
                 await pcmRouter.stopWithoutBlockingUI()
                 pluginRackManager.stop()
                 pcmRouter.performanceSource.setSession(nil)
             },
-            closeEngineInput: { [unowned self] in await dsp.closeAudioInputWithoutBlockingUI() },
+            closeEngineInput: { [unowned self] in await processingBackend.closeInput() },
             stopSpectrum: { [unowned self] in await spectrum.stopWithoutBlockingUI() },
             stopEngine: { [unowned self] in
                 if let output = directOutput {
                     directOutput = nil; directOutputError = nil
                     await Task.detached(priority: .userInitiated) { output.stop() }.value
                 }
-                await dsp.stop()
+                await processingBackend.stop()
             },
-            stopVolume: { [unowned self] in await volumeBridge.stopWithoutBlockingUI() },
-            transportError: { [unowned self] in driverTransport.runtimeError ?? pcmRouter.statistics.deliveryError ?? directOutputError },
+            deliveryError: { [unowned self] in pcmRouter.statistics.deliveryError ?? directOutputError },
             notifyActivation: { [unowned self] in notifications.activated() },
             notifyDeactivation: { [unowned self] in notifications.deactivated() },
             sleep: { try await Task.sleep(for: $0) },
@@ -1783,14 +1328,14 @@ extension AppState {
             dspLoad: fresh ? telemetry.processingLoadPercent : nil, dspBufferFrames: fresh ? telemetry.outputBufferedFrames : nil,
             dspResamplerLoad: fresh ? telemetry.resamplerLoadPercent : nil, queue: statistics.camillaQueue,
             recoveries: statistics.camillaQueueRecoveries, droppedFrames: statistics.camillaDroppedFrames,
-            transportDroppedFrames: driverTransport.statistics.droppedFrames, processCPUSeconds: RuntimePerformanceRecorder.cpuSeconds(),
+            transportDroppedFrames: captureBackend.statistics.droppedFrames, processCPUSeconds: RuntimePerformanceRecorder.cpuSeconds(),
             presentationStatistics: perAppAudio.presentationStatistics,
             timelineMixerStatistics: perAppAudio.timelineStatisticsSnapshot(),
             writerRateAdjustmentPPM: statistics.rateAdjustmentPPM,
             writerRateBufferedFrames: statistics.rateMatchBufferedFrames,
             deliveryConfiguration: runtimeCoordinator.activeDeliveryConfiguration,
-            producerCompletion: driverTransport.statistics.completion, playbackClock: dsp.lastPlaybackClock,
-            deliveryError: driverTransport.runtimeError ?? statistics.deliveryError,
+            producerCompletion: captureBackend.statistics.completion, playbackClock: processingBackend.playbackClock,
+            deliveryError: captureBackend.runtimeError ?? statistics.deliveryError,
             producerDrains: statistics.producerDrains)
     }
 }

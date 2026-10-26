@@ -1,3 +1,4 @@
+import CamiTuneAudio
 import CamiTuneDomain
 import Foundation
 
@@ -42,8 +43,9 @@ extension AudioRuntimeStatus {
 /// Runtime boundary used by the application. It owns the active graph snapshot
 /// and chooses between a small WebSocket patch and a full topology replacement.
 @MainActor
-final class CamillaDSPController {
+final class CamillaDSPController: AudioProcessingBackend {
     private let manager: CamillaDSPManager
+    var binary: URL
     private let compiler: CamillaDSPCompiler
     private let differ: ProcessingGraphDiffer
     private(set) var activeGraph: ProcessingGraph?
@@ -54,12 +56,14 @@ final class CamillaDSPController {
 
     init(
         manager: CamillaDSPManager,
+        binary: URL = CamiTunePaths.supportDirectory.appendingPathComponent("bin/camilladsp"),
         compiler: CamillaDSPCompiler = CamillaDSPCompiler(),
         differ: ProcessingGraphDiffer = ProcessingGraphDiffer(),
         applyConfiguration: ((CamillaDSPConfiguration) async throws -> Void)? = nil,
         applyPatch: ((CamillaDSPRuntimePatch) async throws -> Void)? = nil
     ) {
         self.manager = manager
+        self.binary = binary
         self.compiler = compiler
         self.differ = differ
         self.applyConfiguration = applyConfiguration ?? { try await manager.apply(configuration: $0) }
@@ -106,18 +110,13 @@ final class CamillaDSPController {
             } catch {
                 // A full graph remains a compatibility and recovery path if a
                 // running engine rejects a patch after its protocol/state changes.
-                let configuration = await Task.detached(priority: .userInitiated) {
-                    compiler.compile(graph)
-                }.value
+                let configuration = await configuration(for: graph)
                 try await applyConfiguration(configuration)
                 lastGraphUpdate = .fullConfigurationFallback
                 patchedFilterCount = 0
             }
         case .replaceConfiguration:
-            let compiler = self.compiler
-            let configuration = await Task.detached(priority: .userInitiated) {
-                compiler.compile(graph)
-            }.value
+            let configuration = await configuration(for: graph)
             activeGraph = nil
             try await applyConfiguration(configuration)
             lastGraphUpdate = .fullConfiguration
@@ -132,14 +131,6 @@ final class CamillaDSPController {
         activeGraph = nil
         lastGraphUpdate = nil
         patchedFilterCount = 0
-    }
-
-    func setVolume(_ db: Double) async throws {
-        try await manager.rpc.setVolume(db)
-    }
-
-    func setMute(_ muted: Bool) async throws {
-        try await manager.rpc.setMute(muted)
     }
 
     func fetchMeters() async throws -> SignalLevels {
@@ -173,4 +164,44 @@ final class CamillaDSPController {
             blockFrames: graph?.chunkSize
         )
     }
+}
+
+extension CamillaDSPController {
+    var name: String { "CamillaDSP" }
+    var playbackClock: AudioPlaybackClock? { manager.lastPlaybackClock }
+    var isRunning: Bool { manager.isRunning }
+    var graphUpdateDescription: String? { lastGraphUpdate?.rawValue }
+
+    func validateAvailability() throws {
+        guard FileManager.default.isExecutableFile(atPath: binary.path) else { throw AppState.AppError.missingCamillaDSP }
+    }
+
+    func start() async throws { try await manager.start(binary: binary) }
+
+    func validateOutput(uid: String) async throws {
+        let outputs = try await manager.rpc.availablePlaybackDevices(backend: "CoreAudio")
+        guard outputs.contains(where: { $0.identifier == uid }) else { throw AppState.AppError.camillaDSPCoreAudioUIDUnsupported }
+    }
+
+    func makeInputSink() throws -> any PCMOutputSink {
+        try CamillaPCMSink(duplicating: manager.audioInputHandle().fileDescriptor)
+    }
+
+    func fetchTelemetry() async throws -> AudioOutputTelemetry { .init(camilla: try await fetchDiagnostics()) }
+
+    func measureWork() async -> AudioBackendWork {
+        let load = try? await manager.rpc.processingLoad()
+        let clock = try? await manager.rpc.playbackClock()
+        return .init(loadPercent: load, clockEpoch: clock?.epoch, underrunFrames: clock?.underrunFrames)
+    }
+
+    func observePlaybackClock(session: UUID, consumer: @escaping @Sendable (AudioClockObservation) -> Void) {
+        manager.observePlaybackClock(session: session, consumer: consumer)
+    }
+
+    func stopClockObservations() { manager.stopClockObservations() }
+    func closeInput() async { await manager.closeAudioInputWithoutBlockingUI() }
+    func closeInputSynchronously() { manager.closeAudioInput() }
+    func stop() async { await manager.stop() }
+    func stopSynchronously() { manager.forceStopAndWait() }
 }

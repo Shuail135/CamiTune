@@ -1,5 +1,6 @@
 #import "PluginHost.h"
 #import "MIDIHost.h"
+#include <Accelerate/Accelerate.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/mman.h>
@@ -341,8 +342,7 @@ static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketP
     // 32 channels exceed the default macOS worker stack once an AU renders.
     // Allocate and touch all scratch storage before starting the audio thread.
     struct AudioBuffers {
-        std::array<std::array<float, maximumFrames>, maximumChannels> first{}, second{};
-        std::array<std::array<float, maximumFrames>, 2> sidechain{};
+        std::array<float, maximumFrames * maximumChannels> first{}, second{};
     };
     auto buffers = std::make_shared<AudioBuffers>();
     std::thread worker([samples, channels, buffers] {
@@ -385,27 +385,22 @@ static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketP
             if (request.version != protocolVersion || request.frames == 0 || request.frames > maximumFrames || audioFailed.load()) reply.status = 1;
             else {
                 @autoreleasepool {
-                    for (uint32_t f = 0; f < request.frames; ++f) for (uint32_t c = 0; c < channels; ++c) first[c][f] = samples[f * channels + c];
+                    vDSP_mtrans(samples, 1, first.data(), 1, channels, request.frames);
                     if (request.reset) for (auto& effect : effects) effect->reset();
                     midiHost->process();
                     float* input[maximumChannels], *output[maximumChannels];
-                    for (uint32_t c = 0; c < channels; ++c) { input[c] = first[c].data(); output[c] = second[c].data(); }
+                    for (uint32_t c = 0; c < channels; ++c) { input[c] = first.data() + c * request.frames; output[c] = second.data() + c * request.frames; }
                     for (size_t index = 0; index < effects.size(); ++index) {
                         auto& effect = effects[index];
-                        const float* external = samples + maximumFrames * channels + index * maximumFrames * 2;
-                        for (uint32_t f = 0; f < request.frames; ++f) for (uint32_t c = 0; c < 2; ++c)
-                            buffers->sidechain[c][f] = std::isfinite(external[f * 2 + c]) ? external[f * 2 + c] : 0;
-                        float* sidechain[2]{buffers->sidechain[0].data(), buffers->sidechain[1].data()};
-                        effect->setSidechain(sidechain);
-                        for (uint32_t c = 0; c < channels; ++c) memset(output[c], 0, request.frames * sizeof(float));
+                        effect->setSidechain(samples + maximumFrames * channels + index * maximumFrames * 2);
+                        memset(output[0], 0, request.frames * channels * sizeof(float));
                         if (!effect->render(input, output, request.frames)) { reply.status = 2; break; }
                         for (uint32_t c = 0; c < channels; ++c) std::swap(input[c], output[c]);
                     }
-                    for (uint32_t f = 0; f < request.frames; ++f) for (uint32_t c = 0; c < channels; ++c) {
-                        float value = input[c][f];
-                        if (!std::isfinite(value)) { reply.status = 3; value = 0; }
-                        samples[f * channels + c] = value;
+                    for (uint32_t i = 0; i < request.frames * channels; ++i) {
+                        if (!std::isfinite(input[0][i])) { reply.status = 3; input[0][i] = 0; }
                     }
+                    vDSP_mtrans(input[0], 1, samples, 1, request.frames, channels);
                 }
             }
             if (reply.status) audioFailed = true;

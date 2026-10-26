@@ -90,15 +90,6 @@ OSStatus sabr_client_transport_disconnect(
     AudioObjectID deviceObjectID
 );
 
-uint32_t sabr_client_transport_read(
-    SABRClientTransportRef transport,
-    Float32* interleavedDestination,
-    uint32_t destinationChannelCapacity,
-    uint32_t maximumFrames,
-    uint32_t* activeChannels,
-    double* sampleRate
-);
-
 uint32_t sabr_client_transport_read_packet(
     SABRClientTransportRef transport,
     Float32* interleavedDestination,

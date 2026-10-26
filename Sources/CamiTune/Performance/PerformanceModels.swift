@@ -90,7 +90,7 @@ struct PerformanceEnvironment: Sendable, Codable {
     var writerRateBufferedFrames: UInt64? = nil
     var deliveryConfiguration: PCMDeliveryConfiguration? = nil
     var producerCompletion: ProducerCompletionStatistics? = nil
-    var playbackClock: CamillaPlaybackClock? = nil
+    var playbackClock: AudioPlaybackClock? = nil
     var deliveryError: String? = nil
     var producerDrains: PCMProducerDrainStatistics? = nil
 }

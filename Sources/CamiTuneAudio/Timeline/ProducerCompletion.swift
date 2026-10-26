@@ -177,7 +177,7 @@ package final class ProducerCompletionAssembler {
     private var idleDeadline: PerformanceTick? {
         guard pendingFrames > 0 || !reordered.isEmpty, let lastEvidenceReceived else { return nil }
         return lastEvidenceReceived.advanced(seconds:
-            TimelineReorderPolicy.legacyIdleDelay(largestObservedPacketFrames, sampleRate: observedSampleRate))
+            max(0.004, 1.5 * Double(max(1, largestObservedPacketFrames)) / observedSampleRate))
     }
     private var residenceDeadline: PerformanceTick? {
         let source = epochs.values.flatMap { $0.pieces.map { $0.record.received } }.min()

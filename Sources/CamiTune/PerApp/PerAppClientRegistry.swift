@@ -12,7 +12,7 @@ final class PerAppClientRegistry {
     private let stateLock: NSLock
     private let monitorsRunningApplications: Bool
     private static let identityRetryDelays: [TimeInterval] = [0, 0.1, 0.25, 0.5, 1, 2]
-    private var onResolved: (([PerAppTransportClientKey: ApplicationIdentity], [PerAppDriverClient], Set<PerAppTransportClientKey>, UInt64, Int) -> Bool)?
+    private var onResolved: (([PerAppTransportClientKey: ApplicationIdentity], [AudioCaptureClient], Set<PerAppTransportClientKey>, UInt64, Int) -> Bool)?
     private var onWorkspace: (([String: ApplicationIdentity], [Int32: ApplicationIdentity]) -> Void)?
     private struct ResolvedApplicationOwner {
         var bundleID: String?
@@ -27,7 +27,7 @@ final class PerAppClientRegistry {
             return "pid:\(processID)"
         }
     }
-    private(set) var clientsByKey: [PerAppTransportClientKey: PerAppDriverClient] = [:]
+    private(set) var clientsByKey: [PerAppTransportClientKey: AudioCaptureClient] = [:]
     private(set) var uniqueClientKeyByProcessID: [Int32: PerAppTransportClientKey] = [:]
     private(set) var uniqueClientKeyByClientID: [UInt32: PerAppTransportClientKey] = [:]
     private(set) var applicationKeyByProcessID: [Int32: String] = [:]
@@ -53,7 +53,7 @@ final class PerAppClientRegistry {
         self.monitorsRunningApplications = monitorsRunningApplications
     }
 
-    func start(onResolved: @escaping ([PerAppTransportClientKey: ApplicationIdentity], [PerAppDriverClient], Set<PerAppTransportClientKey>, UInt64, Int) -> Bool,
+    func start(onResolved: @escaping ([PerAppTransportClientKey: ApplicationIdentity], [AudioCaptureClient], Set<PerAppTransportClientKey>, UInt64, Int) -> Bool,
                onWorkspace: @escaping ([String: ApplicationIdentity], [Int32: ApplicationIdentity]) -> Void) {
         self.onResolved = onResolved
         self.onWorkspace = onWorkspace
@@ -76,11 +76,11 @@ final class PerAppClientRegistry {
     func afterIdentityWork(_ work: @escaping () -> Void) { identityQueue.async(execute: work) }
 
     struct ClientUpdate {
-        let clientsByKey: [PerAppTransportClientKey: PerAppDriverClient]
+        let clientsByKey: [PerAppTransportClientKey: AudioCaptureClient]
         let uniqueClientKeyByProcessID: [Int32: PerAppTransportClientKey]
         let uniqueClientKeyByClientID: [UInt32: PerAppTransportClientKey]
         let applicationKeyByProcessID: [Int32: String]
-        init(_ clients: [PerAppDriverClient]) {
+        init(_ clients: [AudioCaptureClient]) {
             clientsByKey = Dictionary(
                 clients.map { ($0.transportKey, $0) },
                 uniquingKeysWith: { current, candidate in
@@ -181,7 +181,7 @@ final class PerAppClientRegistry {
     }
 
     func scheduleIdentityResolution(
-        clients: [PerAppDriverClient],
+        clients: [AudioCaptureClient],
         revision: UInt64,
         attempt: Int
     ) {
@@ -303,15 +303,15 @@ final class PerAppClientRegistry {
 #endif
     }
 
-    private static func isIdentityResolutionCandidate(_ client: PerAppDriverClient) -> Bool {
+    private static func isIdentityResolutionCandidate(_ client: AudioCaptureClient) -> Bool {
         client.processID > 0
             && client.processID != Int32(ProcessInfo.processInfo.processIdentifier)
             && !isSystemAudioService(bundleID: client.bundleID)
     }
 
     private static func uniqueClientKeys<Key: Hashable>(
-        _ clients: [PerAppDriverClient],
-        key: (PerAppDriverClient) -> Key,
+        _ clients: [AudioCaptureClient],
+        key: (AudioCaptureClient) -> Key,
         isUsable: (Key) -> Bool
     ) -> [Key: PerAppTransportClientKey] {
         var result: [Key: PerAppTransportClientKey] = [:]
@@ -330,7 +330,7 @@ final class PerAppClientRegistry {
     }
 
     private static func resolveApplicationIdentity(
-        for client: PerAppDriverClient
+        for client: AudioCaptureClient
     ) -> ApplicationIdentity? {
         guard let owner = resolveOwningApplication(
             processID: client.processID,

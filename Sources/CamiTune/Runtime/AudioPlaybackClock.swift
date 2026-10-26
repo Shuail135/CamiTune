@@ -3,7 +3,7 @@ import Foundation
 
 /// Explicit engine protocol value. Optional UI diagnostics never supply this
 /// control input; the engine adapter polls it for the owned delivery session.
-struct CamillaPlaybackClock: Codable, Sendable {
+struct AudioPlaybackClock: Codable, Sendable {
     let epoch: UInt64
     let sampleTime: Double
     let hostTime: UInt64

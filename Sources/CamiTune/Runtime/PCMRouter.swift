@@ -27,46 +27,21 @@ final class PCMRouter: @unchecked Sendable {
     let performanceSource = PerformanceTraceSource()
     private let state = NSLock()
     private let systemMaster = SystemMasterGainControl()
-    private var camillaBranch: CamillaDeliveryPipeline?
+    private var deliveryBranch: PCMDeliveryPipeline?
     private var analyzerBranch: AnalyzerPCMBranch?
     private var meterBranch: MeterPCMBranch?
     private var statisticsValue = Statistics()
     private var activeRoute: ActiveAudioRoute?
 
     func takeAudioBufferWork() -> AudioBufferWorkObservation {
-        state.lock(); let branch = camillaBranch; state.unlock()
+        state.lock(); let branch = deliveryBranch; state.unlock()
         return branch?.takeAudioBufferWork() ?? .init()
-    }
-
-    func isQuietForBufferChange(seconds: Double = 3, now: PerformanceTick = PerformanceClock.now()) -> Bool {
-        state.lock(); let branch = camillaBranch; let error = statisticsValue.sourceFormatError; state.unlock()
-        return error == nil && branch?.isQuietForBufferChange(seconds: seconds, now: now) == true
-    }
-
-    func bufferHandoffToken(seconds: Double, now: PerformanceTick = PerformanceClock.now()) -> AudioBufferHandoffToken? {
-        state.lock(); let branch = camillaBranch; let error = statisticsValue.sourceFormatError; state.unlock()
-        return error == nil ? branch?.bufferHandoffToken(seconds: seconds, now: now) : nil
-    }
-
-    func acceptsBufferHandoff(_ token: AudioBufferHandoffToken) -> Bool {
-        state.lock(); let branch = camillaBranch; state.unlock()
-        return branch?.acceptsBufferHandoff(token) == true
-    }
-
-    func replaceBackendIfQuiet(_ replacement: CamillaPCMSink, token: AudioBufferHandoffToken,
-        plan: AudioRuntimePlan, clocks: [AudioClockObservation], quietSeconds: Double,
-        now: PerformanceTick = PerformanceClock.now()) -> CamillaPCMSink? {
-        state.lock(); defer { state.unlock() }
-        guard statisticsValue.sourceFormatError == nil else { return nil }
-        return camillaBranch?.replaceBackendIfQuiet(replacement, token: token,
-            chunkFrames: plan.processingGraph.chunkSize, configuration: plan.deliveryConfiguration,
-            clocks: clocks, quietSeconds: quietSeconds, now: now)
     }
 
     var statistics: Statistics {
         state.lock()
         var value = statisticsValue
-        let branch = camillaBranch
+        let branch = deliveryBranch
         state.unlock()
         if let branch {
             let snapshot = branch.statisticsSnapshot()
@@ -76,12 +51,8 @@ final class PCMRouter: @unchecked Sendable {
         return value
     }
 
-    /// Serializes router replacement without making the caller's executor wait
-    /// on worker joins. In particular, AppState can await this from MainActor
-    /// without freezing SwiftUI for the branch shutdown timeouts below.
     func start(
-        camillaSink: FileHandle? = nil,
-        outputSink: (any PCMOutputSink)? = nil,
+        sink: any PCMOutputSink,
         activeRoute: ActiveAudioRoute? = nil,
         renderConfiguration: RenderConfiguration,
         deliveryConfiguration: PCMDeliveryConfiguration,
@@ -95,69 +66,43 @@ final class PCMRouter: @unchecked Sendable {
         analyzerAdmission: (() -> UInt64?)? = nil,
         analyzerBatchFrames: Int = 1
     ) async {
-        await Task.detached(priority: .userInitiated) { [self] in
-            startSynchronously(camillaSink: camillaSink, outputSink: outputSink, activeRoute: activeRoute,
+        let start: @Sendable () -> Void = { [self] in
+            stop()
+            let deliveryBranch = PCMDeliveryPipeline(
+                sink: sink,
+                hrtfDatabase: BundledHRTFDatabase.shared, performanceSource: performanceSource, activeRoute: activeRoute,
                 renderConfiguration: renderConfiguration, deliveryConfiguration: deliveryConfiguration,
                 backendChunkFrames: backendChunkFrames,
-                configurationObserver: configurationObserver, referenceTopology: referenceTopology, pluginProcessor: pluginProcessor,
-                meterConsumer: meterConsumer, meterAdmission: meterAdmission,
-                analyzerConsumer: analyzerConsumer, analyzerAdmission: analyzerAdmission,
-                analyzerBatchFrames: analyzerBatchFrames)
-        }.value
-    }
-
-    /// Only prepared configuration enters the production writer. Fixture defaults
-    /// live with diagnostics, rather than providing a second runtime plan path.
-    private func startSynchronously(
-        camillaSink: FileHandle?,
-        outputSink: (any PCMOutputSink)?,
-        activeRoute: ActiveAudioRoute?,
-        renderConfiguration: RenderConfiguration,
-        deliveryConfiguration: PCMDeliveryConfiguration,
-        backendChunkFrames: Int,
-        configurationObserver: (@Sendable (RenderConfiguration) -> Void)?,
-        referenceTopology: SpeakerTopology?,
-        pluginProcessor: (any PluginAudioProcessor)?,
-        meterConsumer: MeterConsumer?,
-        meterAdmission: (() -> Bool)?,
-        analyzerConsumer: AnalyzerConsumer?,
-        analyzerAdmission: (() -> UInt64?)?,
-        analyzerBatchFrames: Int
-    ) {
-        stop()
-        let camillaBranch = CamillaDeliveryPipeline(
-            sink: outputSink ?? camillaSink.flatMap { try? CamillaPCMSink(duplicating: $0.fileDescriptor) },
-            hrtfDatabase: BundledHRTFDatabase.shared, performanceSource: performanceSource, activeRoute: activeRoute,
-            renderConfiguration: renderConfiguration, deliveryConfiguration: deliveryConfiguration,
-            backendChunkFrames: backendChunkFrames,
-            configurationObserver: configurationObserver, systemMaster: systemMaster,
-            referenceTopology: referenceTopology, pluginProcessor: pluginProcessor
-        )
-        let meterBranch = meterConsumer.map { consumer in
-            MeterPCMBranch(
-                consumer: consumer,
-                admission: meterAdmission,
-                dropHandler: { [weak self] droppedFrames in
-                    self?.recordMeterDrop(droppedFrames: droppedFrames)
-                }
+                configurationObserver: configurationObserver, systemMaster: systemMaster,
+                referenceTopology: referenceTopology, pluginProcessor: pluginProcessor
             )
-        }
-        let analyzerBranch = analyzerConsumer.map {
-            AnalyzerPCMBranch(consumer: $0, admission: analyzerAdmission, minimumBatchFrames: analyzerBatchFrames)
-        }
-        state.lock()
-        statisticsValue = Statistics()
-        self.activeRoute = activeRoute
-        self.camillaBranch = camillaBranch
-        self.meterBranch = meterBranch
-        self.analyzerBranch = analyzerBranch
-        state.unlock()
+            let meterBranch = meterConsumer.map { consumer in
+                MeterPCMBranch(
+                    consumer: consumer,
+                    admission: meterAdmission,
+                    dropHandler: { [weak self] droppedFrames in
+                        self?.recordMeterDrop(droppedFrames: droppedFrames)
+                    }
+                )
+            }
+            let analyzerBranch = analyzerConsumer.map {
+                AnalyzerPCMBranch(consumer: $0, admission: analyzerAdmission, minimumBatchFrames: analyzerBatchFrames)
+            }
+            state.lock()
+            statisticsValue = Statistics()
+            self.activeRoute = activeRoute
+            self.deliveryBranch = deliveryBranch
+            self.meterBranch = meterBranch
+            self.analyzerBranch = analyzerBranch
+            state.unlock()
 
-        // Publish/reset before starting workers so an immediate sink failure is
-        // observable rather than erased by startup's statistics reset.
-        camillaBranch.start()
-        meterBranch?.start()
-        analyzerBranch?.start()
+            // Publish/reset before starting workers so an immediate sink failure is
+            // observable rather than erased by startup's statistics reset.
+            deliveryBranch.start()
+            meterBranch?.start()
+            analyzerBranch?.start()
+        }
+        await Task.detached(priority: .userInitiated, operation: start).value
     }
 
     /// Update the system master without touching CamillaDSP's control socket or
@@ -169,30 +114,30 @@ final class PCMRouter: @unchecked Sendable {
 
     func setRenderConfiguration(_ configuration: RenderConfiguration) {
         state.lock()
-        let branch = camillaBranch
+        let branch = deliveryBranch
         state.unlock()
         branch?.setRenderConfiguration(configuration)
     }
 
     func setPluginProcessor(_ processor: (any PluginAudioProcessor)?) {
-        state.lock(); let branch = camillaBranch; state.unlock()
+        state.lock(); let branch = deliveryBranch; state.unlock()
         branch?.setPluginProcessor(processor)
     }
 
     func setDeliveryConfiguration(_ configuration: PCMDeliveryConfiguration) {
-        state.lock(); let branch = camillaBranch; state.unlock()
+        state.lock(); let branch = deliveryBranch; state.unlock()
         branch?.setDeliveryConfiguration(configuration)
     }
 
     func observeSourceClock(_ observation: AudioClockObservation) {
-        state.lock(); let branch = camillaBranch; state.unlock()
+        state.lock(); let branch = deliveryBranch; state.unlock()
         branch?.observeClock(observation, source: true)
     }
 
     /// Captures this exact branch. A delayed engine reply can never feed a
     /// replacement session through the router's mutable current-branch pointer.
     func playbackClockConsumer() -> @Sendable (AudioClockObservation) -> Void {
-        state.lock(); let branch = camillaBranch; state.unlock()
+        state.lock(); let branch = deliveryBranch; state.unlock()
         if let branch { return branch.playbackClockConsumer() }
         return { _ in }
     }
@@ -200,32 +145,32 @@ final class PCMRouter: @unchecked Sendable {
     /// Called by the single transport reader after routing all PCM authorized
     /// by END. This control shares the writer queue with that PCM.
     func finishProducerEpoch() {
-        state.lock(); let branch = camillaBranch; state.unlock()
+        state.lock(); let branch = deliveryBranch; state.unlock()
         branch?.enqueueProducerEnd()
     }
 
     func setSpatialRenderingMode(_ mode: SpatialRenderingMode) {
         state.lock()
-        let camillaBranch = self.camillaBranch
+        let deliveryBranch = self.deliveryBranch
         state.unlock()
-        camillaBranch?.setSpatialRenderingMode(mode)
+        deliveryBranch?.setSpatialRenderingMode(mode)
     }
 
     func setSpatialSettings(_ settings: SpatialRenderSettings, output: SpatialOutputKind) {
         state.lock()
-        let branch = camillaBranch
+        let branch = deliveryBranch
         state.unlock()
         branch?.setSpatialSettings(settings, output: output)
     }
 
     var referenceSpeakerDiagnostics: ReferenceSpeakerDiagnostics? {
-        state.lock(); let branch = camillaBranch; state.unlock()
+        state.lock(); let branch = deliveryBranch; state.unlock()
         return branch?.referenceDiagnostics
     }
 
     var spatialRenderDiagnostics: SpatialRenderDiagnostics? {
         state.lock()
-        let branch = camillaBranch
+        let branch = deliveryBranch
         state.unlock()
         return branch?.renderDiagnostics
     }
@@ -242,7 +187,7 @@ final class PCMRouter: @unchecked Sendable {
             state.unlock()
             return
         }
-        let camillaBranch = self.camillaBranch
+        let deliveryBranch = self.deliveryBranch
         let meterBranch = self.meterBranch
         let analyzerBranch = self.analyzerBranch
         state.unlock()
@@ -250,7 +195,7 @@ final class PCMRouter: @unchecked Sendable {
         // These are deliberately independent bounded queues. Analyzer or meter
         // stalls can drop observation frames, but never execute on or hold up
         // the CamillaDSP delivery branch.
-        camillaBranch?.enqueue(frame)
+        deliveryBranch?.enqueue(frame)
         var observation = frame
         observation.playbackModeSamples = [:]
         observation.performanceTrace = nil
@@ -259,18 +204,16 @@ final class PCMRouter: @unchecked Sendable {
         analyzerBranch?.enqueue(observation)
     }
 
-
-
     var spatialContentEstimate: SpatialContentEstimate {
         state.lock()
         defer { state.unlock() }
-        return camillaBranch?.contentEstimate ?? .unknown
+        return deliveryBranch?.contentEstimate ?? .unknown
     }
 
     func beginSpatialCalibration(id: UUID) -> Bool {
         state.lock()
         defer { state.unlock() }
-        return camillaBranch?.beginSpatialCalibration(id: id) ?? false
+        return deliveryBranch?.beginSpatialCalibration(id: id) ?? false
     }
 
     func playSpatialCalibration(
@@ -280,7 +223,7 @@ final class PCMRouter: @unchecked Sendable {
     ) -> Bool {
         state.lock()
         defer { state.unlock() }
-        return camillaBranch?.playSpatialCalibration(
+        return deliveryBranch?.playSpatialCalibration(
             id: id, clip: clip, levelCheckGain: levelCheckGain, started: started, completion: completion
         ) ?? false
     }
@@ -288,25 +231,25 @@ final class PCMRouter: @unchecked Sendable {
     func setLevelCheckGain(id: UUID, gain: Float) {
         state.lock()
         defer { state.unlock() }
-        camillaBranch?.setLevelCheckGain(id: id, gain: gain)
+        deliveryBranch?.setLevelCheckGain(id: id, gain: gain)
     }
 
     func stopSpatialCalibrationSample(id: UUID) {
         state.lock()
         defer { state.unlock() }
-        camillaBranch?.stopSpatialCalibrationSample(id: id)
+        deliveryBranch?.stopSpatialCalibrationSample(id: id)
     }
 
     func holdSpatialMeasurement(id: UUID, enabled: Bool) {
         state.lock()
         defer { state.unlock() }
-        camillaBranch?.holdSpatialMeasurement(id: id, enabled: enabled)
+        deliveryBranch?.holdSpatialMeasurement(id: id, enabled: enabled)
     }
 
     func endSpatialCalibration(id: UUID) {
         state.lock()
         defer { state.unlock() }
-        camillaBranch?.endSpatialCalibration(id: id)
+        deliveryBranch?.endSpatialCalibration(id: id)
     }
 
     /// Normal runtime shutdown path. The synchronous stop remains available for
@@ -319,18 +262,18 @@ final class PCMRouter: @unchecked Sendable {
 
     func stop() {
         state.lock()
-        let camillaBranch = self.camillaBranch
+        let deliveryBranch = self.deliveryBranch
         let meterBranch = self.meterBranch
         let analyzerBranch = self.analyzerBranch
-        self.camillaBranch = nil
+        self.deliveryBranch = nil
         self.meterBranch = nil
         self.analyzerBranch = nil
         self.activeRoute = nil
         state.unlock()
 
-        camillaBranch?.stop()
+        deliveryBranch?.stop()
         state.lock()
-        if self.camillaBranch == nil, let snapshot = camillaBranch?.statisticsSnapshot() {
+        if self.deliveryBranch == nil, let snapshot = deliveryBranch?.statisticsSnapshot() {
             snapshot.delivery.project(into: &statisticsValue)
             statisticsValue.camillaQueue = snapshot.queue
         }

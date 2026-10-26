@@ -40,25 +40,13 @@ enum CamiTuneLauncher {
             else { RunLoop.main.run() }
             return
         }
-        if let index = CommandLine.arguments.firstIndex(of: "--timeline-policy-soak"), CommandLine.arguments.count > index + 2 {
+        if let index = CommandLine.arguments.firstIndex(of: "--producer-completion-soak"), CommandLine.arguments.count > index + 2 {
             let destination = CommandLine.arguments[index + 1], silence = CommandLine.arguments[index + 2]
             Task { @MainActor in
-                do { try await LiveRuntimeBaseline.policySoak(destination: destination, silence: silence); Darwin.exit(0) }
-                catch { print("Policy soak failed: \(error.localizedDescription)"); Darwin.exit(1) }
+                do { try await LiveRuntimeBaseline.completionSoak(destination: destination, silence: silence); Darwin.exit(0) }
+                catch { print("Completion soak failed: \(error.localizedDescription)"); Darwin.exit(1) }
             }
             RunLoop.main.run(); return
-        }
-        if let index = CommandLine.arguments.firstIndex(of: "--replay-timeline-policy"), CommandLine.arguments.count > index + 1 {
-            do {
-                let data = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
-                let document = try JSONDecoder().decode(TimelinePolicyTraceDocument.self, from: data)
-                let override = CommandLine.arguments.count > index + 2
-                    ? try JSONDecoder().decode(TimelineReorderPolicyConfiguration.self, from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[index + 2]))) : nil
-                let result = document.replay(configuration: override)
-                let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                print(String(decoding: try encoder.encode(result), as: UTF8.self))
-                Darwin.exit(result.decisionMismatches == 0 && document.droppedEvents == 0 ? 0 : 1)
-            } catch { print("Policy replay failed: \(error.localizedDescription)"); Darwin.exit(1) }
         }
         if let index = CommandLine.arguments.firstIndex(of: "--live-route-handoff"), CommandLine.arguments.count > index + 2 {
             let destination = CommandLine.arguments[index + 1], silence = CommandLine.arguments[index + 2]

@@ -17,20 +17,12 @@ final class CamillaDSPManager: ObservableObject {
     private var hasAppliedConfig = false
     private var clockPollingTask: Task<Void, Never>?
     private var clockSession: UUID?
-    private(set) var lastPlaybackClock: CamillaPlaybackClock?
-    private var isStandby: Bool
-
-    init(standby: Bool = false, excludingPort: UInt16? = nil) {
-        var port = UInt16.random(in: 20_000...49_999)
-        while port == excludingPort { port = UInt16.random(in: 20_000...49_999) }
+    private(set) var lastPlaybackClock: AudioPlaybackClock?
+    init() {
+        let port = UInt16.random(in: 20_000...49_999)
         controlPort = port
         rpc = CamillaRPC(port: port)
-        isStandby = standby
     }
-
-    func makeStandby() -> CamillaDSPManager { .init(standby: true, excludingPort: controlPort) }
-
-    func promoteStandby() { isStandby = false }
 
     func start(binary: URL, shouldContinue: @MainActor () -> Bool = { true }) async throws {
         guard shouldContinue() else { throw CancellationError() }
@@ -39,8 +31,7 @@ final class CamillaDSPManager: ObservableObject {
             return
         }
 
-        // A standby is intentionally concurrent with the owned live engine.
-        if !isStandby { await Self.terminateStalePrivateEngines(binary: binary) }
+        await Self.terminateStalePrivateEngines(binary: binary)
         guard shouldContinue() else { throw CancellationError() }
 
         let logDirectory = supportDirectory().appendingPathComponent("logs", isDirectory: true)
@@ -133,7 +124,7 @@ final class CamillaDSPManager: ObservableObject {
     func apply(yaml: String) async throws {
         do {
             let configDirectory = supportDirectory().appendingPathComponent("configs", isDirectory: true)
-            let configURL = configDirectory.appendingPathComponent(isStandby ? "standby-\(controlPort).yml" : "active.yml")
+            let configURL = configDirectory.appendingPathComponent("active.yml")
             try await Task.detached(priority: .utility) {
                 try FileManager.default.createDirectory(
                     at: configDirectory,

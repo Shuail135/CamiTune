@@ -45,19 +45,29 @@ enum DeveloperSelfTests {
             var durations: [Double] = []
             for cycle in 0..<80 {
                 try Task.checkCancellation()
-                for client in 0..<clients {
-                    let packet = PerAppTimelinePacket(deviceObjectID: 100,
-                        cycleCounter: UInt64(cycle), startSampleTime: Int64(cycle * 512), frameCount: 512,
-                        channelCount: channels, sampleRate: 48_000,
-                        channelLayout: LPCMChannelLayout(coreAudioTag: 0, channelCount: channels)!,
-                        playbackMode: PlaybackMode.allCases[client % PlaybackMode.allCases.count])
-                    let start = PerformanceClock.now()
-                    _ = samples.withUnsafeBufferPointer {
-                        mixer.mixProcessedPacket(mixer.preparePacket(packet), samples: $0,
-                            policyNow: .init(rawValue: UInt64(cycle) * 512 * 1_000_000_000 / 48_000))
-                    }
-                    if cycle >= 10 { durations.append(PerformanceClock.milliseconds(start, PerformanceClock.now())) }
+                let layout = LPCMChannelLayout(coreAudioTag: 0, channelCount: channels)!
+                let records = (0..<clients).map { client in
+                    ProducerCompletionRecord(generation: 1, sequence: UInt64(cycle * clients + client), epoch: 1,
+                        kind: .pcm, device: 100, client: UInt32(client + 1), process: 0, cycle: UInt64(cycle),
+                        start: Int64(cycle * 512), frames: 512, channels: channels, layout: layout, rate: 48_000,
+                        received: PerformanceClock.now(), samples: samples)
                 }
+                let interval = ProducerCompletedInterval(device: 100, epoch: 1, start: Int64(cycle * 512),
+                    end: Int64((cycle + 1) * 512), channels: channels, layout: layout, rate: 48_000,
+                    contributions: records, terminal: false, beginsEpoch: cycle == 0)
+                let start = PerformanceClock.now()
+                try mixer.beginCompletedInterval(interval)
+                for (client, record) in records.enumerated() {
+                    let packet = PerAppTimelinePacket(deviceObjectID: 100, cycleCounter: record.cycle,
+                        startSampleTime: record.start, frameCount: record.frames, channelCount: channels,
+                        sampleRate: record.rate, channelLayout: layout,
+                        playbackMode: PlaybackMode.allCases[client % PlaybackMode.allCases.count])
+                    try samples.withUnsafeBufferPointer {
+                        try mixer.addProcessedPacket(packet, samples: $0, performance: nil, processingCompleted: nil)
+                    }
+                }
+                _ = try mixer.finishCompletedInterval(interval)
+                if cycle >= 10 { durations.append(PerformanceClock.milliseconds(start, PerformanceClock.now())) }
                 await Task.yield()
             }
             let distribution = LatencyDistribution(durations)
@@ -65,7 +75,7 @@ enum DeveloperSelfTests {
                 value: String(format: "Median %.3f ms · p99 %.3f ms · maximum %.3f ms", distribution.medianMilliseconds,
                     distribution.p99Milliseconds, distribution.maximumMilliseconds)))
         }
-        return .init(summary: "Mixer timings measured for four workloads", evidence: evidence,
+        return .init(summary: "Completed-interval mixer timings measured for four workloads", evidence: evidence,
             details: "Synthetic PCM on this computer; first ten cycles excluded as warm-up. Results depend on build configuration and system load.")
     }
 
@@ -100,7 +110,7 @@ enum DeveloperSelfTests {
             let reader = try FileHandle(forReadingFrom: url)
             defer { try? sink.close(); try? reader.close() }
             let profile = DeviceProfile(name: "Benchmark", outputDeviceUID: "benchmark.file", outputDeviceName: "File sink")
-            await router.start(camillaSink: sink,
+            await router.start(sink: try CamillaPCMSink(duplicating: sink.fileDescriptor),
                 renderConfiguration: RenderConfiguration(profile: profile, revision: .init(profileID: profile.id, generation: 0)),
                 // File sinks have no playback clock; use queue-based rate matching for this measurement.
                 deliveryConfiguration: .init(queue: .init(sampleRate: 48_000, operatingTargetFrames: 1920,
@@ -138,11 +148,18 @@ enum DeveloperSelfTests {
                     let binding = router.performanceSource.snapshot()
                     let context = binding.map { PacketPerformanceContext(capture: $0.capture,
                         identity: traceIdentity($0.capture, session: session, start: Int64(index * 512)), received: PerformanceClock.now()) }
-                    if let frame = box.perApp.ingest(source, performance: context) { try await routeAndWait(frame) }
+                    let record = ProducerCompletionRecord(generation: 1, sequence: UInt64(index), epoch: 1,
+                        kind: .pcm, device: source.deviceObjectID, client: source.clientID, process: source.processID,
+                        cycle: source.cycleCounter, start: Int64(source.sampleTime), frames: 512,
+                        channels: source.channelCount, layout: source.channelLayout, rate: source.sampleRate,
+                        received: context?.received ?? PerformanceClock.now(), samples: source.interleaved, performance: context)
+                    let frame = try box.perApp.ingestCompletedInterval(.init(device: record.device, epoch: 1,
+                        start: record.start, end: record.end, channels: record.channels, layout: record.layout,
+                        rate: record.rate, contributions: [record], terminal: false, beginsEpoch: index == 0))
+                    try await routeAndWait(frame)
                     try await Task.sleep(for: .milliseconds(11))
                 }
                 try await Task.sleep(for: .milliseconds(20))
-                if case .flushed(let frame) = box.perApp.flushExpiredMix() { try await routeAndWait(frame) }
                 if tracing, let capture = router.performanceSource.snapshot()?.capture {
                     let limit = PerformanceClock.now().advanced(seconds: 2)
                     while capture.counts().audio < outputBlocks && PerformanceClock.now() < limit {

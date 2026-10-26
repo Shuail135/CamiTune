@@ -23,22 +23,6 @@ package struct PerAppTimelinePacket: Sendable {
     package let playbackMode: PlaybackMode
 }
 
-package struct TimelinePacketPreparation: Sendable {
-    package init(packet: PerAppTimelinePacket, streamEpoch: UInt64, requiresClientDSPReset: Bool, isValid: Bool = true, boundaryReason: TimelineBoundaryReason? = nil) {
-        self.packet = packet
-        self.streamEpoch = streamEpoch
-        self.requiresClientDSPReset = requiresClientDSPReset
-        self.isValid = isValid
-        self.boundaryReason = boundaryReason
-    }
-
-    package let packet: PerAppTimelinePacket
-    package let streamEpoch: UInt64
-    package let requiresClientDSPReset: Bool
-    package var isValid: Bool = true
-    package var boundaryReason: TimelineBoundaryReason? = nil
-}
-
 package struct PerAppTimelineMixerStatistics: Sendable, Codable {
     package init(reorder: TimelineReorderCounters = TimelineReorderCounters(), policySnapshots: [TimelineReorderPolicySnapshot]? = nil, insertedFrames: UInt64 = 0, fullyStalePackets: UInt64 = 0, partiallyLatePackets: UInt64 = 0, timelineRestarts: UInt64 = 0, formatBoundaries: UInt64 = 0, discontinuityFlushes: UInt64 = 0, prependFrames: UInt64 = 0, gapFrames: UInt64 = 0, prependCopiedFrames: UInt64 = 0, retainedSuffixShiftFrames: UInt64 = 0, packetFrontShiftSamples: UInt64 = 0, currentPendingFrames: Int = 0, peakPendingFrames: Int = 0, currentPendingMilliseconds: Double = 0.0, peakPendingMilliseconds: Double = 0.0, currentStorageCapacityFrames: Int = 0, peakStorageCapacityFrames: Int = 0, storageBytes: Int = 0, peakStorageBytes: Int = 0, allocatedBuses: Int = 0, activeDeviceTimelines: Int = 0, latestStreamEpoch: UInt64 = 0, storageReallocations: UInt64 = 0, storageGrowthCopiedFrames: UInt64 = 0, capacityFailures: UInt64 = 0, invalidPackets: UInt64 = 0, wrappedReads: UInt64 = 0, wrappedWrites: UInt64 = 0) {
         self.reorder = reorder
@@ -105,7 +89,8 @@ package struct PerAppTimelineMixerStatistics: Sendable, Codable {
     package var wrappedWrites: UInt64 = 0
 
     package var policySummary: String {
-        reorder.summary + "\n\n" + (policySnapshots ?? []).map(\.summary).joined(separator: "\n\n")
+        guard let policySnapshots, !policySnapshots.isEmpty else { return "Producer-completed intervals" }
+        return reorder.summary + "\n\n" + policySnapshots.map(\.summary).joined(separator: "\n\n")
     }
 
     package var summary: String {
@@ -114,11 +99,8 @@ package struct PerAppTimelineMixerStatistics: Sendable, Codable {
         Pending: \(currentPendingFrames) frames / \(String(format: "%.2f", currentPendingMilliseconds)) ms (peak \(peakPendingFrames) frames)
         Storage capacity: \(currentStorageCapacityFrames) frames (peak \(peakStorageCapacityFrames)); buses: \(allocatedBuses)
         Storage bytes: \(storageBytes) (peak \(peakStorageBytes)); capacity is memory, not buffered latency
-        Stale: \(fullyStalePackets); partially late: \(partiallyLatePackets); restarts: \(timelineRestarts)
-        Format boundaries: \(formatBoundaries); discontinuities: \(discontinuityFlushes)
-        Prepend: \(prependFrames) frames; gaps: \(gapFrames) frames
+        Inserted contribution frames: \(insertedFrames)
         Reallocations: \(storageReallocations); growth copies: \(storageGrowthCopiedFrames) bus-frames
-        Retained suffix shifts: \(retainedSuffixShiftFrames); prepend copies: \(prependCopiedFrames); input shifts: \(packetFrontShiftSamples)
         Wrapped reads/writes: \(wrappedReads)/\(wrappedWrites)
         Capacity failures: \(capacityFailures); invalid packets: \(invalidPackets)
         """

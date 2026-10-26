@@ -33,7 +33,7 @@ final class PluginSidechainInputs: ObservableObject {
     }
     deinit { notifications.forEach(NotificationCenter.default.removeObserver) }
     func refresh() {
-        devices = PluginInputCapture.devices.map { device in
+        devices = AudioInputCapture.devices.map { device in
             let description = CMAudioFormatDescriptionGetStreamBasicDescription(device.activeFormat.formatDescription)?.pointee
             return PluginAudioInput(id: device.uniqueID, name: device.localizedName,
                 channels: min(32, max(1, Int(description?.mChannelsPerFrame ?? 2))))
@@ -52,7 +52,7 @@ final class PluginSidechainInputs: ObservableObject {
             guard let self else { return }
             while true {
                 let current = revision
-                let available = Set(PluginInputCapture.devices.map(\.uniqueID))
+                let available = Set(AudioInputCapture.devices.map(\.uniqueID))
                 for id in Array(captures.keys) where !wanted.contains(id) || !available.contains(id) || errors[id] != nil {
                     if let capture = captures.removeValue(forKey: id) { await capture.stop() }
                     hub.invalidate(kind: .audioInput, id: id)
@@ -80,12 +80,6 @@ final class PluginSidechainInputs: ObservableObject {
 }
 
 private final class PluginInputCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
-    static var devices: [AVCaptureDevice] {
-        let types: [AVCaptureDevice.DeviceType]
-        if #available(macOS 14.0, *) { types = [.microphone, .external] }
-        else { types = [.builtInMicrophone, .externalUnknown] }
-        return AVCaptureDevice.DiscoverySession(deviceTypes: types, mediaType: .audio, position: .unspecified).devices
-    }
     let id: String
     private let hub: PluginSidechainHub
     private let report: @Sendable (String) -> Void
@@ -108,27 +102,15 @@ private final class PluginInputCapture: NSObject, AVCaptureAudioDataOutputSample
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
                 do {
-                    guard let device = Self.devices.first(where: { $0.uniqueID == self.id }) else {
+                    guard let device = AudioInputCapture.devices.first(where: { $0.uniqueID == self.id }) else {
                         throw PluginHostError(message: "This audio input is disconnected.")
                     }
                     let description = CMAudioFormatDescriptionGetStreamBasicDescription(device.activeFormat.formatDescription)?.pointee
                     let channels = min(32, max(1, Int(description?.mChannelsPerFrame ?? 2)))
-                    let input = try AVCaptureDeviceInput(device: device)
-                    let output = AVCaptureAudioDataOutput()
-                    output.audioSettings = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000,
-                        AVNumberOfChannelsKey: channels, AVLinearPCMBitDepthKey: 32,
-                        AVLinearPCMIsFloatKey: true, AVLinearPCMIsBigEndianKey: false,
-                        AVLinearPCMIsNonInterleaved: false]
-                    output.setSampleBufferDelegate(self, queue: self.callbackQueue)
-                    self.session.beginConfiguration()
-                    guard self.session.canAddInput(input), self.session.canAddOutput(output) else {
-                        self.session.commitConfiguration()
+                    guard try AudioInputCapture.start(self.session, device: device, channels: channels,
+                        delegate: self, callbackQueue: self.callbackQueue) else {
                         throw PluginHostError(message: "CamiTune could not open this audio input.")
                     }
-                    self.session.addInput(input); self.session.addOutput(output)
-                    self.session.commitConfiguration()
-                    self.session.startRunning()
-                    guard self.session.isRunning else { throw PluginHostError(message: "This audio input could not start.") }
                     continuation.resume()
                 } catch { continuation.resume(throwing: error) }
             }

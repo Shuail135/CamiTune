@@ -200,11 +200,11 @@ actor CamillaRPC {
         try await unsignedIntegerValue(command: "GetBufferLevel")
     }
 
-    func playbackClock() async throws -> CamillaPlaybackClock? {
+    func playbackClock() async throws -> AudioPlaybackClock? {
         let body = try successfulBody(try await request("GetPlaybackClock"), command: "GetPlaybackClock")
         guard let value = body["value"], !(value is NSNull) else { return nil }
         let bytes = try JSONSerialization.data(withJSONObject: value)
-        return try JSONDecoder().decode(CamillaPlaybackClock.self, from: bytes)
+        return try JSONDecoder().decode(AudioPlaybackClock.self, from: bytes)
     }
 
     func rateAdjust() async throws -> Double {

@@ -5,6 +5,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include "SystemAudioBridgeProfileFormat.h"
 
 #ifdef __cplusplus
@@ -124,7 +125,7 @@ typedef struct SABRTransportHeader {
     uint64_t sessionToken;
 
     /*
-     * Diagnostics/control snapshot lane retained for protocol-v5 ABI compatibility.
+     * Diagnostics/control snapshot lane.
      * Runtime profile volume/mute changes deliberately do not publish here: media-key
      * traffic must stay completely off the SABR PCM transport and its writer counters.
      * If diagnostics publish a snapshot, controlGeneration is an odd/even seqlock.
@@ -227,6 +228,25 @@ static inline uint64_t sabr_double_to_bits(double value) {
 static inline double sabr_bits_to_double(uint64_t bits) {
     union { double value; uint64_t bits; } conversion = { .bits = bits };
     return conversion.value;
+}
+
+/* Packet metadata defines the active channels. Padding in a wider frame ring
+ * is not audio and is never read by the consumer. Both spans are validated by
+ * the caller before copying; no floating-point arithmetic touches the samples. */
+static inline void sabr_copy_audio_frames(
+    Float32* destination, uint32_t destinationStride,
+    const Float32* source, uint32_t sourceStride,
+    uint32_t frames, uint32_t channels
+) {
+    if (sourceStride == channels && destinationStride == channels) {
+        memcpy(destination, source, (size_t)frames * channels * sizeof(Float32));
+        return;
+    }
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        memcpy(destination, source, (size_t)channels * sizeof(Float32));
+        destination += destinationStride;
+        source += sourceStride;
+    }
 }
 
 static inline size_t sabr_transport_region_bytes(uint32_t channelCapacity, uint32_t frameCapacity) {

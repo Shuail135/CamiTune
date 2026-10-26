@@ -688,29 +688,6 @@ OSStatus sabr_client_transport_disconnect(
     return result;
 }
 
-uint32_t sabr_client_transport_read(
-    SABRClientTransportRef transport,
-    Float32* interleavedDestination,
-    uint32_t destinationChannelCapacity,
-    uint32_t maximumFrames,
-    uint32_t* activeChannels,
-    double* sampleRate
-) {
-    if (activeChannels != NULL) { *activeChannels = 0; }
-    if (sampleRate != NULL) { *sampleRate = 0; }
-    SABRClientAudioPacketInfo packet;
-    const uint32_t frames = sabr_client_transport_read_packet(
-        transport,
-        interleavedDestination,
-        destinationChannelCapacity,
-        maximumFrames,
-        &packet
-    );
-    if (frames > 0 && activeChannels != NULL) { *activeChannels = packet.channelCount; }
-    if (frames > 0 && sampleRate != NULL) { *sampleRate = packet.sampleRate; }
-    return frames;
-}
-
 uint32_t sabr_client_transport_read_packet(
     SABRClientTransportRef transport,
     Float32* interleavedDestination,
@@ -859,36 +836,16 @@ uint32_t sabr_client_transport_read_packet(
         sabr_reclaim_consumed_packets(transport, writePacket);
         return 0;
     }
-    const uint32_t startFrame = (uint32_t)(packet.startFrame % header->frameCapacity);
-    const uint32_t firstFrames = packet.frameCount < header->frameCapacity - startFrame
-        ? packet.frameCount
-        : header->frameCapacity - startFrame;
-    const uint32_t secondFrames = packet.frameCount - firstFrames;
-    if (packet.eventKind != SABR_EVENT_PCM) {
-        /* Metadata only; frameCount is the closed timeline interval length. */
-    } else if (packet.channelCount == header->channelCapacity) {
-        memcpy(
-            interleavedDestination,
-            transport->samples + ((size_t)startFrame * header->channelCapacity),
-            (size_t)firstFrames * packet.channelCount * sizeof(Float32)
-        );
-        if (secondFrames > 0) {
-            memcpy(
-                interleavedDestination + ((size_t)firstFrames * packet.channelCount),
-                transport->samples,
-                (size_t)secondFrames * packet.channelCount * sizeof(Float32)
-            );
-        }
-    } else {
-        for (uint32_t frame = 0; frame < packet.frameCount; ++frame) {
-            const uint32_t sourceFrame =
-                (uint32_t)((packet.startFrame + frame) % header->frameCapacity);
-            memcpy(
-                interleavedDestination + ((size_t)frame * packet.channelCount),
-                transport->samples + ((size_t)sourceFrame * header->channelCapacity),
-                (size_t)packet.channelCount * sizeof(Float32)
-            );
-        }
+    if (packet.eventKind == SABR_EVENT_PCM) {
+        const uint32_t startFrame = (uint32_t)(packet.startFrame % header->frameCapacity);
+        const uint32_t firstFrames = packet.frameCount < header->frameCapacity - startFrame
+            ? packet.frameCount : header->frameCapacity - startFrame;
+        sabr_copy_audio_frames(interleavedDestination, packet.channelCount,
+            transport->samples + (size_t)startFrame * header->channelCapacity,
+            header->channelCapacity, firstFrames, packet.channelCount);
+        sabr_copy_audio_frames(interleavedDestination + (size_t)firstFrames * packet.channelCount,
+            packet.channelCount, transport->samples, header->channelCapacity,
+            packet.frameCount - firstFrames, packet.channelCount);
     }
 
     packetInfo->clientID = packet.clientID;

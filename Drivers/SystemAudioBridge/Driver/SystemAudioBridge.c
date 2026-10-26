@@ -19,13 +19,9 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <sys/syslog.h>
-#include <Accelerate/Accelerate.h>
 #include <Availability.h>
 #include "SystemAudioBridgeDriverTransport.h"
 #include "../../../Sources/SystemAudioBridgeC/include/SystemAudioBridgeCompletion.h"
-#ifndef SABR_ENABLE_COMPLETION
-#define SABR_ENABLE_COMPLETION 1
-#endif
 
 //==================================================================================================
 #pragma mark -
@@ -86,33 +82,8 @@
 #pragma mark SystemAudioBridge State
 //==================================================================================================
 
-//    The driver has the following
-//    qualities:
-//    - a box
-//    - a device
-//        - supports 44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000, 8000, 16000 sample rates
-
-
-//        - provides a rate scalar of 1.0 via hard coding
-//    - a single output stream
-//        - supports a standard 2.0, 5.1, or 7.1 build of 32 bit float LPCM samples
-//        - writes to ring buffer
-//    - a single input stream
-//        - supports 16 channels of 32 bit float LPCM samples
-//        - reads from ring buffer
-//    - controls
-//        - master input volume
-//        - master output volume
-//        - master input mute
-//        - master output mute
-
-
-//    Declare the internal object ID numbers for all the objects this driver implements. Note that
-//    because the driver has fixed set of objects that never grows or shrinks. If this were not the
-//    case, the driver would need to have a means to dynamically allocate these IDs. It is important
-//    to realize that a lot of the structure of this driver is vastly simpler when the IDs are all
-//    known a priori. Comments in the code will try to identify some of these simplifications and
-//    point out what a more complicated driver will need to do.
+// Main and profile endpoints expose output-only float32 PCM. Profile object IDs
+// encode slot generations so retired endpoint identities cannot be reused.
 enum
 {
     kObjectID_PlugIn                    = kAudioObjectPlugInObject,
@@ -248,11 +219,6 @@ struct ObjectInfo {
 #endif
 
 
-
-#ifndef kDevice_HasInput
-#define                             kDevice_HasInput                    false
-#endif
-
 #ifndef kDevice_HasOutput
 #define                             kDevice_HasOutput                   true
 #endif
@@ -260,14 +226,10 @@ struct ObjectInfo {
 // A profile endpoint intentionally exposes the same app-facing output scope as
 // the main bridge. Its role is selected by the transport mapping, not by
 // reversing these direction flags.
-#ifndef kDevice2_HasInput
-#define                             kDevice2_HasInput                   false
-#endif
 
 #ifndef kDevice2_HasOutput
 #define                             kDevice2_HasOutput                  true
 #endif
-
 
 
 #ifndef kManufacturer_Name
@@ -348,17 +310,8 @@ static bool                         gPitch_Adjust_Enabled               = false;
 static _Atomic UInt64               gTimingSampleRateBits               = 0;
 static _Atomic UInt64               gTimingEffectiveTicksPerFrameBits   = 0;
 
-#if DEBUG
-static _Atomic bool                 gDebugOverloadPending                = false;
-static dispatch_source_t            gDebugOverloadReporter               = NULL;
-#endif
 
 static struct ObjectInfo            kDevice_ObjectList[]                = {
-#if kDevice_HasInput
-    { kObjectID_Stream_Input,           kObjectType_Stream,     kAudioObjectPropertyScopeInput  },
-    { kObjectID_Volume_Input_Master,    kObjectType_Control,    kAudioObjectPropertyScopeInput  },
-    { kObjectID_Mute_Input_Master,      kObjectType_Control,    kAudioObjectPropertyScopeInput  },
-#endif
 #if kDevice_HasOutput
     { kObjectID_Stream_Output,          kObjectType_Stream,     kAudioObjectPropertyScopeOutput },
     { kObjectID_Volume_Output_Master,   kObjectType_Control,    kAudioObjectPropertyScopeOutput },
@@ -379,11 +332,9 @@ static Float64                      kDevice_SampleRates[]               = { kSam
 static const UInt32                 kDevice_SampleRatesSize             = sizeof(kDevice_SampleRates) / sizeof(Float64);
 
 
-
 #define                             kBits_Per_Channel                   32
 #define                             kBytes_Per_Channel                  (kBits_Per_Channel/ 8)
 #define                             kBytes_Per_Frame                    (kNumber_Of_Channels * kBytes_Per_Channel)
-#define                             kRing_Buffer_Frame_Size             ((65536 + kLatency_Frame_Size))
 
 struct DeviceIOState {
     pthread_mutex_t ioMutex;
@@ -392,12 +343,6 @@ struct DeviceIOState {
     Float64 previousTicks;
     UInt64 numberTimeStamps;
     UInt64 anchorHostTime;
-#if kDevice_HasInput
-    Float32* ringBuffer;
-    Float64 lastOutputSampleTime;
-    Float64 lastMixOutputSampleTime;
-    Boolean isBufferClear;
-#endif
     bool outputStreamIsActive;
     _Atomic Float32 volume;
     _Atomic bool mute;
@@ -441,44 +386,9 @@ static Float64 copy_timing_effective_ticks_per_frame(void)
     ));
 }
 
-#if DEBUG
-static void start_debug_overload_reporter(void)
-{
-    if(gDebugOverloadReporter != NULL) { return; }
-    dispatch_source_t reporter = dispatch_source_create(
-        DISPATCH_SOURCE_TYPE_TIMER,
-        0,
-        0,
-        dispatch_get_global_queue(QOS_CLASS_UTILITY, 0)
-    );
-    if(reporter == NULL) { return; }
-    gDebugOverloadReporter = reporter;
-    dispatch_source_set_timer(
-        reporter,
-        dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC),
-        NSEC_PER_SEC,
-        NSEC_PER_MSEC * 100
-    );
-    dispatch_source_set_event_handler(reporter, ^{
-        if(atomic_exchange_explicit(
-            &gDebugOverloadPending,
-            false,
-            memory_order_acq_rel
-        ))
-        {
-            DebugMsg("SystemAudioBridge overload: MixOutput missed an audio deadline. Try increasing the buffer frame size.");
-        }
-    });
-    dispatch_resume(reporter);
-}
-#endif
 
 static struct DeviceIOState gMainDeviceIOState = {
     .ioMutex = PTHREAD_MUTEX_INITIALIZER,
-#if kDevice_HasInput
-    .lastMixOutputSampleTime = -1.0,
-    .isBufferClear = true,
-#endif
     .outputStreamIsActive = true,
     .volume = 1.0f,
 };
@@ -999,11 +909,9 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
                     gProfileDeviceIOStates[candidate].runningCount != 0 ||
                     atomic_load_explicit(&gProfileDevice_Generations[candidate], memory_order_acquire) >= kProfileObjectMaximumGeneration ||
                     sabr_driver_transport_has_device_clients(profile_device_id(candidate))) { continue; }
-#if SABR_ENABLE_COMPLETION
                 const uint64_t admission = atomic_load_explicit(&gProfileDeviceIOStates[candidate].completionAdmission.state, memory_order_acquire);
                 if((admission & (SABR_COMPLETION_OPEN | SABR_COMPLETION_USERS)) != 0 ||
                     (admission != 0 && !(admission & SABR_COMPLETION_SEALED))) { continue; }
-#endif
                 bool requestedAgain = false;
                 for(CFIndex other = 0; other < count; ++other)
                 {
@@ -1737,10 +1645,6 @@ static OSStatus	SystemAudioBridge_Initialize(AudioServerPlugInDriverRef inDriver
 		for(UInt32 slot = 0; slot < kProfileDevice_Count; ++slot)
 		{
 			pthread_mutex_init(&gProfileDeviceIOStates[slot].ioMutex, NULL);
-#if kDevice_HasInput
-			gProfileDeviceIOStates[slot].lastMixOutputSampleTime = -1.0;
-			gProfileDeviceIOStates[slot].isBufferClear = true;
-#endif
 			gProfileDeviceIOStates[slot].outputStreamIsActive = true;
 			atomic_store_explicit(&gProfileDeviceIOStates[slot].volume, 1.0f, memory_order_relaxed);
 			atomic_store_explicit(&gProfileDeviceIOStates[slot].mute, false, memory_order_relaxed);
@@ -1810,9 +1714,6 @@ static OSStatus	SystemAudioBridge_Initialize(AudioServerPlugInDriverRef inDriver
 	gDevice_AdjustedTicksPerFrame = gDevice_HostTicksPerFrame - gDevice_HostTicksPerFrame/100.0 * 2.0*(gPitch_Adjust - 0.5);
 	publish_timing_snapshot();
 	pthread_mutex_unlock(&gPlugIn_StateMutex);
-#if DEBUG
-	start_debug_overload_reporter();
-#endif
     
     // DebugMsg("SystemAudioBridge theTimeBaseInfo.numer: %u \t theTimeBaseInfo.denom: %u", theTimeBaseInfo.numer, theTimeBaseInfo.denom);
 	
@@ -2018,17 +1919,6 @@ static OSStatus	SystemAudioBridge_PerformDeviceConfigurationChange(AudioServerPl
                         sizeof(formatAddresses) / sizeof(formatAddresses[0]),
                         formatAddresses
                     );
-#if kDevice_HasInput
-                    if(relatedDevices[index] == kObjectID_Device)
-                    {
-                        gPlugIn_Host->PropertiesChanged(
-                            gPlugIn_Host,
-                            kObjectID_Stream_Input,
-                            sizeof(formatAddresses) / sizeof(formatAddresses[0]),
-                            formatAddresses
-                        );
-                    }
-#endif
                 }
             }
             
@@ -3759,8 +3649,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			break;
 
 		case kAudioDevicePropertyLatency:
-			//	This property returns the presentation latency of the device. For this,
-			//	device, the value is 0 due to the fact that it always vends silence.
+			// PCM is published directly; downstream playback owns its device latency.
 			FailWithAction(inDataSize < sizeof(UInt32), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetDevicePropertyData: not enough space for the return value of kAudioDevicePropertyLatency for the device");
 			*((UInt32*)outData) = 0;
 			*outDataSize = sizeof(UInt32);
@@ -3842,8 +3731,7 @@ static OSStatus	SystemAudioBridge_GetDevicePropertyData(AudioServerPlugInDriverR
 			break;
 
 		case kAudioDevicePropertySafetyOffset:
-			//	This property returns the how close to now the HAL can read and write. For
-			//	this, device, the value is 0 due to the fact that it always vends silence.
+			// The virtual endpoint adds no hardware scheduling offset by default.
 			FailWithAction(inDataSize < sizeof(UInt32), theAnswer = kAudioHardwareBadPropertySizeError, Done, "SystemAudioBridge_GetDevicePropertyData: not enough space for the return value of kAudioDevicePropertySafetyOffset for the device");
 			*((UInt32*)outData) = kLatency_Frame_Size;
 			*outDataSize = sizeof(UInt32);
@@ -3983,14 +3871,12 @@ Done:
  * accepting a closure whose contributors went to an old or absent transport. */
 static bool completion_attachment_is_quiescent(void)
 {
-#if SABR_ENABLE_COMPLETION
     for (int slot = -1; slot < kProfileDevice_Count; ++slot) {
         struct DeviceIOState* state = slot < 0 ? &gMainDeviceIOState : &gProfileDeviceIOStates[slot];
         const uint64_t admission = atomic_load_explicit(&state->completionAdmission.state, memory_order_acquire);
         if (state->runningCount != 0 || (admission & (SABR_COMPLETION_OPEN | SABR_COMPLETION_USERS)) != 0 ||
             (admission != 0 && !(admission & SABR_COMPLETION_SEALED))) { return false; }
     }
-#endif
     return true;
 }
 
@@ -5729,7 +5615,6 @@ Done:
 
 #pragma mark IO Operations
 
-#if SABR_ENABLE_COMPLETION
 static void publish_completion_end(struct DeviceIOState* state, AudioObjectID device, uint64_t epoch)
 {
     if (!epoch) { return; }
@@ -5738,7 +5623,6 @@ static void publish_completion_end(struct DeviceIOState* state, AudioObjectID de
         state->completionLayout, 0, 0);
     sabr_completion_end_published(&state->completionAdmission);
 }
-#endif
 
 static OSStatus	SystemAudioBridge_StartIO(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, UInt32 inClientID)
 {
@@ -5784,7 +5668,6 @@ static OSStatus	SystemAudioBridge_StartIO(AudioServerPlugInDriverRef inDriver, A
 
 	if(state->runningCount == 0)
 	{
-#if SABR_ENABLE_COMPLETION
         const uint64_t admission = atomic_load_explicit(&state->completionAdmission.state, memory_order_acquire);
         if ((admission & (SABR_COMPLETION_OPEN | SABR_COMPLETION_USERS)) != 0 ||
             (admission != 0 && !(admission & SABR_COMPLETION_SEALED))) {
@@ -5801,28 +5684,11 @@ static OSStatus	SystemAudioBridge_StartIO(AudioServerPlugInDriverRef inDriver, A
             theAnswer = kAudioHardwareIllegalOperationError;
             goto Done;
         }
-#endif
 		pthread_mutex_lock(&state->ioMutex);
 		state->numberTimeStamps = 0;
 		state->anchorHostTime = mach_absolute_time();
 		state->previousTicks = 0;
 		pthread_mutex_unlock(&state->ioMutex);
-#if kDevice_HasInput
-		state->lastOutputSampleTime = 0;
-		state->lastMixOutputSampleTime = -1;
-		state->isBufferClear = true;
-		state->ringBuffer = calloc(kRing_Buffer_Frame_Size * endpoint_channel_count(inDeviceObjectID), sizeof(Float32));
-		if(state->ringBuffer == NULL)
-		{
-			theAnswer = kAudioHardwareUnspecifiedError;
-#if SABR_ENABLE_COMPLETION
-            publish_completion_end(state, inDeviceObjectID, sabr_completion_close(&state->completionAdmission));
-#endif
-			sabr_driver_transport_stop_client(inDeviceObjectID, inClientID);
-			pthread_mutex_unlock(&gPlugIn_StateMutex);
-			goto Done;
-		}
-#endif
     }
 	state->runningCount += 1;
 
@@ -5868,19 +5734,10 @@ static OSStatus	SystemAudioBridge_StopIO(AudioServerPlugInDriverRef inDriver, Au
 	}
 	state->runningCount -= 1;
 	sabr_driver_transport_stop_client(inDeviceObjectID, inClientID);
-#if SABR_ENABLE_COMPLETION
     if (state->runningCount == 0) {
         publish_completion_end(state, inDeviceObjectID, sabr_completion_close(&state->completionAdmission));
     }
-#endif
 
-#if kDevice_HasInput
-    if(state->runningCount == 0 && state->ringBuffer != NULL)
-    {
-        free(state->ringBuffer);
-        state->ringBuffer = NULL;
-    }
-#endif
 	
 	//	unlock the state lock
 	pthread_mutex_unlock(&gPlugIn_StateMutex);
@@ -5953,7 +5810,7 @@ Done:
 static OSStatus	SystemAudioBridge_WillDoIOOperation(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, UInt32 inClientID, UInt32 inOperationID, Boolean* outWillDo, Boolean* outWillDoInPlace)
 {
 	//	This method returns whether or not the device will do a given IO operation. For this device,
-	//	we support reading input data and mixing each output client separately.
+	//	we publish each client output and the completed mix interval.
 	
 	#pragma unused(inClientID, inDeviceObjectID)
 	
@@ -5969,19 +5826,9 @@ static OSStatus	SystemAudioBridge_WillDoIOOperation(AudioServerPlugInDriverRef i
 	bool willDoInPlace = true;
 	switch(inOperationID)
 	{
-		#if kDevice_HasInput
-		case kAudioServerPlugInIOOperationReadInput:
-			willDo = inDeviceObjectID == kObjectID_Device;
-			willDoInPlace = true;
-			break;
-		#endif
 			
-#if SABR_ENABLE_COMPLETION
         case kAudioServerPlugInIOOperationProcessOutput:
         case kAudioServerPlugInIOOperationWriteMix:
-#else
-		case kAudioServerPlugInIOOperationMixOutput:
-#endif
 			willDo = true;
 			willDoInPlace = true;
 			break;
@@ -6028,10 +5875,8 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
 	
 	//	declare the local variables
 	OSStatus theAnswer = 0;
-#if SABR_ENABLE_COMPLETION
     uint64_t completionLease = 0;
-    struct DeviceIOState* completionState = NULL;
-#endif
+    struct DeviceIOState* state = NULL;
     const UInt32 channelLayoutTag = endpoint_layout_tag(inDeviceObjectID);
     const UInt32 channelCount = channelLayoutTag & 0xffff;
 	
@@ -6040,229 +5885,49 @@ static OSStatus	SystemAudioBridge_DoIOOperation(AudioServerPlugInDriverRef inDri
 	FailWithAction(!is_device_object(inDeviceObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: bad device ID");
 	FailWithAction(!is_stream_object(inStreamObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: bad stream ID");
 	FailWithAction(stream_owner_device(inStreamObjectID) != inDeviceObjectID, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: stream does not belong to device");
-#if SABR_ENABLE_COMPLETION
     Boolean isSupportedOperation = inOperationID == kAudioServerPlugInIOOperationProcessOutput ||
         inOperationID == kAudioServerPlugInIOOperationWriteMix;
-#else
-	Boolean isSupportedOperation = inOperationID == kAudioServerPlugInIOOperationMixOutput;
-#endif
-#if kDevice_HasInput
-	isSupportedOperation = isSupportedOperation || inOperationID == kAudioServerPlugInIOOperationReadInput;
-#endif
 	if(!isSupportedOperation) { goto Done; }
-#if SABR_ENABLE_COMPLETION
-    FailWithAction((inOperationID == kAudioServerPlugInIOOperationProcessOutput ||
-        inOperationID == kAudioServerPlugInIOOperationWriteMix) && inStreamObjectID == kObjectID_Stream_Input,
+    FailWithAction(inStreamObjectID == kObjectID_Stream_Input,
         theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: completion requires an output stream");
-#endif
-	FailWithAction(inOperationID == kAudioServerPlugInIOOperationMixOutput && inStreamObjectID == kObjectID_Stream_Input, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: MixOutput requires an output stream");
-#if kDevice_HasInput
-	FailWithAction(inOperationID == kAudioServerPlugInIOOperationReadInput && (inDeviceObjectID != kObjectID_Device || inStreamObjectID != kObjectID_Stream_Input), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: ReadInput requires the main input stream");
-#endif
+
 	FailWithAction(inIOCycleInfo == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_DoIOOperation: no IO cycle info");
 	FailWithAction(ioMainBuffer == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_DoIOOperation: no main buffer");
-	struct DeviceIOState* state = device_io_state(inDeviceObjectID);
+	state = device_io_state(inDeviceObjectID);
 	FailWithAction(state == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_DoIOOperation: missing IO state");
-#if SABR_ENABLE_COMPLETION
-    if (inOperationID == kAudioServerPlugInIOOperationProcessOutput ||
-        inOperationID == kAudioServerPlugInIOOperationWriteMix) {
-        completionState = state;
-        completionLease = sabr_completion_enter(&state->completionAdmission);
-        // A callback may have paused after initial ID validation while an old
-        // registration retired. Pin completion first, then revalidate identity.
-        FailWithAction(!is_device_object(inDeviceObjectID) || !is_stream_object(inStreamObjectID),
-            theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: retired generation");
-        const bool valid = completionLease && inIOBufferFrameSize > 0 &&
-            (inIOCycleInfo->mOutputTime.mFlags & kAudioTimeStampSampleTimeValid) &&
-            isfinite(inIOCycleInfo->mOutputTime.mSampleTime);
-        if (!valid) {
-            uint64_t epoch = completionLease ? completionLease : sabr_completion_epoch(
-                atomic_load_explicit(&state->completionAdmission.state, memory_order_acquire));
-            sabr_driver_transport_write_completion(SABR_EVENT_FAULT, inDeviceObjectID, epoch,
-                0, 0, endpoint_sample_rate(inDeviceObjectID), channelCount, channelLayoutTag, 0, 0);
-            theAnswer = kAudioHardwareIllegalOperationError;
-            goto Done;
-        }
-        if (inOperationID == kAudioServerPlugInIOOperationProcessOutput) {
-            sabr_driver_transport_write_completed_source(ioMainBuffer, inIOBufferFrameSize,
-                channelCount, channelLayoutTag, state->completionSampleRate, inDeviceObjectID,
-                inClientID, inIOCycleInfo->mIOCycleCounter, inIOCycleInfo->mOutputTime.mSampleTime,
-                completionLease, inIOCycleInfo->mOutputTime.mHostTime, inIOCycleInfo->mOutputTime.mFlags);
-        } else {
-            sabr_driver_transport_write_completion(SABR_EVENT_CLOSE, inDeviceObjectID, completionLease,
-                inIOCycleInfo->mOutputTime.mSampleTime, inIOBufferFrameSize, state->completionSampleRate,
-                channelCount, channelLayoutTag, inIOCycleInfo->mOutputTime.mHostTime,
-                inIOCycleInfo->mOutputTime.mFlags);
-        }
-#if !kDevice_HasInput
+    completionLease = sabr_completion_enter(&state->completionAdmission);
+    // A callback may have paused after initial ID validation while an old
+    // registration retired. Pin completion first, then revalidate identity.
+    FailWithAction(!is_device_object(inDeviceObjectID) || !is_stream_object(inStreamObjectID),
+        theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_DoIOOperation: retired generation");
+    const bool valid = completionLease && inIOBufferFrameSize > 0 &&
+        (inIOCycleInfo->mOutputTime.mFlags & kAudioTimeStampSampleTimeValid) &&
+        isfinite(inIOCycleInfo->mOutputTime.mSampleTime);
+    if (!valid) {
+        uint64_t epoch = completionLease ? completionLease : sabr_completion_epoch(
+            atomic_load_explicit(&state->completionAdmission.state, memory_order_acquire));
+        sabr_driver_transport_write_completion(SABR_EVENT_FAULT, inDeviceObjectID, epoch,
+            0, 0, endpoint_sample_rate(inDeviceObjectID), channelCount, channelLayoutTag, 0, 0);
+        theAnswer = kAudioHardwareIllegalOperationError;
         goto Done;
-#endif
     }
-#endif
-#if kDevice_HasInput
-	FailWithAction(state->ringBuffer == NULL, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_DoIOOperation: IO is not running");
-
-	// Calculate the ring buffer offsets and splits.
-    UInt64 mSampleTime = inOperationID == kAudioServerPlugInIOOperationReadInput ? inIOCycleInfo->mInputTime.mSampleTime : inIOCycleInfo->mOutputTime.mSampleTime;
-    UInt32 ringBufferFrameLocationStart = mSampleTime % kRing_Buffer_Frame_Size;
-    UInt32 firstPartFrameSize = kRing_Buffer_Frame_Size - ringBufferFrameLocationStart;
-    UInt32 secondPartFrameSize = 0;
-    
-    if (firstPartFrameSize >= inIOBufferFrameSize)
-    {
-        firstPartFrameSize = inIOBufferFrameSize;
-    }
-    else
-    {
-        secondPartFrameSize = inIOBufferFrameSize - firstPartFrameSize;
-    }
-    
-    #if SABR_ENABLE_COMPLETION
-    if(inOperationID == kAudioServerPlugInIOOperationWriteMix)
-    {
-        memcpy(state->ringBuffer + ringBufferFrameLocationStart * channelCount,
-            ioMainBuffer, firstPartFrameSize * channelCount * sizeof(Float32));
-        if(secondPartFrameSize > 0) {
-            memcpy(state->ringBuffer, (Float32*)ioMainBuffer + firstPartFrameSize * channelCount,
-                secondPartFrameSize * channelCount * sizeof(Float32));
-        }
-        state->lastOutputSampleTime = inIOCycleInfo->mOutputTime.mSampleTime;
-        state->isBufferClear = false;
-    }
-    #endif
-    // From SystemAudioBridge to Application
-    if(inOperationID == kAudioServerPlugInIOOperationReadInput)
-    {
-        // If mute is one let's just fill the buffer with zeros or if there's no apps outputting audio
-        if (atomic_load_explicit(&gMute_Master_Value, memory_order_relaxed) || state->lastOutputSampleTime - inIOBufferFrameSize < inIOCycleInfo->mInputTime.mSampleTime)
-        {
-            // Clear the ioMainBuffer
-            vDSP_vclr(ioMainBuffer, 1, inIOBufferFrameSize * channelCount);
-            
-            // Clear the ring buffer.
-            if (!state->isBufferClear)
-            {
-                vDSP_vclr(state->ringBuffer, 1, kRing_Buffer_Frame_Size * channelCount);
-                state->isBufferClear = true;
-            }
-        }
-        else
-        {
-            // Copy the buffers.
-            memcpy(ioMainBuffer, state->ringBuffer + ringBufferFrameLocationStart * channelCount, firstPartFrameSize * channelCount * sizeof(Float32));
-            memcpy((Float32*)ioMainBuffer + firstPartFrameSize * channelCount, state->ringBuffer, secondPartFrameSize * channelCount * sizeof(Float32));
-            
-            // Finally we'll apply the output volume to the buffer.
-	    if(kEnableVolumeControl)
-	    {
-			Float32 masterVolume = atomic_load_explicit(&gVolume_Master_Value, memory_order_relaxed);
-			vDSP_vsmul(ioMainBuffer, 1, &masterVolume, ioMainBuffer, 1, inIOBufferFrameSize * channelCount);
-	    }
-
-		}
-	}
-#endif
-
-	// From Application to SystemAudioBridge
-	if(inOperationID == kAudioServerPlugInIOOperationMixOutput)
-	{
-		const Float64 timingSampleRate = endpoint_sample_rate(inDeviceObjectID);
-		const bool currentSampleTimeIsValid =
-			(inIOCycleInfo->mCurrentTime.mFlags & kAudioTimeStampSampleTimeValid) != 0;
-		const bool outputSampleTimeIsValid =
-			(inIOCycleInfo->mOutputTime.mFlags & kAudioTimeStampSampleTimeValid) != 0;
-		const Float64 outputSampleTime = outputSampleTimeIsValid
-			? inIOCycleInfo->mOutputTime.mSampleTime
-			: (currentSampleTimeIsValid
-				? inIOCycleInfo->mCurrentTime.mSampleTime
-				: (Float64)(inIOCycleInfo->mIOCycleCounter * inIOBufferFrameSize));
-        
-		// Do not interpret an unset proxy timestamp as a missed deadline. The HAL
-		// explicitly marks which AudioTimeStamp fields are valid.
-		if (currentSampleTimeIsValid && outputSampleTimeIsValid &&
-			inIOCycleInfo->mCurrentTime.mSampleTime > outputSampleTime + inIOBufferFrameSize + kLatency_Frame_Size)
-        {
-#if DEBUG
-			atomic_store_explicit(&gDebugOverloadPending, true, memory_order_relaxed);
-#endif
-            return kAudioHardwareUnspecifiedError;
-        }
-
-	#if kDevice_HasInput
-		// MixOutput is called with one client's block. Clear the destination
-        // once per cycle, then accumulate every client for the legacy loopback
-        // input. The private transport publishes the blocks separately below.
-        if (state->lastMixOutputSampleTime != outputSampleTime)
-        {
-            vDSP_vclr(
-                state->ringBuffer + ringBufferFrameLocationStart * channelCount,
-                1,
-                firstPartFrameSize * channelCount
-            );
-            if (secondPartFrameSize > 0)
-            {
-                vDSP_vclr(
-                    state->ringBuffer,
-                    1,
-                    secondPartFrameSize * channelCount
-			);
-			}
-			state->lastMixOutputSampleTime = outputSampleTime;
-        }
-        vDSP_vadd(
-            (const Float32*)ioMainBuffer,
-            1,
-            state->ringBuffer + ringBufferFrameLocationStart * channelCount,
-            1,
-            state->ringBuffer + ringBufferFrameLocationStart * channelCount,
-            1,
-            firstPartFrameSize * channelCount
-        );
-        if (secondPartFrameSize > 0)
-        {
-            vDSP_vadd(
-                (const Float32*)ioMainBuffer + firstPartFrameSize * channelCount,
-                1,
-                state->ringBuffer,
-                1,
-                state->ringBuffer,
-                1,
-                secondPartFrameSize * channelCount
-			);
-		}
-		#endif
-
-        // Publish this client's interleaved block before Core Audio combines it
-        // with other applications. The profile volume is a control surface for
-        // media keys; the private transport remains full scale. CamiTune
-        // consumes the control snapshot and applies the physical device's
-        // measured transfer curve exactly once downstream.
-        sabr_driver_transport_write(
-            (const Float32*)ioMainBuffer,
-            inIOBufferFrameSize,
-            channelCount,
-            channelLayoutTag,
-			timingSampleRate,
-            inDeviceObjectID,
-            inClientID,
-            inIOCycleInfo->mIOCycleCounter,
-			outputSampleTime
-        );
-        
-        // Save the last output time.
-	#if kDevice_HasInput
-		state->lastOutputSampleTime = outputSampleTime + inIOBufferFrameSize;
-		state->isBufferClear = false;
-	#endif
+    if (inOperationID == kAudioServerPlugInIOOperationProcessOutput) {
+        sabr_driver_transport_write_completed_source(ioMainBuffer, inIOBufferFrameSize,
+            channelCount, channelLayoutTag, state->completionSampleRate, inDeviceObjectID,
+            inClientID, inIOCycleInfo->mIOCycleCounter, inIOCycleInfo->mOutputTime.mSampleTime,
+            completionLease, inIOCycleInfo->mOutputTime.mHostTime, inIOCycleInfo->mOutputTime.mFlags);
+    } else {
+        sabr_driver_transport_write_completion(SABR_EVENT_CLOSE, inDeviceObjectID, completionLease,
+            inIOCycleInfo->mOutputTime.mSampleTime, inIOBufferFrameSize, state->completionSampleRate,
+            channelCount, channelLayoutTag, inIOCycleInfo->mOutputTime.mHostTime,
+            inIOCycleInfo->mOutputTime.mFlags);
     }
 
 Done:
-#if SABR_ENABLE_COMPLETION
     if (completionLease) {
-        publish_completion_end(completionState, inDeviceObjectID,
-            sabr_completion_leave(&completionState->completionAdmission));
+        publish_completion_end(state, inDeviceObjectID,
+            sabr_completion_leave(&state->completionAdmission));
     }
-#endif
 	return theAnswer;
 }
 

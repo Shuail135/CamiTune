@@ -43,17 +43,6 @@ void sabr_driver_transport_publish_control(
     Float32 linearGain,
     Boolean muted
 );
-void sabr_driver_transport_write(
-    const Float32* interleavedSamples,
-    uint32_t frameCount,
-    uint32_t channelCount,
-    uint32_t channelLayoutTag,
-    double sampleRate,
-    AudioObjectID deviceObjectID,
-    uint32_t clientID,
-    uint64_t cycleCounter,
-    double sampleTime
-);
 void sabr_driver_transport_write_completed_source(
     const Float32* samples, uint32_t frames, uint32_t channels, uint32_t layout,
     double sampleRate, AudioObjectID device, uint32_t client, uint64_t cycle,

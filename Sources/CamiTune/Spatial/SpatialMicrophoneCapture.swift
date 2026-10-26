@@ -54,20 +54,8 @@ final class SpatialMicrophoneCapture: NSObject, AVCaptureAudioDataOutputSampleBu
         lock.lock(); defer { lock.unlock() }; return accumulator.failed
     }
 
-    private static var audioDevices: [AVCaptureDevice] {
-        let deviceTypes: [AVCaptureDevice.DeviceType]
-        if #available(macOS 14.0, *) {
-            deviceTypes = [.microphone, .external]
-        } else {
-            deviceTypes = [.builtInMicrophone, .externalUnknown]
-        }
-        return AVCaptureDevice.DiscoverySession(
-            deviceTypes: deviceTypes, mediaType: .audio, position: .unspecified
-        ).devices
-    }
-
     static var microphones: [MeasurementMicrophone] {
-        audioDevices.map {
+        AudioInputCapture.devices.map {
             MeasurementMicrophone(id: $0.uniqueID, name: $0.localizedName,
                                   isBuiltIn: $0.deviceType == .builtInMicrophone)
         }
@@ -83,26 +71,13 @@ final class SpatialMicrophoneCapture: NSObject, AVCaptureAudioDataOutputSampleBu
                     self.lock.lock()
                     self.accumulator = MicrophoneCaptureAccumulator(retainsAudio: retainAudio)
                     self.lock.unlock()
-                    guard let device = Self.audioDevices.first(where: { $0.uniqueID == id }) else {
+                    guard let device = AudioInputCapture.devices.first(where: { $0.uniqueID == id }) else {
                         throw AcousticMeasurementError.noMicrophone
                     }
-                    let input = try AVCaptureDeviceInput(device: device)
-                    let output = AVCaptureAudioDataOutput()
-                    output.audioSettings = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000,
-                        AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 32,
-                        AVLinearPCMIsFloatKey: true, AVLinearPCMIsBigEndianKey: false,
-                        AVLinearPCMIsNonInterleaved: false]
-                    output.setSampleBufferDelegate(self, queue: self.callbackQueue)
-                    self.session.beginConfiguration()
-                    guard self.session.canAddInput(input), self.session.canAddOutput(output) else {
-                        self.session.commitConfiguration()
+                    guard try AudioInputCapture.start(self.session, device: device, channels: 1,
+                        delegate: self, callbackQueue: self.callbackQueue) else {
                         throw AcousticMeasurementError.captureFailed
                     }
-                    self.session.addInput(input)
-                    self.session.addOutput(output)
-                    self.session.commitConfiguration()
-                    self.session.startRunning()
-                    guard self.session.isRunning else { throw AcousticMeasurementError.captureFailed }
                     continuation.resume()
                 } catch { continuation.resume(throwing: error) }
             }

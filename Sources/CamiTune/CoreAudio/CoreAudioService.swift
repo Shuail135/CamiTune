@@ -276,20 +276,6 @@ final class CoreAudioService {
         return await Task.detached(priority: .utility) { backend.resolve(uid) }.value
     }
 
-    /// Driver endpoint publication can rebuild Core Audio's object graph while
-    /// preserving device UIDs. Resolve the base bridge from its UID again
-    /// before opening a transport instead of trusting a cached object ID.
-    func freshlyResolvedSystemAudioBridge() -> AudioDeviceInfo? {
-        let resolved = Self.deviceInfo(forUID: AudioDeviceInfo.systemAudioBridgeUID)
-        cachedHiddenSystemAudioBridge = resolved
-        hasResolvedHiddenSystemAudioBridge = true
-        return resolved
-    }
-
-    func freshlyResolvedSystemAudioBridgeWithoutBlockingUI() async -> AudioDeviceInfo? {
-        await resolveDeviceWithoutBlockingUI(uid: AudioDeviceInfo.systemAudioBridgeUID)
-    }
-
     private func invalidateSystemAudioBridgeReference() {
         cachedHiddenSystemAudioBridge = nil
         hasResolvedHiddenSystemAudioBridge = false
@@ -382,10 +368,6 @@ final class CoreAudioService {
         return backend.resolve(uid)
     }
 
-    func profileRoutingDevice(profileID: UUID) -> AudioDeviceInfo? {
-        device(uid: ProfileRoutingDescriptor.uid(for: profileID))
-    }
-
     func waitForProfileRoutingDevice(profileID: UUID) async -> AudioDeviceInfo? {
         await waitForDevice(uid: ProfileRoutingDescriptor.uid(for: profileID))
     }
@@ -406,23 +388,16 @@ final class CoreAudioService {
             if let current, ProfileRoutingDescriptor.isProfileRoutingUID(current),
                let physical = devices.first(where: { !$0.isRoutingDevice }),
                let fresh = backend.resolve(physical.id) { try? backend.setDefaultOutput(fresh) }
-            for observed in devices where ProfileRoutingDescriptor.isProfileRoutingUID(observed.id) {
-                guard let fresh = backend.resolve(observed.id),
-                      Self.uint32Property(fresh.objectID, selector: kAudioObjectPropertyClass) == kAudioAggregateDeviceClassID else { continue }
-                _ = AudioHardwareDestroyAggregateDevice(fresh.objectID)
-            }
             if let bridge = backend.resolve(AudioDeviceInfo.systemAudioBridgeUID) { _ = try? backend.publishEndpoints(bridge, []) }
         }.value
         deviceGraphChanged()
         await refreshWithoutBlockingUI()
     }
 
-    /// Unpublishes the driver's native profile endpoints and removes any
-    /// aggregate selectors left by an older CamiTune build.
     func destroyAllProfileRoutingDevices(fallbackUID: String? = nil) {
         cancelReadiness()
         refresh()
-        var selectors = outputDevices.filter {
+        let selectors = outputDevices.filter {
             ProfileRoutingDescriptor.isProfileRoutingUID($0.id)
         }
         if let defaultOutputUID,
@@ -433,14 +408,6 @@ final class CoreAudioService {
             if let fallback { try? setDefaultOutput(uid: fallback) }
         }
 
-        refresh()
-        selectors = outputDevices.filter {
-            ProfileRoutingDescriptor.isProfileRoutingUID($0.id)
-        }
-        for device in selectors where device.id != defaultOutputUID && isAggregateDevice(device.objectID) {
-            let status = AudioHardwareDestroyAggregateDevice(device.objectID)
-            guard status == noErr || status == kAudioHardwareBadObjectError else { continue }
-        }
         if let bridge = systemAudioBridge {
             // Serialize with any cancelled publisher, including its rollback,
             // so an in-flight publication cannot recreate devices after cleanup.
@@ -449,47 +416,7 @@ final class CoreAudioService {
         refresh()
     }
 
-    @discardableResult
-    func synchronizeProfileRoutingDevices(
-        profiles: [DeviceProfile],
-        activeProfileID: UUID?,
-        additionallyVisible: Set<UUID> = [],
-        preparedDescriptors: [UUID: ProfileRoutingDescriptor] = [:]
-    ) throws -> [UUID: ProfileRoutingDescriptor] {
-        guard let bridge = systemAudioBridge else { throw AudioError.deviceNotFound(AudioDeviceInfo.systemAudioBridgeUID) }
-
-        let request = try ProfileEndpointPublicationRequest(profiles: profiles, activeProfileID: activeProfileID,
-            defaultOutputUID: defaultOutputUID, connectedOutputUIDs: Set(physicalOutputDevices.map(\.id)),
-            additionallyVisible: additionallyVisible, preparedDescriptors: preparedDescriptors)
-
-        // One-time migration: native driver endpoints replace the aggregate
-        // selectors used by older builds.
-        var migratedDefaultUID: String?
-        for device in outputDevices where
-            ProfileRoutingDescriptor.isProfileRoutingUID(device.id) &&
-            isAggregateDevice(device.objectID) {
-            if device.id == defaultOutputUID {
-                migratedDefaultUID = device.id
-                try setDefaultOutput(uid: bridge.id)
-            }
-            let status = AudioHardwareDestroyAggregateDevice(device.objectID)
-            guard status == noErr || status == kAudioHardwareBadObjectError else {
-                throw AudioError.osStatus(status)
-            }
-        }
-
-        _ = try backend.publishEndpoints(bridge, request.endpoints)
-        invalidateSystemAudioBridgeReference()
-        if migratedDefaultUID != nil {
-            refresh()
-        }
-        if let migratedDefaultUID, device(uid: migratedDefaultUID) != nil {
-            try setDefaultOutput(uid: migratedDefaultUID)
-        }
-        return request.descriptors
-    }
-
-    /// Native publication and legacy compatibility execute off MainActor. Profile
+    /// Native publication executes off MainActor. Profile
     /// visibility/descriptor policy has already produced this immutable request.
     func publishProfileEndpoints(_ request: ProfileEndpointPublicationRequest) async throws -> CoreAudioEndpointPublicationReceipt {
         // A disconnected output can leave its virtual endpoint selected in
@@ -501,33 +428,7 @@ final class CoreAudioService {
            let fallback = physicalOutputDevices.first {
             try await setDefaultOutputAndWait(uid: fallback.id)
         }
-        let backend = backend
-        let legacy = outputDevices.filter { ProfileRoutingDescriptor.isProfileRoutingUID($0.id) && $0.transportType == kAudioDeviceTransportTypeAggregate }
-        let migratedDefault = try await Task.detached(priority: .utility) {
-            try Self.migrateLegacyEndpoints(legacy, backend: backend)
-        }.value
-        let receipt = try await publishEndpoints(request.endpoints)
-        if let migratedDefault { try await setDefaultOutputAndWait(uid: migratedDefault) }
-        return receipt
-    }
-
-    nonisolated private static func migrateLegacyEndpoints(_ observed: [AudioDeviceInfo], backend: CoreAudioHALBackend) throws -> String? {
-        // Explicit compatibility path. Native endpoint publication never performs
-        // a complete scan: legacy aggregate presence is observed by normal snapshots.
-        guard !observed.isEmpty else { return nil }
-        let previous = backend.readDefaultOutput()
-        var migrated: String?
-        for stale in observed {
-            guard let device = backend.resolve(stale.id),
-                  uint32Property(device.objectID, selector: kAudioObjectPropertyClass) == kAudioAggregateDeviceClassID else { continue }
-            if previous == device.id {
-                guard let bridge = backend.resolve(AudioDeviceInfo.systemAudioBridgeUID) else { throw AudioError.deviceNotFound(AudioDeviceInfo.systemAudioBridgeUID) }
-                try backend.setDefaultOutput(bridge); migrated = previous
-            }
-            let status = AudioHardwareDestroyAggregateDevice(device.objectID)
-            guard status == noErr || status == kAudioHardwareBadObjectError else { throw AudioError.osStatus(status) }
-        }
-        return migrated
+        return try await publishEndpoints(request.endpoints)
     }
 
     /// Endpoint selection belongs to the caller. Publication invalidates bindings even
@@ -851,16 +752,6 @@ final class CoreAudioService {
         )
     }
 
-    func volumeDecibelsWithoutBlockingUI(uid: String) async -> Float32? {
-        guard let device = await resolveDeviceWithoutBlockingUI(uid: uid) else { return nil }
-        return await Task.detached(priority: .utility) {
-            Self.floatProperty(
-                deviceID: device.objectID,
-                selector: kAudioDevicePropertyVolumeDecibels
-            )
-        }.value
-    }
-
     func isMuted(uid: String) -> Bool? {
         guard let device = device(uid: uid) else { return nil }
         return Self.isMuted(deviceID: device.objectID)
@@ -1144,10 +1035,6 @@ final class CoreAudioService {
         }
         guard status == noErr, objectID != kAudioObjectUnknown else { return nil }
         return objectID
-    }
-
-    private func isAggregateDevice(_ objectID: AudioObjectID) -> Bool {
-        Self.uint32Property(objectID, selector: kAudioObjectPropertyClass) == kAudioAggregateDeviceClassID
     }
 
     nonisolated static func defaultOutputDevice() -> AudioDeviceID? {

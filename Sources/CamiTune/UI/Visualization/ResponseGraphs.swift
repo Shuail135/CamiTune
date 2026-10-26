@@ -26,73 +26,15 @@ struct LineGraph: View {
 
     private var plot: some View {
         Canvas(rendersAsynchronously: true) { context, size in
-            let rect = CGRect(origin: .zero, size: size)
-            drawGrid(context: &context, rect: rect)
-            guard points.count > 1,
-                  let firstPoint = points.first,
-                  let lastPoint = points.last else { return }
-            let path = smoothPath(points: points, size: size)
-            if fillsArea {
-                var fill = path
-                fill.addLine(to: CGPoint(x: x(lastPoint.0, width: size.width), y: size.height))
-                fill.addLine(to: CGPoint(x: x(firstPoint.0, width: size.width), y: size.height))
-                fill.closeSubpath()
-                context.fill(
-                    fill,
-                    with: .linearGradient(
-                        Gradient(colors: [lineColor.opacity(0.34), lineColor.opacity(0.04)]),
-                        startPoint: .zero,
-                        endPoint: CGPoint(x: 0, y: size.height)
-                    )
-                )
-            }
-            context.stroke(path, with: .color(lineColor), lineWidth: 1.8)
+            let plot = ResponseGraphPlot(xRange: xRange, size: size, scale: axisScale)
+            plot.drawGrid(context: &context, zeroRange: zeroLine ? yRange : nil)
+            plot.drawLine(points, yRange: yRange, color: lineColor, width: 1.8,
+                fillOpacity: fillsArea ? 0.34 : nil, context: &context)
         }
         .overlay(alignment: .bottom) {
             SpectrumFrequencyAxis(xRange: xRange, scale: axisScale)
                 .frame(height: 16 * axisScale)
                 .offset(y: 16 * axisScale)
-        }
-    }
-
-    private func x(_ value: Double, width: Double) -> Double {
-        SpectrumFrequencyTicks.x(value, in: xRange, width: width, scale: axisScale)
-    }
-
-    private func y(_ value: Double, height: Double) -> Double {
-        let clamped = min(max(value, yRange.lowerBound), yRange.upperBound)
-        return height - (clamped - yRange.lowerBound) / (yRange.upperBound - yRange.lowerBound) * height
-    }
-
-    private func smoothPath(points: [(Double, Double)], size: CGSize) -> Path {
-        let mapped = points.map { CGPoint(x: x($0.0, width: size.width), y: y($0.1, height: size.height)) }
-        var path = Path()
-        guard let first = mapped.first else { return path }
-        path.move(to: first)
-        for index in 1..<mapped.count {
-            let previous = mapped[index - 1]
-            let current = mapped[index]
-            let midpoint = CGPoint(x: (previous.x + current.x) * 0.5, y: (previous.y + current.y) * 0.5)
-            path.addQuadCurve(to: midpoint, control: previous)
-        }
-        if let last = mapped.last { path.addLine(to: last) }
-        return path
-    }
-
-    private func drawGrid(context: inout GraphicsContext, rect: CGRect) {
-        let freqs = SpectrumFrequencyTicks.values(in: xRange)
-        for f in freqs {
-            var p = Path()
-            let xx = x(f, width: rect.width)
-            p.move(to: CGPoint(x: xx, y: 0)); p.addLine(to: CGPoint(x: xx, y: rect.height))
-            context.stroke(p, with: .color(Color.primary.opacity(0.12)), lineWidth: 1)
-        }
-        if zeroLine, yRange.contains(0) {
-            var p = Path()
-            let yy = y(0, height: rect.height)
-            p.move(to: CGPoint(x: x(xRange.lowerBound, width: rect.width), y: yy))
-            p.addLine(to: CGPoint(x: x(xRange.upperBound, width: rect.width), y: yy))
-            context.stroke(p, with: .color(Color.primary.opacity(0.25)), lineWidth: 1)
         }
     }
 
@@ -128,25 +70,13 @@ struct SpectrumWithResponseGraph: View {
 
     private var plot: some View {
         Canvas(rendersAsynchronously: true) { context, size in
-            drawGrid(context: &context, size: size)
-            drawLine(
-                points: spectrum,
-                yRange: spectrumRange,
-                color: .blue,
-                width: 1.7,
-                fillsArea: true,
-                context: &context,
-                size: size
-            )
-            drawLine(
-                points: response,
-                yRange: responseRange,
-                color: CorrectionGraphPresentation.equalizerColor,
-                width: 1.4,
-                fillsArea: false,
-                context: &context,
-                size: size
-            )
+            let plot = ResponseGraphPlot(xRange: xRange, size: size, scale: axisScale)
+            plot.drawGrid(context: &context, zeroRange: responseRange,
+                zeroColor: CorrectionGraphPresentation.equalizerColor.opacity(0.3))
+            plot.drawLine(spectrum, yRange: spectrumRange, color: .blue, width: 1.7,
+                fillOpacity: 0.36, context: &context)
+            plot.drawLine(response, yRange: responseRange,
+                color: CorrectionGraphPresentation.equalizerColor, width: 1.4, context: &context)
         }
         .overlay(alignment: .bottom) {
             SpectrumFrequencyAxis(xRange: xRange, scale: axisScale)
@@ -155,40 +85,27 @@ struct SpectrumWithResponseGraph: View {
         }
     }
 
-    private func drawGrid(context: inout GraphicsContext, size: CGSize) {
-        for frequency in SpectrumFrequencyTicks.values(in: xRange) {
-            var path = Path()
-            let xx = x(frequency, width: size.width)
-            path.move(to: CGPoint(x: xx, y: 0))
-            path.addLine(to: CGPoint(x: xx, y: size.height))
-            context.stroke(path, with: .color(Color.primary.opacity(0.12)), lineWidth: 1)
-        }
-        if responseRange.contains(0) {
-            var zero = Path()
-            let yy = y(0, range: responseRange, height: size.height)
-            zero.move(to: CGPoint(x: x(xRange.lowerBound, width: size.width), y: yy))
-            zero.addLine(to: CGPoint(x: x(xRange.upperBound, width: size.width), y: yy))
-            context.stroke(zero, with: .color(CorrectionGraphPresentation.equalizerColor.opacity(0.3)), lineWidth: 1)
-        }
+}
+
+struct ResponseGraphPlot {
+    let xRange: ClosedRange<Double>
+    let size: CGSize
+    let scale: CGFloat
+
+    func x(_ value: Double) -> Double {
+        SpectrumFrequencyTicks.x(value, in: xRange, width: size.width, scale: scale)
     }
 
-    private func drawLine(
-        points: [(Double, Double)],
-        yRange: ClosedRange<Double>,
-        color: Color,
-        width: Double,
-        fillsArea: Bool,
-        context: inout GraphicsContext,
-        size: CGSize
-    ) {
-        guard points.count > 1,
-              let firstPoint = points.first,
-              let lastPoint = points.last else { return }
-        let mapped = points.map {
-            CGPoint(x: x($0.0, width: size.width), y: y($0.1, range: yRange, height: size.height))
-        }
+    func y(_ value: Double, range: ClosedRange<Double>) -> Double {
+        let clamped = min(max(value, range.lowerBound), range.upperBound)
+        return size.height - (clamped - range.lowerBound) / (range.upperBound - range.lowerBound) * size.height
+    }
+
+    func path(_ points: [(Double, Double)], yRange: ClosedRange<Double>) -> Path {
+        let mapped = points.map { CGPoint(x: x($0.0), y: y($0.1, range: yRange)) }
         var path = Path()
-        if let first = mapped.first { path.move(to: first) }
+        guard let first = mapped.first else { return path }
+        path.move(to: first)
         for index in 1..<mapped.count {
             let previous = mapped[index - 1]
             let current = mapped[index]
@@ -196,32 +113,42 @@ struct SpectrumWithResponseGraph: View {
             path.addQuadCurve(to: midpoint, control: previous)
         }
         if let last = mapped.last { path.addLine(to: last) }
-        if fillsArea {
+        return path
+    }
+
+    func drawGrid(context: inout GraphicsContext, zeroRange: ClosedRange<Double>? = nil,
+        zeroColor: Color = .primary.opacity(0.25)) {
+        for frequency in SpectrumFrequencyTicks.values(in: xRange) {
+            var path = Path()
+            let xx = x(frequency)
+            path.move(to: CGPoint(x: xx, y: 0))
+            path.addLine(to: CGPoint(x: xx, y: size.height))
+            context.stroke(path, with: .color(Color.primary.opacity(0.12)), lineWidth: 1)
+        }
+        if let zeroRange, zeroRange.contains(0) {
+            var path = Path()
+            let yy = y(0, range: zeroRange)
+            path.move(to: CGPoint(x: x(xRange.lowerBound), y: yy))
+            path.addLine(to: CGPoint(x: x(xRange.upperBound), y: yy))
+            context.stroke(path, with: .color(zeroColor), lineWidth: 1)
+        }
+    }
+
+    func drawLine(_ points: [(Double, Double)], yRange: ClosedRange<Double>, color: Color,
+        width: Double, fillOpacity: Double? = nil, context: inout GraphicsContext) {
+        guard points.count > 1, let first = points.first, let last = points.last else { return }
+        let path = path(points, yRange: yRange)
+        if let fillOpacity {
             var fill = path
-            fill.addLine(to: CGPoint(x: x(lastPoint.0, width: size.width), y: size.height))
-            fill.addLine(to: CGPoint(x: x(firstPoint.0, width: size.width), y: size.height))
+            fill.addLine(to: CGPoint(x: x(last.0), y: size.height))
+            fill.addLine(to: CGPoint(x: x(first.0), y: size.height))
             fill.closeSubpath()
-            context.fill(
-                fill,
-                with: .linearGradient(
-                    Gradient(colors: [color.opacity(0.36), color.opacity(0.04)]),
-                    startPoint: .zero,
-                    endPoint: CGPoint(x: 0, y: size.height)
-                )
-            )
+            context.fill(fill, with: .linearGradient(
+                Gradient(colors: [color.opacity(fillOpacity), color.opacity(0.04)]),
+                startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height)))
         }
         context.stroke(path, with: .color(color), lineWidth: width)
     }
-
-    private func x(_ value: Double, width: Double) -> Double {
-        SpectrumFrequencyTicks.x(value, in: xRange, width: width, scale: axisScale)
-    }
-
-    private func y(_ value: Double, range: ClosedRange<Double>, height: Double) -> Double {
-        let clamped = min(max(value, range.lowerBound), range.upperBound)
-        return height - (clamped - range.lowerBound) / (range.upperBound - range.lowerBound) * height
-    }
-
 }
 
 /// Both spectrum panels use identical plot bounds. The response scale fits in

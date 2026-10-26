@@ -343,7 +343,7 @@ class VSTEffect final : public Effect, public IHostApplication, public IComponen
     int mainInput = -1, mainOutput = -1;
     int sidechainInput = -1, requestedSidechain = -1;
     bool instrument = false, sidechainEnabled = false;
-    float* const* sidechain = nullptr;
+    const float* sidechain = nullptr;
     NSMutableArray<NSDictionary*>* auxiliaryInputs = [NSMutableArray array];
     uint32_t latencyFrames = 0; double tail = 0; bool invalidIO = false;
 
@@ -636,7 +636,7 @@ public:
             inputs[i].silenceFlags = (int)i == mainInput || external ? 0 : ~uint64(0);
             if ((int)i != mainInput) for (int c = 0; c < inputs[i].numChannels; ++c) {
                 for (uint32_t f = 0; f < frames; ++f) {
-                    float value = !external ? 0 : inputs[i].numChannels == 1 ? .5f * (sidechain[0][f] + sidechain[1][f]) : c < 2 ? sidechain[c][f] : 0;
+                    float value = sidechainSample(external ? sidechain : nullptr, inputs[i].numChannels, c, f);
                     if (sampleSize == kSample64) inputs[i].channelBuffers64[c][f] = value;
                     else inputs[i].channelBuffers32[c][f] = value;
                 }
@@ -700,7 +700,7 @@ public:
     uint32_t latency() override { return latencyFrames; }
     bool isInstrument() override { return instrument; }
     NSArray<NSDictionary*>* sidechainBuses() override { return auxiliaryInputs; }
-    void setSidechain(float* const* stereo) override { sidechain = stereo; }
+    void setSidechain(const float* stereo) override { sidechain = stereo; }
     double tailSeconds() override { return tail; }
     NSData* saveState() override {
         StateStream componentState(new MemoryStream); auto result = component->getState(componentState.get());

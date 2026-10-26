@@ -1036,49 +1036,11 @@ void sabr_driver_transport_write_completed_source(
     const uint32_t startFrame = (uint32_t)(writeFrame % capacity);
     const uint32_t firstFrames = frameCount < capacity - startFrame ? frameCount : capacity - startFrame;
     const uint32_t secondFrames = frameCount - firstFrames;
-    if (channelCount == channelCapacity) {
-        memcpy(
-            transport->samples + ((size_t)startFrame * channelCapacity),
-            interleavedSamples,
-            (size_t)firstFrames * channelCount * sizeof(Float32)
-        );
-    } else {
-        /* Clear each contiguous ring span once, then expand only the active
-         * channels. This removes a second function call from every frame and
-         * keeps the normal negotiated equal-stride path entirely bulk-copy. */
-        memset(
-            transport->samples + ((size_t)startFrame * channelCapacity),
-            0,
-            (size_t)firstFrames * channelCapacity * sizeof(Float32)
-        );
-        for (uint32_t sourceFrame = 0; sourceFrame < firstFrames; ++sourceFrame) {
-            Float32* destination = transport->samples +
-                ((size_t)(startFrame + sourceFrame) * channelCapacity);
-            const Float32* source = interleavedSamples + ((size_t)sourceFrame * channelCount);
-            memcpy(destination, source, (size_t)channelCount * sizeof(Float32));
-        }
-    }
-    if (secondFrames > 0) {
-        if (channelCount == channelCapacity) {
-            memcpy(
-                transport->samples,
-                interleavedSamples + ((size_t)firstFrames * channelCount),
-                (size_t)secondFrames * channelCount * sizeof(Float32)
-            );
-        } else {
-            memset(
-                transport->samples,
-                0,
-                (size_t)secondFrames * channelCapacity * sizeof(Float32)
-            );
-            for (uint32_t frame = 0; frame < secondFrames; ++frame) {
-                Float32* destination = transport->samples + ((size_t)frame * channelCapacity);
-                const Float32* source = interleavedSamples +
-                    ((size_t)(firstFrames + frame) * channelCount);
-                memcpy(destination, source, (size_t)channelCount * sizeof(Float32));
-            }
-        }
-    }
+    sabr_copy_audio_frames(transport->samples + (size_t)startFrame * channelCapacity,
+        channelCapacity, interleavedSamples, channelCount, firstFrames, channelCount);
+    sabr_copy_audio_frames(transport->samples, channelCapacity,
+        interleavedSamples + (size_t)firstFrames * channelCount,
+        channelCount, secondFrames, channelCount);
 
     atomic_store_explicit(&header->latestChannels, channelCount, memory_order_relaxed);
     atomic_store_explicit(
@@ -1113,17 +1075,6 @@ void sabr_driver_transport_write_completed_source(
     atomic_store_explicit(&packet->committed, SABR_PACKET_STATE_READY, memory_order_release);
     (void)sem_post(transport->notification);
     sabr_release_transport_access();
-}
-
-/* Compatibility entry point for local transport tests and raw diagnostic writers.
- * The completion-aware driver uses the epoch-bearing entry point above. */
-void sabr_driver_transport_write(
-    const Float32* samples, uint32_t frames, uint32_t channels, uint32_t layout,
-    double sampleRate, AudioObjectID device, uint32_t client, uint64_t cycle,
-    double sampleTime
-) {
-    sabr_driver_transport_write_completed_source(samples, frames, channels, layout,
-        sampleRate, device, client, cycle, sampleTime, 0, 0, 0);
 }
 
 void sabr_driver_transport_write_completion(
