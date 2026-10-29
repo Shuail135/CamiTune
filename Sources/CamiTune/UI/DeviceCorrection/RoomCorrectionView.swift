@@ -396,20 +396,7 @@ struct RoomCorrectionView: View {
                         : "Microphone · \(microphoneHeightDescription(position, in: session))")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer(minLength: 0)
-                    Button { mapZoom = max(0.25, mapZoom / 1.25) } label: {
-                        Image(systemName: "minus.magnifyingglass")
-                            .frame(width: 22, height: 22).contentShape(Rectangle())
-                    }
-                        .buttonStyle(.plain)
-                        .disabled(mapZoom <= 0.25).accessibilityLabel("Zoom Out")
-                        .uiInteractionAnchor("room-map-zoom-out")
-                    Button { mapZoom = min(4, mapZoom * 1.25) } label: {
-                        Image(systemName: "plus.magnifyingglass")
-                            .frame(width: 22, height: 22).contentShape(Rectangle())
-                    }
-                        .buttonStyle(.plain)
-                        .disabled(mapZoom >= 4).accessibilityLabel("Zoom In")
-                        .uiInteractionAnchor("room-map-zoom-in")
+                    SpeakerMapZoomControls(zoom: $mapZoom, anchorPrefix: "room-map")
                 }.controlSize(.small)
                 if session.source.kind == .microphone {
                     if position.skipped {

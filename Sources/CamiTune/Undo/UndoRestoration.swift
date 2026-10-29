@@ -144,6 +144,10 @@ extension AppState: HistoryRestoring {
         case (.speakerSystem, .speakerSystem(let id)):
             let profile = try historyProfile(id)
             return .speakerSystem(speakerEditSessions[id] ?? SpeakerSystemHistoryState(topology: profile.speakerTopology, seat: profile.effectiveSpatialSettings.seating, bass: profile.multichannel.bass))
+        case (.personalSpatial(let context, _), .profile(let id)):
+            let profile = try historyProfile(id)
+            guard profile.deviceTypeConfigurationKey == context else { throw ProfileSettingsError.runtime("Switch back to the original playback device before undoing this edit.") }
+            return .personalSpatial(context: context, settings: profile.personalSpatial)
         case (.referenceTransfer, .profile(let id)):
             let profile = try historyProfile(id)
             return .referenceTransfer(ReferenceTransferHistoryState(correction: profile.personalReferenceCorrection,
@@ -290,6 +294,8 @@ extension AppState: HistoryRestoring {
         case let (.speakerSystem(value), .speakerSystem(id)):
             _ = try historyProfile(id)
             speakerEditSessions[id] = value
+        case let (.personalSpatial(context, value), .profile(id)):
+            try await setPersonalSpatial(profileID: id, settings: value, expectedContext: context, recordHistory: false)
         case let (.referenceTransfer(value), .profile(id)):
             var profile = try historyProfile(id)
             profile.setPersonalReferenceCorrection(value.correction)

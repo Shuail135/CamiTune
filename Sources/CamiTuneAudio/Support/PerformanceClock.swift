@@ -31,4 +31,9 @@ package final class PerformanceAtomic: @unchecked Sendable {
     package func set(_ number: UInt64) { cmt_performance_atomic_store(value, number) }
     package func exchange(_ number: UInt64) -> UInt64 { cmt_performance_atomic_exchange(value, number) }
     package func increment() { cmt_performance_atomic_increment(value) }
+    package var acquired: UInt64 { cmt_performance_atomic_load_acquire(value) }
+    package func publish(_ number: UInt64) { cmt_performance_atomic_store_release(value, number) }
+    package func compareExchange(expected: UInt64, desired: UInt64) -> Bool {
+        cmt_performance_atomic_compare_exchange(value, expected, desired) != 0
+    }
 }

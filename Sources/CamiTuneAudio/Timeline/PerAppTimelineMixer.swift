@@ -90,7 +90,7 @@ package final class PerAppTimelineMixer {
             end: packet.startSampleTime + Int64(packet.frameCount), existingEnd: intervalEnd)
         let wrappedBefore = current.storage.wrappedWrites
         current.storage.add(samples, sourceFrameOffset: 0, frameCount: packet.frameCount,
-            at: Int(packet.startSampleTime - current.interval.start), mode: packet.playbackMode)
+            at: Int(packet.startSampleTime - current.interval.start), mode: packet.playbackMode, movieMix: packet.movieMix)
         statistics.wrappedWrites += current.storage.wrappedWrites - wrappedBefore
         statistics.insertedFrames += UInt64(packet.frameCount)
         current.insertedFrames += UInt64(packet.frameCount)
@@ -123,7 +123,7 @@ package final class PerAppTimelineMixer {
         statistics.wrappedReads += current.storage.wrappedReads - wrappedBefore
         var output = PCMFrame(interleaved: materialized.combined, channelCount: interval.channels,
             sampleRate: interval.rate, channelLayout: interval.layout)
-        output.playbackModeSamples = materialized.modes
+        output.cohortSamples = materialized.modes
         output.performanceTrace = intervalTrace
         output.performanceTrace?.emitted = PerformanceClock.now()
         current.storage.discardPrefix(current.storage.frameCount)

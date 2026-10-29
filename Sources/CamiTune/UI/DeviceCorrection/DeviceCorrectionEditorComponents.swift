@@ -200,6 +200,7 @@ struct AutoEQSearchField<Entry: Identifiable>: View {
     let onSelect: @MainActor (Entry) -> Void
     @FocusState private var isFocused: Bool
     @State private var showsResults = false
+    @ScaledMetric(relativeTo: .body) private var resultRowHeight: CGFloat = 30
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -218,14 +219,19 @@ struct AutoEQSearchField<Entry: Identifiable>: View {
                                 dismissResults()
                             } label: {
                                 Text(title(entry))
+                                    .lineLimit(1)
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                                    .frame(height: resultRowHeight)
                                     .contentShape(Rectangle())
-                                    .padding(.horizontal, 8).padding(.vertical, 6)
+                                    .padding(.horizontal, 8)
+                                    .help(title(entry))
                             }.buttonStyle(.plain)
                                 .uiInteractionAnchor("autoeq-search-result-\(entry.id)")
                         }
                     }
-                }.frame(maxHeight: 170)
+                // A ScrollView has no intrinsic content height. A sheet sizes
+                // to its minimum, collapsing a maxHeight-only results list.
+                }.frame(height: min(170, resultRowHeight * CGFloat(results.count)))
                     .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
             }
         }
@@ -233,7 +239,6 @@ struct AutoEQSearchField<Entry: Identifiable>: View {
             if focused { showsResults = true }
         }
         .background(OutsideClickObserver(textFieldFocused: isFocused) { dismissResults() })
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in dismissResults() }
     }
 
     private func dismissResults() {

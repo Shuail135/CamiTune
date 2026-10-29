@@ -160,6 +160,7 @@ package struct ProfileSettingsDraft {
     package var speakerTopology: SpeakerTopology?
     package var spatialSettings: SpatialRenderSettings
     package var audioInterface: AudioInterfaceConfiguration?
+    package var personalSpatial: PersonalSpatialSettings?
     package var personalReferenceCorrections: [String: DeviceCorrectionProfile]?
     package var requestedMode: PlaybackMode?
     package var processing: ProcessingProfile?
@@ -286,6 +287,14 @@ package struct ProfileSettingsDraft {
         }
         if let multichannel {
             result.multichannel = try merge(baseline.multichannel, multichannel, result.multichannel)
+        }
+        if let personalSpatial {
+            guard original.deviceTypeConfigurationKey == current.deviceTypeConfigurationKey,
+                  result.deviceTypeConfigurationKey == original.deviceTypeConfigurationKey else {
+                throw ProfileSettingsError.staleDraft
+            }
+            try personalSpatial.validate()
+            result.personalSpatial = try merge(original.personalSpatial, personalSpatial, current.personalSpatial)
         }
         if let personalReferenceCorrections {
             result.personalReferenceCorrections = try merge(original.personalReferenceCorrections, personalReferenceCorrections, current.personalReferenceCorrections)

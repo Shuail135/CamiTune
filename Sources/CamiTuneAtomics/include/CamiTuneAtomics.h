@@ -16,6 +16,10 @@ uint64_t cmt_performance_atomic_load(CMTPerformanceAtomicRef value);
 void cmt_performance_atomic_store(CMTPerformanceAtomicRef value, uint64_t number);
 uint64_t cmt_performance_atomic_exchange(CMTPerformanceAtomicRef value, uint64_t number);
 void cmt_performance_atomic_increment(CMTPerformanceAtomicRef value);
+// Publication counters for the single-producer/single-consumer analysis handoff.
+uint64_t cmt_performance_atomic_load_acquire(CMTPerformanceAtomicRef value);
+void cmt_performance_atomic_store_release(CMTPerformanceAtomicRef value, uint64_t number);
+int cmt_performance_atomic_compare_exchange(CMTPerformanceAtomicRef value, uint64_t expected, uint64_t desired);
 
 // One delivery writer and one Core Audio render callback. No allocation or
 // locks in push/render. The owner stops callbacks before destroying the ring.

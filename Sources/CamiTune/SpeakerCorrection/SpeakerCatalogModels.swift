@@ -9,13 +9,27 @@ struct SpeakerCatalogEntry: Hashable, Sendable, Identifiable {
 struct SpeakerMetadata: Hashable, Sendable {
     var preferredVersion: String?
     var sources: [String: String]
+    var specifications: [String: VirtualSpeakerSpecifications] = [:]
     static func decode(_ data: Data) throws -> Self {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], object["error"] == nil else {
             throw SpeakerCorrectionError.invalid("Spinorama speaker metadata is unavailable.")
         }
         let measurements = object["measurements"] as? [String: [String: Any]] ?? [:]
+        func number(_ value: Any?, in range: ClosedRange<Double>) -> Double? {
+            guard let value = (value as? NSNumber)?.doubleValue, value.isFinite, range.contains(value) else { return nil }
+            return value
+        }
         return .init(preferredVersion: object["default_measurement"] as? String,
-                     sources: measurements.mapValues { sourceName($0["origin"] as? String ?? "Measurement source") })
+                     sources: measurements.mapValues { sourceName($0["origin"] as? String ?? "Measurement source") },
+                     specifications: measurements.mapValues { measurement in
+                         let specs = measurement["specifications"] as? [String: Any] ?? [:]
+                         let size = specs["size"] as? [String: Any] ?? [:]
+                         let estimates = measurement["estimates"] as? [String: Any] ?? [:]
+                         return .init(cabinet: object["shape"] as? String, amplification: object["type"] as? String,
+                             bassExtensionHz: number(estimates["ref_3dB"], in: 20...500),
+                             heightMM: number(size["height"], in: 1...10_000), widthMM: number(size["width"], in: 1...10_000),
+                             depthMM: number(size["depth"], in: 1...10_000))
+                     })
     }
     static func sourceName(_ origin: String) -> String {
         switch origin {

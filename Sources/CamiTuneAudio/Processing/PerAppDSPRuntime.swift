@@ -20,6 +20,7 @@ package final class PerAppDSPRuntime {
         var processID: Int32
         var generation: UInt64
         var detector = EffectiveLayoutDetector()
+        var movieWeight: Float?
     }
     private var sourceDetectors: [PerAppTransportClientKey: SourceDetector] = [:]
     private var filterBanks: [PerAppTransportClientKey: PerAppFilterBank] = [:]
@@ -60,6 +61,19 @@ package final class PerAppDSPRuntime {
         )
 
         return sourceDiagnostics
+    }
+
+    package func movieRouting(for key: PerAppTransportClientKey, packet: PerAppTimelinePacket) -> MovieCohortMix? {
+        guard packet.playbackMode.mode == .spatialRender else {
+            sourceDetectors[key]?.movieWeight = nil
+            return nil
+        }
+        let target: Float = packet.playbackMode == .spatialMovie ? 1 : 0
+        let previous = sourceDetectors[key]?.movieWeight ?? target
+        let step: Float = previous == target ? 0 : (target > previous ? 1 : -1) / Float(packet.sampleRate * 0.05)
+        let mix = MovieCohortMix(start: previous, step: step, target: target)
+        sourceDetectors[key]?.movieWeight = mix.weight(frame: packet.frameCount - 1)
+        return previous == target ? nil : mix
     }
 
     package func retain(only keys: Set<PerAppTransportClientKey>) {

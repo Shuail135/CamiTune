@@ -2,7 +2,7 @@ import CamiTuneDomain
 import Foundation
 
 package struct PerAppTimelinePacket: Sendable {
-    package init(deviceObjectID: UInt32, cycleCounter: UInt64, startSampleTime: Int64, frameCount: Int, channelCount: Int, sampleRate: Double, channelLayout: LPCMChannelLayout, playbackMode: PlaybackMode) {
+    package init(deviceObjectID: UInt32, cycleCounter: UInt64, startSampleTime: Int64, frameCount: Int, channelCount: Int, sampleRate: Double, channelLayout: LPCMChannelLayout, playbackMode: ProcessingCohort) {
         self.deviceObjectID = deviceObjectID
         self.cycleCounter = cycleCounter
         self.startSampleTime = startSampleTime
@@ -13,6 +13,7 @@ package struct PerAppTimelinePacket: Sendable {
         self.playbackMode = playbackMode
     }
 
+    package var movieMix: MovieCohortMix? = nil
     package let deviceObjectID: UInt32
     package let cycleCounter: UInt64
     package let startSampleTime: Int64
@@ -20,7 +21,7 @@ package struct PerAppTimelinePacket: Sendable {
     package let channelCount: Int
     package let sampleRate: Double
     package let channelLayout: LPCMChannelLayout
-    package let playbackMode: PlaybackMode
+    package let playbackMode: ProcessingCohort
 }
 
 package struct PerAppTimelineMixerStatistics: Sendable, Codable {
@@ -104,5 +105,15 @@ package struct PerAppTimelineMixerStatistics: Sendable, Codable {
         Wrapped reads/writes: \(wrappedReads)/\(wrappedWrites)
         Capacity failures: \(capacityFailures); invalid packets: \(invalidPackets)
         """
+    }
+}
+
+package struct MovieCohortMix: Sendable {
+    package let start: Float
+    package let step: Float
+    package let target: Float
+    package func weight(frame: Int) -> Float {
+        let value = start + Float(frame + 1) * step
+        return step > 0 ? min(target, value) : max(target, value)
     }
 }

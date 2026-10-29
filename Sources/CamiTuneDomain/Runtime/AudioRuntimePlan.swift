@@ -9,6 +9,7 @@ package struct RenderConfiguration: Codable, Hashable, Sendable {
     package var spatialListenerTuning: SpatialListenerTuning
     package var spatialContentMode: SpatialContentMode
     package var virtualSurroundLayout: VirtualSurroundLayout
+    package var personalSpatial: PersonalSpatialSettings?
     package var referenceCorrection: DeviceCorrectionProfile?
     package var pluginRack: PluginRack? = nil
     package var crossfeed: CrossfeedProcessor? = nil
@@ -22,6 +23,7 @@ package struct RenderConfiguration: Codable, Hashable, Sendable {
         spatialListenerTuning = profile.spatialListenerTuning.validated
         spatialContentMode = profile.spatialContentMode
         virtualSurroundLayout = profile.virtualSurroundLayout
+        personalSpatial = profile.isPersonalListening && !profile.usesExclusivePluginOutput && PersonalSpatialSettings.supportedSampleRates.contains(profile.sampleRate) ? profile.personalSpatial : nil
         referenceCorrection = profile.isSectionEnabled(.mode) ? profile.personalReferenceCorrection : nil
         pluginRack = profile.effectivePluginRack
         if profile.isSectionEnabled(.deviceCorrection), profile.supportsCrossfeed, let stage = profile.processing.crossfeed, stage.isEnabled {

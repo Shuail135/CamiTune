@@ -34,31 +34,11 @@ package protocol HRTFDatabase {
     var supportedSampleRates: [Double] { get }
     func referenceDelayFrames(sampleRate: Double) -> Int
     func hrir(for direction: HRTFDirection, sampleRate: Double) throws -> HRIRPair
+    func roomResponse(for role: ChannelRole, sampleRate: Double) throws -> HRIRPair
 }
 
-package struct BinauralSpeakerPosition: Hashable, Sendable {
-    package init(role: ChannelRole, direction: HRTFDirection) {
-        self.role = role
-        self.direction = direction
+extension HRTFDatabase {
+    package func roomResponse(for role: ChannelRole, sampleRate: Double) throws -> HRIRPair {
+        throw PersonalSpatialError.measuredRoomUnavailable
     }
-
-    package var role: ChannelRole
-    package var direction: HRTFDirection
-}
-
-package struct VirtualSpeakerLayout: Sendable {
-    package init(speakers: [BinauralSpeakerPosition]) {
-        self.speakers = speakers
-    }
-
-    package var speakers: [BinauralSpeakerPosition]
-    package static let cinema = VirtualSpeakerLayout(speakers: [
-        .init(role: .left, direction: .init(azimuthDegrees: -30)),
-        .init(role: .right, direction: .init(azimuthDegrees: 30)),
-        .init(role: .center, direction: .init(azimuthDegrees: 0)),
-        .init(role: .leftSurround, direction: .init(azimuthDegrees: -105)),
-        .init(role: .rightSurround, direction: .init(azimuthDegrees: 105)),
-        .init(role: .leftRearSurround, direction: .init(azimuthDegrees: -145)),
-        .init(role: .rightRearSurround, direction: .init(azimuthDegrees: 145))
-    ])
 }

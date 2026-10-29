@@ -2,8 +2,33 @@ import CamiTuneDomain
 import AppKit
 import SwiftUI
 
+/// Shared navigation for fitted room maps. Scrolling remains with the page.
+struct SpeakerMapZoomControls: View {
+    @Binding var zoom: CGFloat
+    let anchorPrefix: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button { zoom = max(0.25, zoom / 1.25) } label: {
+                Image(systemName: "minus.magnifyingglass")
+                    .frame(width: 22, height: 22).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(zoom <= 0.25).accessibilityLabel("Zoom Out")
+            .uiInteractionAnchor("\(anchorPrefix)-zoom-out")
+            Button { zoom = min(4, zoom * 1.25) } label: {
+                Image(systemName: "plus.magnifyingglass")
+                    .frame(width: 22, height: 22).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(zoom >= 4).accessibilityLabel("Zoom In")
+            .uiInteractionAnchor("\(anchorPrefix)-zoom-in")
+        }.controlSize(.small)
+    }
+}
+
 /// Native pointer tracking keeps the grab offset stable across SwiftUI draft updates.
-struct SpeakerRoomCanvas: NSViewRepresentable {
+struct SpeakerRoomCanvas: View {
     var topology: SpeakerTopology
     var listener: SpatialVector3
     var selected: PhysicalOutputID?
@@ -27,6 +52,68 @@ struct SpeakerRoomCanvas: NSViewRepresentable {
     var zoomChanged: (CGFloat) -> Void = { _ in }
     var editingChanged: (Bool) -> Void = { _ in }
 
+    var body: some View { sceneCanvas }
+    var sceneCanvas: SpeakerSceneCanvas {
+        let roles = SpeakerLayoutGeometry.layoutRoles(topology)
+        let ids = Dictionary(uniqueKeysWithValues: topology.endpoints.map { ($0.id.id, $0.id) })
+        return SpeakerSceneCanvas(nodes: topology.endpoints.enumerated().map { index, e in
+            SpeakerSceneNode(id: e.id.id, displayName: e.displayName, role: e.role, displayedRole: roles[index],
+                position: e.position, connectionState: e.connectionState,
+                hasPlacementWarning: !SpeakerPlacementWarning.warnings(for: e, listener: listener).isEmpty)
+        }, listener: listener, selected: selected?.id, playing: playing?.id, extent: extent, locked: locked,
+            listeningOnly: listeningOnly, select: { if let id = ids[$0] { select(id) } },
+            audition: { if let id = ids[$0] { audition(id) } },
+            moveSpeaker: { key, p in if let id = ids[key] { moveSpeaker(id, p) } }, moveListener: moveListener,
+            assignRole: { key, role in if let id = ids[key] { assignRole(id, role) } },
+            roleChoices: { role in let choices = SpeakerRoleChoices(topology: topology, selectedRole: role); return (choices.common, choices.more) },
+            measurementPoint: measurementPoint, measurementRadius: measurementRadius,
+            allowsPanning: allowsPanning, allowsScrollPanning: allowsScrollPanning, fitsAllContent: fitsAllContent,
+            viewportPoints: viewportPoints, viewportResetRevision: viewportResetRevision, zoom: zoom,
+            zoomChanged: zoomChanged, editingChanged: editingChanged)
+    }
+}
+
+struct SpeakerSceneNode {
+    var id: String
+    var displayName: String
+    var role: ChannelRole
+    var displayedRole: ChannelRole
+    var position: SpatialPosition?
+    var connectionState: SpeakerConnectionState
+    var hasPlacementWarning = false
+}
+
+/// Native pointer tracking keeps the grab offset stable across SwiftUI draft updates.
+struct SpeakerSceneCanvas: NSViewRepresentable {
+    var nodes: [SpeakerSceneNode]
+    var listener: SpatialVector3
+    var selected: String?
+    var playing: String?
+    var extent: Float
+    var locked: Bool
+    var listeningOnly: Bool
+    var select: (String) -> Void
+    var audition: (String) -> Void
+    var moveSpeaker: (String, SpatialVector3) -> Void
+    var moveListener: (SpatialVector3) -> Void
+    var assignRole: (String, ChannelRole?) -> Void = { _, _ in }
+    var roleChoices: ((ChannelRole) -> (common: [ChannelRole], more: [ChannelRole]))? = nil
+    // Fixed measured scenes still allow selection and audition. A locked
+    // physical measurement preview continues to disable all speaker interaction.
+    var allowsPositionEditing = true
+    var frontReferenceY: Float = SpeakerLayoutGeometry.screenY
+    var rulerReference: SpatialVector3? = nil
+    var measurementPoint: SpatialVector3? = nil
+    var measurementRadius: Float = 0.1
+    var allowsPanning = true
+    var allowsScrollPanning = true
+    var fitsAllContent = false
+    var viewportPoints: [SpatialVector3] = []
+    var viewportResetRevision = 0
+    var zoom: CGFloat = 1.25
+    var zoomChanged: (CGFloat) -> Void = { _ in }
+    var editingChanged: (Bool) -> Void = { _ in }
+
     func makeNSView(context: Context) -> SpeakerRoomNSView { SpeakerRoomNSView() }
     func updateNSView(_ view: SpeakerRoomNSView, context: Context) {
         view.configuration = self
@@ -37,10 +124,13 @@ struct SpeakerRoomCanvas: NSViewRepresentable {
 
 @MainActor
 final class SpeakerRoomNSView: NSView {
-    var configuration: SpeakerRoomCanvas? {
+    var configuration: SpeakerSceneCanvas? {
         didSet {
             guard let configuration else { return }
-            updateFittedBounds(configuration)
+            let refit = fittedBounds == nil || oldValue?.viewportResetRevision != configuration.viewportResetRevision
+                || oldValue?.nodes.map(\.id) != configuration.nodes.map(\.id)
+                || oldValue?.viewportPoints != configuration.viewportPoints
+            updateFittedBounds(configuration, refit: refit || !configuration.allowsPositionEditing || configuration.locked)
             if !configuration.allowsPanning { pan = .zero }
             if oldValue != nil {
                 if oldValue?.viewportResetRevision != configuration.viewportResetRevision { resetViewport() }
@@ -48,9 +138,9 @@ final class SpeakerRoomNSView: NSView {
                 return
             }
             zoom = configuration.zoom
-            let points = configuration.topology.endpoints.compactMap(\.position).map(SpeakerLayoutGeometry.vector)
-                + [configuration.listener, SpatialVector3(x: 0, y: SpeakerLayoutGeometry.screenY, z: 0)]
-            initialFront = max(SpeakerLayoutGeometry.screenY, points.map(\.y).max() ?? 0)
+            let points = configuration.nodes.compactMap(\.position).map(SpeakerLayoutGeometry.vector)
+                + [configuration.listener, SpatialVector3(x: 0, y: configuration.frontReferenceY, z: 0)]
+            initialFront = max(configuration.frontReferenceY, points.map(\.y).max() ?? 0)
             initialBack = min(0, points.map(\.y).min() ?? 0)
             initialHalfWidth = points.map { abs($0.x) }.max() ?? 0
         }
@@ -59,7 +149,7 @@ final class SpeakerRoomNSView: NSView {
     private var initialBack: Float = 0
     private var initialHalfWidth: Float = 0
     private var fittedBounds: CGRect?
-    private var fittedSpeakerPositions: [PhysicalOutputID: SpatialVector3] = [:]
+    private var fittedSpeakerPositions: [String: SpatialVector3] = [:]
     private(set) var pan = CGPoint.zero
     private(set) var zoom: CGFloat = 1.25
     private var pointerStart = CGPoint.zero
@@ -70,8 +160,8 @@ final class SpeakerRoomNSView: NSView {
     private var pressedArrow = false
     private var snapX: Float?
     private var snapY: Float?
-    private var menuOutput: PhysicalOutputID?
-    private enum Target { case speaker(PhysicalOutputID), listener, pan }
+    private var menuOutput: String?
+    private enum Target { case speaker(String), listener, pan }
     override var isFlipped: Bool { true }
     // The canvas fills its bounds. Keep its redraws local rather than asking
     // the surrounding SwiftUI editor to repaint behind each drag.
@@ -97,15 +187,17 @@ final class SpeakerRoomNSView: NSView {
     #endif
 
     var graph: CGRect { CGRect(x: 48, y: 30, width: max(1, bounds.width - 48), height: max(1, bounds.height - 30)) }
-    private func updateFittedBounds(_ config: SpeakerRoomCanvas) {
+    private func updateFittedBounds(_ config: SpeakerSceneCanvas, refit: Bool) {
         guard config.fitsAllContent else { fittedBounds = nil; fittedSpeakerPositions = [:]; return }
-        let roles = SpeakerLayoutGeometry.layoutRoles(config.topology)
-        fittedSpeakerPositions = Dictionary(uniqueKeysWithValues: config.topology.endpoints.enumerated().map { index, endpoint in
+        fittedSpeakerPositions = Dictionary(uniqueKeysWithValues: config.nodes.enumerated().map { index, endpoint in
             // Unplaced speakers use the existing layout's display estimates only.
-            (endpoint.id, SpeakerLayoutGeometry.vector(endpoint.position ?? SpeakerLayoutGeometry.suggestedPosition(for: roles[index])))
+            (endpoint.id, SpeakerLayoutGeometry.vector(endpoint.position ?? SpeakerLayoutGeometry.suggestedPosition(for: endpoint.displayedRole)))
         })
+        // Placement edits keep their viewport through mouse-up and persistence.
+        // The caller's revision or a changed layout explicitly fits a new scene.
+        if fittedBounds != nil, target != nil || !refit { return }
         var points = Array(fittedSpeakerPositions.values) + config.viewportPoints
-            + [config.listener, SpatialVector3(x: 0, y: SpeakerLayoutGeometry.screenY, z: 0)]
+            + [config.listener, SpatialVector3(x: 0, y: config.frontReferenceY, z: 0)]
         if let point = config.measurementPoint {
             let radius = max(0, config.measurementRadius)
             points += [SpatialVector3(x: point.x - radius, y: point.y - radius, z: 0),
@@ -135,22 +227,24 @@ final class SpeakerRoomNSView: NSView {
     }
 
     var screen: CGPoint {
+        let front = configuration?.frontReferenceY ?? SpeakerLayoutGeometry.screenY
         if let fittedBounds {
             return CGPoint(x: graph.midX - fittedBounds.midX * scale + pan.x,
-                           y: graph.midY + (fittedBounds.midY - CGFloat(SpeakerLayoutGeometry.screenY)) * scale + pan.y)
+                           y: graph.midY + (fittedBounds.midY - CGFloat(front)) * scale + pan.y)
         }
-        return CGPoint(x: graph.midX + pan.x, y: graph.minY + 59 + CGFloat(initialFront - SpeakerLayoutGeometry.screenY) * scale + pan.y)
+        return CGPoint(x: graph.midX + pan.x, y: graph.minY + 59 + CGFloat(initialFront - front) * scale + pan.y)
     }
     func point(_ world: SpatialVector3) -> CGPoint {
         CGPoint(x: screen.x + CGFloat(world.x) * scale,
-                y: screen.y + CGFloat(SpeakerLayoutGeometry.screenY - world.y) * scale)
+                y: screen.y + CGFloat((configuration?.frontReferenceY ?? SpeakerLayoutGeometry.screenY) - world.y) * scale)
     }
     func world(_ point: CGPoint) -> SpatialVector3 {
         SpatialVector3(x: Float((point.x - screen.x) / scale),
-                       y: SpeakerLayoutGeometry.screenY - Float((point.y - screen.y) / scale), z: 0)
+                       y: (configuration?.frontReferenceY ?? SpeakerLayoutGeometry.screenY) - Float((point.y - screen.y) / scale), z: 0)
     }
     // Measurement offsets, grid dots, and rulers share the listener as zero.
     var rulerOrigin: CGPoint {
+        if let reference = configuration?.rulerReference { return point(reference) }
         guard let config = configuration, config.measurementPoint != nil else { return screen }
         return point(config.listener)
     }
@@ -165,7 +259,7 @@ final class SpeakerRoomNSView: NSView {
     private var measurementDistanceLabel: String? {
         measurementDistanceCM.map { String(format: "%g cm", ($0 * 10).rounded() / 10) }
     }
-    func nodePoint(_ endpoint: SpeakerEndpoint, index: Int) -> CGPoint {
+    func nodePoint(_ endpoint: SpeakerSceneNode, index: Int) -> CGPoint {
         if let position = fittedSpeakerPositions[endpoint.id] { return point(position) }
         if endpoint.position != nil { return point(SpeakerLayoutGeometry.vector(endpoint.position)) }
         return CGPoint(x: graph.minX + 42 + CGFloat(index % 5) * 64 + pan.x,
@@ -190,13 +284,11 @@ final class SpeakerRoomNSView: NSView {
         nodeContentRect(point, x: 8, y: -26, width: 17, height: 52)
     }
 
-    private func displayedRole(_ endpoint: SpeakerEndpoint) -> ChannelRole {
-        guard let topology = configuration?.topology,
-              let index = topology.endpoints.firstIndex(where: { $0.id == endpoint.id }) else { return endpoint.role }
-        return SpeakerLayoutGeometry.layoutRoles(topology)[index]
+    private func displayedRole(_ endpoint: SpeakerSceneNode) -> ChannelRole {
+        endpoint.displayedRole
     }
 
-    private func roleDescription(_ endpoint: SpeakerEndpoint) -> String {
+    private func roleDescription(_ endpoint: SpeakerSceneNode) -> String {
         let role = displayedRole(endpoint)
         return endpoint.role == .unknown && role != .unknown ? "Estimated: \(role.displayName)" : role.displayName
     }
@@ -205,8 +297,14 @@ final class SpeakerRoomNSView: NSView {
         guard let config = configuration else { return }
         updateAccessibilityElements()
         setAccessibilityLabel("Speaker and listening position map")
+        let navigation = config.allowsScrollPanning
+            ? "Drag empty space or scroll to pan. "
+            : "Drag empty space to pan. Use the zoom buttons to adjust the view. Scrolling moves the page. "
         setAccessibilityHelp(config.measurementPoint != nil && !config.allowsScrollPanning
             ? "Place the microphone at the blue Measure here marker. The grey line shows its distance from the listening position in centimeters. Click and drag to pan. Use the zoom buttons to adjust the view. Scrolling moves the page."
+            : config.roleChoices == nil
+            ? (config.allowsPositionEditing ? "Drag speakers or the listener to move them. " : "Measured speaker positions are fixed. ")
+                + navigation + "Click a speaker to test it. With keyboard focus, use brackets to select a speaker, L for the listener, arrow keys to move, and Space to test."
             : "Drag speakers or the listener to move them. Drag empty space or scroll to pan. Click a speaker to test it. Use the arrow to assign its role. With keyboard focus, use brackets to select a speaker, L for the listener, arrow keys to move, Space to test, and R for roles.")
     }
 
@@ -239,17 +337,17 @@ final class SpeakerRoomNSView: NSView {
             rect: nodeRect(point(config.listener)))
         listener.setAccessibilityCustomActions(movementActions(output: nil))
         var children = [front, listener]
-        for (index, endpoint) in config.topology.endpoints.enumerated() {
+        for (index, endpoint) in config.nodes.enumerated() {
             let position = SpeakerLayoutGeometry.vector(endpoint.position)
             let distance = SpeakerLayoutGeometry.distance(from: endpoint.position, listenerX: config.listener.x, listenerY: config.listener.y)
             let disabled = endpoint.connectionState == .disabledByUser || endpoint.connectionState == .silent
-            let node = element(endpoint.id.id, label: "\(endpoint.displayName), \(disabled ? "Disabled" : roleDescription(endpoint))",
+            let node = element(endpoint.id, label: "\(endpoint.displayName), \(disabled ? "Disabled" : roleDescription(endpoint))",
                 value: String(format: "%.2f meters from listening position, %.2f meters relative to head height. %@",
                     distance, position.z, config.playing == endpoint.id ? "Test sound playing" : "Test sound stopped"),
                 rect: nodeRect(nodePoint(endpoint, index: index)))
             var actions = [NSAccessibilityCustomAction(name: "Select Speaker", handler: { [weak self] in
                 guard let self, let current = self.configuration, !current.locked,
-                      current.topology.endpoints.contains(where: { $0.id == endpoint.id }) else { return false }
+                      current.nodes.contains(where: { $0.id == endpoint.id }) else { return false }
                 self.keyboardListenerSelected = false
                 current.select(endpoint.id)
                 return true
@@ -261,12 +359,12 @@ final class SpeakerRoomNSView: NSView {
             }
             if !config.listeningOnly {
                 actions += movementActions(output: endpoint.id)
-                actions.append(NSAccessibilityCustomAction(name: "Speaker Role: \(roleDescription(endpoint))", handler: { [weak self] in
+                if config.roleChoices != nil { actions.append(NSAccessibilityCustomAction(name: "Speaker Role: \(roleDescription(endpoint))", handler: { [weak self] in
                     guard let self, let current = self.configuration, !current.locked, !current.listeningOnly,
-                          let index = current.topology.endpoints.firstIndex(where: { $0.id == endpoint.id }) else { return false }
-                    self.showRoles(current.topology.endpoints[index], at: self.nodePoint(current.topology.endpoints[index], index: index))
+                          let index = current.nodes.firstIndex(where: { $0.id == endpoint.id }) else { return false }
+                    self.showRoles(current.nodes[index], at: self.nodePoint(current.nodes[index], index: index))
                     return true
-                }))
+                })) }
             }
             node.setAccessibilityCustomActions(actions)
             children.append(node)
@@ -284,8 +382,9 @@ final class SpeakerRoomNSView: NSView {
         setAccessibilityChildren(children)
     }
 
-    private func movementActions(output: PhysicalOutputID?) -> [NSAccessibilityCustomAction] {
-        guard configuration?.locked == false, output == nil || configuration?.listeningOnly == false else { return [] }
+    private func movementActions(output: String?) -> [NSAccessibilityCustomAction] {
+        guard configuration?.locked == false, configuration?.allowsPositionEditing == true,
+              output == nil || configuration?.listeningOnly == false else { return [] }
         let moves: [(String, Float, Float, Float)] = [
             ("Move Left", -0.05, 0, 0), ("Move Right", 0.05, 0, 0),
             ("Move Forward", 0, 0.05, 0), ("Move Back", 0, -0.05, 0)
@@ -298,26 +397,30 @@ final class SpeakerRoomNSView: NSView {
     }
 
     @discardableResult
-    func moveAccessibly(output: PhysicalOutputID?, x: Float, y: Float, z: Float = 0) -> Bool {
-        guard let config = configuration, !config.locked, x.isFinite, y.isFinite, z.isFinite else { return false }
+    func moveAccessibly(output: String?, x: Float, y: Float, z: Float = 0) -> Bool {
+        guard let config = configuration, !config.locked, config.allowsPositionEditing,
+              x.isFinite, y.isFinite, z.isFinite else { return false }
         if let output {
-            guard !config.listeningOnly, let endpoint = config.topology.endpoints.first(where: { $0.id == output }) else { return false }
+            guard !config.listeningOnly, let endpoint = config.nodes.first(where: { $0.id == output }) else { return false }
             var position = SpeakerLayoutGeometry.vector(endpoint.position)
             position.x += x; position.y += y; position.z = min(10, max(-10, position.z + z))
+            config.editingChanged(true)
             config.select(output)
             config.moveSpeaker(output, position)
         } else {
             var position = config.listener
             position.x += x; position.y += y
+            config.editingChanged(true)
             config.moveListener(position)
         }
+        config.editingChanged(false)
         return true
     }
 
     @discardableResult
-    func testSpeaker(_ id: PhysicalOutputID) -> Bool {
+    func testSpeaker(_ id: String) -> Bool {
         guard let config = configuration, !config.locked,
-              let endpoint = config.topology.endpoints.first(where: { $0.id == id }),
+              let endpoint = config.nodes.first(where: { $0.id == id }),
               endpoint.connectionState != .disabledByUser, endpoint.connectionState != .silent else { return false }
         config.select(id); config.audition(id)
         return true
@@ -330,11 +433,11 @@ final class SpeakerRoomNSView: NSView {
         }
         let key = event.charactersIgnoringModifiers?.lowercased()
         if key == "l" { keyboardListenerSelected = true; return }
-        if key == "[" || key == "]", !config.listeningOnly, !config.topology.endpoints.isEmpty {
-            let index = config.topology.endpoints.firstIndex(where: { $0.id == config.selected }) ?? 0
+        if key == "[" || key == "]", !config.listeningOnly, !config.nodes.isEmpty {
+            let index = config.nodes.firstIndex(where: { $0.id == config.selected }) ?? 0
             let offset = key == "]" ? 1 : -1
-            let next = (index + offset + config.topology.endpoints.count) % config.topology.endpoints.count
-            keyboardListenerSelected = false; config.select(config.topology.endpoints[next].id); return
+            let next = (index + offset + config.nodes.count) % config.nodes.count
+            keyboardListenerSelected = false; config.select(config.nodes[next].id); return
         }
         let output = keyboardListenerSelected || config.listeningOnly ? nil : config.selected
         switch event.keyCode {
@@ -346,8 +449,8 @@ final class SpeakerRoomNSView: NSView {
             if let output { testSpeaker(output) }
         default:
             if key == "r", let output, !config.listeningOnly,
-               let index = config.topology.endpoints.firstIndex(where: { $0.id == output }) {
-                showRoles(config.topology.endpoints[index], at: nodePoint(config.topology.endpoints[index], index: index))
+               let index = config.nodes.firstIndex(where: { $0.id == output }) {
+                showRoles(config.nodes[index], at: nodePoint(config.nodes[index], index: index))
             } else { super.keyDown(with: event) }
         }
     }
@@ -397,7 +500,7 @@ final class SpeakerRoomNSView: NSView {
             NSColor.secondaryLabelColor.setStroke(); distanceLine.lineWidth = 1; distanceLine.stroke()
         }
         symbol("tv.fill", rect: nodeContentRect(screen, x: -46, y: -54, width: 92, height: 54), color: .black)
-        for (index, endpoint) in config.topology.endpoints.enumerated() {
+        for (index, endpoint) in config.nodes.enumerated() {
             drawSpeaker(endpoint, index: index)
         }
         let listener = point(config.listener)
@@ -487,7 +590,7 @@ final class SpeakerRoomNSView: NSView {
         label("Measure here", rect: rect.insetBy(dx: 2, dy: 3), alignment: .center, fontSize: 11, color: .systemBlue)
     }
 
-    private func drawSpeaker(_ endpoint: SpeakerEndpoint, index: Int) {
+    private func drawSpeaker(_ endpoint: SpeakerSceneNode, index: Int) {
             let p = nodePoint(endpoint, index: index)
             let rect = nodeRect(p)
             let selected = configuration?.selected == endpoint.id
@@ -502,11 +605,10 @@ final class SpeakerRoomNSView: NSView {
             symbol(playing && configuration?.locked == false ? "stop.circle.fill" : "speaker.wave.2.fill",
                    rect: nodeContentRect(p, x: -20, y: -19, width: 24, height: 22),
                    color: playing ? .systemOrange : disabled ? .tertiaryLabelColor : .controlAccentColor)
-            if configuration?.listeningOnly == false {
+            if configuration?.listeningOnly == false && configuration?.roleChoices != nil {
                 symbol("chevron.down", rect: nodeContentRect(p, x: 11, y: -12, width: 9, height: 8), color: .labelColor)
             }
-            if let listener = configuration?.listener,
-               !SpeakerPlacementWarning.warnings(for: endpoint, listener: listener).isEmpty {
+            if endpoint.hasPlacementWarning {
                 symbol("exclamationmark.triangle.fill", rect: nodeContentRect(p, x: -25, y: -30, width: 12, height: 12), color: .systemOrange)
             }
             let role = displayedRole(endpoint)
@@ -552,15 +654,15 @@ final class SpeakerRoomNSView: NSView {
         guard graph.contains(p) else { return }
         if acceptsFirstResponder { window?.makeFirstResponder(self) }
         pointerStart = p; panStart = pan; didDrag = false; pressedArrow = false; snapX = nil; snapY = nil
-        if !config.locked, nodeRect(point(config.listener)).contains(p) {
+        if !config.locked, config.allowsPositionEditing, nodeRect(point(config.listener)).contains(p) {
             keyboardListenerSelected = true; target = .listener; worldStart = config.listener; return
         }
-        for (index, endpoint) in config.topology.endpoints.enumerated().reversed() where !config.locked {
+        for (index, endpoint) in config.nodes.enumerated().reversed() where !config.locked {
             let center = nodePoint(endpoint, index: index)
             guard nodeRect(center).contains(p) else { continue }
             keyboardListenerSelected = false
             config.select(endpoint.id)
-            pressedArrow = !config.listeningOnly && menuRect(center).contains(p)
+            pressedArrow = !config.listeningOnly && config.roleChoices != nil && menuRect(center).contains(p)
             target = .speaker(endpoint.id)
             worldStart = endpoint.position == nil ? world(center) : SpeakerLayoutGeometry.vector(endpoint.position)
             return
@@ -585,6 +687,7 @@ final class SpeakerRoomNSView: NSView {
             return
         }
         guard didDrag || hypot(dx, dy) >= 3 else { return }
+        guard config.allowsPositionEditing else { didDrag = true; return }
         if !didDrag {
             UIRenderPerformance.beginSpeakerDrag()
             switch target {
@@ -597,9 +700,9 @@ final class SpeakerRoomNSView: NSView {
         guard !config.locked else { return }
         if case .speaker = target, config.listeningOnly { return }
         var moved = SpeakerLayoutGeometry.dragged(worldStart, x: Float(dx), y: Float(dy), pointsPerMeter: Float(scale))
-        var anchors = [SpatialVector3(x: 0, y: SpeakerLayoutGeometry.screenY, z: 0)]
+        var anchors = [SpatialVector3(x: 0, y: config.frontReferenceY, z: 0)]
         if case .speaker = target { anchors.append(config.listener) }
-        for endpoint in config.topology.endpoints where endpoint.position != nil {
+        for endpoint in config.nodes where endpoint.position != nil {
             if case .speaker(let id) = target, endpoint.id == id { continue }
             anchors.append(SpeakerLayoutGeometry.vector(endpoint.position))
         }
@@ -617,8 +720,8 @@ final class SpeakerRoomNSView: NSView {
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) {
-        if didDrag { UIRenderPerformance.endSpeakerDrag() }
-        if didDrag {
+        if didDrag && (configuration?.allowsPositionEditing == true || isPanning) { UIRenderPerformance.endSpeakerDrag() }
+        if didDrag && configuration?.allowsPositionEditing == true {
             switch target {
             case .listener, .speaker: configuration?.editingChanged(false)
             default: break
@@ -631,7 +734,7 @@ final class SpeakerRoomNSView: NSView {
         target = nil; pressedArrow = false; snapX = nil; snapY = nil
         needsDisplay = true; updateAccessibility()
         guard clicked, case .speaker(let id) = completedTarget, let config = configuration, !config.locked else { return }
-        if openMenu, let endpoint = config.topology.endpoints.first(where: { $0.id == id }) {
+        if openMenu, let endpoint = config.nodes.first(where: { $0.id == id }) {
             showRoles(endpoint, at: convert(event.locationInWindow, from: nil))
         } else {
             config.audition(id)
@@ -641,6 +744,10 @@ final class SpeakerRoomNSView: NSView {
         let location = convert(event.locationInWindow, from: nil)
         guard graph.contains(location) else { super.magnify(with: event); return }
         magnify(by: event.magnification, at: location)
+    }
+    private var isPanning: Bool {
+        if case .pan = target { return true }
+        return false
     }
     func magnify(by amount: CGFloat, at anchor: CGPoint) {
         guard amount.isFinite, amount > -1, target == nil else { return }
@@ -691,15 +798,16 @@ final class SpeakerRoomNSView: NSView {
         needsDisplay = true; updateAccessibility()
     }
     func resetViewport() { zoom = configuration?.zoom ?? 1.25; pan = .zero; needsDisplay = true; updateAccessibility() }
-    private func showRoles(_ endpoint: SpeakerEndpoint, at point: CGPoint) {
+    private func showRoles(_ endpoint: SpeakerSceneNode, at point: CGPoint) {
+        guard configuration?.roleChoices != nil else { return }
         roleMenu(endpoint).popUp(positioning: nil, at: point, in: self)
     }
-    func roleMenu(_ endpoint: SpeakerEndpoint) -> NSMenu {
+    func roleMenu(_ endpoint: SpeakerSceneNode) -> NSMenu {
         menuOutput = endpoint.id
         let menu = NSMenu()
         menu.autoenablesItems = false
         let selectedRole = displayedRole(endpoint)
-        let choices = configuration.map { SpeakerRoleChoices(topology: $0.topology, selectedRole: selectedRole) }
+        let choices = configuration?.roleChoices?(selectedRole)
         func item(for role: ChannelRole) -> NSMenuItem {
             let item = NSMenuItem(title: role.displayName,
                                   action: #selector(roleChosen(_:)), keyEquivalent: "")
@@ -724,7 +832,7 @@ final class SpeakerRoomNSView: NSView {
     }
     @objc private func roleChosen(_ item: NSMenuItem) {
         guard let id = menuOutput, let configuration, !configuration.locked, !configuration.listeningOnly,
-              configuration.topology.endpoints.contains(where: { $0.id == id }),
+              configuration.nodes.contains(where: { $0.id == id }),
               item.tag == -1 || ChannelRole.allCases.indices.contains(item.tag) else { return }
         configuration.assignRole(id, item.tag < 0 ? nil : ChannelRole.allCases[item.tag])
     }

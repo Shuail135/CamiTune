@@ -32,7 +32,7 @@ package final class TimelineCircularStorage {
     package private(set) var headFrameIndex = 0
     package private(set) var frameCount = 0
     private var combined: [Float] = []
-    private var modeBuses: [PlaybackMode: [Float]] = [:]
+    private var modeBuses: [ProcessingCohort: [Float]] = [:]
     package private(set) var reallocations: UInt64 = 0
     package private(set) var growthCopiedFrames: UInt64 = 0
     package private(set) var wrappedReads: UInt64 = 0
@@ -43,7 +43,7 @@ package final class TimelineCircularStorage {
     package init(channelCount: Int, maximumFrames: Int) throws {
         // Check even the all-bus upper bound before accepting a storage policy.
         var bytes = maximumFrames
-        for multiplier in [channelCount, MemoryLayout<Float>.stride, 1 + PlaybackMode.allCases.count] {
+        for multiplier in [channelCount, MemoryLayout<Float>.stride, 1 + ProcessingCohort.allCases.count] {
             let product = bytes.multipliedReportingOverflow(by: multiplier)
             guard !product.overflow else { throw TimelineStorageFailure.capacityExceeded }
             bytes = product.partialValue
@@ -61,7 +61,7 @@ package final class TimelineCircularStorage {
         let newSamples = next * channelCount
         var newCombined = [Float](repeating: 0, count: newSamples)
         copyLive(combined, to: &newCombined)
-        var newBuses: [PlaybackMode: [Float]] = [:]
+        var newBuses: [ProcessingCohort: [Float]] = [:]
         for (mode, bus) in modeBuses {
             var new = [Float](repeating: 0, count: newSamples)
             copyLive(bus, to: &new)
@@ -86,7 +86,7 @@ package final class TimelineCircularStorage {
         frameCount = count
     }
     package func add(_ samples: UnsafeBufferPointer<Float>, sourceFrameOffset: Int, frameCount count: Int,
-             at offset: Int, mode: PlaybackMode) {
+             at offset: Int, mode: ProcessingCohort, movieMix: MovieCohortMix? = nil) {
         precondition(offset >= 0 && count >= 0 && offset + count <= frameCount)
         precondition(sourceFrameOffset >= 0 && (sourceFrameOffset + count) * channelCount <= samples.count)
         if modeBuses[mode] == nil { modeBuses[mode] = [Float](repeating: 0, count: capacityFrames * channelCount) }
@@ -110,10 +110,22 @@ package final class TimelineCircularStorage {
             }
         }
         accumulate(&combined)
-        accumulate(&modeBuses[mode]!)
+        if let movieMix {
+            for cohort in [ProcessingCohort.spatialRender, .spatialMovie] {
+                if modeBuses[cohort] == nil { modeBuses[cohort] = .init(repeating: 0, count: capacityFrames * channels) }
+                for frame in 0..<count {
+                    let weight = movieMix.weight(frame: frame)
+                    let gain = cohort == .spatialMovie ? weight : 1 - weight
+                    let destination = ((first + frame) % capacityFrames) * channels
+                    for channel in 0..<channels {
+                        modeBuses[cohort]![destination + channel] += samples[(sourceFrameOffset + frame) * channels + channel] * gain
+                    }
+                }
+            }
+        } else { accumulate(&modeBuses[mode]!) }
     }
 
-    package func materializePrefix(_ count: Int) -> (combined: [Float], modes: [PlaybackMode: [Float]]) {
+    package func materializePrefix(_ count: Int) -> (combined: [Float], modes: [ProcessingCohort: [Float]]) {
         precondition(count >= 0 && count <= frameCount)
         if count > capacityFrames - headFrameIndex { wrappedReads += 1 }
         return (copyPrefix(combined, count: count), modeBuses.mapValues { copyPrefix($0, count: count) })
@@ -137,7 +149,7 @@ package final class TimelineCircularStorage {
             }
         }
         zero(&combined)
-        for mode in PlaybackMode.allCases where modeBuses[mode] != nil { zero(&modeBuses[mode]!) }
+        for mode in ProcessingCohort.allCases where modeBuses[mode] != nil { zero(&modeBuses[mode]!) }
     }
     private func copyPrefix(_ bus: [Float], count: Int) -> [Float] {
         let sampleCount = count * channelCount

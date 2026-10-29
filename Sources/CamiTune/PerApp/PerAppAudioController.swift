@@ -628,6 +628,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     func processApplicationPacket(_ packet: PerAppAudioPacket, streamEpoch: UInt64,
                                   now suppliedNow: Date? = nil,
                                   performance incomingPerformance: PacketPerformanceContext? = nil,
+                                  intervalPolicy: (context: PerAppPlaybackContext?, overrides: [String: PlaybackMode])? = nil,
                                   mix: (ProcessedApplicationPacket) throws -> TimelineWorkSample?) rethrows -> Bool {
         var processed = packet.interleaved
         guard (1...32).contains(packet.channelCount),
@@ -658,7 +659,9 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         let identity = streamIdentity.application ?? observedSource?.identity
         let applicationID = identity?.id ?? observedSource?.applicationID ?? streamIdentity.fallbackApplicationID
         let settings = settingsStore.settings(for: applicationID)
-        let playbackMode = playbackContext?.effectiveMode(for: settings.playbackModeOverride) ?? .direct
+        let policy = intervalPolicy != nil ? intervalPolicy!.context : playbackContext
+        let override = intervalPolicy.map { $0.overrides[applicationID] } ?? settings.playbackModeOverride
+        let playbackMode = policy?.cohort(for: override, applicationID: applicationID) ?? .direct
         let settingsRevision = settingsStore.revision(for: applicationID)
         stateLock.unlock()
 
@@ -679,7 +682,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
         audioLock.lock()
 
-        let descriptor = PerAppTimelinePacket(deviceObjectID: packet.deviceObjectID,
+        var descriptor = PerAppTimelinePacket(deviceObjectID: packet.deviceObjectID,
             cycleCounter: packet.cycleCounter, startSampleTime: packetStartSampleTime, frameCount: packetFrameCount,
             channelCount: packet.channelCount, sampleRate: packet.sampleRate, channelLayout: packet.channelLayout,
             playbackMode: playbackMode)
@@ -698,6 +701,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             settings: settings, settingsRevision: settingsRevision,
             targetGain: settings.isMuted ? 0 : Float(settings.volume) * eqHeadroom
         )
+        descriptor.movieMix = dspRuntime.movieRouting(for: dspClientKey, packet: descriptor)
         lastPacketDateByApplication[applicationID] = now
         if rawPeak >= Self.applicationActivityFloor {
             lastAudibleDateByApplication[applicationID] = now
@@ -766,6 +770,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     /// Called only by the transport reader after ordered producer evidence has
     /// closed this interval. Per-client DSP consumes each released slice once.
     func ingestCompletedInterval(_ interval: ProducerCompletedInterval) throws -> PCMFrame {
+        // A scope/mode edit becomes effective at one completed interval boundary.
+        stateLock.lock()
+        let policy = (context: playbackContext, overrides: settingsStore.snapshot.settings.compactMapValues(\.playbackModeOverride))
+        stateLock.unlock()
         audioLock.lock()
         do {
             try timelineMixer.beginCompletedInterval(interval)
@@ -782,7 +790,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             var performance = source.performance
             performance?.identity.startSampleTime = source.start
             performance?.identity.frameCount = source.frames
-            let accepted = try processApplicationPacket(packet, streamEpoch: interval.epoch, performance: performance) { processed in
+            let accepted = try processApplicationPacket(packet, streamEpoch: interval.epoch, performance: performance, intervalPolicy: policy) { processed in
                 try processed.samples.withUnsafeBufferPointer {
                     try timelineMixer.addProcessedPacket(processed.packet, samples: $0,
                         performance: processed.performance, processingCompleted: processed.processingCompleted)

@@ -23,13 +23,23 @@ struct OutsideClickObserver: NSViewRepresentable {
         var onOutsideClick: (() -> Void)?
         var observesTextFocus = false
         private var monitor: Any?
+        private var windowObserver: NSObjectProtocol?
 
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             stopObserving()
-            guard window != nil else { return }
+            guard let window else { return }
+            // Only this field's window owns its focus. The parent resigns key
+            // when a sheet opens; unrelated windows must not dismiss its search.
+            windowObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
+                object: window, queue: .main) { [weak self] _ in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.monitor != nil, self.window?.isKeyWindow == false else { return }
+                    self.onOutsideClick?()
+                }
+            }
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
                 guard let self, let window = self.window else { return event }
                 if event.type == .keyDown {
@@ -65,6 +75,8 @@ struct OutsideClickObserver: NSViewRepresentable {
         func stopObserving() {
             if let monitor { NSEvent.removeMonitor(monitor) }
             monitor = nil
+            if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) }
+            windowObserver = nil
         }
     }
 }

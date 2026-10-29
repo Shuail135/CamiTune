@@ -66,7 +66,16 @@ final class SystemAudioBridgeCaptureBackend: AudioCaptureBackend {
             throw AppState.AppError.unsupportedSampleRate(sampleRate, bridge.name)
         }
     }
-    func validatePlan(_ plan: AudioRuntimePlan) throws { _ = try plan.profileRoutingDescriptor.formatPayload() }
+    func validatePlan(_ plan: AudioRuntimePlan) throws {
+        // This protocol publishes named layouts, not per-channel coordinates.
+        // Reject an unrepresentable source instead of silently dropping its geometry.
+        let descriptor = plan.profileRoutingDescriptor
+        guard let published = LPCMChannelLayout(coreAudioTag: descriptor.channelLayoutTag, channelCount: descriptor.channelCount),
+              try AudioFormatDescriptor.source(sampleRate: plan.sourceFormat.sampleRate, layout: published).signalSignature == plan.sourceFormat.signalSignature else {
+            throw ProfileSettingsError.runtime("System Audio Bridge requires a named input layout. Custom source coordinates are not carried by this capture protocol.")
+        }
+        _ = try descriptor.formatPayload()
+    }
     func makeSession(plan: AudioRuntimePlan, ownershipID: RuntimeOwnershipID,
                      delivery: AudioCaptureDelivery, isOwned: @escaping () -> Bool) -> any AudioCaptureSession {
         SystemAudioBridgeCaptureSession(backend: self, plan: plan, ownershipID: ownershipID,

@@ -31,6 +31,11 @@ package struct PerAppFilterBank {
     private var coefficients: [Coefficients] = []
     private var states: [State] = []
 
+    /// Retain prepared coefficients/storage while retiring signal history.
+    package mutating func reset() {
+        for i in states.indices { states[i] = State() }
+    }
+
     package mutating func process(
         _ samples: inout [Float],
         channelCount: Int,
@@ -39,6 +44,33 @@ package struct PerAppFilterBank {
         settingsRevision: UInt64,
         tone: SimpleToneSettings = SimpleToneSettings()
     ) {
+        prepare(channelCount: channelCount, sampleRate: sampleRate, bands: bands,
+                settingsRevision: settingsRevision, tone: tone)
+        // Avoid a mutable Array borrow (and possible copy) for bypassed EQ.
+        guard !coefficients.isEmpty else { return }
+        samples.withUnsafeMutableBufferPointer { processPrepared($0) }
+    }
+
+    /// The prepared signature owns channel count and filter history. Spatial
+    /// tiles use the same arithmetic and block borrowing as per-app EQ.
+    package mutating func processPrepared(_ samples: UnsafeMutableBufferPointer<Float>) {
+        guard !coefficients.isEmpty else { return }
+        let channelCount = signature!.channelCount
+        // These histories are exclusive for the entire block. Borrow once so
+        // each biquad update does not repeat array ownership/exclusivity checks.
+        states.withUnsafeMutableBufferPointer { stateBuffer in
+            coefficients.withUnsafeBufferPointer { filters in
+                for sampleIndex in samples.indices {
+                    samples[sampleIndex] = Self.filter(samples[sampleIndex], channel: sampleIndex % channelCount,
+                        channelCount: channelCount, filters: filters, states: stateBuffer)
+                }
+            }
+        }
+    }
+
+    /// Prepare on the owning worker before spatial processing starts.
+    package mutating func prepare(channelCount: Int, sampleRate: Double, bands: [EQBand], settingsRevision: UInt64 = 0,
+                                  tone: SimpleToneSettings = SimpleToneSettings()) {
         let nextSignature = Signature(
             channelCount: channelCount,
             sampleRate: sampleRate,
@@ -55,25 +87,22 @@ package struct PerAppFilterBank {
             }
             states = [State](repeating: State(), count: coefficients.count * channelCount)
         }
-        guard !coefficients.isEmpty else { return }
-        for sampleIndex in samples.indices {
-            let channel = sampleIndex % channelCount
-            var value = Double(samples[sampleIndex])
-            for filterIndex in coefficients.indices {
-                let stateIndex = filterIndex * channelCount + channel
-                var state = states[stateIndex]
-                let c = coefficients[filterIndex]
-                let output = c.b0 * value + c.b1 * state.x1 + c.b2 * state.x2
-                    - c.a1 * state.y1 - c.a2 * state.y2
-                state.x2 = state.x1
-                state.x1 = value
-                state.y2 = state.y1
-                state.y1 = output
-                states[stateIndex] = state
-                value = output
-            }
-            samples[sampleIndex] = Float(value.isFinite ? value : 0)
+    }
+
+    private static func filter(_ input: Float, channel: Int, channelCount: Int,
+                               filters: UnsafeBufferPointer<Coefficients>, states: UnsafeMutableBufferPointer<State>) -> Float {
+        var value = Double(input)
+        for filterIndex in filters.indices {
+            let stateIndex = filterIndex * channelCount + channel
+            var state = states[stateIndex]
+            let c = filters[filterIndex]
+            let output = c.b0 * value + c.b1 * state.x1 + c.b2 * state.x2 - c.a1 * state.y1 - c.a2 * state.y2
+            state.x2 = state.x1; state.x1 = value
+            state.y2 = state.y1; state.y1 = output
+            states[stateIndex] = state
+            value = output
         }
+        return Float(value.isFinite ? value : 0)
     }
 
     private static func coefficients(for band: EQBand, sampleRate: Double) -> Coefficients? {

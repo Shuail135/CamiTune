@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "id": "sadie-ii-d1-ku100",
   "name": "SADIE II KU100",
   "authors": [
@@ -43,17 +43,2561 @@
   },
   "citation": "Armstrong, C.; Thresh, L.; Murphy, D.; Kearney, G. (2018). A Perceptual Evaluation of Individual and Non-Individual HRTFs: A Case Study of the SADIE II Database. Applied Sciences 8(11), 2029. https://doi.org/10.3390/app8112029",
   "modifications": [
-    "Selected seven nearest measured horizontal directions; SOFA positive-left angles mapped to CamiTune negative-left angles.",
+    "Selected a full-sphere 10-degree azimuth / 15-degree elevation measured grid; SOFA positive-left angles mapped to CamiTune negative-left angles.",
     "Applied a single frontal broadband energy normalization shared by all ears and directions.",
     "Polyphase Kaiser-window resampling with transfer-gain normalization for six sample rates.",
     "Converted to contiguous little-endian float32 in rate/direction/ear/sample order."
   ],
+  "equalizationReference": "SADIE II D1 dataset diffuse-field equalization; no additional diffuse-field inverse",
+  "interpolation": "Bilinear 10-degree azimuth / 15-degree elevation, peak-aligned with separate restored ear delays",
+  "delayOrigin": "SOFA Data.IR retained; Data.Delay is zero; no ear delay removed",
   "commonGain": 1.3506467647807348,
   "file": "sadie-d1.f32",
-  "sha256": "35ca5e6296e13309229d53883dec7719475cef597fd70cc65d94c146e64b1a0e",
+  "sha256": "c3872364be23af6c25dc37c8d102ef68b736bbb5ae88a4b3d874be2dc2c40d47",
   "directions": [
     {
-      "role": "left",
+      "role": "-180/-90",
+      "azimuthDegrees": -180,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-170/-90",
+      "azimuthDegrees": -170,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-160/-90",
+      "azimuthDegrees": -160,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-150/-90",
+      "azimuthDegrees": -150,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-140/-90",
+      "azimuthDegrees": -140,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-130/-90",
+      "azimuthDegrees": -130,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-120/-90",
+      "azimuthDegrees": -120,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-110/-90",
+      "azimuthDegrees": -110,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-100/-90",
+      "azimuthDegrees": -100,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-90/-90",
+      "azimuthDegrees": -90,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-80/-90",
+      "azimuthDegrees": -80,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-70/-90",
+      "azimuthDegrees": -70,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-60/-90",
+      "azimuthDegrees": -60,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-50/-90",
+      "azimuthDegrees": -50,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-40/-90",
+      "azimuthDegrees": -40,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-30/-90",
+      "azimuthDegrees": -30,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-20/-90",
+      "azimuthDegrees": -20,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-10/-90",
+      "azimuthDegrees": -10,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "0/-90",
+      "azimuthDegrees": 0,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "10/-90",
+      "azimuthDegrees": 10,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "20/-90",
+      "azimuthDegrees": 20,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "30/-90",
+      "azimuthDegrees": 30,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "40/-90",
+      "azimuthDegrees": 40,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "50/-90",
+      "azimuthDegrees": 50,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "60/-90",
+      "azimuthDegrees": 60,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "70/-90",
+      "azimuthDegrees": 70,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "80/-90",
+      "azimuthDegrees": 80,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "90/-90",
+      "azimuthDegrees": 90,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "100/-90",
+      "azimuthDegrees": 100,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "110/-90",
+      "azimuthDegrees": 110,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "120/-90",
+      "azimuthDegrees": 120,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "130/-90",
+      "azimuthDegrees": 130,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "140/-90",
+      "azimuthDegrees": 140,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "150/-90",
+      "azimuthDegrees": 150,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "160/-90",
+      "azimuthDegrees": 160,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "170/-90",
+      "azimuthDegrees": 170,
+      "elevationDegrees": -90,
+      "measuredSofaPosition": [
+        0.0,
+        -90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 0
+    },
+    {
+      "role": "-180/-75",
+      "azimuthDegrees": -180,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        180.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4403
+    },
+    {
+      "role": "-170/-75",
+      "azimuthDegrees": -170,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        170.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4183
+    },
+    {
+      "role": "-160/-75",
+      "azimuthDegrees": -160,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        160.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3913
+    },
+    {
+      "role": "-150/-75",
+      "azimuthDegrees": -150,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        150.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3654
+    },
+    {
+      "role": "-140/-75",
+      "azimuthDegrees": -140,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        140.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3401
+    },
+    {
+      "role": "-130/-75",
+      "azimuthDegrees": -130,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        130.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3181
+    },
+    {
+      "role": "-120/-75",
+      "azimuthDegrees": -120,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        120.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2939
+    },
+    {
+      "role": "-110/-75",
+      "azimuthDegrees": -110,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        110.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2691
+    },
+    {
+      "role": "-100/-75",
+      "azimuthDegrees": -100,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        100.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2421
+    },
+    {
+      "role": "-90/-75",
+      "azimuthDegrees": -90,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        90.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2201
+    },
+    {
+      "role": "-80/-75",
+      "azimuthDegrees": -80,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        80.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1981
+    },
+    {
+      "role": "-70/-75",
+      "azimuthDegrees": -70,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        70.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1712
+    },
+    {
+      "role": "-60/-75",
+      "azimuthDegrees": -60,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        60.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1465
+    },
+    {
+      "role": "-50/-75",
+      "azimuthDegrees": -50,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        50.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1223
+    },
+    {
+      "role": "-40/-75",
+      "azimuthDegrees": -40,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        40.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1003
+    },
+    {
+      "role": "-30/-75",
+      "azimuthDegrees": -30,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        30.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 750
+    },
+    {
+      "role": "-20/-75",
+      "azimuthDegrees": -20,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        20.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 492
+    },
+    {
+      "role": "-10/-75",
+      "azimuthDegrees": -10,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        10.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 223
+    },
+    {
+      "role": "0/-75",
+      "azimuthDegrees": 0,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        0.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2
+    },
+    {
+      "role": "10/-75",
+      "azimuthDegrees": 10,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        350.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8583
+    },
+    {
+      "role": "20/-75",
+      "azimuthDegrees": 20,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        340.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8313
+    },
+    {
+      "role": "30/-75",
+      "azimuthDegrees": 30,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        330.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8054
+    },
+    {
+      "role": "40/-75",
+      "azimuthDegrees": 40,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        320.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7801
+    },
+    {
+      "role": "50/-75",
+      "azimuthDegrees": 50,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        310.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7581
+    },
+    {
+      "role": "60/-75",
+      "azimuthDegrees": 60,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        300.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7339
+    },
+    {
+      "role": "70/-75",
+      "azimuthDegrees": 70,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        290.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7091
+    },
+    {
+      "role": "80/-75",
+      "azimuthDegrees": 80,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        280.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6821
+    },
+    {
+      "role": "90/-75",
+      "azimuthDegrees": 90,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        270.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6601
+    },
+    {
+      "role": "100/-75",
+      "azimuthDegrees": 100,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        260.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6381
+    },
+    {
+      "role": "110/-75",
+      "azimuthDegrees": 110,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        250.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6112
+    },
+    {
+      "role": "120/-75",
+      "azimuthDegrees": 120,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        240.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5865
+    },
+    {
+      "role": "130/-75",
+      "azimuthDegrees": 130,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        230.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5623
+    },
+    {
+      "role": "140/-75",
+      "azimuthDegrees": 140,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        220.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5403
+    },
+    {
+      "role": "150/-75",
+      "azimuthDegrees": 150,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        210.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5150
+    },
+    {
+      "role": "160/-75",
+      "azimuthDegrees": 160,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        200.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4892
+    },
+    {
+      "role": "170/-75",
+      "azimuthDegrees": 170,
+      "elevationDegrees": -75,
+      "measuredSofaPosition": [
+        190.0,
+        -75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4623
+    },
+    {
+      "role": "-180/-60",
+      "azimuthDegrees": -180,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        180.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4405
+    },
+    {
+      "role": "-170/-60",
+      "azimuthDegrees": -170,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        170.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4185
+    },
+    {
+      "role": "-160/-60",
+      "azimuthDegrees": -160,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        160.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3915
+    },
+    {
+      "role": "-150/-60",
+      "azimuthDegrees": -150,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        150.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3656
+    },
+    {
+      "role": "-140/-60",
+      "azimuthDegrees": -140,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        140.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3403
+    },
+    {
+      "role": "-130/-60",
+      "azimuthDegrees": -130,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        130.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3183
+    },
+    {
+      "role": "-120/-60",
+      "azimuthDegrees": -120,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        120.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2941
+    },
+    {
+      "role": "-110/-60",
+      "azimuthDegrees": -110,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        110.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2693
+    },
+    {
+      "role": "-100/-60",
+      "azimuthDegrees": -100,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        100.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2423
+    },
+    {
+      "role": "-90/-60",
+      "azimuthDegrees": -90,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        90.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2203
+    },
+    {
+      "role": "-80/-60",
+      "azimuthDegrees": -80,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        80.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1983
+    },
+    {
+      "role": "-70/-60",
+      "azimuthDegrees": -70,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        70.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1714
+    },
+    {
+      "role": "-60/-60",
+      "azimuthDegrees": -60,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        60.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1467
+    },
+    {
+      "role": "-50/-60",
+      "azimuthDegrees": -50,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        50.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1225
+    },
+    {
+      "role": "-40/-60",
+      "azimuthDegrees": -40,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        40.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1005
+    },
+    {
+      "role": "-30/-60",
+      "azimuthDegrees": -30,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        30.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 752
+    },
+    {
+      "role": "-20/-60",
+      "azimuthDegrees": -20,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        20.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 494
+    },
+    {
+      "role": "-10/-60",
+      "azimuthDegrees": -10,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        10.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 225
+    },
+    {
+      "role": "0/-60",
+      "azimuthDegrees": 0,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        0.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4
+    },
+    {
+      "role": "10/-60",
+      "azimuthDegrees": 10,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        350.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8585
+    },
+    {
+      "role": "20/-60",
+      "azimuthDegrees": 20,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        340.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8315
+    },
+    {
+      "role": "30/-60",
+      "azimuthDegrees": 30,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        330.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8056
+    },
+    {
+      "role": "40/-60",
+      "azimuthDegrees": 40,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        320.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7803
+    },
+    {
+      "role": "50/-60",
+      "azimuthDegrees": 50,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        310.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7583
+    },
+    {
+      "role": "60/-60",
+      "azimuthDegrees": 60,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        300.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7341
+    },
+    {
+      "role": "70/-60",
+      "azimuthDegrees": 70,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        290.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7093
+    },
+    {
+      "role": "80/-60",
+      "azimuthDegrees": 80,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        280.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6823
+    },
+    {
+      "role": "90/-60",
+      "azimuthDegrees": 90,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        270.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6603
+    },
+    {
+      "role": "100/-60",
+      "azimuthDegrees": 100,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        260.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6383
+    },
+    {
+      "role": "110/-60",
+      "azimuthDegrees": 110,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        250.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6114
+    },
+    {
+      "role": "120/-60",
+      "azimuthDegrees": 120,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        240.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5867
+    },
+    {
+      "role": "130/-60",
+      "azimuthDegrees": 130,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        230.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5625
+    },
+    {
+      "role": "140/-60",
+      "azimuthDegrees": 140,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        220.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5405
+    },
+    {
+      "role": "150/-60",
+      "azimuthDegrees": 150,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        210.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5152
+    },
+    {
+      "role": "160/-60",
+      "azimuthDegrees": 160,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        200.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4894
+    },
+    {
+      "role": "170/-60",
+      "azimuthDegrees": 170,
+      "elevationDegrees": -60,
+      "measuredSofaPosition": [
+        190.0,
+        -60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4625
+    },
+    {
+      "role": "-180/-45",
+      "azimuthDegrees": -180,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        180.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4407
+    },
+    {
+      "role": "-170/-45",
+      "azimuthDegrees": -170,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        170.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4187
+    },
+    {
+      "role": "-160/-45",
+      "azimuthDegrees": -160,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        160.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3917
+    },
+    {
+      "role": "-150/-45",
+      "azimuthDegrees": -150,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        150.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3658
+    },
+    {
+      "role": "-140/-45",
+      "azimuthDegrees": -140,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        140.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3405
+    },
+    {
+      "role": "-130/-45",
+      "azimuthDegrees": -130,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        130.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3185
+    },
+    {
+      "role": "-120/-45",
+      "azimuthDegrees": -120,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        120.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2943
+    },
+    {
+      "role": "-110/-45",
+      "azimuthDegrees": -110,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        110.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2695
+    },
+    {
+      "role": "-100/-45",
+      "azimuthDegrees": -100,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        100.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2425
+    },
+    {
+      "role": "-90/-45",
+      "azimuthDegrees": -90,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        90.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2205
+    },
+    {
+      "role": "-80/-45",
+      "azimuthDegrees": -80,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        80.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1985
+    },
+    {
+      "role": "-70/-45",
+      "azimuthDegrees": -70,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        70.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1716
+    },
+    {
+      "role": "-60/-45",
+      "azimuthDegrees": -60,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        60.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1469
+    },
+    {
+      "role": "-50/-45",
+      "azimuthDegrees": -50,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        50.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1227
+    },
+    {
+      "role": "-40/-45",
+      "azimuthDegrees": -40,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        40.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1007
+    },
+    {
+      "role": "-30/-45",
+      "azimuthDegrees": -30,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        30.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 754
+    },
+    {
+      "role": "-20/-45",
+      "azimuthDegrees": -20,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        20.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 496
+    },
+    {
+      "role": "-10/-45",
+      "azimuthDegrees": -10,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        10.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 227
+    },
+    {
+      "role": "0/-45",
+      "azimuthDegrees": 0,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        0.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6
+    },
+    {
+      "role": "10/-45",
+      "azimuthDegrees": 10,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        350.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8587
+    },
+    {
+      "role": "20/-45",
+      "azimuthDegrees": 20,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        340.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8317
+    },
+    {
+      "role": "30/-45",
+      "azimuthDegrees": 30,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        330.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8058
+    },
+    {
+      "role": "40/-45",
+      "azimuthDegrees": 40,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        320.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7805
+    },
+    {
+      "role": "50/-45",
+      "azimuthDegrees": 50,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        310.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7585
+    },
+    {
+      "role": "60/-45",
+      "azimuthDegrees": 60,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        300.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7343
+    },
+    {
+      "role": "70/-45",
+      "azimuthDegrees": 70,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        290.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7095
+    },
+    {
+      "role": "80/-45",
+      "azimuthDegrees": 80,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        280.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6825
+    },
+    {
+      "role": "90/-45",
+      "azimuthDegrees": 90,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        270.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6605
+    },
+    {
+      "role": "100/-45",
+      "azimuthDegrees": 100,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        260.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6385
+    },
+    {
+      "role": "110/-45",
+      "azimuthDegrees": 110,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        250.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6116
+    },
+    {
+      "role": "120/-45",
+      "azimuthDegrees": 120,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        240.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5869
+    },
+    {
+      "role": "130/-45",
+      "azimuthDegrees": 130,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        230.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5627
+    },
+    {
+      "role": "140/-45",
+      "azimuthDegrees": 140,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        220.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5407
+    },
+    {
+      "role": "150/-45",
+      "azimuthDegrees": 150,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        210.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5154
+    },
+    {
+      "role": "160/-45",
+      "azimuthDegrees": 160,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        200.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4896
+    },
+    {
+      "role": "170/-45",
+      "azimuthDegrees": 170,
+      "elevationDegrees": -45,
+      "measuredSofaPosition": [
+        190.0,
+        -45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4627
+    },
+    {
+      "role": "-180/-30",
+      "azimuthDegrees": -180,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        180.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4409
+    },
+    {
+      "role": "-170/-30",
+      "azimuthDegrees": -170,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        170.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4189
+    },
+    {
+      "role": "-160/-30",
+      "azimuthDegrees": -160,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        160.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3919
+    },
+    {
+      "role": "-150/-30",
+      "azimuthDegrees": -150,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        150.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3660
+    },
+    {
+      "role": "-140/-30",
+      "azimuthDegrees": -140,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        140.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3407
+    },
+    {
+      "role": "-130/-30",
+      "azimuthDegrees": -130,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        130.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3187
+    },
+    {
+      "role": "-120/-30",
+      "azimuthDegrees": -120,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        120.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2945
+    },
+    {
+      "role": "-110/-30",
+      "azimuthDegrees": -110,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        110.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2697
+    },
+    {
+      "role": "-100/-30",
+      "azimuthDegrees": -100,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        100.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2427
+    },
+    {
+      "role": "-90/-30",
+      "azimuthDegrees": -90,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        90.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2207
+    },
+    {
+      "role": "-80/-30",
+      "azimuthDegrees": -80,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        80.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1987
+    },
+    {
+      "role": "-70/-30",
+      "azimuthDegrees": -70,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        70.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1718
+    },
+    {
+      "role": "-60/-30",
+      "azimuthDegrees": -60,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        60.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1471
+    },
+    {
+      "role": "-50/-30",
+      "azimuthDegrees": -50,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        50.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1229
+    },
+    {
+      "role": "-40/-30",
+      "azimuthDegrees": -40,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        40.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1009
+    },
+    {
+      "role": "-30/-30",
+      "azimuthDegrees": -30,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        30.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 756
+    },
+    {
+      "role": "-20/-30",
+      "azimuthDegrees": -20,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        20.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 498
+    },
+    {
+      "role": "-10/-30",
+      "azimuthDegrees": -10,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        10.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 229
+    },
+    {
+      "role": "0/-30",
+      "azimuthDegrees": 0,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        0.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8
+    },
+    {
+      "role": "10/-30",
+      "azimuthDegrees": 10,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        350.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8589
+    },
+    {
+      "role": "20/-30",
+      "azimuthDegrees": 20,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        340.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8319
+    },
+    {
+      "role": "30/-30",
+      "azimuthDegrees": 30,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        330.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8060
+    },
+    {
+      "role": "40/-30",
+      "azimuthDegrees": 40,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        320.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7807
+    },
+    {
+      "role": "50/-30",
+      "azimuthDegrees": 50,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        310.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7587
+    },
+    {
+      "role": "60/-30",
+      "azimuthDegrees": 60,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        300.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7345
+    },
+    {
+      "role": "70/-30",
+      "azimuthDegrees": 70,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        290.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7097
+    },
+    {
+      "role": "80/-30",
+      "azimuthDegrees": 80,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        280.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6827
+    },
+    {
+      "role": "90/-30",
+      "azimuthDegrees": 90,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        270.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6607
+    },
+    {
+      "role": "100/-30",
+      "azimuthDegrees": 100,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        260.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6387
+    },
+    {
+      "role": "110/-30",
+      "azimuthDegrees": 110,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        250.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6118
+    },
+    {
+      "role": "120/-30",
+      "azimuthDegrees": 120,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        240.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5871
+    },
+    {
+      "role": "130/-30",
+      "azimuthDegrees": 130,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        230.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5629
+    },
+    {
+      "role": "140/-30",
+      "azimuthDegrees": 140,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        220.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5409
+    },
+    {
+      "role": "150/-30",
+      "azimuthDegrees": 150,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        210.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5156
+    },
+    {
+      "role": "160/-30",
+      "azimuthDegrees": 160,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        200.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4898
+    },
+    {
+      "role": "170/-30",
+      "azimuthDegrees": 170,
+      "elevationDegrees": -30,
+      "measuredSofaPosition": [
+        190.0,
+        -30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4629
+    },
+    {
+      "role": "-180/-15",
+      "azimuthDegrees": -180,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        180.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4412
+    },
+    {
+      "role": "-170/-15",
+      "azimuthDegrees": -170,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        170.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4192
+    },
+    {
+      "role": "-160/-15",
+      "azimuthDegrees": -160,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        160.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3922
+    },
+    {
+      "role": "-150/-15",
+      "azimuthDegrees": -150,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        150.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3663
+    },
+    {
+      "role": "-140/-15",
+      "azimuthDegrees": -140,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        140.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3410
+    },
+    {
+      "role": "-130/-15",
+      "azimuthDegrees": -130,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        130.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3190
+    },
+    {
+      "role": "-120/-15",
+      "azimuthDegrees": -120,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        120.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2948
+    },
+    {
+      "role": "-110/-15",
+      "azimuthDegrees": -110,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        110.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2700
+    },
+    {
+      "role": "-100/-15",
+      "azimuthDegrees": -100,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        100.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2430
+    },
+    {
+      "role": "-90/-15",
+      "azimuthDegrees": -90,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        90.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2210
+    },
+    {
+      "role": "-80/-15",
+      "azimuthDegrees": -80,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        80.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1990
+    },
+    {
+      "role": "-70/-15",
+      "azimuthDegrees": -70,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        70.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1721
+    },
+    {
+      "role": "-60/-15",
+      "azimuthDegrees": -60,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        60.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1474
+    },
+    {
+      "role": "-50/-15",
+      "azimuthDegrees": -50,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        50.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1232
+    },
+    {
+      "role": "-40/-15",
+      "azimuthDegrees": -40,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        40.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1012
+    },
+    {
+      "role": "-30/-15",
+      "azimuthDegrees": -30,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        30.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 759
+    },
+    {
+      "role": "-20/-15",
+      "azimuthDegrees": -20,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        20.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 501
+    },
+    {
+      "role": "-10/-15",
+      "azimuthDegrees": -10,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        10.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 232
+    },
+    {
+      "role": "0/-15",
+      "azimuthDegrees": 0,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        0.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 11
+    },
+    {
+      "role": "10/-15",
+      "azimuthDegrees": 10,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        350.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8592
+    },
+    {
+      "role": "20/-15",
+      "azimuthDegrees": 20,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        340.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8322
+    },
+    {
+      "role": "30/-15",
+      "azimuthDegrees": 30,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        330.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8063
+    },
+    {
+      "role": "40/-15",
+      "azimuthDegrees": 40,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        320.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7810
+    },
+    {
+      "role": "50/-15",
+      "azimuthDegrees": 50,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        310.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7590
+    },
+    {
+      "role": "60/-15",
+      "azimuthDegrees": 60,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        300.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7348
+    },
+    {
+      "role": "70/-15",
+      "azimuthDegrees": 70,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        290.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7100
+    },
+    {
+      "role": "80/-15",
+      "azimuthDegrees": 80,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        280.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6830
+    },
+    {
+      "role": "90/-15",
+      "azimuthDegrees": 90,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        270.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6610
+    },
+    {
+      "role": "100/-15",
+      "azimuthDegrees": 100,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        260.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6390
+    },
+    {
+      "role": "110/-15",
+      "azimuthDegrees": 110,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        250.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6121
+    },
+    {
+      "role": "120/-15",
+      "azimuthDegrees": 120,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        240.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5874
+    },
+    {
+      "role": "130/-15",
+      "azimuthDegrees": 130,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        230.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5632
+    },
+    {
+      "role": "140/-15",
+      "azimuthDegrees": 140,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        220.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5412
+    },
+    {
+      "role": "150/-15",
+      "azimuthDegrees": 150,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        210.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5159
+    },
+    {
+      "role": "160/-15",
+      "azimuthDegrees": 160,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        200.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4901
+    },
+    {
+      "role": "170/-15",
+      "azimuthDegrees": 170,
+      "elevationDegrees": -15,
+      "measuredSofaPosition": [
+        190.0,
+        -15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4632
+    },
+    {
+      "role": "-180/0",
+      "azimuthDegrees": -180,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        180.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4413
+    },
+    {
+      "role": "-170/0",
+      "azimuthDegrees": -170,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        170.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4193
+    },
+    {
+      "role": "-160/0",
+      "azimuthDegrees": -160,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        160.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3923
+    },
+    {
+      "role": "-150/0",
+      "azimuthDegrees": -150,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        150.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3664
+    },
+    {
+      "role": "-140/0",
+      "azimuthDegrees": -140,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        140.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3411
+    },
+    {
+      "role": "-130/0",
+      "azimuthDegrees": -130,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        130.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3191
+    },
+    {
+      "role": "-120/0",
+      "azimuthDegrees": -120,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        120.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2949
+    },
+    {
+      "role": "-110/0",
+      "azimuthDegrees": -110,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        110.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2701
+    },
+    {
+      "role": "-100/0",
+      "azimuthDegrees": -100,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        100.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2431
+    },
+    {
+      "role": "-90/0",
+      "azimuthDegrees": -90,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        90.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2211
+    },
+    {
+      "role": "-80/0",
+      "azimuthDegrees": -80,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        80.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1991
+    },
+    {
+      "role": "-70/0",
+      "azimuthDegrees": -70,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        70.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1722
+    },
+    {
+      "role": "-60/0",
+      "azimuthDegrees": -60,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        60.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1475
+    },
+    {
+      "role": "-50/0",
+      "azimuthDegrees": -50,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        50.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1233
+    },
+    {
+      "role": "-40/0",
+      "azimuthDegrees": -40,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        40.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1013
+    },
+    {
+      "role": "-30/0",
       "azimuthDegrees": -30,
       "elevationDegrees": 0,
       "measuredSofaPosition": [
@@ -64,18 +2608,29 @@
       "sourceMeasurementIndex": 760
     },
     {
-      "role": "right",
-      "azimuthDegrees": 30,
+      "role": "-20/0",
+      "azimuthDegrees": -20,
       "elevationDegrees": 0,
       "measuredSofaPosition": [
-        330.0,
+        20.0,
         0.0,
         1.2
       ],
-      "sourceMeasurementIndex": 8064
+      "sourceMeasurementIndex": 502
     },
     {
-      "role": "center",
+      "role": "-10/0",
+      "azimuthDegrees": -10,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        10.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 233
+    },
+    {
+      "role": "0/0",
       "azimuthDegrees": 0,
       "elevationDegrees": 0,
       "measuredSofaPosition": [
@@ -86,48 +2641,2567 @@
       "sourceMeasurementIndex": 12
     },
     {
-      "role": "leftSurround",
-      "azimuthDegrees": -105,
+      "role": "10/0",
+      "azimuthDegrees": 10,
       "elevationDegrees": 0,
       "measuredSofaPosition": [
-        105.0,
+        350.0,
         0.0,
         1.2
       ],
-      "sourceMeasurementIndex": 2569
+      "sourceMeasurementIndex": 8593
     },
     {
-      "role": "rightSurround",
-      "azimuthDegrees": 105,
+      "role": "20/0",
+      "azimuthDegrees": 20,
       "elevationDegrees": 0,
       "measuredSofaPosition": [
-        255.0,
+        340.0,
         0.0,
         1.2
       ],
-      "sourceMeasurementIndex": 6254
+      "sourceMeasurementIndex": 8323
     },
     {
-      "role": "leftRearSurround",
-      "azimuthDegrees": -145,
+      "role": "30/0",
+      "azimuthDegrees": 30,
       "elevationDegrees": 0,
       "measuredSofaPosition": [
-        145.0,
+        330.0,
         0.0,
         1.2
       ],
-      "sourceMeasurementIndex": 3521
+      "sourceMeasurementIndex": 8064
     },
     {
-      "role": "rightRearSurround",
-      "azimuthDegrees": 145,
+      "role": "40/0",
+      "azimuthDegrees": 40,
       "elevationDegrees": 0,
       "measuredSofaPosition": [
-        215.0,
+        320.0,
         0.0,
         1.2
       ],
-      "sourceMeasurementIndex": 5303
+      "sourceMeasurementIndex": 7811
+    },
+    {
+      "role": "50/0",
+      "azimuthDegrees": 50,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        310.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7591
+    },
+    {
+      "role": "60/0",
+      "azimuthDegrees": 60,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        300.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7349
+    },
+    {
+      "role": "70/0",
+      "azimuthDegrees": 70,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        290.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7101
+    },
+    {
+      "role": "80/0",
+      "azimuthDegrees": 80,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        280.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6831
+    },
+    {
+      "role": "90/0",
+      "azimuthDegrees": 90,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        270.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6611
+    },
+    {
+      "role": "100/0",
+      "azimuthDegrees": 100,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        260.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6391
+    },
+    {
+      "role": "110/0",
+      "azimuthDegrees": 110,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        250.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6122
+    },
+    {
+      "role": "120/0",
+      "azimuthDegrees": 120,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        240.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5875
+    },
+    {
+      "role": "130/0",
+      "azimuthDegrees": 130,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        230.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5633
+    },
+    {
+      "role": "140/0",
+      "azimuthDegrees": 140,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        220.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5413
+    },
+    {
+      "role": "150/0",
+      "azimuthDegrees": 150,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        210.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5160
+    },
+    {
+      "role": "160/0",
+      "azimuthDegrees": 160,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        200.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4902
+    },
+    {
+      "role": "170/0",
+      "azimuthDegrees": 170,
+      "elevationDegrees": 0,
+      "measuredSofaPosition": [
+        190.0,
+        0.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4633
+    },
+    {
+      "role": "-180/15",
+      "azimuthDegrees": -180,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        180.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4414
+    },
+    {
+      "role": "-170/15",
+      "azimuthDegrees": -170,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        170.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4194
+    },
+    {
+      "role": "-160/15",
+      "azimuthDegrees": -160,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        160.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3924
+    },
+    {
+      "role": "-150/15",
+      "azimuthDegrees": -150,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        150.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3665
+    },
+    {
+      "role": "-140/15",
+      "azimuthDegrees": -140,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        140.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3412
+    },
+    {
+      "role": "-130/15",
+      "azimuthDegrees": -130,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        130.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3192
+    },
+    {
+      "role": "-120/15",
+      "azimuthDegrees": -120,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        120.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2950
+    },
+    {
+      "role": "-110/15",
+      "azimuthDegrees": -110,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        110.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2702
+    },
+    {
+      "role": "-100/15",
+      "azimuthDegrees": -100,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        100.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2432
+    },
+    {
+      "role": "-90/15",
+      "azimuthDegrees": -90,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        90.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2212
+    },
+    {
+      "role": "-80/15",
+      "azimuthDegrees": -80,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        80.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1992
+    },
+    {
+      "role": "-70/15",
+      "azimuthDegrees": -70,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        70.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1723
+    },
+    {
+      "role": "-60/15",
+      "azimuthDegrees": -60,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        60.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1476
+    },
+    {
+      "role": "-50/15",
+      "azimuthDegrees": -50,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        50.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1234
+    },
+    {
+      "role": "-40/15",
+      "azimuthDegrees": -40,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        40.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1014
+    },
+    {
+      "role": "-30/15",
+      "azimuthDegrees": -30,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        30.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 761
+    },
+    {
+      "role": "-20/15",
+      "azimuthDegrees": -20,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        20.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 503
+    },
+    {
+      "role": "-10/15",
+      "azimuthDegrees": -10,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        10.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 234
+    },
+    {
+      "role": "0/15",
+      "azimuthDegrees": 0,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        0.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 13
+    },
+    {
+      "role": "10/15",
+      "azimuthDegrees": 10,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        350.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8594
+    },
+    {
+      "role": "20/15",
+      "azimuthDegrees": 20,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        340.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8324
+    },
+    {
+      "role": "30/15",
+      "azimuthDegrees": 30,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        330.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8065
+    },
+    {
+      "role": "40/15",
+      "azimuthDegrees": 40,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        320.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7812
+    },
+    {
+      "role": "50/15",
+      "azimuthDegrees": 50,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        310.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7592
+    },
+    {
+      "role": "60/15",
+      "azimuthDegrees": 60,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        300.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7350
+    },
+    {
+      "role": "70/15",
+      "azimuthDegrees": 70,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        290.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7102
+    },
+    {
+      "role": "80/15",
+      "azimuthDegrees": 80,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        280.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6832
+    },
+    {
+      "role": "90/15",
+      "azimuthDegrees": 90,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        270.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6612
+    },
+    {
+      "role": "100/15",
+      "azimuthDegrees": 100,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        260.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6392
+    },
+    {
+      "role": "110/15",
+      "azimuthDegrees": 110,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        250.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6123
+    },
+    {
+      "role": "120/15",
+      "azimuthDegrees": 120,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        240.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5876
+    },
+    {
+      "role": "130/15",
+      "azimuthDegrees": 130,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        230.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5634
+    },
+    {
+      "role": "140/15",
+      "azimuthDegrees": 140,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        220.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5414
+    },
+    {
+      "role": "150/15",
+      "azimuthDegrees": 150,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        210.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5161
+    },
+    {
+      "role": "160/15",
+      "azimuthDegrees": 160,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        200.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4903
+    },
+    {
+      "role": "170/15",
+      "azimuthDegrees": 170,
+      "elevationDegrees": 15,
+      "measuredSofaPosition": [
+        190.0,
+        15.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4634
+    },
+    {
+      "role": "-180/30",
+      "azimuthDegrees": -180,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        180.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4417
+    },
+    {
+      "role": "-170/30",
+      "azimuthDegrees": -170,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        170.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4197
+    },
+    {
+      "role": "-160/30",
+      "azimuthDegrees": -160,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        160.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3927
+    },
+    {
+      "role": "-150/30",
+      "azimuthDegrees": -150,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        150.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3668
+    },
+    {
+      "role": "-140/30",
+      "azimuthDegrees": -140,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        140.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3415
+    },
+    {
+      "role": "-130/30",
+      "azimuthDegrees": -130,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        130.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3195
+    },
+    {
+      "role": "-120/30",
+      "azimuthDegrees": -120,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        120.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2953
+    },
+    {
+      "role": "-110/30",
+      "azimuthDegrees": -110,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        110.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2705
+    },
+    {
+      "role": "-100/30",
+      "azimuthDegrees": -100,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        100.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2435
+    },
+    {
+      "role": "-90/30",
+      "azimuthDegrees": -90,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        90.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2215
+    },
+    {
+      "role": "-80/30",
+      "azimuthDegrees": -80,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        80.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1995
+    },
+    {
+      "role": "-70/30",
+      "azimuthDegrees": -70,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        70.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1726
+    },
+    {
+      "role": "-60/30",
+      "azimuthDegrees": -60,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        60.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1479
+    },
+    {
+      "role": "-50/30",
+      "azimuthDegrees": -50,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        50.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1237
+    },
+    {
+      "role": "-40/30",
+      "azimuthDegrees": -40,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        40.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1017
+    },
+    {
+      "role": "-30/30",
+      "azimuthDegrees": -30,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        30.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 764
+    },
+    {
+      "role": "-20/30",
+      "azimuthDegrees": -20,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        20.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 506
+    },
+    {
+      "role": "-10/30",
+      "azimuthDegrees": -10,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        10.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 237
+    },
+    {
+      "role": "0/30",
+      "azimuthDegrees": 0,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        0.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 16
+    },
+    {
+      "role": "10/30",
+      "azimuthDegrees": 10,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        350.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8597
+    },
+    {
+      "role": "20/30",
+      "azimuthDegrees": 20,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        340.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8327
+    },
+    {
+      "role": "30/30",
+      "azimuthDegrees": 30,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        330.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8068
+    },
+    {
+      "role": "40/30",
+      "azimuthDegrees": 40,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        320.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7815
+    },
+    {
+      "role": "50/30",
+      "azimuthDegrees": 50,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        310.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7595
+    },
+    {
+      "role": "60/30",
+      "azimuthDegrees": 60,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        300.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7353
+    },
+    {
+      "role": "70/30",
+      "azimuthDegrees": 70,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        290.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7105
+    },
+    {
+      "role": "80/30",
+      "azimuthDegrees": 80,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        280.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6835
+    },
+    {
+      "role": "90/30",
+      "azimuthDegrees": 90,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        270.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6615
+    },
+    {
+      "role": "100/30",
+      "azimuthDegrees": 100,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        260.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6395
+    },
+    {
+      "role": "110/30",
+      "azimuthDegrees": 110,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        250.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6126
+    },
+    {
+      "role": "120/30",
+      "azimuthDegrees": 120,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        240.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5879
+    },
+    {
+      "role": "130/30",
+      "azimuthDegrees": 130,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        230.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5637
+    },
+    {
+      "role": "140/30",
+      "azimuthDegrees": 140,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        220.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5417
+    },
+    {
+      "role": "150/30",
+      "azimuthDegrees": 150,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        210.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5164
+    },
+    {
+      "role": "160/30",
+      "azimuthDegrees": 160,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        200.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4906
+    },
+    {
+      "role": "170/30",
+      "azimuthDegrees": 170,
+      "elevationDegrees": 30,
+      "measuredSofaPosition": [
+        190.0,
+        30.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4637
+    },
+    {
+      "role": "-180/45",
+      "azimuthDegrees": -180,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        180.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4419
+    },
+    {
+      "role": "-170/45",
+      "azimuthDegrees": -170,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        170.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4199
+    },
+    {
+      "role": "-160/45",
+      "azimuthDegrees": -160,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        160.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3929
+    },
+    {
+      "role": "-150/45",
+      "azimuthDegrees": -150,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        150.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3670
+    },
+    {
+      "role": "-140/45",
+      "azimuthDegrees": -140,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        140.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3417
+    },
+    {
+      "role": "-130/45",
+      "azimuthDegrees": -130,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        130.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3197
+    },
+    {
+      "role": "-120/45",
+      "azimuthDegrees": -120,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        120.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2955
+    },
+    {
+      "role": "-110/45",
+      "azimuthDegrees": -110,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        110.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2707
+    },
+    {
+      "role": "-100/45",
+      "azimuthDegrees": -100,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        100.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2437
+    },
+    {
+      "role": "-90/45",
+      "azimuthDegrees": -90,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        90.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2217
+    },
+    {
+      "role": "-80/45",
+      "azimuthDegrees": -80,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        80.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1997
+    },
+    {
+      "role": "-70/45",
+      "azimuthDegrees": -70,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        70.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1728
+    },
+    {
+      "role": "-60/45",
+      "azimuthDegrees": -60,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        60.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1481
+    },
+    {
+      "role": "-50/45",
+      "azimuthDegrees": -50,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        50.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1239
+    },
+    {
+      "role": "-40/45",
+      "azimuthDegrees": -40,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        40.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1019
+    },
+    {
+      "role": "-30/45",
+      "azimuthDegrees": -30,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        30.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 766
+    },
+    {
+      "role": "-20/45",
+      "azimuthDegrees": -20,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        20.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 508
+    },
+    {
+      "role": "-10/45",
+      "azimuthDegrees": -10,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        10.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 239
+    },
+    {
+      "role": "0/45",
+      "azimuthDegrees": 0,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        0.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 18
+    },
+    {
+      "role": "10/45",
+      "azimuthDegrees": 10,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        350.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8599
+    },
+    {
+      "role": "20/45",
+      "azimuthDegrees": 20,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        340.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8329
+    },
+    {
+      "role": "30/45",
+      "azimuthDegrees": 30,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        330.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8070
+    },
+    {
+      "role": "40/45",
+      "azimuthDegrees": 40,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        320.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7817
+    },
+    {
+      "role": "50/45",
+      "azimuthDegrees": 50,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        310.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7597
+    },
+    {
+      "role": "60/45",
+      "azimuthDegrees": 60,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        300.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7355
+    },
+    {
+      "role": "70/45",
+      "azimuthDegrees": 70,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        290.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7107
+    },
+    {
+      "role": "80/45",
+      "azimuthDegrees": 80,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        280.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6837
+    },
+    {
+      "role": "90/45",
+      "azimuthDegrees": 90,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        270.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6617
+    },
+    {
+      "role": "100/45",
+      "azimuthDegrees": 100,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        260.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6397
+    },
+    {
+      "role": "110/45",
+      "azimuthDegrees": 110,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        250.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6128
+    },
+    {
+      "role": "120/45",
+      "azimuthDegrees": 120,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        240.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5881
+    },
+    {
+      "role": "130/45",
+      "azimuthDegrees": 130,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        230.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5639
+    },
+    {
+      "role": "140/45",
+      "azimuthDegrees": 140,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        220.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5419
+    },
+    {
+      "role": "150/45",
+      "azimuthDegrees": 150,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        210.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5166
+    },
+    {
+      "role": "160/45",
+      "azimuthDegrees": 160,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        200.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4908
+    },
+    {
+      "role": "170/45",
+      "azimuthDegrees": 170,
+      "elevationDegrees": 45,
+      "measuredSofaPosition": [
+        190.0,
+        45.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4639
+    },
+    {
+      "role": "-180/60",
+      "azimuthDegrees": -180,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        180.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4421
+    },
+    {
+      "role": "-170/60",
+      "azimuthDegrees": -170,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        170.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4201
+    },
+    {
+      "role": "-160/60",
+      "azimuthDegrees": -160,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        160.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3931
+    },
+    {
+      "role": "-150/60",
+      "azimuthDegrees": -150,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        150.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3672
+    },
+    {
+      "role": "-140/60",
+      "azimuthDegrees": -140,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        140.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3419
+    },
+    {
+      "role": "-130/60",
+      "azimuthDegrees": -130,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        130.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3199
+    },
+    {
+      "role": "-120/60",
+      "azimuthDegrees": -120,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        120.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2957
+    },
+    {
+      "role": "-110/60",
+      "azimuthDegrees": -110,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        110.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2709
+    },
+    {
+      "role": "-100/60",
+      "azimuthDegrees": -100,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        100.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2439
+    },
+    {
+      "role": "-90/60",
+      "azimuthDegrees": -90,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        90.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2219
+    },
+    {
+      "role": "-80/60",
+      "azimuthDegrees": -80,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        80.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1999
+    },
+    {
+      "role": "-70/60",
+      "azimuthDegrees": -70,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        70.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1730
+    },
+    {
+      "role": "-60/60",
+      "azimuthDegrees": -60,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        60.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1483
+    },
+    {
+      "role": "-50/60",
+      "azimuthDegrees": -50,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        50.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1241
+    },
+    {
+      "role": "-40/60",
+      "azimuthDegrees": -40,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        40.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1021
+    },
+    {
+      "role": "-30/60",
+      "azimuthDegrees": -30,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        30.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 768
+    },
+    {
+      "role": "-20/60",
+      "azimuthDegrees": -20,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        20.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 510
+    },
+    {
+      "role": "-10/60",
+      "azimuthDegrees": -10,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        10.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 241
+    },
+    {
+      "role": "0/60",
+      "azimuthDegrees": 0,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        0.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 20
+    },
+    {
+      "role": "10/60",
+      "azimuthDegrees": 10,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        350.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8601
+    },
+    {
+      "role": "20/60",
+      "azimuthDegrees": 20,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        340.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8331
+    },
+    {
+      "role": "30/60",
+      "azimuthDegrees": 30,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        330.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8072
+    },
+    {
+      "role": "40/60",
+      "azimuthDegrees": 40,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        320.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7819
+    },
+    {
+      "role": "50/60",
+      "azimuthDegrees": 50,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        310.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7599
+    },
+    {
+      "role": "60/60",
+      "azimuthDegrees": 60,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        300.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7357
+    },
+    {
+      "role": "70/60",
+      "azimuthDegrees": 70,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        290.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7109
+    },
+    {
+      "role": "80/60",
+      "azimuthDegrees": 80,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        280.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6839
+    },
+    {
+      "role": "90/60",
+      "azimuthDegrees": 90,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        270.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6619
+    },
+    {
+      "role": "100/60",
+      "azimuthDegrees": 100,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        260.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6399
+    },
+    {
+      "role": "110/60",
+      "azimuthDegrees": 110,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        250.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6130
+    },
+    {
+      "role": "120/60",
+      "azimuthDegrees": 120,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        240.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5883
+    },
+    {
+      "role": "130/60",
+      "azimuthDegrees": 130,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        230.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5641
+    },
+    {
+      "role": "140/60",
+      "azimuthDegrees": 140,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        220.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5421
+    },
+    {
+      "role": "150/60",
+      "azimuthDegrees": 150,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        210.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5168
+    },
+    {
+      "role": "160/60",
+      "azimuthDegrees": 160,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        200.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4910
+    },
+    {
+      "role": "170/60",
+      "azimuthDegrees": 170,
+      "elevationDegrees": 60,
+      "measuredSofaPosition": [
+        190.0,
+        60.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4641
+    },
+    {
+      "role": "-180/75",
+      "azimuthDegrees": -180,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        180.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4423
+    },
+    {
+      "role": "-170/75",
+      "azimuthDegrees": -170,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        170.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4203
+    },
+    {
+      "role": "-160/75",
+      "azimuthDegrees": -160,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        160.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3933
+    },
+    {
+      "role": "-150/75",
+      "azimuthDegrees": -150,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        150.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3674
+    },
+    {
+      "role": "-140/75",
+      "azimuthDegrees": -140,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        140.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3421
+    },
+    {
+      "role": "-130/75",
+      "azimuthDegrees": -130,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        130.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 3201
+    },
+    {
+      "role": "-120/75",
+      "azimuthDegrees": -120,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        120.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2959
+    },
+    {
+      "role": "-110/75",
+      "azimuthDegrees": -110,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        110.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2711
+    },
+    {
+      "role": "-100/75",
+      "azimuthDegrees": -100,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        100.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2441
+    },
+    {
+      "role": "-90/75",
+      "azimuthDegrees": -90,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        90.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2221
+    },
+    {
+      "role": "-80/75",
+      "azimuthDegrees": -80,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        80.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 2001
+    },
+    {
+      "role": "-70/75",
+      "azimuthDegrees": -70,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        70.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1732
+    },
+    {
+      "role": "-60/75",
+      "azimuthDegrees": -60,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        60.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1485
+    },
+    {
+      "role": "-50/75",
+      "azimuthDegrees": -50,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        50.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1243
+    },
+    {
+      "role": "-40/75",
+      "azimuthDegrees": -40,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        40.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 1023
+    },
+    {
+      "role": "-30/75",
+      "azimuthDegrees": -30,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        30.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 770
+    },
+    {
+      "role": "-20/75",
+      "azimuthDegrees": -20,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        20.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 512
+    },
+    {
+      "role": "-10/75",
+      "azimuthDegrees": -10,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        10.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 243
+    },
+    {
+      "role": "0/75",
+      "azimuthDegrees": 0,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        0.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 22
+    },
+    {
+      "role": "10/75",
+      "azimuthDegrees": 10,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        350.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8603
+    },
+    {
+      "role": "20/75",
+      "azimuthDegrees": 20,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        340.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8333
+    },
+    {
+      "role": "30/75",
+      "azimuthDegrees": 30,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        330.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 8074
+    },
+    {
+      "role": "40/75",
+      "azimuthDegrees": 40,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        320.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7821
+    },
+    {
+      "role": "50/75",
+      "azimuthDegrees": 50,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        310.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7601
+    },
+    {
+      "role": "60/75",
+      "azimuthDegrees": 60,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        300.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7359
+    },
+    {
+      "role": "70/75",
+      "azimuthDegrees": 70,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        290.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 7111
+    },
+    {
+      "role": "80/75",
+      "azimuthDegrees": 80,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        280.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6841
+    },
+    {
+      "role": "90/75",
+      "azimuthDegrees": 90,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        270.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6621
+    },
+    {
+      "role": "100/75",
+      "azimuthDegrees": 100,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        260.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6401
+    },
+    {
+      "role": "110/75",
+      "azimuthDegrees": 110,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        250.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 6132
+    },
+    {
+      "role": "120/75",
+      "azimuthDegrees": 120,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        240.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5885
+    },
+    {
+      "role": "130/75",
+      "azimuthDegrees": 130,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        230.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5643
+    },
+    {
+      "role": "140/75",
+      "azimuthDegrees": 140,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        220.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5423
+    },
+    {
+      "role": "150/75",
+      "azimuthDegrees": 150,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        210.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 5170
+    },
+    {
+      "role": "160/75",
+      "azimuthDegrees": 160,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        200.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4912
+    },
+    {
+      "role": "170/75",
+      "azimuthDegrees": 170,
+      "elevationDegrees": 75,
+      "measuredSofaPosition": [
+        190.0,
+        75.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 4643
+    },
+    {
+      "role": "-180/90",
+      "azimuthDegrees": -180,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-170/90",
+      "azimuthDegrees": -170,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-160/90",
+      "azimuthDegrees": -160,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-150/90",
+      "azimuthDegrees": -150,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-140/90",
+      "azimuthDegrees": -140,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-130/90",
+      "azimuthDegrees": -130,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-120/90",
+      "azimuthDegrees": -120,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-110/90",
+      "azimuthDegrees": -110,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-100/90",
+      "azimuthDegrees": -100,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-90/90",
+      "azimuthDegrees": -90,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-80/90",
+      "azimuthDegrees": -80,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-70/90",
+      "azimuthDegrees": -70,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-60/90",
+      "azimuthDegrees": -60,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-50/90",
+      "azimuthDegrees": -50,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-40/90",
+      "azimuthDegrees": -40,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-30/90",
+      "azimuthDegrees": -30,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-20/90",
+      "azimuthDegrees": -20,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "-10/90",
+      "azimuthDegrees": -10,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "0/90",
+      "azimuthDegrees": 0,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "10/90",
+      "azimuthDegrees": 10,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "20/90",
+      "azimuthDegrees": 20,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "30/90",
+      "azimuthDegrees": 30,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "40/90",
+      "azimuthDegrees": 40,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "50/90",
+      "azimuthDegrees": 50,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "60/90",
+      "azimuthDegrees": 60,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "70/90",
+      "azimuthDegrees": 70,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "80/90",
+      "azimuthDegrees": 80,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "90/90",
+      "azimuthDegrees": 90,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "100/90",
+      "azimuthDegrees": 100,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "110/90",
+      "azimuthDegrees": 110,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "120/90",
+      "azimuthDegrees": 120,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "130/90",
+      "azimuthDegrees": 130,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "140/90",
+      "azimuthDegrees": 140,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "150/90",
+      "azimuthDegrees": 150,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "160/90",
+      "azimuthDegrees": 160,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
+    },
+    {
+      "role": "170/90",
+      "azimuthDegrees": 170,
+      "elevationDegrees": 90,
+      "measuredSofaPosition": [
+        0.0,
+        90.0,
+        1.2
+      ],
+      "sourceMeasurementIndex": 23
     }
   ],
   "rates": [
@@ -140,31 +5214,31 @@
     {
       "sampleRate": 48000,
       "frameCount": 256,
-      "byteOffset": 13216,
+      "byteOffset": 883584,
       "referenceDelayFrames": 104
     },
     {
       "sampleRate": 88200,
       "frameCount": 471,
-      "byteOffset": 27552,
+      "byteOffset": 1842048,
       "referenceDelayFrames": 191
     },
     {
       "sampleRate": 96000,
       "frameCount": 512,
-      "byteOffset": 53928,
+      "byteOffset": 3605472,
       "referenceDelayFrames": 208
     },
     {
       "sampleRate": 176400,
       "frameCount": 941,
-      "byteOffset": 82600,
+      "byteOffset": 5522400,
       "referenceDelayFrames": 382
     },
     {
       "sampleRate": 192000,
       "frameCount": 1024,
-      "byteOffset": 135296,
+      "byteOffset": 9045504,
       "referenceDelayFrames": 416
     }
   ]

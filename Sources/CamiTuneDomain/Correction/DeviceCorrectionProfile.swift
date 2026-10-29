@@ -196,16 +196,29 @@ package struct AutoEQSettings: Codable, Hashable, Sendable {
     }
 }
 
-package enum DeviceForm: String, Codable, Sendable {
-    case overEar, onEar, inEar, earbud
+package enum DeviceForm: String, Codable, Hashable, CaseIterable, Sendable {
+    case overEar, onEar, inEar, earbud, openEar, boneConduction, other
     package init?(catalogValue: String?) {
         switch DeviceNameNormalizer.key(for: catalogValue ?? "") {
         case "over ear", "overear", "headphone", "headphones": self = .overEar
         case "on ear", "onear": self = .onEar
         case "in ear", "inear", "iem": self = .inEar
         case "earbud", "earbuds": self = .earbud
+        case "open ear", "openear", "off ear", "offear": self = .openEar
+        case "bone conduction": self = .boneConduction
         default: return nil
         }
     }
-    package var isIEM: Bool { self == .inEar || self == .earbud }
+    package var title: String {
+        switch self {
+        case .overEar: return "Over-ear headphones"
+        case .onEar: return "On-ear headphones"
+        case .inEar: return "IEM · sealed in-ear"
+        case .earbud: return "Earbuds · rests in the outer ear"
+        case .openEar: return "Open-ear · outside the ear"
+        case .boneConduction: return "Bone conduction"
+        case .other: return "Other"
+        }
+    }
+    package var hasEnclosure: Bool { self == .overEar || self == .onEar }
 }

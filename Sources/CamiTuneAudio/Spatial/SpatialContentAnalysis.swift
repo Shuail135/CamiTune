@@ -27,9 +27,81 @@ package struct SpatialContentEstimate: Equatable, Sendable {
     }
 }
 
-/// Constant-memory, 100 ms feature windows on the existing PCM writer worker.
-/// No microphone, FFT, model, network, or additional audio queue is involved.
-package struct SpatialContentAnalyzer {
+/// Analysis-only mix for either detector. All non-LFE channels contribute with
+/// equal energy weights. A cancelled window selects a stable energetic channel,
+/// with hysteresis and a 20 ms ramp; playback samples are never changed.
+package final class SpatialAnalysisMixer {
+    private let base: UnsafeMutablePointer<Float>
+    private let weights: UnsafeMutablePointer<Float>
+    private let target: UnsafeMutablePointer<Float>
+    private let energies: UnsafeMutablePointer<Double>
+    private var mixedEnergy: Double = 0
+    private var count = 0, ramp = 0
+    private let channels: Int, window: Int, rampLength: Int
+    private var dominant = 0
+    package init(layout: LPCMChannelLayout, rate: Double) {
+        channels = layout.channelCount
+        base = .allocate(capacity: channels * 3)
+        base.initialize(repeating: 0, count: channels * 3)
+        weights = base.advanced(by: channels); target = weights.advanced(by: channels)
+        energies = .allocate(capacity: channels)
+        energies.initialize(repeating: 0, count: channels)
+        let count = layout.roles.filter { $0 != .lowFrequencyEffects }.count
+        let gain = count > 0 ? 1 / sqrt(Float(count)) : 0
+        for index in layout.roles.indices { base[index] = layout.roles[index] == .lowFrequencyEffects ? 0 : gain }
+        weights.update(from: base, count: channels); target.update(from: base, count: channels)
+        dominant = layout.roles.firstIndex { $0 != .lowFrequencyEffects } ?? 0
+        window = max(1, Int(rate * 0.1)); rampLength = max(1, Int(rate * 0.02))
+    }
+    deinit { base.deallocate(); energies.deallocate() }
+    package func sample(_ samples: UnsafeBufferPointer<Float>, offset: Int) -> Float {
+        var mixed: Float = 0, output: Float = 0
+        for channel in 0..<channels where base[channel] != 0 {
+            if ramp > 0 { weights[channel] += (target[channel] - weights[channel]) / Float(ramp) }
+            let value = SpatialSafety.sample(samples[offset + channel])
+            mixed += base[channel] * value; output += weights[channel] * value
+            energies[channel] += Double(value) * Double(value)
+        }
+        if ramp > 0 { ramp -= 1 }
+        mixedEnergy += Double(mixed) * Double(mixed)
+        count += 1
+        if count == window {
+            var expected: Double = 0
+            var strongest = dominant
+            for channel in 0..<channels where base[channel] != 0 {
+                expected += energies[channel] * Double(base[channel] * base[channel])
+                if energies[channel] > energies[strongest] { strongest = channel }
+            }
+            if energies[strongest] > energies[dominant] * 1.5 { dominant = strongest }
+            let cancelled = expected > Double(window) * 1e-8 && mixedEnergy < expected * 0.08
+            var changed = false
+            for channel in 0..<channels {
+                let next: Float = cancelled ? (channel == dominant ? 1 : 0) : base[channel]
+                if next != target[channel] { changed = true; target[channel] = next }
+            }
+            if changed { ramp = rampLength }
+            count = 0; mixedEnergy = 0; energies.update(repeating: 0, count: channels)
+        }
+        return output
+    }
+    /// Batch entry keeps numerical preprocessing in the optimized Audio module,
+    /// including when the app and platform-model adapter run in an Xcode Debug build.
+    package func process(_ input: UnsafeBufferPointer<Float>, frameCount: Int,
+                        output: UnsafeMutableBufferPointer<Float>) -> Double {
+        precondition(input.count >= frameCount * channels && output.count >= frameCount)
+        var energy: Double = 0
+        for frame in 0..<frameCount {
+            let value = sample(input, offset: frame * channels)
+            output[frame] = value
+            energy += Double(value) * Double(value)
+        }
+        return energy
+    }
+}
+
+/// Constant-memory, 100 ms feature windows. The physical renderer and Movie's
+/// Basic worker use the same feature calculations and input-mixing contract.
+package final class SpatialContentAnalyzer {
     package init() {}
 
     package private(set) var estimate = SpatialContentEstimate.unknown
@@ -44,36 +116,48 @@ package struct SpatialContentAnalyzer {
     private var lowCoefficient = 0.0, upperCoefficient = 0.0
     private var previousRMS = 0.0, envelopeChange = 0.0
     private var activeWindows = 0
+    private var mixer: SpatialAnalysisMixer?
 
-    package mutating func reset() { self = Self() }
+    package func reset() {
+        estimate = .unknown; rate = 0; roles = []; count = 0
+        energy = 0; lowEnergy = 0; voiceEnergy = 0
+        leftEnergy = 0; rightEnergy = 0; cross = 0; peak = 0; crossings = 0
+        previous = 0; low = 0; upper = 0; lowCoefficient = 0; upperCoefficient = 0
+        previousRMS = 0; envelopeChange = 0; activeWindows = 0; mixer = nil
+    }
 
-    package mutating func ingest(_ frame: PCMFrame) {
-        guard frame.sampleRate.isFinite, (8_000...384_000).contains(frame.sampleRate),
-              frame.channelCount > 0, frame.channelCount <= 32,
-              frame.channelLayout.roles.count == frame.channelCount,
-              frame.interleaved.count.isMultiple(of: frame.channelCount),
-              let l = frame.channelLayout.roles.firstIndex(of: .left),
-              let r = frame.channelLayout.roles.firstIndex(of: .right) else { reset(); return }
-        if rate != frame.sampleRate || roles != frame.channelLayout.roles {
+    package func ingest(_ frame: PCMFrame) {
+        frame.interleaved.withUnsafeBufferPointer {
+            ingest($0, channelCount: frame.channelCount, sampleRate: frame.sampleRate, layout: frame.channelLayout)
+        }
+    }
+
+    /// The analysis worker already owns a bounded input buffer. Borrow it for
+    /// this call; retain only feature history, never its sample storage.
+    package func ingest(_ samples: UnsafeBufferPointer<Float>, channelCount: Int,
+                        sampleRate: Double, layout: LPCMChannelLayout) {
+        guard sampleRate.isFinite, (8_000...384_000).contains(sampleRate),
+              channelCount > 0, channelCount <= 32,
+              layout.roles.count == channelCount,
+              samples.count.isMultiple(of: channelCount) else { reset(); return }
+        if rate != sampleRate || roles != layout.roles {
             reset()
-            rate = frame.sampleRate
-            roles = frame.channelLayout.roles
+            rate = sampleRate
+            roles = layout.roles
             lowCoefficient = 1 - exp(-2 * .pi * 180 / rate)
             upperCoefficient = 1 - exp(-2 * .pi * 3_500 / rate)
+            mixer = SpatialAnalysisMixer(layout: layout, rate: rate)
         }
-        let center = roles.firstIndex(of: .center)
+        let mixer = mixer!
+        let l = roles.firstIndex(of: .left), r = roles.firstIndex(of: .right)
         let window = max(1, Int(rate * 0.1))
-        for offset in stride(from: 0, to: frame.interleaved.count, by: frame.channelCount) {
-            let left = clean(frame.interleaved[offset + l])
-            let right = clean(frame.interleaved[offset + r])
-            // Center energy contributes evidence, but its channel name alone
-            // never classifies dialogue. Surround roles remain renderer-owned.
-            let c = center.map { clean(frame.interleaved[offset + $0]) } ?? 0
-            var sample = (left + right) * 0.5 + c * 0.707
-            for channel in 0..<frame.channelCount where channel != l && channel != r && channel != center {
-                let discrete = clean(frame.interleaved[offset + channel]) * 0.5
-                if abs(discrete) > abs(sample) { sample = discrete }
-            }
+        for offset in stride(from: 0, to: samples.count, by: channelCount) {
+            let sample = Double(mixer.sample(samples, offset: offset))
+            var left = l.map { clean(samples[offset + $0]) } ?? sample
+            var right = r.map { clean(samples[offset + $0]) } ?? sample
+            // A silent front pair supplies no stereo evidence for a center,
+            // side, or height-only source. Analyze its waveform as mono.
+            if abs(left) + abs(right) < 1e-8 { left = sample; right = sample }
             low += lowCoefficient * (sample - low)
             upper += upperCoefficient * (sample - upper)
             let voice = upper - low
@@ -91,7 +175,7 @@ package struct SpatialContentAnalyzer {
         }
     }
 
-    private mutating func finishWindow() {
+    private func finishWindow() {
         let rms = sqrt(energy / Double(count))
         // Side-only/out-of-phase stereo still counts as active audio.
         let stereoRMS = sqrt((leftEnergy + rightEnergy) / Double(count * 2))
@@ -99,10 +183,11 @@ package struct SpatialContentAnalyzer {
         activeWindows = active ? min(100, activeWindows + 1) : 0
         let change = abs(rms - previousRMS) / max(0.0001, max(rms, previousRMS))
         envelopeChange += 0.3 * (change - envelopeChange)
-        let correlation = cross / max(1e-12, sqrt(leftEnergy * rightEnergy))
+        let correlation = min(leftEnergy, rightEnergy) < max(leftEnergy, rightEnergy) * 1e-6
+            ? 1 : abs(cross) / max(1e-12, sqrt(leftEnergy * rightEnergy))
         let voiceRatio = voiceEnergy / max(1e-12, energy)
         let lowRatio = lowEnergy / max(1e-12, energy)
-        let crossingRate = Double(crossings) / Double(count)
+        let crossingRate = Double(crossings) / Double(count) * rate / 48_000
         let crest = peak / max(0.0001, rms)
         let onset = max(0, (rms - previousRMS) / max(0.0001, rms))
         let voiced = unit((voiceRatio - 0.35) / 0.4) * unit((0.30 - crossingRate) / 0.2)

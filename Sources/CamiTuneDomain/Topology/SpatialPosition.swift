@@ -6,6 +6,10 @@ package struct SpatialVector3: Codable, Hashable, Sendable {
     package var x: Float
     package var y: Float
     package var z: Float
+
+    package static func distance(_ a: Self, _ b: Self) -> Float {
+        sqrt(pow(a.x - b.x, 2) + pow(a.y - b.y, 2) + pow(a.z - b.z, 2))
+    }
 }
 
 /// Listener coordinates: x right, y front/screen, z up. Negative azimuth is left.

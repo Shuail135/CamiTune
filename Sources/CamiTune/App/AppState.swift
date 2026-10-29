@@ -184,9 +184,10 @@ final class AppState: NSObject, ObservableObject {
     private var hasShutdown = false
     var processingDrafts: [UUID: ProfileProcessingDraft] = [:]
     private var requestedRuntimeVisualProfileID: UUID?
+    private var requestedMovieAnalysisProfileID: UUID?
     private var requestedMeterVisuals = true
     private var requestedSpectrumVisuals = true
-    private var mainWindowPresentationActive = false
+    private(set) var mainWindowPresentationActive = false
     private var profilePersistenceErrorObservation: AnyCancellable?
     private var coreAudioRoutingObservation: AnyCancellable?
     private var immediateDefaultOutputObservation: AnyCancellable?
@@ -386,10 +387,22 @@ final class AppState: NSObject, ObservableObject {
     func setMainWindowPresentationActive(_ active: Bool) {
         guard mainWindowPresentationActive != active else { return }
         mainWindowPresentationActive = active
+        updateMovieAnalysisPresentation()
         perAppAudio.setMeterPresentationSuspended(!active, source: "main")
         guard let requestedRuntimeVisualProfileID else { return }
         spectrum.setPresentationActive(active && requestedSpectrumVisuals, profileID: requestedRuntimeVisualProfileID)
         meters.setPresentationActive(active && requestedMeterVisuals, profileID: requestedRuntimeVisualProfileID)
+    }
+
+    func setMovieAnalysisPresentation(profileID: UUID, active: Bool) {
+        if active { requestedMovieAnalysisProfileID = profileID }
+        else if requestedMovieAnalysisProfileID == profileID { requestedMovieAnalysisProfileID = nil }
+        updateMovieAnalysisPresentation()
+    }
+
+    private func updateMovieAnalysisPresentation() {
+        pcmRouter.setMovieAnalysisPresentationEnabled(mainWindowPresentationActive && activeProfileID != nil
+            && requestedMovieAnalysisProfileID == activeProfileID)
     }
 
     func prepareForDependencyRepair() async -> Bool {
@@ -735,6 +748,21 @@ final class AppState: NSObject, ObservableObject {
         performanceResult = "success"
     }
 
+    func setPersonalSpatial(profileID: UUID, settings: PersonalSpatialSettings, expectedContext: String, recordHistory: Bool = true) async throws {
+        guard let profile = profiles.profiles.first(where: { $0.id == profileID }), profile.isPersonalListening,
+              expectedContext == profile.deviceTypeConfigurationKey else {
+            throw ProfileSettingsError.runtime("The playback device changed. Reopen Spatial and try again.")
+        }
+        var draft = ProfileSettingsDraft(profile: profile, activation: profiles.activationMode(for: profile))
+        draft.personalSpatial = settings
+        try await saveProfileSettings(draft)
+        if recordHistory {
+            history.record(actionName: "Adjust Virtual Speakers", contextName: profile.name, target: .profile(profileID),
+                before: .personalSpatial(context: profile.deviceTypeConfigurationKey, settings: profile.personalSpatial),
+                after: .personalSpatial(context: profile.deviceTypeConfigurationKey, settings: settings))
+        }
+    }
+
     func setPlaybackMode(profileID: UUID, mode: PlaybackMode) async {
         guard let profile = profiles.profiles.first(where: { $0.id == profileID }),
               profile.availablePlaybackModes.contains(mode) else { return }
@@ -920,30 +948,6 @@ final class AppState: NSObject, ObservableObject {
 
     var acousticVolumeSnapshot: SystemVolumeControlSession.Snapshot? { runtimeCoordinator.volumeSnapshot }
 
-    func acousticMeasurementIsCurrent(context: SpatialCalibrationContext, processing: ProcessingProfile) -> Bool {
-        spatialCalibrationContext == context && isActive && !transitionInProgress && !runtimeCoordinator.hasLiveApplyWork
-            && activeSession?.id == context.runtimeSessionID
-            && coreAudio.defaultOutputUID == activeRoutingUID
-            && profiles.profiles.first(where: { $0.id == context.profileID })?.processing == processing
-    }
-
-    func saveAcousticCalibration(context: SpatialCalibrationContext, measurement: SpatialAcousticProfile) -> Bool {
-        guard spatialCalibrationContext == context, isActive, !transitionInProgress,
-              activeSession?.id == context.runtimeSessionID,
-              coreAudio.defaultOutputUID == activeRoutingUID,
-              var profile = profiles.profiles.first(where: { $0.id == context.profileID }),
-              measurement.applies(to: profile),
-              measurement.positions.contains(where: { $0.position == .listeningPosition }) else { return false }
-        profile.spatialAcousticProfile = measurement
-        profile.spatialListenerProfile = nil
-        profiles.update(profile)
-        endSpatialCalibration(id: context.id)
-        Task {
-            do { try await applyHistoryProfileIfActive(profile.id) }
-            catch { presentError(error) }
-        }
-        return true
-    }
 
     func endSpatialCalibration(id: UUID) {
         guard spatialCalibrationContext?.id == id else { return }
@@ -952,81 +956,6 @@ final class AppState: NSObject, ObservableObject {
         spatialCalibrationContext = nil
     }
 
-    func selectListeningPosition(profileID: UUID, positionID: UUID?, delete: Bool = false) async {
-        guard spatialCalibrationContext == nil,
-              let profile = profiles.profiles.first(where: { $0.id == profileID }) else { return }
-        var draft = ProfileSettingsDraft(profile: profile, activation: profiles.activationMode(for: profile))
-        if delete, let positionID {
-            draft.spatialSettings.listeningPositions.removeAll { $0.id == positionID }
-            if draft.spatialSettings.selectedPositionID == positionID { draft.spatialSettings.selectedPositionID = nil }
-            if draft.spatialSettings.primaryPositionID == positionID { draft.spatialSettings.primaryPositionID = draft.spatialSettings.listeningPositions.first?.id }
-        } else {
-            guard positionID == nil || draft.spatialSettings.listeningPositions.contains(where: {
-                $0.id == positionID && $0.outputDeviceUID == profile.outputDeviceUID
-            }) else { return }
-            draft.spatialSettings.selectedPositionID = positionID
-        }
-        do { try await saveProfileSettings(draft) }
-        catch { presentError(error) }
-    }
-
-    func saveListeningPosition(context: SpatialCalibrationContext, position: SpatialSeatingCalibration) async -> Bool {
-        guard spatialCalibrationContext == context, activeSession?.id == context.runtimeSessionID,
-              !transitionInProgress, activePhysicalOutputUID == context.outputDeviceUID,
-              var profile = profiles.profiles.first(where: { $0.id == context.profileID }),
-              profile.outputDeviceUID == position.outputDeviceUID,
-              profile.outputDeviceUID == context.outputDeviceUID else { return false }
-        profile.spatialSettings.seating = position
-        profile.synchronizeListeningPositionCorrection()
-        profiles.update(profile)
-        endSpatialCalibration(id: context.id)
-        await apply(profile: profile)
-        return true
-    }
-
-    func saveRoomCorrection(context: SpatialCalibrationContext, measurement: SpatialAcousticProfile) async -> Bool {
-        guard acousticMeasurementIsCurrent(context: context, processing: measurement.processing),
-              var profile = profiles.profiles.first(where: { $0.id == context.profileID }),
-              [.virtualSurround, .spatialAudio].contains(profile.effectiveSpatialRenderingMode),
-              (profile.effectiveSpatialRenderingMode != .spatialAudio
-                || profile.effectiveSpatialSettings.resolvedOutput(deviceName: profile.outputDeviceName) == .speakers),
-              measurement.applies(to: profile),
-              !SpatialRoomCorrection.isApplied(to: profile.processing) else { return false }
-        let bands = SpatialRoomCorrection.bands(for: measurement)
-        var seat = profile.effectiveSpatialSettings.seating
-            ?? SpatialSeatingCalibration(outputDeviceUID: profile.outputDeviceUID, name: "Measured listening position")
-        seat.roomCorrectionBands = bands
-        seat.roomCorrectionTopology = profile.speakerTopology
-        seat.measuredAt = measurement.measuredAt
-        seat.microphoneName = measurement.microphone.name
-        seat.measurementConfidence = measurement.confidence
-        if measurement.confidence != .limited,
-           let center = measurement.positions.first(where: { $0.position == .listeningPosition }) {
-            seat.measuredArrivalDifferenceMS = center.rightMinusLeftArrivalMilliseconds
-            seat.measuredLevelDifferenceDB = center.rightMinusLeftLevelDB
-            seat.useMeasuredAlignment = true
-        }
-        profile.spatialSettings.seating = seat
-        profile.synchronizeListeningPositionCorrection()
-        profile.spatialAcousticProfile = measurement
-        profiles.update(profile)
-        // Save before ending the token; normal profile apply preserves all
-        // preexisting EQ/limiter stages and uses the serialized graph worker.
-        endSpatialCalibration(id: context.id)
-        await apply(profile: profile)
-        return true
-    }
-
-    func removeRoomCorrection(profileID: UUID) async {
-        guard spatialCalibrationContext == nil,
-              var profile = profiles.profiles.first(where: { $0.id == profileID }) else { return }
-        profile.spatialSettings.seating?.roomCorrectionBands = []
-        profile.spatialSettings.seating?.roomCorrectionResult = nil
-        profile.spatialSettings.seating?.roomCorrectionEnabled = false
-        profile.processing.removeRoomStages()
-        profiles.update(profile)
-        if activeProfileID == profileID { await apply(profile: profile) }
-    }
 
     func sectionNeedsDisableConfirmation(_ section: ProfileSection, profile: DeviceProfile) -> Bool {
         let runtime = (try? applyingSessionEQDrafts(to: profile)) ?? profile

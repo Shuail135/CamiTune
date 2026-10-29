@@ -25,7 +25,7 @@ https://doi.org/10.3390/app8112029.
 
 The unmodified license, attribution, modification notice and provenance manifest
 ship inside `SpatialAssets/`. The original SOFA data is converted at development
-time by `Scripts/prepare-spatial-hrtf.py`; Python, h5py, NumPy and SciPy are not
+time by `Scripts/prepare-spatial-hrtf.py` and `Scripts/prepare-spatial-brir.py`; Python, h5py, NumPy and SciPy are not
 runtime dependencies or redistributed as part of this asset.
 
 ## Speaker Auto EQ
@@ -33,3 +33,40 @@ runtime dependencies or redistributed as part of this asset.
 The bundled `Helpers/camitune-speaker-eq` adapter uses [Pierre Aubert's AutoEQ](https://github.com/pierreaubert/autoeq/tree/06ec8f958f11e24bdf1f725e9346373fbdafceca), pinned to revision `06ec8f958f11e24bdf1f725e9346373fbdafceca` (`autoeq-optim` 0.5.62), Copyright (C) 2025–2026 Pierre Aubert, GPL-3.0-or-later, used under GPLv3. The CamiTune adapter is GPL-3.0-only. The app bundles the generated dependency notices alongside the helper and the GPLv3 text in `LICENSE`. Exact dependency revisions and the complete reproducible build path are in `Tools/CamiTuneSpeakerEQCore/Cargo.lock`, its README, and `Scripts/build-speaker-eq.sh`; retain these in source distributions.
 
 Speaker measurements are requested at runtime from the official [Spinorama API](https://www.spinorama.org/docs/09_api.html). Spinorama is the aggregation/API provider; original acoustic sources such as Erin's Audio Corner, Audio Science Review, Princeton/3D3A and vendors are displayed in the app and persisted with the selected measurement version, source hash and retrieval date. CamiTune does not bundle a measurement database. Test-only excerpts preserve source attribution and are excluded from application resources. 
+
+## Spatial headphone correction and implementation references
+
+Spatial fetches headphone/IEM measurements through AutoEq and reuses the bundled,
+fixture-matched target references described in `DeviceCorrectionTargets/NOTICE.md`.
+AutoEq is MIT licensed, Copyright 2018–2022 Jaakko Pasanen; the complete notice is
+bundled there. The selected measurement sources, snapshots and correction target
+are persisted with the Spatial profile. Unknown fixture mappings are rejected.
+The app applies its own bounded correction fit; it does not bundle AutoEq's Python
+runtime or claim a personalized binaural calibration.
+
+[Impulcifer](https://github.com/jaakkopasanen/Impulcifer) is the main implementation
+reference for speaker-to-ear convolution, retained interaural timing, and shared
+gain. CamiTune's production renderer is Swift, not embedded Impulcifer code.
+The local-only validation suite compares against pinned upstream Impulcifer
+convolution code.
+
+Spatial playback-device identification records a small set of independently
+checked enclosure facts from the manufacturer's [HD 600 specification](https://www.sennheiser-hearing.com/p/hd-600/1000/)
+and [HD 620S announcement](https://newsroom.sennheiser.com/distraction-off-open-sound-on).
+These facts retain exact-model attribution, source URL and review date. No
+manufacturer prose, images or measurement database is bundled for identification;
+unlisted enclosures remain unknown until the user confirms them.
+
+## Local Movie sound analysis
+
+The optional Local AI detector uses Apple's system **SoundAnalysis** framework,
+`SNAudioStreamAnalyzer` and `SNClassifySoundRequest` with classifier version 1.
+Processing runs on the Mac. CamiTune does not download or redistribute classifier
+weights, a Core ML conversion, or training recordings. The framework is supplied
+by macOS under the applicable Apple platform terms. The implementation follows
+Apple's [built-in sound-classification documentation](https://developer.apple.com/videos/play/wwdc2021/10036/).
+
+Local evaluation uses attributed [MUSAN](https://www.openslr.org/17/) excerpts and
+controlled mixtures, with compilation and per-recording terms retained beside
+the fixtures. Those clips, reference implementations and reports stay in ignored
+`Tests/` and are excluded from the app and source distribution.

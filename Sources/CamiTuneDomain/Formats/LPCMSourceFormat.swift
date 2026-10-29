@@ -4,12 +4,24 @@ import Foundation
 /// The channel order attached to an LPCM block as it crosses the private
 /// driver boundary. Keeping semantic roles beside the samples prevents later
 /// spatial processing from having to guess what channel 2 or channel 7 means.
-package struct LPCMChannelLayout: Hashable, Sendable {
+package struct LPCMChannelLayout: Codable, Hashable, Sendable {
     package var coreAudioTag: UInt32
     package var roles: [ChannelRole]
     package var positions: [SpatialPosition?]? = nil
 
     package var channelCount: Int { roles.count }
+
+    /// Tags can name equivalent layouts. Ordered roles and supplied coordinates
+    /// determine preparation/persisted placement identity, including repetitions.
+    package var signalSignature: Self { .init(coreAudioTag: 0, roles: roles, positions: positions?.contains(where: { $0 != nil }) == true ? positions : nil) }
+
+    package func validate() throws {
+        guard (1...32).contains(channelCount) else { throw AudioFormatError.invalidChannelCount(channelCount) }
+        if let positions {
+            guard positions.count == channelCount else { throw AudioFormatError.invalidSourcePositions }
+            for position in positions { try position?.validate() }
+        }
+    }
 
     package static let mono = LPCMChannelLayout(coreAudioTag: UInt32(kAudioChannelLayoutTag_Mono), roles: [.center])
 
@@ -150,7 +162,7 @@ package enum SpatialSourceFormat: Hashable, Sendable {
 
     package init(layout: LPCMChannelLayout) {
         switch layout.roles {
-        case LPCMChannelLayout.stereo.roles: self = .stereo
+        case LPCMChannelLayout.stereo.roles where layout.positions?.contains(where: { $0 != nil }) != true: self = .stereo
         case let roles where roles.count == 6 && Set(roles) == Set(LPCMChannelLayout.fivePointOne.roles): self = .fivePointOne(layout)
         case let roles where roles.count == 8 && Set(roles) == Set(LPCMChannelLayout.sevenPointOne.roles): self = .sevenPointOne(layout)
         default: self = .multichannel(layout)
@@ -173,6 +185,9 @@ package enum SpatialSourceFormat: Hashable, Sendable {
         case .fivePointOne: return "5.1"
         case .sevenPointOne: return "7.1"
         case .multichannel(let layout):
+            if layout.roles == LPCMChannelLayout.mono.roles { return "Mono" }
+            if layout.roles == LPCMChannelLayout.stereo.roles { return "2.0" }
+            if layout.roles == LPCMChannelLayout.quad.roles { return "Quad" }
             if layout.roles == LPCMChannelLayout.ninePointOnePointSix.roles { return "9.1.6" }
             if layout.roles == LPCMChannelLayout.fivePointOnePointTwo.roles { return "5.1.2" }
             if layout.roles == LPCMChannelLayout.fivePointOnePointFour.roles { return "5.1.4" }

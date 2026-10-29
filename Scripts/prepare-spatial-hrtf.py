@@ -18,8 +18,9 @@ source = Path(sys.argv[1])
 out = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(__file__).resolve().parents[1] / 'Sources/CamiTune/SpatialAssets'
 assert hashlib.sha256(source.read_bytes()).hexdigest() == SOURCE_SHA256, 'Unreviewed source revision'
 out.mkdir(parents=True, exist_ok=True)
-roles = [('left', -30), ('right', 30), ('center', 0), ('leftSurround', -105),
-         ('rightSurround', 105), ('leftRearSurround', -145), ('rightRearSurround', 145)]
+# Full sphere, regular 10-degree azimuth / 15-degree elevation grid.
+# Pole entries repeat deliberately so the runtime has one bilinear contract.
+roles = [(f"{az}/{el}", az, el) for el in range(-90, 91, 15) for az in range(-180, 180, 10)]
 with h5py.File(source) as f:
     attrs = {k: v.decode('utf-8') for k, v in f.attrs.items() if isinstance(v, bytes)}
     assert attrs['SOFAConventions'] == 'SimpleFreeFieldHRIR' and attrs['DataType'] == 'FIR'
@@ -31,23 +32,23 @@ with h5py.File(source) as f:
     positions = f['SourcePosition'][:]
     source_filters = []
     directions = []
-    for role, angle in roles:
+    for role, angle, elevation in roles:
         # CamiTune: negative is left. SOFA: positive azimuth is left.
         azimuth_error = np.abs((positions[:, 0] + angle + 180) % 360 - 180)
-        error = azimuth_error ** 2 + positions[:, 1] ** 2
-        index = int(np.argmin(error))
-        assert error[index] <= 1, 'No sufficiently close measured direction'
+        error = azimuth_error ** 2 + (positions[:, 1] - elevation) ** 2
+        index = int(np.argmin(error)) if abs(elevation) != 90 else int(np.argmin(np.abs(positions[:, 1] - elevation)))
+        assert error[index] <= 1 or abs(elevation) == 90, 'No sufficiently close measured direction'
         ir = f['Data.IR'][index]
         assert ir.shape == (2, 256) and np.isfinite(ir).all()
         source_filters.append(ir)
-        directions.append(dict(role=role, azimuthDegrees=angle, elevationDegrees=0,
+        directions.append(dict(role=role, azimuthDegrees=angle, elevationDegrees=elevation,
                                measuredSofaPosition=positions[index].tolist(), sourceMeasurementIndex=index))
     filters = np.stack(source_filters)
     # One dataset-wide scale, shared by all directions/ears: unity broadband
     # energy for the frontal pair. Do not normalize each ear or direction.
-    common_gain = float(1 / np.sqrt(np.mean(np.sum(filters[2] ** 2, axis=1))))
+    common_gain = float(1 / np.sqrt(np.mean(np.sum(filters[6 * 36 + 18] ** 2, axis=1))))
     filters *= common_gain
-    reference_delay = int(np.argmax(np.mean(filters[2] ** 2, axis=0)))
+    reference_delay = int(np.argmax(np.mean(filters[6 * 36 + 18] ** 2, axis=0)))
     payload = bytearray()
     rates = []
     for rate in [44100, 48000, 88200, 96000, 176400, 192000]:
@@ -62,7 +63,7 @@ with h5py.File(source) as f:
         rates.append(dict(sampleRate=rate, frameCount=bank.shape[-1], byteOffset=len(payload),
                           referenceDelayFrames=round(reference_delay * rate / 48000)))
         payload.extend(bank.astype('<f4').tobytes(order='C'))
-    manifest = dict(version=1, id='sadie-ii-d1-ku100', name='SADIE II KU100',
+    manifest = dict(version=2, id='sadie-ii-d1-ku100', name='SADIE II KU100',
         authors=['Cal Armstrong', 'Lewis Thresh', 'Gavin Kearney'],
         copyright='Copyright 2018, University of York', license='Apache-2.0',
         source='https://zenodo.org/records/10886409', sourceVersion='2-1',
@@ -70,10 +71,13 @@ with h5py.File(source) as f:
         sourceFile='D1_HRIR_SOFA/D1_48K_24bit_256tap_FIR_SOFA.sofa', sourceSHA256=SOURCE_SHA256,
         sourceLicense=attrs['License'], sourceMetadata=attrs,
         citation='Armstrong, C.; Thresh, L.; Murphy, D.; Kearney, G. (2018). A Perceptual Evaluation of Individual and Non-Individual HRTFs: A Case Study of the SADIE II Database. Applied Sciences 8(11), 2029. https://doi.org/10.3390/app8112029',
-        modifications=['Selected seven nearest measured horizontal directions; SOFA positive-left angles mapped to CamiTune negative-left angles.',
+        modifications=['Selected a full-sphere 10-degree azimuth / 15-degree elevation measured grid; SOFA positive-left angles mapped to CamiTune negative-left angles.',
                        'Applied a single frontal broadband energy normalization shared by all ears and directions.',
                        'Polyphase Kaiser-window resampling with transfer-gain normalization for six sample rates.',
                        'Converted to contiguous little-endian float32 in rate/direction/ear/sample order.'],
+        equalizationReference='SADIE II D1 dataset diffuse-field equalization; no additional diffuse-field inverse',
+        interpolation='Bilinear 10-degree azimuth / 15-degree elevation, peak-aligned with separate restored ear delays',
+        delayOrigin='SOFA Data.IR retained; Data.Delay is zero; no ear delay removed',
         commonGain=common_gain, file='sadie-d1.f32', sha256=hashlib.sha256(payload).hexdigest(),
         directions=directions, rates=rates)
     (out / 'sadie-d1.f32').write_bytes(payload)

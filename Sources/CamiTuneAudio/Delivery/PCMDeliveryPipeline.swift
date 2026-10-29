@@ -21,6 +21,7 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
     private let condition = NSCondition()
     private var renderConfiguration: RenderConfiguration
     private let configurationObserver: (@Sendable (RenderConfiguration) -> Void)?
+    private let movieAnalysis: MovieAnalysisExchange?
     private var queue = LowLatencyPCMQueue()
     private var stopping = false
     private var workerFinished = true
@@ -33,6 +34,15 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
     private var needsContentReset = false
     private let expectedOutputChannelCount: Int
     private let routeRenderer: RouteRenderer
+    private let hrtfDatabase: (any HRTFDatabase)?
+    private let personalStatusChanged: (@Sendable (PCMDeliveryPipeline, PersonalSpatialPreparationStatus) -> Void)?
+    private let scenePreparation = DispatchQueue(label: "CamiTune.PersonalScene", qos: .userInitiated)
+    // condition protects preparation admission/publication, not render histories.
+    private var personalPreparationBusy = false
+    private var preparedPersonalIntent: PersonalSpatialRenderIntent?
+    private var pendingPersonalBank: PersonalSpatialRenderBank?
+    private var personalPreparationError: String?
+
     private var publishedReferenceDiagnostics: ReferenceSpeakerDiagnostics?
     private var publishedRenderDiagnostics: SpatialRenderDiagnostics?
     private var renderSettings: SpatialRenderSettings {
@@ -61,8 +71,9 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
     private var pluginWasFailing = false
     private var pluginWasActive = false
     private var pluginWasBypassed = false
-    // Only an authoritative producer END (or a fresh session) permits the
-    // instrument clock. Temporary source starvation must not invent PCM time.
+    // Admission owns capture liveness, including intervals muted by calibration.
+    // An END permits idle work only after queued PCM has drained. Temporary
+    // starvation must never invent source completion or a new PCM clock.
     private var producerEnded = true
     private var nextInstrumentTick: UInt64 = 0
     private var wasGeneratingInstrument = false
@@ -79,8 +90,14 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
         configurationObserver: (@Sendable (RenderConfiguration) -> Void)?,
         systemMaster: SystemMasterGainControl,
         referenceTopology: SpeakerTopology?,
-        pluginProcessor: (any PluginAudioProcessor)? = nil
+        pluginProcessor: (any PluginAudioProcessor)? = nil,
+        personalStatusChanged: (@Sendable (PCMDeliveryPipeline, PersonalSpatialPreparationStatus) -> Void)? = nil,
+        movieAnalysis: MovieAnalysisExchange? = nil
     ) {
+        self.movieAnalysis = movieAnalysis
+        movieAnalysis?.configure(.init(configuration: renderConfiguration))
+        movieAnalysis?.suspend()
+        self.personalStatusChanged = personalStatusChanged
         self.performanceSource = performanceSource
         self.pluginProcessor = pluginProcessor
         self.pluginResetNeeded = pluginProcessor != nil
@@ -90,8 +107,24 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
         self.sink = sink
         self.renderConfiguration = renderConfiguration
         self.configurationObserver = configurationObserver
+        self.hrtfDatabase = hrtfDatabase
+        var personalBank: PersonalSpatialRenderBank?
+        if let settings = renderConfiguration.personalSpatial {
+            do {
+                guard let database = hrtfDatabase else {
+                    throw BinauralConvolutionError.invalidConfiguration
+                }
+                personalBank = try PersonalSpatialRenderBank(intent: settings.renderIntent,
+                    rate: deliveryConfiguration.queue.sampleRate, database: database)
+                preparedPersonalIntent = settings.renderIntent
+            } catch {
+                personalPreparationError = hrtfDatabase == nil
+                    ? "The bundled directional profile could not be loaded. Restart Spatial after reinstalling the app resources."
+                    : "The virtual-speaker intent could not be prepared: \(error.localizedDescription)"
+            }
+        }
         routeRenderer = RouteRenderer(activeRoute: activeRoute, referenceTopology: referenceTopology,
-            hrtfDatabase: hrtfDatabase)
+            personalBank: personalBank)
         self.expectedOutputChannelCount = routeRenderer.expectedOutputChannelCount
         masterStage = SystemMasterStage(control: systemMaster)
     }
@@ -150,12 +183,87 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
         let old = renderConfiguration
         // Preserve the existing reset policy. Renderer-local settings changes
         // continue through the long-lived engine's own update path.
-        if old.spatialRenderingMode != configuration.spatialRenderingMode {
+        if configuration.personalSpatial == nil && old.spatialRenderingMode != configuration.spatialRenderingMode {
             needsSpatialReset = true
         }
         if old.spatialContentMode != configuration.spatialContentMode { needsContentReset = true }
         renderConfiguration = configuration
+        movieAnalysis?.configure(.init(configuration: configuration))
+        if producerEnded || calibrationID != nil { movieAnalysis?.suspend() }
+        if !personalPreparationBusy, personalPreparationError != nil,
+           configuration.personalSpatial?.renderIntent == preparedPersonalIntent, let intent = preparedPersonalIntent {
+            personalPreparationError = nil
+            personalStatusChanged?(self, .active(intent))
+        }
+        schedulePersonalPreparationLocked()
         // Correction history is compared with this block's immutable value on the writer.
+    }
+
+    package var personalSpatialStatus: PersonalSpatialPreparationStatus? {
+        condition.lock(); defer { condition.unlock() }
+        return personalStatusLocked
+    }
+
+    private var personalStatusLocked: PersonalSpatialPreparationStatus? {
+        guard renderConfiguration.personalSpatial != nil else { return nil }
+        if personalPreparationBusy { return .preparing }
+        if let error = personalPreparationError { return .unavailable(error) }
+        return preparedPersonalIntent.map(PersonalSpatialPreparationStatus.active)
+    }
+
+    package func setPersonalRoom(_ amount: Float) {
+        condition.lock(); defer { condition.unlock() }
+        renderConfiguration.personalSpatial?.room = SpatialRenderIntent.unit(amount)
+    }
+
+    /// At most the active bank and one preparing/fading bank. Repeated requests
+    /// replace desired intent; they do not enqueue another bank or worker wakeup.
+    private func schedulePersonalPreparationLocked() {
+        guard !stopping, !personalPreparationBusy, let settings = renderConfiguration.personalSpatial,
+              settings.renderIntent != preparedPersonalIntent, let database = hrtfDatabase else { return }
+        personalPreparationBusy = true
+        personalStatusChanged?(self, .preparing)
+        let intent = settings.renderIntent
+        scenePreparation.async { [self] in
+            let result = Result { try PersonalSpatialRenderBank(intent: intent, rate: backendSampleRate, database: database) }
+            condition.lock()
+            guard !stopping, renderConfiguration.personalSpatial?.renderIntent == intent else {
+                personalPreparationBusy = false
+                // Release stale coefficients on this worker before another bank.
+                condition.unlock()
+                withExtendedLifetime(result) {}
+                condition.lock()
+                if !stopping, renderConfiguration.personalSpatial?.renderIntent == preparedPersonalIntent,
+                   let intent = preparedPersonalIntent {
+                    personalPreparationError = nil
+                    personalStatusChanged?(self, .active(intent))
+                }
+                schedulePersonalPreparationLocked()
+                condition.unlock()
+                return
+            }
+            switch result {
+            case .success(let bank):
+                pendingPersonalBank = bank; preparedPersonalIntent = intent; personalPreparationError = nil
+                condition.signal()
+            case .failure(let error):
+                personalPreparationError = error.localizedDescription; personalPreparationBusy = false
+                personalStatusChanged?(self, .unavailable(error.localizedDescription))
+            }
+            condition.unlock()
+        }
+    }
+
+    private func retirePersonalBank(_ bank: PersonalSpatialRenderBank?, activated: Bool, retainedIntent: PersonalSpatialRenderIntent? = nil) {
+        scenePreparation.async { [self, bank] in
+            withExtendedLifetime(bank) {}
+            condition.lock()
+            personalPreparationBusy = false
+            if !activated { preparedPersonalIntent = retainedIntent }
+            if !stopping, let intent = preparedPersonalIntent { personalStatusChanged?(self, .active(intent)) }
+            schedulePersonalPreparationLocked()
+            condition.unlock()
+        }
     }
 
     package func setPluginProcessor(_ processor: (any PluginAudioProcessor)?) {
@@ -218,6 +326,7 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
         stopping = false
         let validChunk = backendChunkFrames > 0 && backendChunkFrames <= Int.max / 2
         workerFinished = sink == nil || !validChunk
+        if let status = personalStatusLocked { personalStatusChanged?(self, status) }
         condition.unlock()
 
         guard validChunk else {
@@ -241,6 +350,7 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
         defer { condition.unlock() }
         guard !stopping, !workerFinished, calibrationID == nil else { return false }
         calibrationID = id
+        movieAnalysis?.suspend()
         needsContentReset = true
         return true
     }
@@ -299,12 +409,15 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
     package func enqueue(_ frame: PCMFrame) {
         let performance = performanceSource.snapshot()
         condition.lock()
-        guard !stopping, calibrationPlayback == nil, !measurementHold else {
+        guard !stopping else { condition.unlock(); return }
+        if calibrationPlayback != nil || measurementHold {
+            producerEnded = false
             condition.unlock()
             return
         }
         let result = queue.enqueue(frame, performance: performance)
         if case .rejected = result { condition.unlock(); return }
+        producerEnded = false
         let recovery = result.recovery
         let entry = queue.lastEnqueuedTrace
         let writerFrames = writerBlockInProgressFrames
@@ -330,8 +443,11 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
 
     package func enqueueProducerEnd() {
         condition.lock()
-        guard !stopping, calibrationPlayback == nil, !measurementHold else { condition.unlock(); return }
-        let accepted = queue.enqueueProducerEnd()
+        guard !stopping else { condition.unlock(); return }
+        // Tests may discard captured samples and reset their queue, but neither
+        // operation may discard the producer's authoritative terminal state.
+        producerEnded = true
+        let accepted = calibrationPlayback != nil || measurementHold || queue.enqueueProducerEnd()
         if !accepted { stopping = true; resetQueue(reason: .runtimeReset, performance: performanceSource.snapshot()) }
         condition.signal()
         condition.unlock()
@@ -351,6 +467,7 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
     }
 
     package func stop() {
+        movieAnalysis?.retire()
         // A direct sink can cancel a bounded writer wait without touching HAL
         // or freeing memory beneath the render callback.
         let performance = performanceSource.snapshot()
@@ -384,6 +501,7 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
 
     private func run() {
         defer {
+            movieAnalysis?.retire()
             condition.lock()
             let retired = sink; sink = nil
             condition.unlock()
@@ -401,8 +519,24 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
                 producerEnded && calibrationID == nil && !measurementHold
                     && pluginProcessor?.requiresContinuousRendering == true
             }
-            while queue.isEmpty && calibrationPlayback == nil && pluginTailFrames == 0 && !stopping && !instrumentClockNeeded() && !wasGeneratingInstrument {
+            while queue.isEmpty && calibrationPlayback == nil && pendingPersonalBank == nil && pluginTailFrames == 0 && !stopping && !instrumentClockNeeded() && !wasGeneratingInstrument {
                 condition.wait()
+            }
+            // A test owns a stable scene until its final faded block. Admit the
+            // replacement on the next writer turn, even if no source follows.
+            if !stopping, calibrationPlayback == nil, let bank = pendingPersonalBank {
+                pendingPersonalBank = nil
+                let desired = renderConfiguration.personalSpatial?.renderIntent
+                let sourceIsStopped = producerEnded && queue.isEmpty
+                condition.unlock()
+                if bank.intent == desired {
+                    if !routeRenderer.installPersonalBank(bank, sourceIsStopped: sourceIsStopped) {
+                        retirePersonalBank(routeRenderer.takeRetiredPersonalBank(), activated: true)
+                    }
+                } else {
+                    retirePersonalBank(bank, activated: false, retainedIntent: routeRenderer.personalIntent)
+                }
+                continue
             }
             if wasGeneratingInstrument && !instrumentClockNeeded() {
                 wasGeneratingInstrument = false
@@ -520,9 +654,9 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
             } else {
                 let entry = queue.removeNext()
                 if case .producerEnd? = entry {
-                    producerEnded = true
                     let discard = needsPCMDiscontinuityReset
                     condition.unlock()
+                    movieAnalysis?.suspend()
                     do {
                         try routeRenderer.finishProducer(discard: discard) { rendered in
                             condition.lock(); let cancelled = stopping; condition.unlock()
@@ -536,6 +670,7 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
                         }
                     } catch is CancellationError { return }
                     catch { failWrite(error); return }
+                    if let retired = routeRenderer.takeRetiredPersonalBank() { retirePersonalBank(retired, activated: true) }
                     var tailFrames = 0
                     if var tail = rateStage.finish(discard: discard), !tail.interleaved.isEmpty {
                         processPlugins(&tail.interleaved, sampleRate: tail.sampleRate, reset: discard)
@@ -584,7 +719,7 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
                 }
                 nextFrame = entry?.frame
                 if nextFrame != nil {
-                    pluginTailFrames = 0; producerEnded = false
+                    pluginTailFrames = 0
                     wasGeneratingInstrument = false; instrumentStopPadding = false
                 }
             }
@@ -633,9 +768,11 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
             let renderOutput = configuration.spatialOutput
             let currentMode = configuration.playbackMode
             let correction = configuration.referenceCorrection
-            let hasSpatialBus = frame.playbackModeSamples[.spatialRender] != nil
+            let hasSpatialBus = frame.cohortSamples[.spatialRender] != nil || frame.cohortSamples[.spatialMovie] != nil
             let shouldAnalyzeContent = ((spatialRenderingMode != .standard && renderSettings.enabled) || hasSpatialBus)
-                && calibrationID == nil && !isCalibrationSample
+                && configuration.personalSpatial == nil && calibrationID == nil && !isCalibrationSample
+            let movieInput = calibrationID == nil && !isCalibrationSample
+                ? frame.cohortSamples[.spatialMovie] : nil
             let shouldResetContent = needsContentReset || Date().timeIntervalSince(contentEstimateDate) > 1
             needsContentReset = false
             needsPCMDiscontinuityReset = false
@@ -648,12 +785,16 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
                     queuedFrames: queuedFrames, capacityFrames: trace.capacity)))
             }
             if shouldResetPCMDiscontinuity { rateStage.reset() }
+            if shouldResetPCMDiscontinuity { movieAnalysis?.suspend() }
+            let movieScores = movieAnalysis?.offer(frame, movieSamples: movieInput)
             let renderedFrame = routeRenderer.render(frame, mode: isAcousticMeasurement ? .direct : currentMode,
                 settings: renderSettings, output: renderOutput, correction: correction,
                 physicalOutput: physicalOutput, analyzeContent: shouldAnalyzeContent,
                 resetContent: shouldResetContent, resetPCM: shouldResetPCMDiscontinuity,
                 resetSpatial: shouldResetSpatialRenderer,
-                crossfeed: configuration.crossfeed, bypassCrossfeed: isCalibrationSample)
+                crossfeed: configuration.crossfeed, bypassCrossfeed: isCalibrationSample,
+                personalSettings: configuration.personalSpatial, movieScores: movieScores)
+            if let retired = routeRenderer.takeRetiredPersonalBank() { retirePersonalBank(retired, activated: true) }
             condition.lock()
             publishedContentEstimate = routeRenderer.contentEstimate
             contentEstimateDate = Date()
@@ -802,6 +943,7 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
         // Cancellation during an intentional retirement is not an output fault.
         guard !stopping else { condition.unlock(); return }
         stopping = true
+        movieAnalysis?.retire()
         resetQueue(reason: .runtimeReset, performance: performance)
         condition.unlock()
         recordWriteFailure(error)

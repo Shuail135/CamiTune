@@ -84,7 +84,7 @@ package struct ProfileRoutingDescriptor: Hashable, Sendable {
         }
         // Existing per-app mode buses can request reference/spatial rendering
         // independently of the profile mode. Preserve their multichannel input.
-        if profile.isPersonalListening { return .sevenPointOne }
+        if profile.isPersonalListening { return profile.personalSpatial.inputLayout }
         return profile.effectivePlaybackMode == .direct ? .stereo : .sevenPointOne
     }
 

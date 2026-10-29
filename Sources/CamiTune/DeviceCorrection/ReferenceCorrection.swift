@@ -30,6 +30,63 @@ extension ReferenceCorrection {
 
 }
 
+/// Reuses the measurement consensus, fixture compatibility and bounded PEQ
+/// engine used by Reference. Spatial owns the resulting correction separately.
+enum SpatialHeadphoneCorrection {
+    static func describe(_ entry: DeviceCatalogEntry) -> SpatialPlaybackDevice {
+        let forms = Set(entry.measurements.compactMap { DeviceForm(catalogValue: $0.form) })
+        return .init(id: entry.id, name: entry.displayName, source: "AutoEq",
+            catalogForm: forms.count == 1 ? forms.first : nil, verifiedType: verifiedType(model: entry.displayName))
+    }
+
+    /// Exact catalog names only. These independently checked enclosure facts
+    /// do not authorize fuzzy matches, fixture conversions or anatomy defaults.
+    private static func verifiedType(model: String) -> SpatialDeviceTypeEvidence? {
+        let name: String, enclosure: HeadphoneEnclosure, url: String
+        switch DeviceNameNormalizer.key(for: model) {
+        case "sennheiser hd 600", "sennheiser hd600":
+            name = "Sennheiser HD 600"; enclosure = .openBack
+            url = "https://www.sennheiser-hearing.com/p/hd-600/1000/"
+        case "sennheiser hd 620s", "sennheiser hd620s", "sennheiser hd 620 s":
+            name = "Sennheiser HD 620S"; enclosure = .closedBack
+            url = "https://newsroom.sennheiser.com/distraction-off-open-sound-on"
+        default: return nil
+        }
+        return .init(type: .init(form: .overEar, enclosure: enclosure), model: name,
+            sourceName: "Sennheiser", sourceURL: url, revision: "2026-10-27",
+            reviewedAt: Date(timeIntervalSince1970: 1_793_059_200),
+            rights: "Independently recorded product facts; no manufacturer text, images or measurement data reproduced.")
+    }
+
+    static func paths(measurements: [DeviceCorrectionMeasurement]) throws -> [CorrectionPath] {
+        try TargetCompatibilityEngine().rankedPaths(measurements: measurements).filter {
+            $0.target == .diffuseFieldReference || $0.target == .neutral
+        }.sorted { a, b in
+            if a.target != b.target { return a.target == .diffuseFieldReference }
+            if a.isConverted != b.isConverted { return !a.isConverted }
+            return a.confidence > b.confidence
+        }
+    }
+
+    static func prepare(entry: DeviceCatalogEntry, measurements: [DeviceCorrectionMeasurement],
+                        target: DeviceCorrectionTargetPreset) throws -> SpatialPlaybackDevice {
+        guard let path = try paths(measurements: measurements).first(where: { $0.target == target }) else {
+            throw PersonalSpatialError.invalidHeadphoneCorrection
+        }
+        let ids = Set(path.sources.map(\.id))
+        let compatible = measurements.filter { ids.contains($0.source.id) }
+        let selection = DeviceCorrectionTargetSelection(preset: target)
+        let resolved = try DeviceCorrectionTargetCatalog().resolve(selection: selection, sources: path.sources)
+        let correction = try DeviceCorrectionEngine().generate(deviceName: entry.displayName, measurements: compatible,
+            target: resolved.response, targetSelection: selection, policy: .recommended, filterCount: 12,
+            sampleRate: 44_100, targetConfidence: resolved.confidence)
+        var result = describe(entry)
+        result.correction = correction
+        try result.validate()
+        return result
+    }
+}
+
 @MainActor
 extension AppState {
     func saveReferenceCorrection(profile original: DeviceProfile, correction: DeviceCorrectionProfile?) async throws {

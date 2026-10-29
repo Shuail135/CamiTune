@@ -59,6 +59,7 @@ struct ProfileDeletionSnapshot: Equatable, Sendable {
     var selectedProfileID: UUID?
 }
 enum HistoryState: Equatable, Sendable {
+    case personalSpatial(context: String, settings: PersonalSpatialSettings)
     case pluginOrder([UUID])
     case pluginRack(PluginRack)
     case pluginMIDI(PluginMIDIConfiguration)

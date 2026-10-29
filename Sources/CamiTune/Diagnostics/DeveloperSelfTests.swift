@@ -61,7 +61,7 @@ enum DeveloperSelfTests {
                     let packet = PerAppTimelinePacket(deviceObjectID: 100, cycleCounter: record.cycle,
                         startSampleTime: record.start, frameCount: record.frames, channelCount: channels,
                         sampleRate: record.rate, channelLayout: layout,
-                        playbackMode: PlaybackMode.allCases[client % PlaybackMode.allCases.count])
+                        playbackMode: ProcessingCohort.allCases[client % ProcessingCohort.allCases.count])
                     try samples.withUnsafeBufferPointer {
                         try mixer.addProcessedPacket(packet, samples: $0, performance: nil, processingCompleted: nil)
                     }

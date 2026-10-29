@@ -145,7 +145,7 @@ def verify(root, package, project, require_modules=False):
         if path.name == "PCMRouter.swift" and re.search(r"\.legacy\s*\(", source):
             errors.append(f"{path.relative_to(root)}: writer invents a delivery policy outside the prepared plan")
         for pattern, label in [
-            (r"\b(?:struct|class|enum)\s+(?:AdaptiveSpatialContentPolicy|FrontStageRenderer|VirtualSurroundRenderer|MultichannelMovieRenderer|VirtualSourceRenderer|CrosstalkProcessor|TimbreCompensator|SpatialParameterSmoother|SpatialCalibrationProfile|SpatialPolicy)\b", "retired prototype audio implementation"),
+            (r"\b(?:struct|class|enum)\s+(?:SpatialAudioEngine|HeadphoneSpatialRenderer|VirtualSpeakerBinauralizer|AdaptiveSpatialContentPolicy|FrontStageRenderer|VirtualSurroundRenderer|MultichannelMovieRenderer|VirtualSourceRenderer|CrosstalkProcessor|TimbreCompensator|SpatialParameterSmoother|SpatialCalibrationProfile|SpatialPolicy)\b", "retired prototype audio implementation"),
             (r"\bstartFixture\s*\(", "diagnostic PCM fixture entry point"),
             (r"\blegacy\s*\(\s*sampleRate:", "diagnostic-only delivery policy constructor"),
             (r"\b(?:sourceBufferedFrames|sourceCapacityFrames)\b", "retired PCM occupancy metadata"),

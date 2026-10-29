@@ -8,14 +8,19 @@ package final class RouteRenderer {
     private var directMapper: DirectChannelMapper?
     private let sourceRouter = SpatialSourceRouter()
     private var contentAnalyzer = SpatialContentAnalyzer()
-    private let spatialEngine: SpatialAudioEngine
+    private let spatialEngine = StereoSpeakerSpatialEngine()
+    private var personal: PersonalSpatialTransition?
+    private var alignedDirect: [Float] = []
+    private var alignedReference: [Float] = []
+    private var directDelayCursor = 0, referenceDelayCursor = 0
+    package private(set) var retiredPersonalBank: PersonalSpatialRenderBank?
     private var physicalModeRenderer: PhysicalSpeakerModeRenderer?
     private var correctionBank = PerAppFilterBank()
     private var correctionSignature: DeviceCorrectionProfile?
     private var correctionGain: Float = 1
     private var busSafetyGain: Float = 1
     private var lastSourceFormat: SpatialSourceFormat?
-    private var renderedModeBuses: Set<PlaybackMode> = []
+    private var renderedModeBuses: Set<ProcessingCohort> = []
     private let directCrossfeed = HeadphoneCrossfeed()
     private let referenceCrossfeed = HeadphoneCrossfeed()
     private var lastSingleMode: PlaybackMode?
@@ -29,6 +34,7 @@ package final class RouteRenderer {
         let correction: DeviceCorrectionProfile?
         let crossfeed: CrossfeedProcessor?
         let bypassCrossfeed: Bool
+        let personalSettings: PersonalSpatialSettings?
     }
     private var drainContext: DrainContext?
 
@@ -38,34 +44,35 @@ package final class RouteRenderer {
     package func finishProducer(discard: Bool, consume: (PCMFrame) throws -> Void) throws {
         defer {
             drainContext = nil
-            spatialEngine.reset(); physicalModeRenderer?.reset()
+            spatialEngine.reset(); personal?.reset(); physicalModeRenderer?.reset()
             directCrossfeed.reset(); referenceCrossfeed.reset()
             correctionBank = PerAppFilterBank()
+            resetAlignment()
             contentAnalyzer.reset(); renderedModeBuses.removeAll()
             lastSingleMode = nil; lastSourceFormat = nil; busSafetyGain = 1
         }
         guard !discard, let context = drainContext else { return }
-        let modes = context.template.playbackModeSamples.isEmpty
-            ? Set([context.mode]) : renderedModeBuses
-        guard modes.contains(.spatialRender) || context.crossfeed != nil ||
+        let modes = context.template.cohortSamples.isEmpty
+            ? Set([ProcessingCohort(context.mode)]) : renderedModeBuses
+        guard modes.contains(.spatialRender) || modes.contains(.spatialMovie) || personal != nil || context.crossfeed != nil ||
               (modes.contains(.referencePlayback) && context.correction?.isEnabled == true) else { return }
         let rate = context.template.sampleRate
         // The extra 50 ms covers short delay networks and bypass ramps before
         // silence can establish completion; HRTF gaps cannot end the drain early.
-        let minimum = max(spatialEngine.finiteTailFrames, Int(ceil(rate * 0.05)))
+        let minimum = max(personal?.active.tailFrames ?? spatialEngine.finiteTailFrames, Int(ceil(rate * 0.05)))
         let maximum = minimum + Int(ceil(rate))
         var emitted = 0, quietFrames = 0
         while emitted < maximum {
             let count = min(256, maximum - emitted)
             var silence = context.template
             silence.interleaved = .init(repeating: 0, count: count * silence.channelCount)
-            for mode in silence.playbackModeSamples.keys {
-                silence.playbackModeSamples[mode] = silence.interleaved
+            for mode in silence.cohortSamples.keys {
+                silence.cohortSamples[mode] = silence.interleaved
             }
             guard let frame = render(silence, mode: context.mode, settings: context.settings,
                 output: context.output, correction: context.correction, physicalOutput: nil,
                 analyzeContent: false, resetContent: false, resetPCM: false, resetSpatial: false,
-                crossfeed: context.crossfeed, bypassCrossfeed: context.bypassCrossfeed) else { return }
+                crossfeed: context.crossfeed, bypassCrossfeed: context.bypassCrossfeed, personalSettings: context.personalSettings) else { return }
             try consume(frame)
             emitted += count
             quietFrames = frame.interleaved.allSatisfy { abs($0) < 1e-7 } ? quietFrames + count : 0
@@ -73,12 +80,44 @@ package final class RouteRenderer {
         }
     }
 
-    package init(activeRoute: ActiveAudioRoute?, referenceTopology: SpeakerTopology?, hrtfDatabase: (any HRTFDatabase)?) {
+    package init(activeRoute: ActiveAudioRoute?, referenceTopology: SpeakerTopology?, personalBank: PersonalSpatialRenderBank?) {
         self.activeRoute = activeRoute
         self.referenceTopology = referenceTopology
         expectedOutputChannelCount = activeRoute?.dspInputFormat.channelCount ?? referenceTopology?.declaredChannelCount ?? 2
         physicalModeRenderer = referenceTopology.flatMap { try? PhysicalSpeakerModeRenderer(topology: $0) }
-        spatialEngine = SpatialAudioEngine(hrtfDatabase: hrtfDatabase)
+        if let personalBank {
+            personal = PersonalSpatialTransition(personalBank)
+            alignedDirect = .init(repeating: 0, count: personalBank.latency * 2)
+            alignedReference = alignedDirect
+        }
+    }
+
+    /// Returns whether a transition must finish before preparing another scene.
+    package func installPersonalBank(_ bank: PersonalSpatialRenderBank, sourceIsStopped: Bool) -> Bool {
+        if let personal, !sourceIsStopped {
+            precondition(personal.replace(bank), "Scene preparation must remain serialized")
+            return true
+        }
+        // A completed source has already drained. A completed/stopped test clip
+        // also owns no future input. Publish its replacement without inventing
+        // PCM intervals merely to advance a warmup and fade through silence.
+        retiredPersonalBank = personal?.active
+        personal = PersonalSpatialTransition(bank)
+        alignedDirect = .init(repeating: 0, count: bank.latency * 2)
+        alignedReference = alignedDirect
+        return false
+    }
+    package var personalIntent: PersonalSpatialRenderIntent? { personal?.active.intent }
+    package func takeRetiredPersonalBank() -> PersonalSpatialRenderBank? {
+        let bank = retiredPersonalBank; retiredPersonalBank = nil; return bank
+    }
+    private func resetAlignment() {
+        for i in alignedDirect.indices { alignedDirect[i] = 0; alignedReference[i] = 0 }
+        directDelayCursor = 0; referenceDelayCursor = 0
+    }
+    private func align(_ samples: inout [Float], buffer: inout [Float], cursor: inout Int) {
+        guard !buffer.isEmpty else { return }
+        for i in samples.indices { let x = samples[i]; samples[i] = buffer[cursor]; buffer[cursor] = x; cursor = (cursor + 1) % buffer.count }
     }
 
     /// Reads only immutable route values; safe for the control-side admission check.
@@ -102,27 +141,31 @@ package final class RouteRenderer {
 
     package var contentEstimate: SpatialContentEstimate { contentAnalyzer.estimate }
     package var referenceDiagnostics: ReferenceSpeakerDiagnostics? { physicalModeRenderer?.diagnostics }
-    package var renderDiagnostics: SpatialRenderDiagnostics? { physicalModeRenderer?.spatialDiagnostics ?? spatialEngine.diagnostics }
+    package var renderDiagnostics: SpatialRenderDiagnostics? { physicalModeRenderer?.spatialDiagnostics ?? personal.map {
+        SpatialRenderDiagnostics(renderer: .headphones, algorithmicLatencyFrames: $0.active.latency,
+            hrtfProfile: $0.active.ordinary.coefficients.profileName)
+    } ?? spatialEngine.diagnostics }
 
     package func render(_ frame: PCMFrame, mode: PlaybackMode, settings: SpatialRenderSettings,
                         output: SpatialOutputKind, correction: DeviceCorrectionProfile?,
                         physicalOutput: PhysicalOutputID?, analyzeContent: Bool,
                         resetContent: Bool, resetPCM: Bool, resetSpatial: Bool,
-                        crossfeed: CrossfeedProcessor? = nil, bypassCrossfeed: Bool = false) -> PCMFrame? {
+                        crossfeed: CrossfeedProcessor? = nil, bypassCrossfeed: Bool = false, personalSettings: PersonalSpatialSettings? = nil, movieScores: MovieContentScores? = nil) -> PCMFrame? {
         if resetContent || resetPCM || resetSpatial || lastSourceFormat != frame.sourceFormat {
             contentAnalyzer.reset()
         }
         if analyzeContent { contentAnalyzer.ingest(frame) }
         else { contentAnalyzer.reset() }
         if resetPCM {
-            spatialEngine.reset(); physicalModeRenderer?.reset(); correctionBank = PerAppFilterBank()
+            resetAlignment()
+            spatialEngine.reset(); personal?.reset(); physicalModeRenderer?.reset(); correctionBank = PerAppFilterBank()
             renderedModeBuses.removeAll()
         }
         if resetPCM || resetSpatial || bypassCrossfeed || lastSourceFormat != frame.sourceFormat {
             directCrossfeed.reset(); referenceCrossfeed.reset()
             lastSingleMode = nil
         }
-        if resetSpatial {
+        if resetSpatial && personal == nil {
             spatialEngine.reset(); physicalModeRenderer?.reset()
             renderedModeBuses.removeAll()
         }
@@ -137,30 +180,30 @@ package final class RouteRenderer {
             } else { rendered = nil }
         } else {
             rendered = renderModeBuses(frame, mode: mode, settings: settings, output: output,
-                                      correction: correction, crossfeed: crossfeed, bypassCrossfeed: bypassCrossfeed)
+                                      correction: correction, crossfeed: crossfeed, bypassCrossfeed: bypassCrossfeed, personalSettings: personalSettings, movieScores: movieScores)
         }
         guard let rendered, rendered.channelCount == expectedOutputChannelCount else { return nil }
         if let activeRoute, (try? activeRoute.validateDSPFrame(rendered)) == nil { return nil }
         if physicalOutput == nil {
             var template = PCMFrame(interleaved: [], channelCount: frame.channelCount,
                                     sampleRate: frame.sampleRate, channelLayout: frame.channelLayout)
-            template.playbackModeSamples = frame.playbackModeSamples.mapValues { _ in [] }
+            template.cohortSamples = frame.cohortSamples.mapValues { _ in [] }
             drainContext = DrainContext(template: template, mode: mode, settings: settings,
-                output: output, correction: correction, crossfeed: crossfeed, bypassCrossfeed: bypassCrossfeed)
+                output: output, correction: correction, crossfeed: crossfeed, bypassCrossfeed: bypassCrossfeed, personalSettings: personalSettings)
         }
         return rendered
     }
 
     private func renderModeBuses(_ frame: PCMFrame, mode: PlaybackMode, settings: SpatialRenderSettings,
                                  output: SpatialOutputKind, correction: DeviceCorrectionProfile?,
-                                 crossfeed: CrossfeedProcessor?, bypassCrossfeed: Bool) -> PCMFrame? {
-        let modes: [PlaybackMode]
-        if frame.playbackModeSamples.isEmpty {
+                                 crossfeed: CrossfeedProcessor?, bypassCrossfeed: Bool, personalSettings: PersonalSpatialSettings?, movieScores: MovieContentScores?) -> PCMFrame? {
+        let modes: [ProcessingCohort]
+        if frame.cohortSamples.isEmpty {
             if lastSingleMode != mode {
                 directCrossfeed.reset(); referenceCrossfeed.reset()
             }
             lastSingleMode = mode
-            modes = [mode]
+            modes = [ProcessingCohort(mode)]
         } else {
             if lastSingleMode != nil {
                 directCrossfeed.reset(); referenceCrossfeed.reset()
@@ -168,15 +211,16 @@ package final class RouteRenderer {
             }
             // Continue previously used buses for filter/reverb tails, but do
             // not run unused Reference/Spatial renderers for Direct playback.
-            renderedModeBuses.formUnion(frame.playbackModeSamples.keys)
-            modes = PlaybackMode.allCases.filter { renderedModeBuses.contains($0) }
+            renderedModeBuses.formUnion(frame.cohortSamples.keys)
+            modes = ProcessingCohort.allCases.filter { renderedModeBuses.contains($0) }
         }
         var sum: PCMFrame?
-        for busMode in modes {
+        for cohort in modes {
+            let busMode = cohort.mode
             var bus = frame
-            bus.playbackModeSamples = [:]
-            if !frame.playbackModeSamples.isEmpty {
-                bus.interleaved = frame.playbackModeSamples[busMode] ?? [Float](repeating: 0, count: frame.interleaved.count)
+            bus.cohortSamples = [:]
+            if !frame.cohortSamples.isEmpty {
+                bus.interleaved = frame.cohortSamples[cohort] ?? [Float](repeating: 0, count: frame.interleaved.count)
             }
             let rendered: PCMFrame?
             if activeRoute?.usesSourceProcessingBus == true && busMode != .direct { return nil }
@@ -191,8 +235,13 @@ package final class RouteRenderer {
                     rendered = try? route.preparePhysicalCompatibilityFrame(physical)
                 } else { rendered = physical }
             } else if busMode == .spatialRender {
-                var enabled = settings; enabled.enabled = true
-                rendered = spatialEngine.render(frame: bus, settings: enabled, detectedOutput: output)
+                if output == .headphones {
+                    guard let personal, let personalSettings else { return nil }
+                    rendered = personal.render(bus, cohort: cohort, settings: personalSettings, movieScores: movieScores)
+                } else {
+                    var enabled = settings; enabled.enabled = true
+                    rendered = spatialEngine.render(frame: bus, settings: enabled)
+                }
             } else {
                 rendered = sourceRouter.stereoFallback(for: bus)
             }
@@ -216,12 +265,17 @@ package final class RouteRenderer {
                 let processor = busMode == .referencePlayback ? referenceCrossfeed : directCrossfeed
                 processor.process(&rendered.interleaved, sampleRate: rendered.sampleRate, settings: crossfeed)
             }
+            if personal != nil && busMode != .spatialRender {
+                if busMode == .direct { align(&rendered.interleaved, buffer: &alignedDirect, cursor: &directDelayCursor) }
+                else { align(&rendered.interleaved, buffer: &alignedReference, cursor: &referenceDelayCursor) }
+            }
             if sum == nil { sum = rendered }
             else {
                 guard sum!.interleaved.count == rendered.interleaved.count else { return nil }
                 for i in rendered.interleaved.indices { sum!.interleaved[i] += rendered.interleaved[i] }
             }
         }
+        if let retired = personal?.finishInterval(frames: frame.frameCount) { retiredPersonalBank = retired }
         guard var result = sum else { return nil }
         // Linked sample-wise safety after summing buses, with release independent of block size.
         let release = Float(1 - exp(-1 / (frame.sampleRate * 0.2)))

@@ -2,7 +2,7 @@ import Foundation
 
 package enum SpatialSafety {
 
-    package static func sample(_ value: Float) -> Float {
+    @inlinable @inline(__always) package static func sample(_ value: Float) -> Float {
         // Protect filter state from both non-finite and corrupt finite PCM.
         value.isFinite ? min(16, max(-16, value)) : 0
     }

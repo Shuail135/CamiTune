@@ -37,7 +37,7 @@ package struct RuntimePlanDiffer: Sendable {
             graph: graph,
             renderer: .init(playbackModeChanged: a.playbackMode != b.playbackMode,
                 spatialModeChanged: a.spatialRenderingMode != b.spatialRenderingMode,
-                spatialSettingsChanged: a.spatialSettings != b.spatialSettings,
+                spatialSettingsChanged: a.spatialSettings != b.spatialSettings || a.personalSpatial != b.personalSpatial,
                 spatialOutputChanged: a.spatialOutput != b.spatialOutput,
                 listenerTuningChanged: a.spatialListenerTuning != b.spatialListenerTuning,
                 contentModeChanged: a.spatialContentMode != b.spatialContentMode,

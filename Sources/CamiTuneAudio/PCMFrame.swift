@@ -9,7 +9,7 @@ package struct PCMFrame: Sendable {
     package var interleaved: [Float]
     /// Optional mode buses share this frame's exact format and timeline.
     /// `interleaved` remains the combined signal for observation branches.
-    package var playbackModeSamples: [PlaybackMode: [Float]] = [:]
+    package var cohortSamples: [ProcessingCohort: [Float]] = [:]
     package let channelCount: Int
     package let sampleRate: Double
     package let channelLayout: LPCMChannelLayout

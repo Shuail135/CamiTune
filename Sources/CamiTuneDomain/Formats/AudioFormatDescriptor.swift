@@ -32,20 +32,23 @@ package struct AudioChannelDescriptor: Codable, Hashable, Sendable, Identifiable
     package let label: String?
     package let kind: AudioChannelKind
     package let physicalOutputID: PhysicalOutputID?
+    package let position: SpatialPosition?
 
     package init(id: AudioChannelID, role: ChannelRole? = nil, label: String? = nil,
-         kind: AudioChannelKind, physicalOutputID: PhysicalOutputID? = nil) {
+         kind: AudioChannelKind, physicalOutputID: PhysicalOutputID? = nil, position: SpatialPosition? = nil) {
         self.id = id
         self.role = role
         self.label = label
         self.kind = kind
         self.physicalOutputID = physicalOutputID
+        self.position = position
     }
 }
 
 package enum AudioFormatError: Error, Equatable {
     case invalidSampleRate(Int)
     case invalidChannelCount(Int)
+    case invalidSourcePositions
     case emptyChannelID
     case duplicateChannelID(AudioChannelID)
     case missingPhysicalOutput(AudioChannelID)
@@ -67,7 +70,7 @@ package struct AudioFormatDescriptor: Codable, Hashable, Sendable {
     /// Ordered signal identity. UI labels never change stream compatibility.
     package var signalSignature: Self {
         .init(sampleRate: sampleRate, channels: channels.map {
-            .init(id: $0.id, role: $0.role, kind: $0.kind, physicalOutputID: $0.physicalOutputID)
+            .init(id: $0.id, role: $0.role, kind: $0.kind, physicalOutputID: $0.physicalOutputID, position: $0.position)
         })
     }
 
@@ -82,6 +85,7 @@ package struct AudioFormatDescriptor: Codable, Hashable, Sendable {
         var ids = Set<AudioChannelID>()
         var outputs = Set<PhysicalOutputID>()
         for channel in channels {
+            try channel.position?.validate()
             guard !channel.id.rawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw AudioFormatError.emptyChannelID
             }
@@ -107,8 +111,10 @@ package struct AudioFormatDescriptor: Codable, Hashable, Sendable {
 
     /// Preserve the supplied channel order, including unknown/discrete roles.
     package static func source(sampleRate: Int, layout: LPCMChannelLayout) throws -> Self {
+        try layout.validate()
         let format = Self(sampleRate: sampleRate, channels: layout.roles.enumerated().map {
-            AudioChannelDescriptor(id: .source($0.offset), role: $0.element, kind: .source)
+            AudioChannelDescriptor(id: .source($0.offset), role: $0.element, kind: .source,
+                position: layout.positions?[$0.offset])
         })
         try format.validate()
         return format

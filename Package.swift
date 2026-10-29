@@ -5,7 +5,11 @@ import Foundation
 var packageTargets: [Target] = [
     .target(name: "CamiTuneDomain", path: "Sources/CamiTuneDomain"),
     .target(name: "CamiTuneAtomics", path: "Sources/CamiTuneAtomics", publicHeadersPath: "include"),
-    .target(name: "CamiTuneAudio", dependencies: ["CamiTuneDomain", "CamiTuneAtomics"], path: "Sources/CamiTuneAudio"),
+    // Audio deadlines also apply when running the app from Xcode/SwiftPM Debug.
+    // Keep the UI/domain debuggable while optimizing the DSP. SwiftPM owns the
+    // compilation mode: injecting WMO into Debug breaks its clean-build output map.
+    .target(name: "CamiTuneAudio", dependencies: ["CamiTuneDomain", "CamiTuneAtomics"], path: "Sources/CamiTuneAudio",
+        swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
     .target(
         name: "SystemAudioBridgeC",
         path: "Sources/SystemAudioBridgeC",
@@ -62,6 +66,12 @@ for (name, modes, dependency) in [
     guard FileManager.default.fileExists(atPath: packageRoot.appendingPathComponent(path).path) else { continue }
     let dependencies: [Target.Dependency] = dependency == "CamiTuneDomain" ? ["CamiTuneDomain"] : ["CamiTuneDomain", "CamiTuneAudio"]
     packageTargets.append(.testTarget(name: name, dependencies: dependencies, path: path))
+}
+
+if ["1", "spatial"].contains(localTests),
+   FileManager.default.fileExists(atPath: packageRoot.appendingPathComponent("Tests/PersonalSpatialRegression").path) {
+    packageTargets.append(.testTarget(name: "PersonalSpatialRegression",
+        dependencies: ["CamiTune", "CamiTuneDomain", "CamiTuneAudio"], path: "Tests/PersonalSpatialRegression"))
 }
 
 let package = Package(

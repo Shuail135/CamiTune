@@ -18,7 +18,16 @@ package struct SpatialSourceRouter {
             return frame
         }
 
-        let matrix = stereoMatrix(for: frame.channelLayout.roles)
+        guard (try? frame.channelLayout.validate()) != nil else { return nil }
+        var matrix = stereoMatrix(for: frame.channelLayout.roles)
+        if frame.channelLayout.roles.contains(.unknown) {
+            let solver = VBAPSolver(positions: [StandardSpeakerPositions.position(for: .left)!, StandardSpeakerPositions.position(for: .right)!])
+            for (index, role) in frame.channelLayout.roles.enumerated() where role == .unknown {
+                guard let position = frame.channelLayout.positions?[index] else { return nil }
+                let gains = solver.gains(for: position).gains
+                matrix[index] = (gains[0], gains[1])
+            }
+        }
         var output = [Float]()
         output.reserveCapacity(frame.frameCount * 2)
         var peak = Float.zero
@@ -55,7 +64,7 @@ package struct SpatialSourceRouter {
     private func stereoMatrix(
         for roles: [ChannelRole]
     ) -> [(left: Float, right: Float)] {
-        roles.enumerated().map { index, role in
+        roles.map { role in
             switch role {
             case .left:
                 return (left: Float(1), right: Float(0))
@@ -73,11 +82,8 @@ package struct SpatialSourceRouter {
                 // semantic spatial rendering.
                 return (left: Float(0), right: Float(0))
             case .unknown:
-                // Preserve the conventional first stereo pair for an otherwise
-                // unknown layout. Additional unknown positions cannot be mixed
-                // safely without inventing a role.
-                if index == 0 { return (left: Float(1), right: Float(0)) }
-                if index == 1 { return (left: Float(0), right: Float(1)) }
+                // Coordinates are resolved by the caller; unpositioned custom
+                // channels produce an explicit unsupported result.
                 return (left: Float(0), right: Float(0))
             }
         }

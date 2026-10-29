@@ -171,6 +171,8 @@ macOS saves the app as an exception, so you normally need to do this only once.
 ### v0.3+
 - turn CamillaDSP as a fallback option gradually
 - Support Core Audio taps
+- Hopefully support lower MacOS Version(11+ instead)
+- Continue improve room correction
 
 ***
 
@@ -201,7 +203,7 @@ A full Xcode installation is required. Swift 5.9 is used by the project.
 - [SADIE II Database](https://www.york.ac.uk/sadie-project/database.html) - CamiTune's bundled virtual-speaker/HRTF filters are derived from SADIE II D1 Ku100 dataset from the University of York AudioLab. The dataset is licensed under Apache-2.0.
 - [AutoEQ](https://github.com/pierreaubert/autoeq) - Speaker auto eq uses the `autoeq-optim` implementation. Used by CamiTune under GPL-3.0.
 - [Spinorama](http://Spinorama.org) - Speaker Auto EQ requests public loudspeaker measurement data at runtime from the Spinorama API.
-
+- [Impulcifer](https://github.com/jaakkopasanen/Impulcifer) - Heavily reference for speaker-to-ear convolution, retained interaural timing, and shared gain. Used by CamiTune under MIT License.
 
 ## License
 

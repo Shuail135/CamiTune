@@ -95,6 +95,7 @@ struct AutoEQCatalogSearchIndex<Entry: Sendable>: Sendable {
     func contains(where predicate: (Entry) -> Bool) -> Bool {
         rows.contains { predicate($0.entry) }
     }
+    var isEmpty: Bool { rows.isEmpty }
 
     func results(matching query: String, limit: Int = 40, including predicate: (Entry) -> Bool = { _ in true }) -> [Entry] {
         let key = DeviceNameAliasCatalog.canonicalKey(for: Self.normalizedName(query))

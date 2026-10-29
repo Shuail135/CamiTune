@@ -149,10 +149,7 @@
 		CA3200000000000000000202 = {isa = PBXBuildFile; fileRef = CA3200000000000000000102; };
 		CA3200000000000000000201 = {isa = PBXBuildFile; fileRef = CA3200000000000000000101; };
 		CA119B900000000000000001 = {isa = PBXBuildFile; fileRef = CA119B900000000000000011; };
-		98F1B04221D097DE32257EB7 = {isa = PBXBuildFile; fileRef = 3F55C60FB215D2D7357B67B6; };
-		ED6A249F4F2EFA9666989753 = {isa = PBXBuildFile; fileRef = 21675E9304ED2A6AA84438EE; };
 		F59C47E32FA4422B4EA97A34 = {isa = PBXBuildFile; fileRef = B365846B28087A0692856BBF; };
-		E784866DF02BE1B95F156D45 = {isa = PBXBuildFile; fileRef = 41204B470ED142696FC00B72; };
 		D47275A799CC59AB9CECE186 = {isa = PBXBuildFile; fileRef = DB6FA792520461A8A254D85D; };
 		55A73285A0879925E4E44ED9 = {isa = PBXBuildFile; fileRef = 74B8F63750AAACE8767EC7F7; };
 		7B7B769DDD2CE747DADEE7BD = {isa = PBXBuildFile; fileRef = FDE7BB300CF334A26EFAA2DC; };
@@ -164,7 +161,6 @@
 		4254C2D6B6D79DA2A7159A55 = {isa = PBXBuildFile; fileRef = 7071FC95C5507CFE112FBE3E; };
 		1654233E92A2CD17F3495AF7 = {isa = PBXBuildFile; fileRef = 5D04D480DDD2FE10F5310C32; };
 		A94C1FDDFF5A8E454D71D3F4 = {isa = PBXBuildFile; fileRef = E99EE877ED2190A49D40EAFD; };
-		7FCFA418D171E66C73222BD6 = {isa = PBXBuildFile; fileRef = 1150B923491588732A57776A; };
 		C11FF9DA9524780ECE8EAC47 = {isa = PBXBuildFile; fileRef = 2B23ACE2C13E8CAEC6E6E100; };
 		6C3962DA4B04B9D6DEEBFCE4 = {isa = PBXBuildFile; fileRef = 2E32FDC537715DE75E2AA55F; };
 		88252F214F9E3637A1D2E9E0 = {isa = PBXBuildFile; fileRef = ECDAD64B7971715A7C3E8264; };
@@ -180,10 +176,8 @@
         CA115B500000000000000001 = {isa = PBXBuildFile; fileRef = CA115B500000000000000011; };
         CA115B500000000000000002 = {isa = PBXBuildFile; fileRef = CA115B500000000000000012; };
         CA115B500000000000000003 = {isa = PBXBuildFile; fileRef = CA115B500000000000000013; };
-        CA115B500000000000000004 = {isa = PBXBuildFile; fileRef = CA115B500000000000000014; };
 		CA114B400000000000000004 = {isa = PBXBuildFile; fileRef = CA114B400000000000000014; };
 		CA114B400000000000000001 = {isa = PBXBuildFile; fileRef = CA114B400000000000000011; };
-		CA114B400000000000000002 = {isa = PBXBuildFile; fileRef = CA114B400000000000000012; };
 
 		AB109A719BE042A098FE1003 = {isa = PBXBuildFile; fileRef = AB109A719BE042A098FE1004; };
 		AB109A719BE042A098FE1001 = {isa = PBXBuildFile; fileRef = AB109A719BE042A098FE1002; };
@@ -1007,6 +1001,19 @@
 		F36F47A29B58F494F6F9FD18 = {isa = PBXBuildFile; fileRef = 5BD47EB1E13214C579674EB5; };
 		EA0BDD89B1C7F3C6E26F7369 = {isa = PBXBuildFile; fileRef = 86DCB8AC2711D871152F5AE0; };
 		D483E1A3399C6F375C3651B2 = {isa = PBXBuildFile; fileRef = 5D6B700A8C9E49867C2DFBC1; };
+		1C01D15AFCF258D6E4D70CFC /* PersonalSpatialEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C31EC3A4B1F81A979BE3CFA /* PersonalSpatialEditorView.swift */; };
+		6DC0CFE28A420AA15DC2C7AB /* SpatialModelPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5599603DD398DDBD00CFD56 /* SpatialModelPicker.swift */; };
+		F91E705FE059C2062FCD941E /* DirectionalHRTFGrid.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BEE0643ABC7489D01F31EE5 /* DirectionalHRTFGrid.swift */; };
+		D2538709802C7DD4ADA62904 /* PersonalSpatialRenderBank.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E43B62FA5706710C36DB8F9 /* PersonalSpatialRenderBank.swift */; };
+		3724DD5F296062F1E5913839 /* PersonalHRTFAdjustment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13880311EFBB242326E6CE77 /* PersonalHRTFAdjustment.swift */; };
+		6F9BFC2D58B14D27631586B1 /* PersonalSpatialSceneCompiler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BF9B9F59F1D588D35691C31 /* PersonalSpatialSceneCompiler.swift */; };
+		D5DFF23ADABD4AF3B5A813CB /* MovieEnhancement.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA25221F49A87292D5418D09 /* MovieEnhancement.swift */; };
+		A6AA8286B55CD250D31DC336 /* PersonalSpatialSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D0E9249F97879BD56D19EB6 /* PersonalSpatialSettings.swift */; };
+		9BBED969F6005D0292203222 /* SpatialListeningScene.swift in Sources */ = {isa = PBXBuildFile; fileRef = 107CD1E8F25600C40E0632BE /* SpatialListeningScene.swift */; };
+		0B4FAD452CA154C8A897D84D /* PersonalSpatialRoom.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DE8090F05146D97B0A4F751 /* PersonalSpatialRoom.swift */; };
+		F42F00D552A66640DF06652E /* SpatialPlaybackDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = D25B0B1783FE66DCDB1D9040 /* SpatialPlaybackDevice.swift */; };
+		178B66D0F6DD44546A728D03 /* MovieAnalysisExchange.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9802E506CB5C222151732F09; };
+		8F860A3C4C33415F0E5C2A3E /* MovieAnalysisSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31661DBF99C96B714B702DA7; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1370,15 +1377,7 @@
 			sourceTree = "<group>";
 		};
 		CA119B900000000000000011 = {isa = PBXFileReference; lastKnownFileType = folder; path = SpatialAssets; sourceTree = "<group>"; };
-		3F55C60FB215D2D7357B67B6 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialChannelCheckView.swift; sourceTree = "<group>"; };
-		21675E9304ED2A6AA84438EE = {
-			path = VirtualSpeakerBinauralizer.swift;
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			sourceTree = "<group>";
-		};
 		B365846B28087A0692856BBF = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledHRTFDatabase.swift; sourceTree = "<group>"; };
-		41204B470ED142696FC00B72 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialSeatingCalibrationView.swift; sourceTree = "<group>"; };
 		DB6FA792520461A8A254D85D = {
 			path = HRTFDatabase.swift;
 			isa = PBXFileReference;
@@ -1440,12 +1439,6 @@
 			lastKnownFileType = sourcecode.swift;
 			sourceTree = "<group>";
 		};
-		1150B923491588732A57776A = {
-			path = HeadphoneSpatialRenderer.swift;
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			sourceTree = "<group>";
-		};
 		2B23ACE2C13E8CAEC6E6E100 = {
 			path = SpatialSafety.swift;
 			isa = PBXFileReference;
@@ -1465,7 +1458,7 @@
 			sourceTree = "<group>";
 		};
 		FE397D86A6B82EB70DF6F0DE = {
-			path = SpatialAudioEngine.swift;
+			path = StereoSpeakerSpatialEngine.swift;
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
 			sourceTree = "<group>";
@@ -1491,10 +1484,8 @@
 		};
         CA115B500000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AcousticSweepAnalyzer.swift; sourceTree = "<group>"; };
         CA115B500000000000000013 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialMicrophoneCapture.swift; sourceTree = "<group>"; };
-        CA115B500000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialMicrophoneCalibrationView.swift; sourceTree = "<group>"; };
 		CA114B400000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialPerceptualCalibrationTests.swift; sourceTree = "<group>"; };
 		CA114B400000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialListenerProfile.swift; sourceTree = "<group>"; };
-		CA114B400000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialCalibrationAudio.swift; sourceTree = "<group>"; };
 
 		AB109A719BE042A098FE1004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalVolumeMirrorTests.swift; sourceTree = "<group>"; };
 		AB109A719BE042A098FE1002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalVolumeMirror.swift; sourceTree = "<group>"; };
@@ -2734,6 +2725,19 @@
 		5BD47EB1E13214C579674EB5 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Tests/CamiTuneTestSupport/Diagnostics/UIInteractionSelfTests.swift"; sourceTree = SOURCE_ROOT; };
 		86DCB8AC2711D871152F5AE0 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Tests/DiagnosticsRegression/DiagnosticsTests.swift"; sourceTree = SOURCE_ROOT; };
 		5D6B700A8C9E49867C2DFBC1 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Tests/DiagnosticsRegression/LocalIntegrationTests.swift"; sourceTree = SOURCE_ROOT; };
+		4C31EC3A4B1F81A979BE3CFA /* PersonalSpatialEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalSpatialEditorView.swift; sourceTree = "<group>"; };
+		C5599603DD398DDBD00CFD56 /* SpatialModelPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialModelPicker.swift; sourceTree = "<group>"; };
+		0BEE0643ABC7489D01F31EE5 /* DirectionalHRTFGrid.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectionalHRTFGrid.swift; sourceTree = "<group>"; };
+		6E43B62FA5706710C36DB8F9 /* PersonalSpatialRenderBank.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalSpatialRenderBank.swift; sourceTree = "<group>"; };
+		13880311EFBB242326E6CE77 /* PersonalHRTFAdjustment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalHRTFAdjustment.swift; sourceTree = "<group>"; };
+		2BF9B9F59F1D588D35691C31 /* PersonalSpatialSceneCompiler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalSpatialSceneCompiler.swift; sourceTree = "<group>"; };
+		DA25221F49A87292D5418D09 /* MovieEnhancement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieEnhancement.swift; sourceTree = "<group>"; };
+		0D0E9249F97879BD56D19EB6 /* PersonalSpatialSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalSpatialSettings.swift; sourceTree = "<group>"; };
+		107CD1E8F25600C40E0632BE /* SpatialListeningScene.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialListeningScene.swift; sourceTree = "<group>"; };
+		6DE8090F05146D97B0A4F751 /* PersonalSpatialRoom.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalSpatialRoom.swift; sourceTree = "<group>"; };
+		D25B0B1783FE66DCDB1D9040 /* SpatialPlaybackDevice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialPlaybackDevice.swift; sourceTree = "<group>"; };
+		9802E506CB5C222151732F09 /* MovieAnalysisExchange.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieAnalysisExchange.swift; sourceTree = "<group>"; };
+		31661DBF99C96B714B702DA7 /* MovieAnalysisSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieAnalysisSession.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -2864,7 +2868,6 @@
 				DC334CD249D0C613841E78BA,
 				507204B402664D18CC4411F8,
 				CA115B500000000000000012,
-				CA114B400000000000000012,
 				CA114B400000000000000011,
 				CA115B500000000000000013,
 				CA118B800000000000000011,
@@ -3250,10 +3253,9 @@
 			path = Spatial;
 			sourceTree = "<group>";
 			children = (
+				C5599603DD398DDBD00CFD56 /* SpatialModelPicker.swift */,
+				4C31EC3A4B1F81A979BE3CFA /* PersonalSpatialEditorView.swift */,
 				C164B4B1A1FF3A9919ACA648,
-				3F55C60FB215D2D7357B67B6,
-				CA115B500000000000000014,
-				41204B470ED142696FC00B72,
 				CA3500000000000000000204,
 				CA3500000000000000000205,
 				CA4100000000000000000203,
@@ -3396,7 +3398,6 @@
 		C92132996D1BA3375D188ACA = {
 			isa = PBXGroup;
 			children = (
-				5C1C46472243D5B37E2158C2,
 				FCDFC28BEF5A52A4B93F8918,
 				01FA5627321E92B2D8EA1F66,
 				36070571A9A3A71282B834AD,
@@ -3511,6 +3512,7 @@
 			isa = PBXGroup;
 			children = (
 				B365846B28087A0692856BBF,
+				31661DBF99C96B714B702DA7 /* MovieAnalysisSession.swift */,
 			);
 			path = Headphones;
 			sourceTree = "<group>";
@@ -3584,6 +3586,7 @@
 				15200CE395B23495827DFA8B,
 				CD30EF0386A679879C4A3351,
 				CA116B600000000000000011,
+				9802E506CB5C222151732F09 /* MovieAnalysisExchange.swift */,
 			);
 			path = Spatial;
 			sourceTree = "<group>";
@@ -3623,10 +3626,12 @@
 		5BF83C153CA0C7839F1547A0 = {
 			isa = PBXGroup;
 			children = (
+				13880311EFBB242326E6CE77 /* PersonalHRTFAdjustment.swift */,
+				2BF9B9F59F1D588D35691C31 /* PersonalSpatialSceneCompiler.swift */,
+				6E43B62FA5706710C36DB8F9 /* PersonalSpatialRenderBank.swift */,
+				0BEE0643ABC7489D01F31EE5 /* DirectionalHRTFGrid.swift */,
 				74B8F63750AAACE8767EC7F7,
-				1150B923491588732A57776A,
 				DB6FA792520461A8A254D85D,
-				21675E9304ED2A6AA84438EE,
 			);
 			path = Headphones;
 			sourceTree = "<group>";
@@ -3734,6 +3739,7 @@
 		FCBFF408A577B630763174C2 = {
 			isa = PBXGroup;
 			children = (
+				5C1C46472243D5B37E2158C2,
 				CA4300000000000000000204,
 				CA4300000000000000000206,
 				11BE833B89F9640FB5E90023,
@@ -3768,6 +3774,11 @@
 		E28C2AD6BF2F4542F13A7684 = {
 			isa = PBXGroup;
 			children = (
+				DA25221F49A87292D5418D09 /* MovieEnhancement.swift */,
+				0D0E9249F97879BD56D19EB6 /* PersonalSpatialSettings.swift */,
+				107CD1E8F25600C40E0632BE /* SpatialListeningScene.swift */,
+				6DE8090F05146D97B0A4F751 /* PersonalSpatialRoom.swift */,
+				D25B0B1783FE66DCDB1D9040 /* SpatialPlaybackDevice.swift */,
 				CA115B500000000000000011,
 				A602A9F2C241572DC1976F25,
 				4CF5B186681B7D2B9AE513ED,
@@ -4080,6 +4091,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6DC0CFE28A420AA15DC2C7AB /* SpatialModelPicker.swift in Sources */,
+				1C01D15AFCF258D6E4D70CFC /* PersonalSpatialEditorView.swift in Sources */,
 				C96D19320E7087E3E03DD3D4,
 				BABE599C3D13709BBE9277E7,
 				D99661F7A376E9811A258E2F,
@@ -4194,17 +4207,14 @@
 				CA3500000000000000000103,
 				CA3500000000000000000102,
 				CA3500000000000000000101,
-				98F1B04221D097DE32257EB7,
 				F59C47E32FA4422B4EA97A34,
-				E784866DF02BE1B95F156D45,
+				8F860A3C4C33415F0E5C2A3E /* MovieAnalysisSession.swift in Sources */,
 				6B5FD6FD181F0513BAE1071E,
 				CA114B400000000000000001,
 				CA118B800000000000000001,
 				CA117B700000000000000001,
 				CA115B500000000000000002,
 				CA115B500000000000000003,
-				CA115B500000000000000004,
-				CA114B400000000000000002,
 				AB109A719BE042A098FE1001,
 				087A85F6C26B99E3E3C61059,
 				5802CB74AF55627F307EC03B,
@@ -4290,7 +4300,6 @@
 				84D671C519AF93D0AA71AC88,
 				199293AC7AD1C3C5546A51E1,
 				1BA964313CD4592A6A0A986C,
-				46695496011E3E0A51F2358B,
 				F11583964084C4B207FBE7B8,
 				2C065B04D42C1402296A76DB,
 
@@ -4309,6 +4318,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				46695496011E3E0A51F2358B,
+				D5DFF23ADABD4AF3B5A813CB /* MovieEnhancement.swift in Sources */,
+				A6AA8286B55CD250D31DC336 /* PersonalSpatialSettings.swift in Sources */,
+				9BBED969F6005D0292203222 /* SpatialListeningScene.swift in Sources */,
+				0B4FAD452CA154C8A897D84D /* PersonalSpatialRoom.swift in Sources */,
+				F42F00D552A66640DF06652E /* SpatialPlaybackDevice.swift in Sources */,
 				E4FE79635D0F1EF2DD5EEE24,
 				A0C6A950E853219723D91F9B,
 				CA2026102300000000000102,
@@ -4408,6 +4423,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3724DD5F296062F1E5913839 /* PersonalHRTFAdjustment.swift in Sources */,
+				6F9BFC2D58B14D27631586B1 /* PersonalSpatialSceneCompiler.swift in Sources */,
+				D2538709802C7DD4ADA62904 /* PersonalSpatialRenderBank.swift in Sources */,
+				F91E705FE059C2062FCD941E /* DirectionalHRTFGrid.swift in Sources */,
 				1ACE3EC212B3B3671EAA99CB,
 				5F0B097FE3387689FC3BAA3F,
 				653821D0BCB2DBFCEA7B5A9B,
@@ -4449,14 +4468,13 @@
 				16E47513AA99C560116D6F57,
 				3AEBCC5F09FFB466C6149F72,
 				7B7B769DDD2CE747DADEE7BD,
-				7FCFA418D171E66C73222BD6,
-				ED6A249F4F2EFA9666989753,
 				1654233E92A2CD17F3495AF7,
 				4254C2D6B6D79DA2A7159A55,
 				CADAB5229C0D374ADB5FD2F4,
 				11810D2A45B604DB2954306E,
 				8F1E5DD009C5F4A3C2A11D92,
 				CA116B600000000000000001,
+				178B66D0F6DD44546A728D03 /* MovieAnalysisExchange.swift in Sources */,
 				27ED9ABDBCEE938E05585E06,
 				C0569044922206EAF897B43F,
 				C4D3B43F1EDEDEAB76D6094D,
@@ -4817,6 +4835,8 @@
 		5944664DF7F06CBA22247537 = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_COMPILATION_MODE = wholemodule;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				DEFINES_MODULE = YES;
 				SKIP_INSTALL = YES;

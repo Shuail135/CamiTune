@@ -14,20 +14,23 @@ extension ActiveAudioRoute {
             guard roles.count == sourceFormat.channelCount, roles.allSatisfy({ $0 == .unknown }) else { throw AudioRouteFormatError.unsupportedLayout }
             return
         }
-        guard !roles.contains(.unknown), Set(roles).count == roles.count else {
-            throw AudioRouteFormatError.unsupportedLayout
-        }
         if usesPhysicalSpeakerBus {
+            guard !roles.contains(.unknown), Set(roles).count == roles.count else {
+                throw AudioRouteFormatError.unsupportedLayout
+            }
             let expected = Set(sourceFormat.channels.compactMap(\.role))
             guard Set(roles).isSubset(of: expected) else { throw AudioRouteFormatError.unsupportedLayout }
+        } else if !PersonalVirtualSpeakerRenderer.supports(frame) {
+            throw AudioRouteFormatError.unsupportedLayout
         }
     }
 
     package static func validateFrame(_ frame: PCMFrame) throws {
+        do { try frame.channelLayout.validate() } catch { throw AudioRouteFormatError.malformedFrame }
         guard (1...32).contains(frame.channelCount), frame.sampleRate.isFinite, frame.sampleRate > 0,
               frame.channelLayout.channelCount == frame.channelCount, !frame.interleaved.isEmpty,
               frame.interleaved.count.isMultiple(of: frame.channelCount),
-              frame.playbackModeSamples.values.allSatisfy({ $0.count == frame.interleaved.count }) else {
+              frame.cohortSamples.values.allSatisfy({ $0.count == frame.interleaved.count }) else {
             throw AudioRouteFormatError.malformedFrame
         }
     }

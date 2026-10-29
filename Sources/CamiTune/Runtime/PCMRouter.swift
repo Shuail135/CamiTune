@@ -1,6 +1,7 @@
 import CamiTuneAudio
 import CamiTuneDomain
 import Foundation
+import Combine
 import Darwin
 
 /// App-side composition of delivery, bounded analysis, and meter observation.
@@ -24,6 +25,11 @@ final class PCMRouter: @unchecked Sendable {
         var camillaQueue = PCMQueueSnapshot()
     }
 
+    let personalSpatialChanges = PassthroughSubject<PersonalSpatialPreparationStatus, Never>()
+    private let movieAnalysis = MovieAnalysisSession()
+    var movieAnalysisChanges: PassthroughSubject<MovieAnalysisStatus, Never> { movieAnalysis.changes }
+    var movieAnalysisStatus: MovieAnalysisStatus { movieAnalysis.status }
+    func setMovieAnalysisPresentationEnabled(_ enabled: Bool) { movieAnalysis.setPresentationEnabled(enabled) }
     let performanceSource = PerformanceTraceSource()
     private let state = NSLock()
     private let systemMaster = SystemMasterGainControl()
@@ -68,13 +74,26 @@ final class PCMRouter: @unchecked Sendable {
     ) async {
         let start: @Sendable () -> Void = { [self] in
             stop()
+            let movieExchange = renderConfiguration.personalSpatial.flatMap {
+                movieAnalysis.makeExchange(rate: deliveryConfiguration.queue.sampleRate, layout: $0.inputLayout)
+            }
             let deliveryBranch = PCMDeliveryPipeline(
                 sink: sink,
                 hrtfDatabase: BundledHRTFDatabase.shared, performanceSource: performanceSource, activeRoute: activeRoute,
                 renderConfiguration: renderConfiguration, deliveryConfiguration: deliveryConfiguration,
                 backendChunkFrames: backendChunkFrames,
                 configurationObserver: configurationObserver, systemMaster: systemMaster,
-                referenceTopology: referenceTopology, pluginProcessor: pluginProcessor
+                referenceTopology: referenceTopology, pluginProcessor: pluginProcessor,
+                personalStatusChanged: { [weak self] branch, status in
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        self.state.lock()
+                        let current = self.deliveryBranch === branch
+                        self.state.unlock()
+                        guard current else { return }
+                        self.personalSpatialChanges.send(status)
+                    }
+                }, movieAnalysis: movieExchange
             )
             let meterBranch = meterConsumer.map { consumer in
                 MeterPCMBranch(
@@ -117,6 +136,15 @@ final class PCMRouter: @unchecked Sendable {
         let branch = deliveryBranch
         state.unlock()
         branch?.setRenderConfiguration(configuration)
+    }
+
+    func setPersonalRoom(_ amount: Float) {
+        state.lock(); let branch = deliveryBranch; state.unlock()
+        branch?.setPersonalRoom(amount)
+    }
+    var personalSpatialPreparationStatus: PersonalSpatialPreparationStatus? {
+        state.lock(); let branch = deliveryBranch; state.unlock()
+        return branch?.personalSpatialStatus
     }
 
     func setPluginProcessor(_ processor: (any PluginAudioProcessor)?) {
@@ -197,7 +225,7 @@ final class PCMRouter: @unchecked Sendable {
         // the CamillaDSP delivery branch.
         deliveryBranch?.enqueue(frame)
         var observation = frame
-        observation.playbackModeSamples = [:]
+        observation.cohortSamples = [:]
         observation.performanceTrace = nil
         observation.writerTrace = nil
         meterBranch?.enqueue(observation)
@@ -261,6 +289,7 @@ final class PCMRouter: @unchecked Sendable {
     }
 
     func stop() {
+        movieAnalysis.stop()
         state.lock()
         let deliveryBranch = self.deliveryBranch
         let meterBranch = self.meterBranch

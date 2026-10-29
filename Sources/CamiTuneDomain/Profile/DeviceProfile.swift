@@ -28,6 +28,11 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         return layout
     }
 
+    package var personalSpatialByEndpoint: [String: PersonalSpatialSettings] = [:]
+    package var personalSpatial: PersonalSpatialSettings {
+        get { personalSpatialByEndpoint[deviceTypeConfigurationKey] ?? PersonalSpatialSettings() }
+        set { personalSpatialByEndpoint[deviceTypeConfigurationKey] = newValue }
+    }
     package var personalReferenceCorrections: [String: DeviceCorrectionProfile] = [:]
     package var audioInterface: AudioInterfaceConfiguration?
     package var sectionLayout: ProfileSectionLayout?
@@ -151,6 +156,12 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         if mode == .referencePlayback && !isPersonalListening {
             var candidate = self; candidate.setPlaybackMode(mode)
             do { _ = try candidate.validatedReferenceTopology() } catch { return .unavailable(error.localizedDescription) }
+        }
+        if mode == .spatialRender && isPersonalListening {
+            guard PersonalSpatialSettings.supportedSampleRates.contains(sampleRate) else {
+                return .unavailable("Virtual speakers support 44.1, 48, 88.2, 96, 176.4 and 192 kHz. Choose a supported sample rate in Profile Settings.")
+            }
+            do { try personalSpatial.validate() } catch { return .unavailable(error.localizedDescription) }
         }
         if mode == .referencePlayback && isPersonalListening {
             guard let correction = personalReferenceCorrection else {
@@ -396,7 +407,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         case autoActivateWhenProfileDeviceSelected, playbackModesByEndpoint, sectionLayout, audioInterface, personalReferenceCorrections, physicalChannelProcessing, speakerTopologyNeedsReview
         case lockOutputVolume, outputVolumeScalar, sampleRate, chunkSize, usesGlobalAudioBuffer, audioBufferSetting, playbackMode, pluginRack
         case spatialRenderingMode, spatialContentMode, spatialListenerProfile, spatialAcousticProfile, equalizerAPOText, processing
-        case virtualSurroundLayout, spatialSettings, speakerTopology, usesReferenceSpeakers, multichannel, speakerVerification
+        case personalSpatialByEndpoint, virtualSurroundLayout, spatialSettings, speakerTopology, usesReferenceSpeakers, multichannel, speakerVerification
     }
 
     private enum LegacyCodingKeys: String, CodingKey {
@@ -484,6 +495,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         spatialAcousticProfile = try? values.decodeIfPresent(SpatialAcousticProfile.self, forKey: .spatialAcousticProfile)
         spatialContentMode = (try? values.decodeIfPresent(SpatialContentMode.self, forKey: .spatialContentMode)) ?? .automatic
         virtualSurroundLayout = (try? values.decodeIfPresent(VirtualSurroundLayout.self, forKey: .virtualSurroundLayout)) ?? .standard
+        personalSpatialByEndpoint = try values.decodeIfPresent([String: PersonalSpatialSettings].self, forKey: .personalSpatialByEndpoint) ?? [:]
         let legacyText = try values.decodeIfPresent(String.self, forKey: .equalizerAPOText)
             ?? Self.defaultEqualizerAPOText
         if let decodedProcessing = try values.decodeIfPresent(ProcessingProfile.self, forKey: .processing) {
@@ -495,6 +507,9 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         } else {
             processing = .defaultStereo
             unmigratedEqualizerAPOText = legacyText
+        }
+        if !values.contains(.personalSpatialByEndpoint) && isPersonalListening {
+            personalSpatial = .migrated(virtualSurroundLayout)
         }
         if let stage = processing.global.stages.first(where: { $0.id == ProcessingProfile.spatialRoomCorrectionStageID }),
            case .equalizer(let eq) = stage.processor,
@@ -532,6 +547,7 @@ Filter 8: ON HS Fc 16000 Hz Gain 0.0 dB Q 1.00
         try values.encode(playbackMode, forKey: .playbackMode)
         try values.encode(spatialRenderingMode, forKey: .spatialRenderingMode)
         try values.encode(spatialSettings, forKey: .spatialSettings)
+        try values.encode(personalSpatialByEndpoint, forKey: .personalSpatialByEndpoint)
         try values.encodeIfPresent(speakerTopology, forKey: .speakerTopology)
         try values.encode(usesReferenceSpeakers, forKey: .usesReferenceSpeakers)
         try values.encode(personalReferenceCorrections, forKey: .personalReferenceCorrections)

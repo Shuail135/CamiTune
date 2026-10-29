@@ -1,3 +1,8 @@
+# **v0.3.3**
+- UI & Audio Latency Optimization
+
+***
+
 # **v0.3.2**
 - AU & VST3 Support(beta)
 	- MIDI Support
