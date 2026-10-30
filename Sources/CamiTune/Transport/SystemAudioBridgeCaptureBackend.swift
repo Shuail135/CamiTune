@@ -43,7 +43,7 @@ struct SystemAudioBridgeCaptureEffects {
     var stopTransportSynchronously: () -> Void
     var stopVolumeSynchronously: () -> Void
     var hideBridgeSynchronously: () throws -> Void
-    var removeProfileDevices: () -> Void
+    var removeProfileDevices: () throws -> Void
     var sleep: (Duration) async throws -> Void
 }
 
@@ -101,7 +101,7 @@ final class SystemAudioBridgeCaptureBackend: AudioCaptureBackend {
     }
     func updatePresentation() async throws { try await effects.hideBridge() }
     func cancelPendingOperations() { effects.cancelReadiness() }
-    func shutdownSynchronously() { effects.removeProfileDevices() }
+    func shutdownSynchronously() throws { try effects.removeProfileDevices() }
 }
 
 @MainActor
@@ -122,6 +122,9 @@ private final class SystemAudioBridgeCaptureSession: AudioCaptureSession {
     private(set) var volumeMode: SystemVolumeMode?
     private(set) var bindingAction = "No runtime binding"
     var selectionUID: String { plan.profileRoutingDescriptor.uid }
+    func canRetainSourceFormat(_ format: AudioFormatDescriptor) -> Bool {
+        format.sampleRate == plan.sourceFormat.sampleRate
+    }
     var volumeSnapshot: SystemVolumeControlSession.Snapshot? { volumeLease?.controlSession.snapshot() }
     var audibilityHeld: Bool { volumeLease?.controlSession.snapshot().audibility == .held }
     var needsBindingRefresh: Bool {
@@ -346,7 +349,7 @@ extension SystemAudioBridgeCaptureBackend {
             stopTransportSynchronously: { transport.stop() },
             stopVolumeSynchronously: { volume.stop() },
             hideBridgeSynchronously: { try coreAudio.setSystemAudioBridgePresentation(name: AudioDeviceInfo.systemAudioBridgeName, visible: false) },
-            removeProfileDevices: { coreAudio.destroyAllProfileRoutingDevices() },
+            removeProfileDevices: { try coreAudio.destroyAllProfileRoutingDevices() },
             sleep: { try await Task.sleep(for: $0) }))
     }
 }

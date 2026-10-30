@@ -57,14 +57,6 @@ final class DeviceCorrectionLoadCoordinator: ObservableObject {
     var deviceMatchGeneration: UInt64 = 0
 }
 
-struct CorrectionEditorSnapshot: Equatable {
-    var generated: DeviceCorrectionProfile?
-    var target: DeviceCorrectionTargetSelection
-    var policy: DeviceCorrectionPolicyKind
-    var settings: AutoEQSettings
-    var targetChosen: Bool
-}
-
 @MainActor
 final class EditorSnapshotHistory<Snapshot: Equatable>: ObservableObject {
     let manager = UndoManager()
@@ -134,5 +126,3 @@ final class EditorSnapshotHistory<Snapshot: Equatable>: ObservableObject {
         revision &+= 1
     }
 }
-
-typealias CorrectionEditorHistory = EditorSnapshotHistory<CorrectionEditorSnapshot>

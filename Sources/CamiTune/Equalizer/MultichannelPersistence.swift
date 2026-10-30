@@ -3,6 +3,8 @@ import Foundation
 
 extension AppState {
     func scheduleMultichannelAutosave(_ draft: MultichannelHistoryState, for profileID: UUID, previewOnly: Bool = false) {
+        let historyPosition = history.beginPendingEdit()
+        let history = history
         multichannelEditSessions[profileID] = draft
         multichannelAutosaveTasks[profileID]?.cancel()
         let revision = UUID()
@@ -10,6 +12,7 @@ extension AppState {
         multichannelAutosaveRevisions[profileID] = revision
         multichannelAutosaveErrors[profileID] = nil
         multichannelAutosaveTasks[profileID] = Task { @MainActor [weak self] in
+            defer { history.endPendingEdit(historyPosition) }
             do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
             guard let self else { return }
             defer {
@@ -35,7 +38,7 @@ extension AppState {
             }
             do {
                 try await self.saveMultichannelSettings(draft.settings, profileID: profileID,
-                    topology: draft.topology, previewOnly: previewOnly)
+                    topology: draft.topology, previewOnly: previewOnly, historyPosition: historyPosition)
             } catch {
                 if self.multichannelAutosaveRevisions[profileID] == revision {
                     self.multichannelAutosaveErrors[profileID] = error.localizedDescription
@@ -52,7 +55,10 @@ extension AppState {
 
     @discardableResult
     func saveMultichannelSettings(_ value: MultichannelProcessingSettings, profileID: UUID,
-                                  topology: SpeakerTopology? = nil, previewOnly: Bool = false, recordHistory: Bool = true) async throws -> DeviceProfile {
+                                  topology: SpeakerTopology? = nil, previewOnly: Bool = false, recordHistory: Bool = true,
+                                  historyPosition: HistoryPosition? = nil) async throws -> DeviceProfile {
+        let position = historyPosition ?? (recordHistory ? history.beginPendingEdit() : nil)
+        defer { if historyPosition == nil { history.endPendingEdit(position) } }
         let original = try historyProfile(profileID)
         var candidate = original; candidate.multichannel = value
         if let topology { candidate.speakerTopology = topology }
@@ -67,7 +73,7 @@ extension AppState {
             var settings = ProfileSettingsDraft(profile: original, activation: profiles.activationMode(for: original))
             settings.multichannel = value
             if let topology { settings.speakerTopology = topology }
-            try await saveProfileSettings(settings)
+            try await saveProfileSettings(settings, historyAction: nil)
             candidate = try historyProfile(profileID)
         }
         if multichannelEditSessions[profileID] == .init(settings: value, topology: topology) {
@@ -76,7 +82,7 @@ extension AppState {
         if recordHistory {
             history.record(actionName: "Change Multichannel Processing", contextName: original.name,
                 target: .profile(profileID), before: .multichannel(.init(settings: original.multichannel, topology: original.speakerTopology)),
-                after: .multichannel(.init(settings: value, topology: candidate.speakerTopology)))
+                after: .multichannel(.init(settings: value, topology: candidate.speakerTopology)), position: position)
         }
         return candidate
     }

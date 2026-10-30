@@ -408,10 +408,13 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     func setUsesGlobalSettings(_ global: Bool, for profileID: UUID) {
         finishPendingAudioInteractions()
         stateLock.lock()
+        let before = settingsStore.usesGlobalSettings(for: profileID)
         settingsStore.setUsesGlobalSettings(global, for: profileID)
         let saved = settingsStore.snapshot
         presentationRevision &+= 1
         stateLock.unlock()
+        history?.record(actionName: "Change App Audio Scope", target: .profile(profileID),
+            before: .appAudioScope(usesGlobal: before), after: .appAudioScope(usesGlobal: global))
         // Seed presentation preferences at the same first switch as audio.
         if !global { _ = presentationStore(for: .local(profileID)) }
         refreshActivePresentationStore()

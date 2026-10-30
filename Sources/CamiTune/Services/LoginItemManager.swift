@@ -3,6 +3,7 @@ import ServiceManagement
 
 @MainActor
 final class LoginItemManager: ObservableObject {
+    weak var history: UndoCoordinator?
     struct Notice {
         let title: String
         let message: String
@@ -47,6 +48,7 @@ final class LoginItemManager: ObservableObject {
     @discardableResult
     func setEnabled(_ enabled: Bool) -> Notice? {
         guard !isUpdating else { return nil }
+        let before = isEnabled
         if enabled && !isInApplicationsFolder {
             isEnabled = false
             requiresApproval = false
@@ -85,6 +87,8 @@ final class LoginItemManager: ObservableObject {
             return Notice(title: "Couldn’t Update Login Startup", message: statusMessage)
         }
 
+        history?.record(actionName: "Change Login Startup", target: .preference(.loginStartup),
+            before: .boolean(before), after: .boolean(isEnabled))
         return nil
     }
 

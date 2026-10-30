@@ -116,6 +116,8 @@ struct CamiTuneCommands: Commands {
     @ObservedObject var coordinator: MainWindowCommandCoordinator
     @ObservedObject var undo: UndoCommandRouter
     var showLicense: () -> Void
+    var checkForUpdates: () -> Void
+    var showChangelog: () -> Void
 
     var body: some Commands {
         CommandGroup(replacing: .undoRedo) {
@@ -130,6 +132,9 @@ struct CamiTuneCommands: Commands {
                 .disabled(!coordinator.context.canNavigate)
         }
         CommandGroup(after: .appInfo) {
+            Button("Check for Updates…", action: checkForUpdates)
+                .disabled(!coordinator.context.canNavigate)
+            Divider()
             Button("License & Warranty", action: showLicense)
             Button("Open Setup…") { coordinator.send(.openSetup) }
                 .disabled(!coordinator.context.canNavigate)
@@ -183,7 +188,7 @@ struct CamiTuneCommands: Commands {
             }
         }
         CommandGroup(replacing: .help) {
-            Button("Open Changelog") { AppChangelogWindow.show() }
+            Button("Open Changelog", action: showChangelog)
             Button("Open Setup…") { coordinator.send(.openSetup) }
                 .disabled(!coordinator.context.canNavigate)
         }

@@ -1,4 +1,5 @@
 import Combine
+import CamiTuneDomain
 import Foundation
 
 @MainActor
@@ -16,17 +17,53 @@ final class UndoCoordinator: ObservableObject {
     private(set) var undoStack: [HistoryEntry] = []
     private(set) var redoStack: [HistoryEntry] = []
     private var gestures: [GestureKey: HistoryEntry] = [:]
+    private var nextPosition: UInt64 = 0
+    private var pendingEdits: Set<HistoryPosition> = []
+    private var retainedAssets: ProfileAssetLease?
     weak var restorer: (any HistoryRestoring)?
     let capacity: Int
-    var canUndo: Bool { !isReplaying && gestures.isEmpty && !undoStack.isEmpty }
-    var canRedo: Bool { !isReplaying && gestures.isEmpty && !redoStack.isEmpty }
+    var canUndo: Bool { !isReplaying && gestures.isEmpty && pendingEdits.isEmpty && !undoStack.isEmpty }
+    var canRedo: Bool { !isReplaying && gestures.isEmpty && pendingEdits.isEmpty && !redoStack.isEmpty }
     var isRecordingEnabled: Bool { !isReplaying }
     init(capacity: Int = 150) { self.capacity = max(1, capacity) }
 
+    private func position() -> HistoryPosition {
+        nextPosition &+= 1
+        return .init(ordinal: nextPosition)
+    }
+
+    /// Async edits reserve their user-action order before suspension. Replay
+    /// waits for their explicit success, failure or cancellation.
+    func beginPendingEdit() -> HistoryPosition? {
+        guard isRecordingEnabled else { return nil }
+        let value = position()
+        pendingEdits.insert(value)
+        objectWillChange.send()
+        return value
+    }
+
+    func endPendingEdit(_ value: HistoryPosition?) {
+        guard let value, pendingEdits.remove(value) != nil else { return }
+        objectWillChange.send()
+    }
+
+    func retainAssets(in storage: ProfileAssetStorage) {
+        retainedAssets = storage.retain(assetReferences)
+    }
+    private var assetReferences: ProfileAssetReferences {
+        var references = ProfileAssetReferences()
+        for entry in undoStack + redoStack + Array(gestures.values) {
+            references.formUnion(entry.before.assetReferences)
+            references.formUnion(entry.after.assetReferences)
+        }
+        return references
+    }
+
     func record(actionName: String, contextName: String? = nil, target: HistoryTarget,
                 before: HistoryState, after: HistoryState,
-                coalescingKey: HistoryCoalescingKey? = nil, now: Date = Date()) {
+                coalescingKey: HistoryCoalescingKey? = nil, now: Date = Date(), position reservedPosition: HistoryPosition? = nil) {
         guard isRecordingEnabled, before != after else { return }
+        let position = reservedPosition ?? position()
         var before = before, after = after
         if case .globalEQ(var previous) = before, case .globalEQ(var next) = after,
            previous.replacesDeviceCorrection != next.replacesDeviceCorrection {
@@ -36,7 +73,9 @@ final class UndoCoordinator: ObservableObject {
             before = .globalEQ(previous); after = .globalEQ(next)
         }
         if let key = coalescingKey, var last = undoStack.last,
-           redoStack.isEmpty, last.coalescingKey == key, last.target == target,
+           redoStack.isEmpty, last.position < position, last.coalescingKey == key, last.target == target,
+           !pendingEdits.contains(where: { last.position < $0 && $0 < position }),
+           !gestures.values.contains(where: { last.position < $0.position && $0.position < position }),
            last.actionName == actionName, last.after == before,
            now.timeIntervalSince(last.timestamp) >= 0, now.timeIntervalSince(last.timestamp) <= 0.4 {
             last.after = after
@@ -44,8 +83,10 @@ final class UndoCoordinator: ObservableObject {
             undoStack.removeLast()
             if last.before != after { undoStack.append(last) }
         } else {
-            undoStack.append(HistoryEntry(id: UUID(), actionName: actionName, contextName: contextName,
-                target: target, before: before, after: after, coalescingKey: coalescingKey, timestamp: now))
+            let entry = HistoryEntry(id: UUID(), position: position, actionName: actionName, contextName: contextName,
+                target: target, before: before, after: after, coalescingKey: coalescingKey, timestamp: now)
+            let index = undoStack.firstIndex { position < $0.position } ?? undoStack.endIndex
+            undoStack.insert(entry, at: index)
         }
         redoStack.removeAll()
         if undoStack.count > capacity { undoStack.removeFirst(undoStack.count - capacity) }
@@ -54,38 +95,26 @@ final class UndoCoordinator: ObservableObject {
     func beginGesture(key: GestureKey, actionName: String, contextName: String? = nil,
                       target: HistoryTarget, before: HistoryState) {
         guard isRecordingEnabled, gestures[key] == nil else { return }
-        gestures[key] = HistoryEntry(id: UUID(), actionName: actionName, contextName: contextName,
+        gestures[key] = HistoryEntry(id: UUID(), position: position(), actionName: actionName, contextName: contextName,
             target: target, before: before, after: before, coalescingKey: nil, timestamp: Date())
+        retainedAssets?.update(assetReferences)
         objectWillChange.send()
     }
     func endGesture(key: GestureKey, after: HistoryState) {
         guard let gesture = gestures.removeValue(forKey: key) else { return }
         record(actionName: gesture.actionName, contextName: gesture.contextName, target: gesture.target,
-               before: gesture.before, after: after)
+               before: gesture.before, after: after, position: gesture.position)
+        retainedAssets?.update(assetReferences)
         objectWillChange.send()
     }
     func cancelGesture(key: GestureKey) {
         guard gestures.removeValue(forKey: key) != nil else { return }
+        retainedAssets?.update(assetReferences)
         objectWillChange.send()
     }
     func clear() {
-        guard !isReplaying else { return }
+        guard !isReplaying, pendingEdits.isEmpty else { return }
         gestures.removeAll(); undoStack.removeAll(); redoStack.removeAll(); refresh()
-    }
-    /// Old processing gestures must not install another device's calibration.
-    func discardDeviceConfiguration(for profileID: UUID) {
-        func belongs(_ entry: HistoryEntry) -> Bool {
-            if case .profileName = entry.before { return false }
-            switch entry.target {
-            case .profile(let id), .profileChannel(let id, _), .profileGroup(let id, _),
-                 .speakerSystem(let id), .referenceCorrection(let id): return id == profileID
-            default: return false
-            }
-        }
-        undoStack.removeAll(where: belongs)
-        redoStack.removeAll(where: belongs)
-        gestures = gestures.filter { !belongs($0.value) }
-        refresh()
     }
     func undo() async { await replay(undo: true) }
     func redo() async { await replay(undo: false) }
@@ -103,6 +132,7 @@ final class UndoCoordinator: ObservableObject {
         } catch { lastError = error.localizedDescription }
     }
     private func refresh() {
+        retainedAssets?.update(assetReferences)
         undoTitle = undoStack.last?.title
         redoTitle = redoStack.last?.title
     }

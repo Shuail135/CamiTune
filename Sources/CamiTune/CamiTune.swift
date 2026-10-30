@@ -120,7 +120,13 @@ struct CamiTuneMain: App {
         .menuBarExtraStyle(.window)
         .commands {
             CamiTuneCommands(coordinator: CamiTunePresentationCoordinator.shared.commands,
-                undo: state.undoCommands, showLicense: AppLicense.show)
+                undo: state.undoCommands, showLicense: AppLicense.show,
+                checkForUpdates: {
+                    CamiTunePresentationCoordinator.shared.showMainWindow()
+                    Task { await state.updateChecker.checkForUpdates() }
+                }, showChangelog: {
+                    AppChangelogWindow.show(checker: state.updateChecker)
+                })
         }
     }
 }
@@ -700,7 +706,9 @@ final class CamiTuneAppDelegate: NSObject, NSApplicationDelegate {
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else { return false }
         if alert.suppressionButton?.state == .on {
-            UserDefaults.standard.set(true, forKey: closeHintKey)
+            withMainThreadHistory {
+                CamiTunePresentationCoordinator.shared.state.setClosingReminder(false)
+            }
         }
         return true
     }

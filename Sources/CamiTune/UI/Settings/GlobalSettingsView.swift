@@ -34,6 +34,7 @@ struct SettingsView: View {
     @ObservedObject private var store: ProfileStore
     @ObservedObject private var loginItem: LoginItemManager
     @ObservedObject private var updateChecker: AppUpdateChecker
+    @ObservedObject private var notifications: NotificationManager
     private var category: String { commands.settingsCategory }
     @State private var type: ProfileEndpointKind = .speakers
     @State private var showingApply = false
@@ -48,6 +49,7 @@ struct SettingsView: View {
         _store = ObservedObject(wrappedValue: state.profiles)
         _loginItem = ObservedObject(wrappedValue: state.loginItem)
         _updateChecker = ObservedObject(wrappedValue: state.updateChecker)
+        _notifications = ObservedObject(wrappedValue: state.notifications)
     }
     var body: some View {
         HStack(spacing: 0) {
@@ -96,7 +98,6 @@ struct SettingsView: View {
             }
             .padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .onChange(of: appearance) { $0.apply() }
         .sheet(isPresented: $showingApply) {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Apply Layout to Existing Profiles").font(.title2.bold())
@@ -121,7 +122,7 @@ struct SettingsView: View {
 
     private var generalSettings: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Picker("Appearance", selection: $appearance) {
+            Picker("Appearance", selection: Binding(get: { appearance }, set: { state.setAppearance($0) })) {
                 ForEach(AppAppearance.allCases, id: \.self) { option in
                     Text(option.displayName).tag(option)
                 }
@@ -142,12 +143,13 @@ struct SettingsView: View {
                         Text(notice.message)
                     }
             Toggle("Automatically check for updates", isOn: $updateChecker.automaticallyChecksForUpdates)
+            Toggle("Show profile activation and deactivation notifications", isOn: $notifications.isEnabled)
             Divider().padding(.vertical, 4)
             Text("Confirmations").font(.headline)
             Toggle("Show profile enabled explanation", isOn: $store.showProfileEnabledExplanation)
             Toggle("Show window closing reminder", isOn: Binding(
                 get: { !hideCloseKeepsRunningHint },
-                set: { hideCloseKeepsRunningHint = !$0 }))
+                    set: { state.setClosingReminder($0) }))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 4)

@@ -19,7 +19,7 @@ struct DeviceCorrectionEditorView: View {
     let onPersistDraft: (@MainActor (AutoEQEditorDraft, Bool) -> Void)?
 
     let catalog = DeviceMeasurementCatalog.online
-    @StateObject var history = CorrectionEditorHistory()
+    @StateObject var history = EditorSnapshotHistory<AutoEQEditorDraft>(actionName: "Edit Auto EQ", coalescingInterval: 0)
     @StateObject var loadCoordinator = DeviceCorrectionLoadCoordinator()
 
     @State var deviceName: String
@@ -172,20 +172,19 @@ struct DeviceCorrectionEditorView: View {
         }
         .frame(minWidth: embedded ? nil : 700, idealWidth: embedded ? nil : 760,
             minHeight: embedded ? nil : 620, idealHeight: embedded ? nil : 720)
-        .modifier(EditorHistoryCommands(history: history))
+        .modifier(EditorHistoryCommands(history: history, isExclusive: !embedded))
         .onAppear {
             updateDeviceMatchAvailability()
-            history.current = editorSnapshot
-            history.restore = { snapshot in
-                generated = snapshot.generated
-                targetSelection = snapshot.target
-                policy = snapshot.policy
-                autoEQSettings = snapshot.settings
-                targetChosen = snapshot.targetChosen
+            if !embedded {
+                history.current = persistentDraft
+                history.restore = restoreDraft
             }
+            onPersistDraft?(persistentDraft, false)
         }
-        .onChange(of: editorSnapshot) { history.record($0) }
-        .onChange(of: persistentDraft) { onPersistDraft?($0, false) }
+        .onChange(of: persistentDraft) {
+            if !embedded { history.record($0) }
+            onPersistDraft?($0, false)
+        }
         .onChange(of: sampleRate) { _ in
             generated = nil
             generatedAutomaticHeadroomDB = 0
@@ -216,7 +215,6 @@ struct DeviceCorrectionEditorView: View {
         .onChange(of: searchText) { newValue in
             searchResults = []
             guard newValue != deviceName else { return }
-            history.reset()
             loadCoordinator.sourceGeneration &+= 1
             selectedCatalogID = nil
             targetChosen = false
@@ -266,8 +264,6 @@ struct DeviceCorrectionEditorView: View {
             importResponse(result, asTarget: true)
         }
         .onDisappear {
-            // The serial writer owns queued saves; navigation need not wait on disk.
-            onPersistDraft?(persistentDraft, false)
             if !accepted { Task { await onPreview?(nil) } }
             history.restore = nil
             loadCoordinator.sourceGeneration &+= 1

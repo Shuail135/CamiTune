@@ -147,7 +147,7 @@ package struct ProfileDeviceTypeDraft {
 }
 
 /// Pure settings preflight. Applying or abandoning a draft does not persist it.
-package struct ProfileSettingsDraft {
+package struct ProfileSettingsDraft: Equatable, Sendable {
     package let original: DeviceProfile
     package let originalActivation: ProfileActivationMode
     package var name: String
@@ -306,4 +306,43 @@ package struct ProfileSettingsDraft {
         return result
     }
 
+}
+
+extension DeviceProfile {
+    /// Replay only fields owned by this settings transaction. Live volume,
+    /// inherited defaults, plug-in parameters and unrelated edits remain current.
+    package func restoringSettings(_ value: DeviceProfile, replacing previous: DeviceProfile) throws -> DeviceProfile {
+        guard id == value.id, id == previous.id else { throw ProfileSettingsError.staleDraft }
+        var result = self
+        func restore<Value: Equatable>(_ key: WritableKeyPath<DeviceProfile, Value>) {
+            let desired = value[keyPath: key], old = previous[keyPath: key]
+            guard desired != old else { return }
+            result[keyPath: key] = desired
+        }
+        restore(\.name)
+        restore(\.outputDevice)
+        restore(\.endpointKind)
+        restore(\.deviceTypeConfigurations)
+        restore(\.physicalChannelProcessing)
+        restore(\.speakerTopologyNeedsReview)
+        restore(\.multichannel)
+        restore(\.speakerVerification)
+        restore(\.personalSpatialByEndpoint)
+        restore(\.personalReferenceCorrections)
+        restore(\.audioInterface)
+        restore(\.sectionLayout)
+        restore(\.playbackModesByEndpoint)
+        restore(\.sampleRate)
+        restore(\.audioBufferOverride)
+        restore(\.playbackMode)
+        restore(\.spatialRenderingMode)
+        restore(\.spatialSettings)
+        restore(\.speakerTopology)
+        restore(\.spatialContentMode)
+        restore(\.virtualSurroundLayout)
+        restore(\.spatialListenerProfile)
+        restore(\.spatialAcousticProfile)
+        restore(\.processing)
+        return result
+    }
 }

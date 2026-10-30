@@ -1,5 +1,31 @@
 import Foundation
 
+/// The plain-language Spatial choices map to the existing correction contracts.
+/// This is an editing intent; the saved device correction remains authoritative.
+package enum SpatialSoundSignature: String, CaseIterable, Sendable {
+    case original, natural, balanced
+
+    package var target: DeviceCorrectionTargetPreset? {
+        switch self {
+        case .original: return nil
+        case .natural: return .diffuseFieldReference
+        case .balanced: return .neutral
+        }
+    }
+
+    package init?(device: SpatialPlaybackDevice) {
+        guard let correction = device.correction, correction.isEnabled, device.strength > 0 else {
+            self = .original
+            return
+        }
+        switch correction.targetSelection.preset {
+        case .diffuseFieldReference: self = .natural
+        case .neutral: self = .balanced
+        default: return nil
+        }
+    }
+}
+
 package enum HeadphoneEnclosure: String, Codable, Hashable, CaseIterable, Sendable {
     case unknown, openBack, closedBack, semiOpen
 
@@ -103,6 +129,13 @@ package struct SpatialPlaybackDevice: Codable, Hashable, Sendable {
 
     package var correctionMatchesType: Bool {
         correction.map { resolvedType.supportsCorrection(from: $0.sources) } ?? true
+    }
+
+    package mutating func removeCorrection() {
+        // Older saved models derive their wearing type from the measurement.
+        // Keep that catalog fact when the user chooses the device's own sound.
+        if catalogForm == nil, measurementForms.count == 1 { catalogForm = measurementForms.first }
+        correction = nil
     }
 
     private enum CodingKeys: String, CodingKey {

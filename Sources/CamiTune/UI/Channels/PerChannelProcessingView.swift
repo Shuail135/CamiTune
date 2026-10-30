@@ -32,6 +32,8 @@ struct PerChannelProcessingView: View {
     @StateObject var runtime = PerChannelEditorRuntime()
     @StateObject var bandReduction = UIBackgroundOperation<[EQBand]>()
     @State var runtimeVisualsActive = false
+    @State private var isExpanded = false
+    @State private var observedSettings: ChannelProcessingPresentationSnapshot?
 
     var profileIsActive: Bool {
         state.isActive && state.activeProfileID == profile.id
@@ -64,7 +66,19 @@ struct PerChannelProcessingView: View {
             if convolutionOnly {
                 editorContent
             } else {
-                GroupBox { editorContent.padding(6) }
+                DisclosureGroup(isExpanded: $isExpanded) {
+                    editorContent.padding(.top, 8)
+                } label: {
+                    Text("Channel Processing").font(.headline)
+                        .uiInteractionAnchor("channel-processing-disclosure")
+                }
+                .disclosureGroupStyle(SectionDisclosureStyle {
+                    if isExpanded {
+                        PerChannelResetButton(status: runtime.status,
+                            presentation: equalizerPresentation, onReset: resetSelectedChannel)
+                            .disabled(editableChannels.isEmpty || bandReduction.isRunning)
+                    }
+                })
             }
         }
         .alert("Recalculate Equalizer Bands?", isPresented: $showBandReductionConfirmation) {
@@ -77,22 +91,36 @@ struct PerChannelProcessingView: View {
         } message: {
             Text(bandReductionConfirmationMessage)
         }
-        .onChange(of: state.historyReplayRevision) { _ in loadSelectedChannel() }
         .onAppear {
-            runtimeVisualsActive = true
-            loadSelectedChannelIfNeeded()
+            refreshProcessingPresentation()
+            runtimeVisualsActive = convolutionOnly || isExpanded
+            if runtimeVisualsActive { loadSelectedChannelIfNeeded() }
         }
         .onChange(of: profile.id) { _ in
             selectionScope = .groups
             selectedGroupID = nil
             selectedChannelIndex = 0
-            loadSelectedChannel()
+            observedSettings = nil
+            isExpanded = false
+            refreshProcessingPresentation()
+            if convolutionOnly || isExpanded { loadSelectedChannel() }
+        }
+        .onChange(of: profile) { _ in refreshProcessingPresentation() }
+        .onReceive(state.eqDraftChanges.filter { $0 == profile.id }) { _ in
+            refreshProcessingPresentation()
+        }
+        .onChange(of: isExpanded) { expanded in
+            runtimeVisualsActive = convolutionOnly || expanded
+            if expanded { loadSelectedChannel() }
+            else { runtime.responseCalculationTask?.cancel() }
         }
         .onChange(of: editableChannels) { channels in
             if !channels.contains(where: { $0.index == selectedChannelIndex }) { selectedChannelIndex = channels.first?.index ?? 0 }
-            loadSelectedChannel()
+            if convolutionOnly || isExpanded { loadSelectedChannel() }
         }
-        .onChange(of: editableGroups) { _ in loadSelectedChannel() }
+        .onChange(of: editableGroups) { _ in
+            if convolutionOnly || isExpanded { loadSelectedChannel() }
+        }
         .onChange(of: profile.sampleRate) { _ in bandReduction.cancel(); updateResponses() }
         .onDisappear {
             if runtime.continuousEditDepth > 0 {
@@ -100,7 +128,37 @@ struct PerChannelProcessingView: View {
                 continuousEditingChanged(false)
             }
             bandReduction.cancel()
+            runtime.responseCalculationTask?.cancel()
             runtimeVisualsActive = false
+        }
+    }
+
+    private func refreshProcessingPresentation() {
+        do {
+            // Global drafts neither reveal this subsection nor prevent valid
+            // channel changes from being presented while a global edit is incomplete.
+            var draft = state.processingDrafts[profile.id] ?? .init()
+            draft.equalizer = .init()
+            let current = try ChannelProcessingPresentationSnapshot(profile: draft.applying(to: profile))
+            guard current != observedSettings else { return }
+            let previous = observedSettings
+            observedSettings = current
+            let editorWasVisible = convolutionOnly || isExpanded
+            if !convolutionOnly, previous?.profileID == current.profileID || current.hasProcessing {
+                isExpanded = true
+            }
+            if editorWasVisible, !runtime.suppressChanges, let settings = current.settings[selectedTarget] {
+                let selectedSettingsChanged = previous?.settings[selectedTarget].map {
+                    !ChannelProcessingPresentationSnapshot.sameSettings($0, settings)
+                } ?? true
+                if selectedSettingsChanged,
+                   runtime.loadedProfileID != profile.id
+                    || !ChannelProcessingPresentationSnapshot.sameSettings(settings, runtime.snapshot.processingSettings) {
+                    loadSelectedChannel()
+                }
+            }
+        } catch {
+            state.errorMessage = error.localizedDescription
         }
     }
 
@@ -108,11 +166,6 @@ struct PerChannelProcessingView: View {
         VStack(alignment: .leading, spacing: 12) {
             if !convolutionOnly {
                 if bandReduction.isRunning { ProgressView("Fitting bands…").controlSize(.small) }
-                PerChannelHeader(
-                    status: runtime.status,
-                    presentation: equalizerPresentation,
-                    onReset: resetSelectedChannel
-                )
             }
 
             if editableChannels.isEmpty {
@@ -182,6 +235,7 @@ struct PerChannelProcessingView: View {
             }
         }
         .disabled(editableChannels.isEmpty || bandReduction.isRunning)
+        .uiInteractionAnchor("channel-processing-content")
     }
 
     private var groupAndSpeakerSelector: some View {
@@ -218,18 +272,14 @@ struct PerChannelProcessingView: View {
     }
 }
 
-private struct PerChannelHeader: View {
+private struct PerChannelResetButton: View {
     @ObservedObject var status: PerChannelStatusState
     let presentation: EqualizerPresentation
     let onReset: @MainActor () -> Void
 
     var body: some View {
-        HStack {
-            Text("Channel Processing").font(.title3.bold())
-            Spacer()
-            SectionResetButton(presentation.resetTitle) { onReset() }
-                .disabled(!status.canReset)
-        }
+        SectionResetButton(presentation.resetTitle) { onReset() }
+            .disabled(!status.canReset)
     }
 }
 

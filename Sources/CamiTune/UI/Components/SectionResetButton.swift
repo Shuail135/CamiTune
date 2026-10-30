@@ -13,7 +13,7 @@ struct SectionResetButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "arrow.uturn.backward.circle")
-                .font(.system(size: 14))
+                .font(.system(size: 16))
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
         }

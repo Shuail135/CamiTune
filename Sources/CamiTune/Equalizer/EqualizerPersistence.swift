@@ -28,8 +28,20 @@ extension AppState {
         after.replacesDeviceCorrection = true
         before.ownsLegacyCorrectionTransfer = true
         after.ownsLegacyCorrectionTransfer = true
+        before.sectionLayout = try historyProfile(profile.id).sectionLayout
+        before.ownsSectionLayout = true
+        var layout = profiles.effectiveLayout(for: try historyProfile(profile.id))
+        layout.hidden.remove(.equalizer)
+        if layout.equalizer == .simpleTone { layout.equalizer = .both }
+        after.sectionLayout = layout
+        after.ownsSectionLayout = true
         setGlobalEQHistoryDraft(after, for: profile.id)
-        do { try persistEqualizerEdits(for: profile.id) }
+        do {
+            try persistEqualizerEdits(for: profile.id)
+            var updated = try historyProfile(profile.id)
+            updated.sectionLayout = layout
+            profiles.update(updated, recordLayoutHistory: false)
+        }
         catch {
             setGlobalEQHistoryDraft(before, for: profile.id)
             throw error

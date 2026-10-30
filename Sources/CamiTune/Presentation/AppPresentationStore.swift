@@ -270,9 +270,17 @@ final class AppPresentationStore: ObservableObject, @unchecked Sendable {
     }
 
     func setEqualizerPresentation(_ presentation: EqualizerPresentation, for id: String) {
+        let before = currentDocument.records[id]?.equalizerPresentation ?? .both
         mutate { document in
             guard document.records[id]?.hasBeenSeen == true else { return }
             document.records[id]?.equalizerPresentation = presentation
+        }
+        let after = currentDocument.records[id]?.equalizerPresentation ?? .both
+        if Thread.isMainThread {
+            withMainThreadHistory {
+                history?.record(actionName: "Change App Equalizer View", target: .scopedAppPresentation(id, historyScope),
+                    before: .equalizerPresentation(before), after: .equalizerPresentation(after))
+            }
         }
     }
 

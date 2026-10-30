@@ -75,6 +75,44 @@ package struct SpatialListeningScene: Codable, Hashable, Sendable {
         placements.first { $0.layout.signalSignature == layout.signalSignature } ?? .init(layout: layout)
     }
 
+    /// Version 5 stored a manual capture format. Transfer the selected placement
+    /// by semantic role: 7.1.4 height slots move when wide channels are added.
+    package mutating func migrateInputPlacement(from previous: LPCMChannelLayout, to layout: LPCMChannelLayout) throws {
+        try previous.validate()
+        guard previous.signalSignature != layout.signalSignature else { return }
+        let old = placement(for: previous)
+        var edit = SpatialListeningPlacement(layout: layout)
+        edit.distance = old.distance
+        edit.listener = old.listener
+        let sources = try sources(for: previous)
+        for source in sources where source.role != .lowFrequencyEffects {
+            guard let index = layout.roles.firstIndex(of: source.role) else { continue }
+            // Preserve supplied geometry as well as explicit placement edits.
+            if source.origin != .nominal { edit.positions[.source(index)] = source.position }
+        }
+        // Added channels have no saved placement. A legacy floor-only room or
+        // offset listener may exclude their nominal points. Initialize those
+        // new sources at the nearest existing source, preserving the user's
+        // room, listener and every previously rendered channel. These become
+        // explicit editable placements, not a relaxed geometry contract.
+        let previousPoints = sources.compactMap(\.position)
+        for (index, role) in layout.roles.enumerated() where !previous.roles.contains(role) {
+            guard var nominal = StandardSpeakerPositions.position(for: role) else { continue }
+            nominal.distanceMeters = (edit.distance ?? .near).meters
+            let point = SpeakerLayoutGeometry.vector(nominal)
+            if !acoustics.contains(point) || SpatialVector3.distance(point, edit.listener) < 1 {
+                guard let nearest = previousPoints.min(by: {
+                    SpatialVector3.distance($0, point) < SpatialVector3.distance($1, point)
+                }) else { throw PersonalSpatialError.invalidGeometry }
+                edit.positions[.source(index)] = nearest
+            }
+        }
+        if let index = placements.firstIndex(where: { $0.layout == edit.layout }) {
+            placements[index] = edit
+        } else { placements.append(edit) }
+        try validate()
+    }
+
     package func sources(for layout: LPCMChannelLayout) throws -> [SpatialListeningSource] {
         try layout.validate()
         let edit = placement(for: layout)

@@ -224,6 +224,10 @@ extension PerChannelProcessingView {
         let snapshot = runtime.snapshot
         guard runtime.loadedProfileID == profile.id,
               snapshot != runtime.persistedSnapshot else { return }
+        // Draft publication is synchronous. Keep this editor's accepted values
+        // while the disclosure observes the write, including APO rounding.
+        runtime.suppressChanges = true
+        defer { runtime.suppressChanges = false }
         if let group = selectedGroup {
             state.setGroupProcessingDraft(snapshot, for: profile.id, groupID: group.id)
         } else {
@@ -280,6 +284,7 @@ extension PerChannelProcessingView {
     }
 
     func updateResponses(using snapshot: PerChannelEditorSnapshot) {
+        guard runtimeVisualsActive, !convolutionOnly else { return }
         let sampleRate = Double(profile.sampleRate)
         let profileID = profile.id
         let channelIndex = selectedChannelIndex

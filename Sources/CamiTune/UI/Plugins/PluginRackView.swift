@@ -18,9 +18,6 @@ struct PluginRackView: View {
     @State private var errorMessage: String?
     @State private var confirmingExclusiveOutput = false
     @StateObject private var reorder = PluginRackReorderCoordinator()
-    // An actual image reserves native menu geometry; Color.clear labels collapse
-    // when SwiftUI converts them to an AppKit menu button.
-    private static let optionsMenuImage = NSImage(size: .init(width: 36, height: 24), flipped: false) { _ in true }
 
     init(state: AppState, profile: Binding<DeviceProfile>) {
         self.state = state; _profile = profile
@@ -214,10 +211,45 @@ struct PluginRackView: View {
                 }))
                 .labelsHidden().toggleStyle(.switch)
                 .disabled(busy)
-                presetMenu(slot)
+                Button {
+                    edit("Remove \(slot.plugin.name)") {
+                        $0.slots.removeAll { $0.id == slot.id }
+                        $0.midi.mappings.removeAll { $0.slotID == slot.id }
+                        $0.midi.keyboardInputDisabledSlotIDs.remove(slot.id)
+                        if $0.midi.programChangeSlotID == slot.id { $0.midi.programChangeSlotID = nil }
+                    }
+                } label: {
+                    Image(systemName: "minus.circle").frame(width: 22, height: 22)
+                }
+                .buttonStyle(.borderless)
+                .disabled(busy)
+                .accessibilityLabel("Remove \(slot.plugin.name)")
+                .accessibilityIdentifier("plugin-remove-\(slot.id)")
+                .uiInteractionAnchor("plugin-remove-\(slot.id)")
             }
         }
         .opacity(slot.isEnabled && profile.pluginRack.isEnabled ? 1 : 0.65)
+        .contentShape(Rectangle())
+        .uiInteractionAnchor("plugin-row-\(slot.id)")
+        .contextMenu {
+            Button("Save Preset…") { savePreset(slot) }.disabled(busy)
+            Button("Load Preset…") { loadPreset(slot) }.disabled(busy)
+            Button("Reset to Default") { edit("Reset \(slot.plugin.name)") { rack in
+                if let index = rack.slots.firstIndex(where: { $0.id == slot.id }) { rack.slots[index].state = nil }
+            }}.disabled(busy)
+            Divider()
+            Button("Sidechain…") { sidechainSlotID = slot.id }.disabled(busy)
+        }
+        .popover(isPresented: Binding(get: { sidechainSlotID == slot.id }, set: { if !$0 { sidechainSlotID = nil } }), arrowEdge: .bottom) {
+            PluginSidechainView(state: state, profile: profile, slot: slot) { source, bus in
+                sidechainSlotID = nil
+                edit("Change \(slot.plugin.name) Sidechain") { rack in
+                    if let index = rack.slots.firstIndex(where: { $0.id == slot.id }) {
+                        rack.slots[index].sidechain = source; rack.slots[index].sidechainBus = bus
+                    }
+                }
+            }
+        }
     }
 
     private var insertionIndex: Int? {
@@ -233,52 +265,6 @@ struct PluginRackView: View {
     private func dragSource(_ slot: AudioPluginSlot) -> some View {
         PluginRackDragSource(id: slot.id, name: slot.plugin.name, coordinator: reorder)
             .accessibilityHidden(true)
-    }
-
-    private func presetMenu(_ slot: AudioPluginSlot) -> some View {
-        Menu {
-            Button("Save Preset…") { savePreset(slot) }.disabled(busy)
-            Button("Load Preset…") { loadPreset(slot) }.disabled(busy)
-            Button("Reset to Default") { edit("Reset \(slot.plugin.name)") { rack in
-                if let index = rack.slots.firstIndex(where: { $0.id == slot.id }) { rack.slots[index].state = nil }
-            }}.disabled(busy)
-            Divider()
-            Button("Sidechain…") { sidechainSlotID = slot.id }.disabled(busy)
-            Divider()
-            Button("Remove Plug-in", role: .destructive) {
-                edit("Remove \(slot.plugin.name)") {
-                    $0.slots.removeAll { $0.id == slot.id }
-                    $0.midi.mappings.removeAll { $0.slotID == slot.id }
-                    $0.midi.keyboardInputDisabledSlotIDs.remove(slot.id)
-                    if $0.midi.programChangeSlotID == slot.id { $0.midi.programChangeSlotID = nil }
-                }
-            }.disabled(busy).accessibilityIdentifier("plugin-remove-\(slot.id)")
-        } label: {
-            Image(nsImage: Self.optionsMenuImage).contentShape(Rectangle())
-        }
-        // Keep native hit testing and focus feedback; draw the symbols separately
-        // so focus cannot dim them independently of the rack switches.
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .overlay {
-            HStack(spacing: 3) {
-                Image(systemName: "ellipsis")
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
-            }
-            .foregroundStyle(Color.primary)
-            .allowsHitTesting(false)
-        }
-        .accessibilityLabel("Options for \(slot.plugin.name)")
-        .uiInteractionAnchor("plugin-presets-\(slot.id)")
-        .popover(isPresented: Binding(get: { sidechainSlotID == slot.id }, set: { if !$0 { sidechainSlotID = nil } }), arrowEdge: .bottom) {
-            PluginSidechainView(state: state, profile: profile, slot: slot) { source, bus in
-                sidechainSlotID = nil
-                edit("Change \(slot.plugin.name) Sidechain") { rack in
-                    if let index = rack.slots.firstIndex(where: { $0.id == slot.id }) {
-                        rack.slots[index].sidechain = source; rack.slots[index].sidechainBus = bus
-                    }
-                }
-            }
-        }
     }
 
     private func edit(_ action: String, mutation: @escaping (inout PluginRack) -> Void) {

@@ -33,6 +33,11 @@ package struct DeviceProfile: Identifiable, Codable, Hashable, Sendable {
         get { personalSpatialByEndpoint[deviceTypeConfigurationKey] ?? PersonalSpatialSettings() }
         set { personalSpatialByEndpoint[deviceTypeConfigurationKey] = newValue }
     }
+    /// A saved scene is the setup record, including an explicitly generic scene.
+    /// Existing scenes remain configured without a separate completion flag.
+    package var needsPersonalSpatialSetup: Bool {
+        isPersonalListening && personalSpatialByEndpoint[deviceTypeConfigurationKey] == nil
+    }
     package var personalReferenceCorrections: [String: DeviceCorrectionProfile] = [:]
     package var audioInterface: AudioInterfaceConfiguration?
     package var sectionLayout: ProfileSectionLayout?

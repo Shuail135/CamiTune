@@ -15,21 +15,21 @@ struct AutoEQCorrectionView: View {
     init(state: AppState, profile: Binding<DeviceProfile>) {
         self.state = state
         _profile = profile
-        _draftStore = StateObject(wrappedValue: AutoEQDraftStore(url: AutoEQDraftStore.url(
-            profileID: profile.wrappedValue.id, endpoint: profile.wrappedValue.effectiveEndpointKind)))
+        _draftStore = StateObject(wrappedValue: state.autoEQDraftStore(profile: profile.wrappedValue))
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let expectedRevision = draftStore.replayRevision
+        return VStack(alignment: .leading, spacing: 12) {
             Text("Auto EQ").font(.title3.bold())
             if draftLoaded {
                 DeviceCorrectionEditorView(
                     existing: personalCorrection,
                     embedded: true,
-                    initialDraft: initialDraft,
+                    initialDraft: draftStore.latest ?? initialDraft,
                     equalizerState: equalizerState,
                     onPersistDraft: { draft, flush in
-                        draftStore.save(draft)
+                        draftStore.save(draft, expectedRevision: expectedRevision)
                         if flush { draftStore.flush() }
                     },
                     sampleRate: Double(profile.sampleRate),
@@ -39,7 +39,8 @@ struct AutoEQCorrectionView: View {
                     onCancel: {},
                     onLoad: loadCorrection
                 )
-                .id(profile.id)
+                .id(draftStore.replayRevision)
+                .id(profile.sampleRate)
             } else {
                 ProgressView().controlSize(.small).frame(maxWidth: .infinity, minHeight: 120)
             }
@@ -76,10 +77,6 @@ struct AutoEQCorrectionView: View {
         do {
             try state.loadAutoEQCorrectionDraft(correction, for: profile)
             if let latest = state.profiles.profiles.first(where: { $0.id == profile.id }) { profile = latest }
-            var layout = state.profiles.effectiveLayout(for: profile)
-            layout.hidden.remove(.equalizer)
-            if layout.equalizer == .simpleTone { layout.equalizer = .both }
-            profile.sectionLayout = layout
             state.equalizerReplacementChanges.send(profile.id)
             reload()
             let profileID = profile.id

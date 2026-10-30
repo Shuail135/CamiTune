@@ -74,6 +74,8 @@ struct AudioRuntimePlanPreparer {
     func prepare(profile original: DeviceProfile, revision: RuntimeIntentRevision,
                  services: AudioRuntimeServices,
                  phase: (String) -> Void = { _ in }) async throws -> AudioRuntimePlan {
+        let retainedAssets = ProfileAssetStorage.shared.retain(.init(profiles: [original]))
+        defer { withExtendedLifetime(retainedAssets) {} }
         let profile = try await Task.detached(priority: .userInitiated) { try Self.normalize(original) }.value
         phase("intent normalized")
         let needsTopology = try profile.validatedPhysicalSpeakerTopology() != nil || profile.validatedInterfaceConfiguration() != nil

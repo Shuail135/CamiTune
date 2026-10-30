@@ -40,8 +40,8 @@ struct AudioRuntimeServices {
     var stopSpectrum: () async -> Void
     var stopEngine: () async -> Void
     var deliveryError: () -> String?
-    var notifyActivation: () -> Void
-    var notifyDeactivation: () -> Void
+    var notifyActivation: (_ profileName: String) -> Void
+    var notifyDeactivation: (_ profileName: String) -> Void
     var sleep: (Duration) async throws -> Void
     var transitionFinished: (Bool) -> Void
 }
@@ -50,6 +50,7 @@ struct AudioRuntimeServices {
 /// to the coordinator, just as it does for asynchronous retirement.
 @MainActor
 struct SynchronousRuntimeServices {
+    let readDefaultOutput: () -> String?
     let stopPCM: () -> Void
     let closeEngineInput: () -> Void
     let stopSpectrum: () -> Void

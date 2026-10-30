@@ -122,8 +122,8 @@ struct PluginMapButton: View {
                                 var midi = profile.pluginRack.midi; midi.isEnabled = true
                                 try await state.commitPluginMIDI(midi, profileID: profile.id, action: "Enable MIDI Mapping")
                             }
-                            if state.pluginEditorHistory[slot.id] == nil { state.pluginEditorHistory[slot.id] = profile.pluginRack }
                             try await state.pluginRackManager.startMapping(slot: slot, profile: profile)
+                            state.editingPluginSlots.insert(slot.id)
                         } catch { model.error = error.localizedDescription }
                     }
                 }

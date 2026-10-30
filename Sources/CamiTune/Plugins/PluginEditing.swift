@@ -57,14 +57,16 @@ final class PluginRackReorderApply: ObservableObject {
 @MainActor
 extension AppState {
     func commitAudioBufferSize(_ frames: AudioBufferSetting?, profileID: UUID) async throws {
+        let position = history.beginPendingEdit()
+        defer { history.endPendingEdit(position) }
         let profile = try historyProfile(profileID)
         let previous = profile.audioBufferOverride
         guard previous != frames else { return }
         var draft = ProfileSettingsDraft(profile: profile, activation: profiles.activationMode(for: profile))
         draft.audioBufferOverride = frames
-        try await saveProfileSettings(draft)
+        try await saveProfileSettings(draft, historyAction: nil)
         history.record(actionName: "Change Buffer Size", contextName: profile.name, target: .profile(profileID),
-            before: .audioBuffer(previous), after: .audioBuffer(frames))
+            before: .audioBuffer(previous), after: .audioBuffer(frames), position: position)
     }
 
     func commitPluginRack(_ rack: PluginRack, profileID: UUID, action: String) async throws {
@@ -111,22 +113,16 @@ extension AppState {
     }
 
     func capturePluginState(profileID: UUID, slotID: UUID, data: Data) {
-        profiles.capturePluginState(profileID: profileID, slotID: slotID, data: data)
+        profiles.capturePluginState(profileID: profileID, slotID: slotID, data: data,
+            recordHistory: editingPluginSlots.contains(slotID))
     }
 
     func openPluginEditor(slot: AudioPluginSlot, profile: DeviceProfile) async throws {
-        if pluginEditorHistory[slot.id] == nil { pluginEditorHistory[slot.id] = profile.pluginRack }
         try await pluginRackManager.openEditor(slot: slot, profile: profile)
+        editingPluginSlots.insert(slot.id)
     }
 
     func finishPluginEditor(profileID: UUID, slotID: UUID) {
-        guard let before = pluginEditorHistory.removeValue(forKey: slotID), let profile = try? historyProfile(profileID) else { return }
-        // Only the edited slot participates in this history entry; concurrent
-        // changes to other slots or their order are preserved.
-        var previous = profile.pluginRack
-        if let old = before.slots.first(where: { $0.id == slotID }), let index = previous.slots.firstIndex(where: { $0.id == slotID }) {
-            previous.slots[index].state = old.state
-        }
-        history.record(actionName: "Edit Plug-in", contextName: profile.name, target: .profile(profileID), before: .pluginRack(previous), after: .pluginRack(profile.pluginRack))
+        editingPluginSlots.remove(slotID)
     }
 }

@@ -164,6 +164,8 @@ final class CoreAudioService {
         return await Task.detached(priority: .userInitiated) { backend.readDefaultOutput() }.value
     }
 
+    func readDefaultOutputSynchronously() -> String? { backend.readDefaultOutput() }
+
     func refreshDefaultOutput() async {
         defaultObservationRevision &+= 1
         let revision = defaultObservationRevision
@@ -380,39 +382,16 @@ final class CoreAudioService {
         } catch { return nil }
     }
 
-    func destroyAllProfileRoutingDevicesWithoutBlockingUI() async {
+    func destroyAllProfileRoutingDevicesWithoutBlockingUI() async throws {
         let backend = backend
-        await Task.detached(priority: .utility) {
-            let devices = backend.enumerateOutputs()
-            let current = backend.readDefaultOutput()
-            if let current, ProfileRoutingDescriptor.isProfileRoutingUID(current),
-               let physical = devices.first(where: { !$0.isRoutingDevice }),
-               let fresh = backend.resolve(physical.id) { try? backend.setDefaultOutput(fresh) }
-            if let bridge = backend.resolve(AudioDeviceInfo.systemAudioBridgeUID) { _ = try? backend.publishEndpoints(bridge, []) }
-        }.value
+        try await Task.detached(priority: .utility) { try backend.removeProfileEndpoints() }.value
         deviceGraphChanged()
         await refreshWithoutBlockingUI()
     }
 
-    func destroyAllProfileRoutingDevices(fallbackUID: String? = nil) {
+    func destroyAllProfileRoutingDevices() throws {
         cancelReadiness()
-        refresh()
-        let selectors = outputDevices.filter {
-            ProfileRoutingDescriptor.isProfileRoutingUID($0.id)
-        }
-        if let defaultOutputUID,
-           selectors.contains(where: { $0.id == defaultOutputUID }) {
-            let fallback = fallbackUID.flatMap { requested in
-                physicalOutputDevices.first(where: { $0.id == requested })?.id
-            } ?? physicalOutputDevices.first?.id
-            if let fallback { try? setDefaultOutput(uid: fallback) }
-        }
-
-        if let bridge = systemAudioBridge {
-            // Serialize with any cancelled publisher, including its rollback,
-            // so an in-flight publication cannot recreate devices after cleanup.
-            _ = try? backend.publishEndpoints(bridge, [])
-        }
+        try backend.removeProfileEndpoints()
         refresh()
     }
 
@@ -615,8 +594,7 @@ final class CoreAudioService {
 
     /// Synchronous application-termination/maintenance primitive; always resolve freshly.
     func setDefaultOutput(uid: String) throws {
-        guard let device = backend.resolve(uid) else { throw AudioError.deviceNotFound(uid) }
-        try backend.setDefaultOutput(device)
+        try backend.setDefaultOutputAndWaitSynchronously(uid: uid)
         defaultObservationRevision &+= 1
         snapshots.publishDefault(backend.readDefaultOutput())
     }

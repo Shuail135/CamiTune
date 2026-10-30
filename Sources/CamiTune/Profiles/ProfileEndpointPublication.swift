@@ -33,7 +33,7 @@ struct ProfileEndpointState: Equatable, Sendable {
     var payload: [String: Any] {
         var value: [String: Any] = ["deviceUID": uid, "displayName": name]
         if let format {
-            value["profileFormatVersion"] = 1; value["channelCount"] = format.channelCount
+            value["profileFormatVersion"] = Int(SABR_PROFILE_FORMAT_VERSION); value["channelCount"] = format.channelCount
             value["channelLayoutTag"] = format.layoutTag; value["supportedSampleRates"] = [format.sampleRate]
         }
         return value
@@ -104,7 +104,10 @@ enum ProfileEndpointPublication {
             do {
                 try CoreAudioPublicationCancellation.$current.withValue(nil) {
                 let current = try backend.current()
-                if !equivalent(current, previous) { try apply(from: current, to: previous, using: backend) }
+                // A timed-out HAL request may still be pending even when the
+                // acknowledged descriptors have not changed. Republish rollback
+                // to supersede that request before releasing this transaction.
+                try apply(from: current, to: previous, using: backend)
                 if let uid = defaultUID, try backend.defaultOutputUID() != uid { try backend.restoreDefaultOutput(uid) }
                 }
             } catch { throw ProfileSettingsError.rollback(failure.localizedDescription, error.localizedDescription) }
@@ -118,15 +121,9 @@ enum ProfileEndpointPublication {
 
     private static func apply(from current: [ProfileEndpointState], to desired: [ProfileEndpointState],
                               using backend: ProfileEndpointPublicationBackend) throws {
-        let retained = current.filter { old in desired.contains { $0.uid == old.uid && $0.format == old.format } }
-        let removed = current.filter { old in !retained.contains { $0.uid == old.uid } }
-        if !removed.isEmpty {
-            // The driver rejects removal while client IO runs. No partial change
-            // occurs in that case; callers can report it and retain the old route.
-            try backend.apply(retained)
-            try backend.waitForVisibility(removed, present: false)
-        }
+        let removed = current.filter { old in !desired.contains { $0.uid == old.uid } }
         try backend.apply(desired)
+        if !removed.isEmpty { try backend.waitForVisibility(removed, present: false) }
         try backend.waitForVisibility(desired, present: true)
         guard equivalent(try backend.current(), desired) else {
             throw ProfileSettingsError.runtime("The driver did not retain the requested profile formats.")
@@ -140,9 +137,9 @@ struct NativeProfileEndpointBackend: ProfileEndpointPublicationBackend {
     private var currentBridgeID: AudioObjectID { Self.resolve(AudioDeviceInfo.systemAudioBridgeUID) }
 
     func checkSupport() throws {
-        guard sabr_client_profile_format_version(currentBridgeID) == 1,
+        guard sabr_client_profile_format_version(currentBridgeID) == SABR_PROFILE_FORMAT_VERSION,
               sabr_client_transport_is_supported(currentBridgeID), sabr_client_transport_channel_count(currentBridgeID) == 32 else {
-            throw ProfileSettingsError.runtime("Profile channel formats require System Audio Bridge 0.8.0 or newer. Open Setup and select Install / Repair Everything.")
+            throw ProfileSettingsError.runtime("Live profile format changes require the current System Audio Bridge driver. Open Setup and select Install / Repair Everything.")
         }
     }
 
@@ -161,7 +158,12 @@ struct NativeProfileEndpointBackend: ProfileEndpointPublicationBackend {
     }
 
     func waitForVisibility(_ endpoints: [ProfileEndpointState], present: Bool) throws {
-        let result = CoreAudioConditionWaiter.waitSynchronously(backend: .live, event: .devices, timeout: .seconds(3)) {
+        let events: [CoreAudioEvent] = [.devices] + endpoints.flatMap { endpoint -> [CoreAudioEvent] in
+            let id = Self.resolve(endpoint.uid)
+            guard id != kAudioObjectUnknown else { return [] }
+            return [.nominalRate(id), .streamConfiguration(id), .channelLayout(id)]
+        }
+        let result = CoreAudioConditionWaiter.waitSynchronously(backend: .live, events: events, timeout: .seconds(3)) {
             present ? endpointsAreReady(endpoints) : endpoints.allSatisfy { Self.resolve($0.uid) == kAudioObjectUnknown }
         }
         waitObserver(result)
@@ -220,7 +222,7 @@ struct NativeProfileEndpointBackend: ProfileEndpointPublicationBackend {
         let status = AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil,
             UInt32(MemoryLayout<AudioObjectID>.size), &id)
         guard status == noErr else { throw ProfileSettingsError.runtime("The macOS output could not be restored (\(status)).") }
-        let result = CoreAudioConditionWaiter.waitSynchronously(backend: .live, event: .defaultOutput, timeout: .seconds(3)) {
+        let result = CoreAudioConditionWaiter.waitSynchronously(backend: .live, events: [.defaultOutput], timeout: .seconds(3)) {
             (try? self.defaultOutputUID()) == uid
         }
         waitObserver(result)

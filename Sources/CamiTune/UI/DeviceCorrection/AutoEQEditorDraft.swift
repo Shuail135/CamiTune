@@ -1,6 +1,34 @@
 import CamiTuneDomain
 import Foundation
 
+extension AutoEQEditorDraft {
+    var historyState: HistoryState {
+        var value = self
+        value.presentation = .init()
+        value.automaticHeadroomDB = 0
+        return .autoEQDraft(value)
+    }
+    func preservingPresentation(from current: Self?) -> Self {
+        var value = self
+        if let current { value.presentation = current.presentation }
+        return value
+    }
+}
+
+extension SpeakerAutoEQEditorDraft {
+    var historyState: HistoryState {
+        var value = self
+        value.presentation = .init()
+        value.automaticHeadroomDB = 0
+        return .speakerAutoEQDraft(value)
+    }
+    func preservingPresentation(from current: Self?) -> Self {
+        var value = self
+        if let current { value.presentation = current.presentation }
+        return value
+    }
+}
+
 struct SpeakerAutoEQEditorDraft: PersistedAutoEQWork {
     var schemaVersion = 1
     var sampleRate: Double

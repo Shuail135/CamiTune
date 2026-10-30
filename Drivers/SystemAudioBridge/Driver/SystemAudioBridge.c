@@ -141,6 +141,7 @@ enum
     ChangeAction_SetSampleRate          = 1,
     ChangeAction_EnablePitchControl     = 2,
     ChangeAction_DisablePitchControl    = 3,
+    ChangeAction_SetProfileFormat       = 4,
 };
 
 enum ObjectType
@@ -287,6 +288,11 @@ static CFStringRef                  gProfileDevice_Names[kProfileDevice_Count] =
  */
 static _Atomic bool                 gProfileDevice_IsLive[kProfileDevice_Count] = { false };
 static SABRProfileFormat            gProfileDevice_Formats[kProfileDevice_Count] = {0};
+// The host owns permission to change a live stream. Each publication supersedes
+// older requests; a late Perform/Abort must not apply a retired configuration.
+static SABRProfileFormat            gProfileDevice_RequestedFormats[kProfileDevice_Count] = {0};
+static UInt64                      gProfileDevice_FormatActions[kProfileDevice_Count] = {0};
+static UInt64                      gProfileFormatSequence = 0;
 static _Atomic UInt32               gProfileDevice_LayoutTags[kProfileDevice_Count] = {0};
 static _Atomic UInt64               gProfileDevice_RateBits[kProfileDevice_Count] = {0};
 static _Atomic UInt64               gProfileDevice_TicksBits[kProfileDevice_Count] = {0};
@@ -798,6 +804,44 @@ static void notify_profile_devices(
     }
 }
 
+// Called with the state lock held and, for an existing endpoint, only after HAL
+// has stopped IO through PerformDeviceConfigurationChange.
+static void set_profile_format(UInt32 slot, SABRProfileFormat format)
+{
+    gProfileDevice_Formats[slot] = format;
+    atomic_store_explicit(&gProfileDevice_LayoutTags[slot], format.channelLayoutTag, memory_order_release);
+    atomic_store_explicit(&gProfileDevice_RateBits[slot], sabr_double_to_bits(format.sampleRate), memory_order_release);
+    Float64 ticks = 0;
+    if(format.sampleRate > 0)
+    {
+        struct mach_timebase_info timebase;
+        mach_timebase_info(&timebase);
+        ticks = 1e9 * (Float64)timebase.denom / timebase.numer / format.sampleRate;
+    }
+    atomic_store_explicit(&gProfileDevice_TicksBits[slot], sabr_double_to_bits(ticks), memory_order_release);
+}
+
+static void request_profile_format_change(AudioObjectID device, UInt64 action)
+{
+    pthread_mutex_lock(&gPlugIn_StateMutex);
+    const bool current = is_profile_device_id(device) &&
+        gProfileDevice_UIDs[profile_device_index(device)] != NULL &&
+        gProfileDevice_FormatActions[profile_device_index(device)] == action;
+    pthread_mutex_unlock(&gPlugIn_StateMutex);
+    if(!current) { return; }
+    const OSStatus status = gPlugIn_Host->RequestDeviceConfigurationChange(gPlugIn_Host, device, action, NULL);
+    if(status != noErr)
+    {
+        pthread_mutex_lock(&gPlugIn_StateMutex);
+        if(is_profile_device_id(device))
+        {
+            UInt32 slot = profile_device_index(device);
+            if(gProfileDevice_FormatActions[slot] == action) { gProfileDevice_FormatActions[slot] = 0; }
+        }
+        pthread_mutex_unlock(&gPlugIn_StateMutex);
+    }
+}
+
 static OSStatus set_profile_devices(CFArrayRef profiles)
 {
     if(profiles == NULL || CFGetTypeID(profiles) != CFArrayGetTypeID())
@@ -818,6 +862,8 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
     bool addedSlots[kProfileDevice_Count] = { false };
     bool removedSlots[kProfileDevice_Count] = { false };
     bool changedNames[kProfileDevice_Count] = { false };
+    UInt64 formatActions[kProfileDevice_Count] = {0};
+    AudioObjectID formatDevices[kProfileDevice_Count] = {0};
     bool deviceListChanged = false;
     OSStatus result = noErr;
 
@@ -932,11 +978,13 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
         if(gProfileDevice_UIDs[slot] != NULL &&
             !sabr_profile_format_equal(gProfileDevice_Formats[slot], requestedFormats[index]))
         {
-            // HAL owns the lifetime of an advertised stream format. A control
-            // command cannot resize buffers behind an existing client, even idle.
-            result = kAudioHardwareIllegalOperationError;
-            pthread_mutex_unlock(&gPlugIn_StateMutex);
-            goto Cleanup;
+            if(gPlugIn_Host == NULL || gPlugIn_Host->RequestDeviceConfigurationChange == NULL ||
+                gProfileFormatSequence > (UINT64_MAX >> 8) - kProfileDevice_Count)
+            {
+                result = kAudioHardwareIllegalOperationError;
+                pthread_mutex_unlock(&gPlugIn_StateMutex);
+                goto Cleanup;
+            }
         }
     }
 
@@ -958,6 +1006,7 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
         removedSlots[slot] = previousUIDs[slot] != NULL && !assignedSlots[slot];
         if(removedSlots[slot])
         {
+            gProfileDevice_FormatActions[slot] = 0;
             // Publish death before releasing the CF objects. Removed slots are
             // guaranteed not to have running IO by the check above.
             atomic_store_explicit(
@@ -1000,17 +1049,8 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
         addedSlots[slot] = previousUIDs[slot] == NULL;
         if(addedSlots[slot])
         {
-            gProfileDevice_Formats[slot] = requestedFormats[index];
-            atomic_store_explicit(&gProfileDevice_LayoutTags[slot], requestedFormats[index].channelLayoutTag, memory_order_release);
-            atomic_store_explicit(&gProfileDevice_RateBits[slot], sabr_double_to_bits(requestedFormats[index].sampleRate), memory_order_release);
-            Float64 ticks = 0;
-            if(requestedFormats[index].sampleRate > 0)
-            {
-                struct mach_timebase_info timebase;
-                mach_timebase_info(&timebase);
-                ticks = 1e9 * (Float64)timebase.denom / timebase.numer / requestedFormats[index].sampleRate;
-            }
-            atomic_store_explicit(&gProfileDevice_TicksBits[slot], sabr_double_to_bits(ticks), memory_order_release);
+            set_profile_format(slot, requestedFormats[index]);
+            gProfileDevice_FormatActions[slot] = 0;
             // All profile metadata and persistent IO state are ready before a
             // real-time callback can accept this object ID.
             atomic_store_explicit(
@@ -1018,6 +1058,19 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
                 true,
                 memory_order_release
             );
+        }
+        else if(sabr_profile_format_equal(gProfileDevice_Formats[slot], requestedFormats[index]))
+        {
+            // Rollback can arrive before the host performs a pending change.
+            gProfileDevice_FormatActions[slot] = 0;
+        }
+        else if(gProfileDevice_FormatActions[slot] == 0 ||
+            !sabr_profile_format_equal(gProfileDevice_RequestedFormats[slot], requestedFormats[index]))
+        {
+            gProfileDevice_RequestedFormats[slot] = requestedFormats[index];
+            formatActions[slot] = (++gProfileFormatSequence << 8) | ChangeAction_SetProfileFormat;
+            gProfileDevice_FormatActions[slot] = formatActions[slot];
+            formatDevices[slot] = profile_device_id(slot);
         }
         if(previousNames[slot] != NULL)
         {
@@ -1034,6 +1087,16 @@ static OSStatus set_profile_devices(CFArrayRef profiles)
         deviceListChanged = deviceListChanged || removedSlots[slot];
     }
     pthread_mutex_unlock(&gPlugIn_StateMutex);
+
+    for(UInt32 slot = 0; slot < kProfileDevice_Count; ++slot)
+    {
+        if(formatActions[slot] == 0) { continue; }
+        const AudioObjectID device = formatDevices[slot];
+        const UInt64 action = formatActions[slot];
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            request_profile_format_change(device, action);
+        });
+    }
 
     if(gPlugIn_Host != NULL)
     {
@@ -1828,6 +1891,36 @@ static OSStatus	SystemAudioBridge_PerformDeviceConfigurationChange(AudioServerPl
 	
 	//	check the arguments
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_PerformDeviceConfigurationChange: bad driver reference");
+    if((inChangeAction & 0xff) == ChangeAction_SetProfileFormat)
+    {
+        pthread_mutex_lock(&gPlugIn_StateMutex);
+        if(is_profile_device_id(inDeviceObjectID))
+        {
+            const UInt32 slot = profile_device_index(inDeviceObjectID);
+            if(gProfileDevice_UIDs[slot] != NULL && gProfileDevice_FormatActions[slot] == inChangeAction)
+            {
+                struct DeviceIOState* state = &gProfileDeviceIOStates[slot];
+                const uint64_t admission = atomic_load_explicit(&state->completionAdmission.state, memory_order_acquire);
+                if(state->runningCount != 0 || (admission & (SABR_COMPLETION_OPEN | SABR_COMPLETION_USERS)) != 0 ||
+                    (admission != 0 && !(admission & SABR_COMPLETION_SEALED)))
+                {
+                    theAnswer = kAudioHardwareIllegalOperationError;
+                }
+                else { set_profile_format(slot, gProfileDevice_RequestedFormats[slot]); }
+                gProfileDevice_FormatActions[slot] = 0;
+            }
+        }
+        pthread_mutex_unlock(&gPlugIn_StateMutex);
+        // HAL refreshes the stream, channel layout and rate before restarting
+        // the registered clients. Publish the private acknowledgement as well.
+        if(gPlugIn_Host != NULL)
+        {
+            AudioObjectPropertyAddress address = { SABR_TRANSPORT_PROPERTY,
+                kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
+            gPlugIn_Host->PropertiesChanged(gPlugIn_Host, kObjectID_Device, 1, &address);
+        }
+        goto Done;
+    }
     FailWithAction(!is_device_object(inDeviceObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_PerformDeviceConfigurationChange: bad device ID");
     switch(inChangeAction)
     {
@@ -1859,7 +1952,10 @@ static OSStatus	SystemAudioBridge_PerformDeviceConfigurationChange(AudioServerPl
             bool relatedIOIsRunning = gMainDeviceIOState.runningCount > 0;
             for(UInt32 slot = 0; slot < kProfileDevice_Count && !relatedIOIsRunning; ++slot)
             {
-                relatedIOIsRunning = gProfileDeviceIOStates[slot].runningCount > 0;
+                // Versioned profile endpoints have independent rates/clocks.
+                // Their clients do not use the main device's timing snapshot.
+                relatedIOIsRunning = gProfileDevice_Formats[slot].version == 0 &&
+                    gProfileDeviceIOStates[slot].runningCount > 0;
             }
             pthread_mutex_unlock(&gPlugIn_StateMutex);
             FailWithAction(relatedIOIsRunning, theAnswer = kAudioHardwareIllegalOperationError, Done, "SystemAudioBridge_PerformDeviceConfigurationChange: related device IO is running");
@@ -1901,6 +1997,11 @@ static OSStatus	SystemAudioBridge_PerformDeviceConfigurationChange(AudioServerPl
                 };
                 for(UInt32 index = 0; index < relatedCount; ++index)
                 {
+                    if(relatedDevices[index] != kObjectID_Device &&
+                        atomic_load_explicit(&gProfileDevice_RateBits[profile_device_index(relatedDevices[index])], memory_order_acquire) != 0)
+                    {
+                        continue;
+                    }
                     if(relatedDevices[index] != inDeviceObjectID)
                     {
                         gPlugIn_Host->PropertiesChanged(
@@ -1944,6 +2045,17 @@ static OSStatus	SystemAudioBridge_AbortDeviceConfigurationChange(AudioServerPlug
 	
 	//	check the arguments
 	FailWithAction(inDriver != gAudioServerPlugInDriverRef, theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_PerformDeviceConfigurationChange: bad driver reference");
+    if((inChangeAction & 0xff) == ChangeAction_SetProfileFormat)
+    {
+        pthread_mutex_lock(&gPlugIn_StateMutex);
+        if(is_profile_device_id(inDeviceObjectID))
+        {
+            UInt32 slot = profile_device_index(inDeviceObjectID);
+            if(gProfileDevice_FormatActions[slot] == inChangeAction) { gProfileDevice_FormatActions[slot] = 0; }
+        }
+        pthread_mutex_unlock(&gPlugIn_StateMutex);
+        goto Done;
+    }
 	FailWithAction(!is_device_object(inDeviceObjectID), theAnswer = kAudioHardwareBadObjectError, Done, "SystemAudioBridge_PerformDeviceConfigurationChange: bad device ID");
 
 Done:

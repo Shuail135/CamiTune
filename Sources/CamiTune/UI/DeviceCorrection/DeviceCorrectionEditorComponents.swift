@@ -224,7 +224,6 @@ struct AutoEQSearchField<Entry: Identifiable>: View {
                                     .frame(height: resultRowHeight)
                                     .contentShape(Rectangle())
                                     .padding(.horizontal, 8)
-                                    .help(title(entry))
                             }.buttonStyle(.plain)
                                 .uiInteractionAnchor("autoeq-search-result-\(entry.id)")
                         }
@@ -289,13 +288,17 @@ struct AutoEQGenerateButton: View {
 @MainActor
 struct EditorHistoryCommands<Snapshot: Equatable>: ViewModifier {
     @ObservedObject var history: EditorSnapshotHistory<Snapshot>
-    var isExclusive = false
+    var isExclusive = true
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.undoCommandRouter) private var router
 
     func body(content: Content) -> some View {
-        content.background(EditorHistoryRegistration(manager: history.manager, revision: history.revision,
-            isEnabled: isEnabled && !history.isEditing, isExclusive: isExclusive, router: router))
+        content.background {
+            if isExclusive {
+                EditorHistoryRegistration(manager: history.manager, revision: history.revision,
+                    isEnabled: isEnabled && !history.isEditing, router: router)
+            }
+        }
     }
 }
 
@@ -306,12 +309,11 @@ private struct EditorHistoryRegistration: NSViewRepresentable {
     let manager: UndoManager
     let revision: Int
     let isEnabled: Bool
-    let isExclusive: Bool
     let router: UndoCommandRouter?
 
     func makeNSView(context: Context) -> EditorHistoryCommandView { EditorHistoryCommandView() }
     func updateNSView(_ view: EditorHistoryCommandView, context: Context) {
-        view.configure(manager: manager, revision: revision, isEnabled: isEnabled, isExclusive: isExclusive, router: router)
+        view.configure(manager: manager, revision: revision, isEnabled: isEnabled, router: router)
     }
     static func dismantleNSView(_ view: EditorHistoryCommandView, coordinator: ()) {
         view.router?.unregister(view)
@@ -324,12 +326,12 @@ final class EditorHistoryCommandView: NSView {
     private(set) weak var router: UndoCommandRouter?
     private var revision: Int?
     private var commandsEnabled = false
-    private(set) var isExclusive = false
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    func configure(manager: UndoManager, revision: Int, isEnabled: Bool, isExclusive: Bool, router: UndoCommandRouter?) {
-        let changed = self.revision != nil && self.revision != revision
+    func configure(manager: UndoManager, revision: Int, isEnabled: Bool, router: UndoCommandRouter?) {
+        guard self.manager !== manager || self.revision != revision
+                || commandsEnabled != isEnabled || self.router !== router else { return }
         if self.router !== router {
             self.router?.unregister(self)
             self.router = router
@@ -338,8 +340,6 @@ final class EditorHistoryCommandView: NSView {
         self.manager = manager
         self.revision = revision
         commandsEnabled = isEnabled
-        self.isExclusive = isExclusive
-        if changed { router?.editorDidChange(self) }
         router?.refreshCommands()
     }
 

@@ -65,7 +65,7 @@ extension CoreAudioConditionWaiter {
             while self.revision == revision && !expired { condition.wait() }
         }
     }
-    static func waitSynchronously(backend: CoreAudioHALBackend, event: CoreAudioEvent,
+    static func waitSynchronously(backend: CoreAudioHALBackend, events: [CoreAudioEvent],
                                   timeout: Duration, condition: @escaping @Sendable () -> Bool) -> CoreAudioWaitResult {
         let start = ContinuousClock.now
         func result(_ source: CoreAudioWaitResult.Source) -> CoreAudioWaitResult {
@@ -75,10 +75,10 @@ extension CoreAudioConditionWaiter {
         if condition() { return result(.immediate) }
         let signal = Signal()
         let cancellation = CoreAudioPublicationCancellation.current?.observe { signal.wake(.cancelled) }
-        let listener = backend.subscribe(event) { signal.wake(.notification) }
+        let listeners = events.compactMap { event in backend.subscribe(event) { signal.wake(.notification) } }
         let fallback = backend.schedule(timeout / 2) { signal.wake(.fallback) }
         let deadline = backend.schedule(timeout) { signal.wake(.deadline) }
-        defer { listener?.cancel(); fallback.cancel(); deadline.cancel(); cancellation?.cancel() }
+        defer { listeners.forEach { $0.cancel() }; fallback.cancel(); deadline.cancel(); cancellation?.cancel() }
         // Capture the event revision before checking so a racing notification
         // between the read and condition.wait cannot be lost.
         var first = true

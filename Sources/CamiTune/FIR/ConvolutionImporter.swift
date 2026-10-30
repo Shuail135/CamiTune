@@ -29,6 +29,8 @@ struct ConvolutionImporter: ViewModifier {
                 let sampleRate = context.sampleRate
                 isImporting = true
                 task = Task {
+                    let access = ProfileAssetStorage.shared.beginAccess()
+                    defer { withExtendedLifetime(access) {} }
                     let imported = await Task.detached(priority: .userInitiated) {
                         Result {
                             let access = url.startAccessingSecurityScopedResource()

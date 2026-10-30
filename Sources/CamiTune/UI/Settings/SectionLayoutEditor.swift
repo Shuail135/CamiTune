@@ -41,6 +41,14 @@ struct SectionLayoutEditor: View {
                 Picker("Default Equalizer", selection: $layout.equalizer) {
                     ForEach(EqualizerPresentation.allCases) { Text($0.title).tag($0) }
                 }
+                Toggle("Channel Processing inside Equalizer", isOn: Binding(
+                    get: { !layout.hidden.contains(.perChannel) },
+                    set: { shown in
+                        var updated = layout
+                        if shown { updated.hidden.remove(.perChannel) }
+                        else { updated.hidden.insert(.perChannel) }
+                        confirmedLayout.wrappedValue = updated
+                    }))
                 Label("Drag the reorder symbol to arrange sections. Unchecked sections stop processing and keep their saved settings.", systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary)
                 SectionLayoutList(type: type, layout: confirmedLayout)
@@ -91,7 +99,7 @@ final class SectionLayoutTableView: NSTableView, NSTableViewDataSource, NSTableV
     private(set) var sectionLayout = ProfileSectionLayout()
     private var onChange: (ProfileSectionLayout) -> Void = { _ in }
     private var sections: [ProfileSection] {
-        sectionLayout.normalizedOrder.filter { $0.applies(to: endpoint) }
+        sectionLayout.normalizedOrder.filter { $0 != .perChannel && $0.applies(to: endpoint) }
     }
 
     override init(frame frameRect: NSRect) {

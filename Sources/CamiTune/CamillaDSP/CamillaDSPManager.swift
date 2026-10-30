@@ -3,6 +3,38 @@ import CamiTuneDomain
 import Foundation
 import Darwin
 
+/// Owns a child before its background launch starts. Launch and retirement share
+/// a barrier so synchronous app termination cannot miss a not-yet-published PID.
+final class CamillaDSPProcess: @unchecked Sendable {
+    private let lock = NSLock()
+    private let process: Process
+    private var retired = false
+
+    init(_ process: Process) { self.process = process }
+    deinit { stop(graceSteps: 0) }
+
+    var isRunning: Bool { lock.withLock { process.isRunning } }
+
+    func launch() throws {
+        try lock.withLock {
+            guard !retired else { throw CancellationError() }
+            try process.run()
+        }
+    }
+
+    func stop(graceSteps: Int) {
+        lock.withLock {
+            guard !retired else { return }
+            retired = true
+            guard process.isRunning else { return }
+            process.terminate()
+            for _ in 0..<graceSteps where process.isRunning { usleep(50_000) }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            process.waitUntilExit()
+        }
+    }
+}
+
 @MainActor
 final class CamillaDSPManager: ObservableObject {
     @Published private(set) var isRunning = false
@@ -12,7 +44,7 @@ final class CamillaDSPManager: ObservableObject {
     // port (1234), which may already be occupied by a manual/legacy setup.
     private let controlPort: UInt16
     let rpc: CamillaRPC
-    private var process: Process?
+    private var process: CamillaDSPProcess?
     private var inputPipe: Pipe?
     private var hasAppliedConfig = false
     private var clockPollingTask: Task<Void, Never>?
@@ -41,35 +73,42 @@ final class CamillaDSPManager: ObservableObject {
                 at: logDirectory,
                 withIntermediateDirectories: true
             )
-            FileManager.default.createFile(atPath: logURL.path, contents: nil)
-            let handle = try FileHandle(forWritingTo: logURL)
-            try handle.seekToEnd()
-            return handle
+            try Data().write(to: logURL)
+            return try FileHandle(forWritingTo: logURL)
         }.value
         guard shouldContinue() else { try? handle.close(); throw CancellationError() }
 
-        let port = controlPort
-        let (p, pipe) = try await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            process.executableURL = binary
-            process.arguments = ["--address", "127.0.0.1", "--port", String(port), "--wait", "--gain=-20", "--logfile", logURL.path]
-            process.standardOutput = handle
-            process.standardError = handle
-            let pipe = Pipe()
-            process.standardInput = pipe
-            try process.run()
-            return (process, pipe)
-        }.value
-        p.terminationHandler = { [weak self] _ in
-            guard let self else { return }
+        let p = Process()
+        p.executableURL = binary
+        // Rotation gives the engine its own _rCURRENT.log file. Keep only
+        // raw startup errors and panics in the separate, per-launch base log.
+        p.arguments = [
+            "--address", "127.0.0.1", "--port", String(controlPort), "--wait", "--gain=-20",
+            "--loglevel", "warn", "--logfile", logURL.path,
+            "--log_rotate_size", "1048576", "--log_keep_nbr", "2"
+        ]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = handle
+        let pipe = Pipe()
+        p.standardInput = pipe
+        let child = CamillaDSPProcess(p)
+        p.terminationHandler = { [weak self, weak child] _ in
+            guard let self, let child else { return }
             Task { @MainActor in
+                guard self.process === child else { return }
                 self.isRunning = false
             }
         }
         inputPipe = pipe
-        process = p
+        process = child
         hasAppliedConfig = false
+        try await Task.detached(priority: .userInitiated) {
+            defer { try? handle.close() }
+            try child.launch()
+        }.value
+        guard process === child, shouldContinue() else { throw CancellationError() }
         try await connectWithRetry(shouldContinue: shouldContinue)
+        guard process === child, shouldContinue() else { throw CancellationError() }
         isRunning = true
     }
 
@@ -179,19 +218,7 @@ final class CamillaDSPManager: ObservableObject {
         }
 
         closeAudioInput()
-        if childProcess.isRunning {
-            childProcess.terminate()
-            // App termination cannot await an async task. Give only this app's
-            // child process a short grace period, then guarantee it cannot be
-            // orphaned and keep CoreAudio/control ports open after quit.
-            for _ in 0..<10 where childProcess.isRunning {
-                usleep(50_000)
-            }
-            if childProcess.isRunning {
-                kill(childProcess.processIdentifier, SIGKILL)
-            }
-            childProcess.waitUntilExit()
-        }
+        childProcess.stop(graceSteps: 10)
         self.process = nil
         hasAppliedConfig = false
         isRunning = false
@@ -199,24 +226,17 @@ final class CamillaDSPManager: ObservableObject {
 
     func stop() async {
         stopClockObservations()
+        let childProcess = process
         await closeAudioInputWithoutBlockingUI()
         // Disconnecting first also aborts a stuck in-flight RPC. Waiting for an
         // "Exit" reply here could otherwise make profile switching hang forever.
         await rpc.disconnect()
-        if let childProcess = process {
-            if childProcess.isRunning {
-                childProcess.terminate()
-                for _ in 0..<8 where childProcess.isRunning {
-                    try? await Task.sleep(for: .milliseconds(50))
-                }
-                if childProcess.isRunning {
-                    kill(childProcess.processIdentifier, SIGKILL)
-                }
-            }
+        if let childProcess {
             await Task.detached(priority: .utility) {
-                childProcess.waitUntilExit()
+                childProcess.stop(graceSteps: 8)
             }.value
         }
+        guard process === childProcess else { return }
         process = nil
         hasAppliedConfig = false
         isRunning = false

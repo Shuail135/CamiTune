@@ -2,12 +2,41 @@ import CamiTuneDomain
 import Foundation
 
 enum HistoryTarget: Hashable, Sendable {
+    case autoEQ(UUID, ProfileEndpointKind), speakerAutoEQ(UUID)
+    case globalSettings, preference(AppHistoryPreference)
     case scopedAppPresentation(String, PerAppSettingsScope), scopedAppPresentationDocument(PerAppSettingsScope)
     case scopedApplication(String, PerAppSettingsScope), scopedApplications(PerAppSettingsScope)
     case profile(UUID), profileChannel(UUID, Int), application(String)
     case applicationPresentation(String), applicationPresentationDocument, profileOrganization
     case referenceCorrection(UUID), speakerSystem(UUID)
     case profileGroup(UUID, SpeakerGroupID)
+    case plugin(UUID, UUID)
+}
+
+enum AppHistoryPreference: Hashable, Sendable {
+    case appearance, closingReminder, enabledExplanation, automaticUpdates, notifications, loginStartup
+}
+
+struct ProfileSettingsHistoryState: Equatable, Sendable {
+    var profile: DeviceProfile
+    var replacing: DeviceProfile
+    var routing: ProfileRoutingHistoryState
+}
+
+struct ProfileRoutingHistoryState: Equatable, Sendable {
+    var defaults: [PhysicalDeviceDefaultProfile]
+    var outputUIDs: Set<String>
+    var autoActivation: [UUID: Bool]
+}
+
+struct ProfileLayoutHistoryState: Equatable, Sendable {
+    var profileID: UUID
+    var layout: ProfileSectionLayout?
+}
+
+struct AudioBufferHistoryState: Equatable, Sendable {
+    var defaultValue: AudioBufferSetting
+    var overrides: [UUID: AudioBufferSetting?]
 }
 
 struct GlobalEQHistoryState: Equatable, Sendable {
@@ -19,6 +48,8 @@ struct GlobalEQHistoryState: Equatable, Sendable {
     var deviceCorrectionProvenance: DeviceCorrectionProfile?
     var deviceCorrection: DeviceCorrectionProfile? = nil
     var ownsLegacyCorrectionTransfer = false
+    var sectionLayout: ProfileSectionLayout? = nil
+    var ownsSectionLayout = false
 }
 struct CrossfeedHistoryState: Equatable, Sendable {
     var processor: CrossfeedProcessor
@@ -59,10 +90,19 @@ struct ProfileDeletionSnapshot: Equatable, Sendable {
     var selectedProfileID: UUID?
 }
 enum HistoryState: Equatable, Sendable {
+    case autoEQDraft(AutoEQEditorDraft), speakerAutoEQDraft(SpeakerAutoEQEditorDraft)
+    case profileSettings(ProfileSettingsHistoryState), profileEnabled(Bool)
+    case routing(ProfileRoutingHistoryState)
+    case defaultLayout(ProfileEndpointKind, ProfileSectionLayout), profileLayouts([ProfileLayoutHistoryState])
+    case globalAudioBuffer(AudioBufferHistoryState)
+    case boolean(Bool), appearance(String)
+    case appAudioScope(usesGlobal: Bool)
     case personalSpatial(context: String, settings: PersonalSpatialSettings)
     case pluginOrder([UUID])
     case pluginRack(PluginRack)
     case pluginMIDI(PluginMIDIConfiguration)
+    case pluginState(Data?)
+    case equalizerPresentation(EqualizerPresentation)
     case audioBuffer(AudioBufferSetting?)
     case deviceCorrection(DeviceCorrectionProfile?)
     case globalEQ(GlobalEQHistoryState), channel(PerChannelEditorSnapshot)
@@ -82,8 +122,13 @@ struct HistoryCoalescingKey: Hashable, Sendable {
     var control: String
 }
 typealias GestureKey = HistoryCoalescingKey
+struct HistoryPosition: Hashable, Comparable, Sendable {
+    let ordinal: UInt64
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.ordinal < rhs.ordinal }
+}
 struct HistoryEntry: Identifiable, Equatable, Sendable {
     let id: UUID
+    let position: HistoryPosition
     let actionName: String
     let contextName: String?
     let target: HistoryTarget
@@ -102,6 +147,38 @@ enum HistoryRestoreError: LocalizedError {
         case .invalidOrganization: return "The profile organization has changed and cannot be restored."
         case .busy: return "Finish the current profile operation before undoing this edit."
         }
+    }
+}
+
+extension HistoryState {
+    var assetReferences: ProfileAssetReferences {
+        var references = ProfileAssetReferences()
+        switch self {
+        case .convolution(let value):
+            if let processor = value.processor { references.include(processor) }
+        case .convolutionBatch(let values):
+            for value in values.values {
+                if let processor = value.processor { references.include(processor) }
+            }
+        case .roomCorrectionImport(let value):
+            for chain in value.channels.values { references.include(chain) }
+            if let seat = value.seat { references.include(seat) }
+        case .speakerSystem(let value):
+            if let seat = value.seat { references.include(seat) }
+        case .deletion(let value, _):
+            references = .init(profiles: value.profiles)
+        case .profileSettings(let value):
+            references = .init(profiles: [value.profile, value.replacing])
+        case .autoEQDraft, .speakerAutoEQDraft, .profileEnabled, .routing,
+             .defaultLayout, .profileLayouts, .globalAudioBuffer, .boolean, .appearance, .appAudioScope:
+            break
+        case .personalSpatial, .pluginOrder, .pluginRack, .pluginMIDI, .pluginState, .equalizerPresentation, .audioBuffer,
+             .deviceCorrection, .globalEQ, .channel, .crossfeed, .perAppAudio, .perAppBatch,
+             .appAlias, .appPlacement, .profileName, .profileOrganization,
+             .referenceCorrection, .referenceTransfer, .multichannel:
+            break
+        }
+        return references
     }
 }
 

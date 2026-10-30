@@ -4,8 +4,20 @@ import SwiftUI
 
 @MainActor
 extension DeviceCorrectionEditorView {
-    var editorSnapshot: CorrectionEditorSnapshot {
-        .init(generated: generated, target: targetSelection, policy: policy, settings: autoEQSettings, targetChosen: targetChosen)
+    func restoreDraft(_ snapshot: AutoEQEditorDraft) {
+        loadCoordinator.sourceGeneration &+= 1
+        loadCoordinator.deviceMatchGeneration &+= 1
+        isGenerating = false; isLoadingMeasurements = false; isLoadingDeviceMatch = false
+        deviceName = snapshot.deviceName; searchText = snapshot.searchText
+        selectedCatalogID = snapshot.selectedCatalogID
+        sourceMeasurements = snapshot.sourceMeasurements; measurement = snapshot.measurement
+        policy = snapshot.policy; autoEQSettings = snapshot.settings
+        targetChosen = snapshot.targetChosen; targetSelection = snapshot.targetSelection
+        customTarget = snapshot.customTarget
+        deviceMatchSearchText = snapshot.deviceMatchSearchText
+        selectedDeviceMatchCatalogID = snapshot.selectedDeviceMatchCatalogID
+        deviceMatchConsensus = snapshot.deviceMatchConsensus
+        generated = snapshot.generated; generatedAutomaticHeadroomDB = snapshot.automaticHeadroomDB
     }
 
     var trimmedDeviceName: String {

@@ -112,7 +112,8 @@ package struct ProfileSectionLayout: Codable, Hashable, Sendable {
     }
 
     package func visualDemand(for profile: DeviceProfile) -> (meters: Bool, spectrum: Bool) {
-        let sections = editorSections(for: profile)
+        let sections = profile.pluginRack.outputMode == .exclusive
+            ? editorSections(for: profile) : visibleSections(for: profile)
         return (sections.contains(.meters) || sections.contains(.equalizer) || sections.contains(.perChannel),
                 sections.contains(.spectrum) || (sections.contains(.equalizer) && equalizer != .simpleTone))
     }
@@ -157,8 +158,16 @@ package struct ProfileSectionLayout: Codable, Hashable, Sendable {
     /// or the section enablement used to validate native processing settings.
     package func editorSections(for profile: DeviceProfile) -> [ProfileSection] {
         let sections = visibleSections(for: profile)
-        guard profile.pluginRack.outputMode == .exclusive else { return sections }
-        return sections.filter { $0 == .deviceSetup || $0 == .plugins || $0 == .meters || $0 == .appAudio }
+        if profile.pluginRack.outputMode == .exclusive {
+            return sections.filter { $0 == .deviceSetup || $0 == .plugins || $0 == .meters || $0 == .appAudio }
+        }
+        // Channel processing lives inside the Equalizer card, but retains its
+        // independent processing enablement, including when global EQ is hidden.
+        return normalizedOrder.filter {
+            if $0 == .perChannel { return false }
+            if $0 == .equalizer { return sections.contains(.equalizer) || sections.contains(.perChannel) }
+            return sections.contains($0)
+        }
     }
     package mutating func move(_ section: ProfileSection, before destination: ProfileSection?) {
         let section = section.consolidated

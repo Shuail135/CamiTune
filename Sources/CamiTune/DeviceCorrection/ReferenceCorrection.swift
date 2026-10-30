@@ -69,8 +69,12 @@ enum SpatialHeadphoneCorrection {
     }
 
     static func prepare(entry: DeviceCatalogEntry, measurements: [DeviceCorrectionMeasurement],
-                        target: DeviceCorrectionTargetPreset) throws -> SpatialPlaybackDevice {
-        guard let path = try paths(measurements: measurements).first(where: { $0.target == target }) else {
+                        target: DeviceCorrectionTargetPreset, typeOverride: SpatialDeviceType? = nil) throws -> SpatialPlaybackDevice {
+        var result = describe(entry)
+        result.typeOverride = typeOverride
+        guard let path = try paths(measurements: measurements).first(where: {
+            $0.target == target && result.resolvedType.supportsCorrection(from: $0.sources)
+        }) else {
             throw PersonalSpatialError.invalidHeadphoneCorrection
         }
         let ids = Set(path.sources.map(\.id))
@@ -80,7 +84,6 @@ enum SpatialHeadphoneCorrection {
         let correction = try DeviceCorrectionEngine().generate(deviceName: entry.displayName, measurements: compatible,
             target: resolved.response, targetSelection: selection, policy: .recommended, filterCount: 12,
             sampleRate: 44_100, targetConfidence: resolved.confidence)
-        var result = describe(entry)
         result.correction = correction
         try result.validate()
         return result
@@ -103,6 +106,8 @@ extension AppState {
     }
 
     func importReferenceToEqualizer(profile original: DeviceProfile, expectedDraft: String?) async throws {
+        let position = history.beginPendingEdit()
+        defer { history.endPendingEdit(position) }
         guard eqDraft(for: original.id) == expectedDraft,
               let correction = original.personalReferenceCorrection else { throw ProfileSettingsError.staleDraft }
         let before = ReferenceTransferHistoryState(correction: original.personalReferenceCorrection,
@@ -122,13 +127,13 @@ extension AppState {
         layout.hidden.remove(.equalizer)
         if layout.equalizer == .simpleTone { layout.equalizer = .both }
         draft.sectionLayout = layout
-        try await saveProfileSettings(draft)
+        try await saveProfileSettings(draft, historyAction: nil)
         let latest = try historyProfile(original.id)
         let after = ReferenceTransferHistoryState(correction: latest.personalReferenceCorrection,
             globalEQ: try globalEQHistoryState(for: latest), sectionLayout: latest.sectionLayout)
         referenceCorrectionSessions[original.id] = ReferenceCorrectionSession(draft: latest.personalReferenceCorrection)
         history.record(actionName: "Import Reference to Equalizer", contextName: original.name, target: .profile(original.id),
-            before: .referenceTransfer(before), after: .referenceTransfer(after))
+            before: .referenceTransfer(before), after: .referenceTransfer(after), position: position)
 
     }
 }

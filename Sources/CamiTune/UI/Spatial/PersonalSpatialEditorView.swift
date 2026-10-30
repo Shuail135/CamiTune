@@ -6,6 +6,7 @@ import SwiftUI
 struct PersonalSpatialEditorView: View {
     @ObservedObject var state: AppState
     let profile: DeviceProfile
+    let openSetup: () -> Void
     @State private var draft: PersonalSpatialSettings
     @State private var selectionPreference: String?
     @State private var activeInputChannels: Set<Int> = []
@@ -22,7 +23,7 @@ struct PersonalSpatialEditorView: View {
     @State private var viewportResetRevision = 0
 
     private enum Sheet: Hashable, Identifiable {
-        case device, deviceType, speaker(VirtualSpeakerGroup), applications
+        case speaker(VirtualSpeakerGroup), applications
         var id: Self { self }
     }
     private struct Audition {
@@ -30,16 +31,16 @@ struct PersonalSpatialEditorView: View {
         let sourceID: String
     }
 
-    init(state: AppState, profile: DeviceProfile) {
+    init(state: AppState, profile: DeviceProfile, openSetup: @escaping () -> Void) {
         self.state = state
         self.profile = profile
+        self.openSetup = openSetup
         _draft = State(initialValue: profile.personalSpatial)
         _preparation = State(initialValue: state.pcmRouter.personalSpatialPreparationStatus)
     }
 
     private var active: Bool { state.isActive && state.activeProfileID == profile.id }
     private var canAudition: Bool { active && pendingSettings == nil && preparation == .active(draft.renderIntent) }
-    private var genericName: String { profile.effectiveEndpointKind == .iem ? "Generic IEM" : "Generic Headphones" }
     private var listening: Bool { draft.experience == .spatialListening }
     private var movieVisible: Bool { listening && draft.movie.enabled && active }
     private var adjustable: Bool { listening || draft.scene.roomModel == .generic }
@@ -56,38 +57,16 @@ struct PersonalSpatialEditorView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(profile.effectiveEndpointKind == .iem ? "Earphones" : "Headphones")
+                Text(draft.playbackDevice.flatMap { $0.id == nil ? nil : $0.name } ?? "My model isn’t listed").foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
-                Text(draft.playbackDevice?.name ?? genericName).foregroundStyle(.secondary).lineLimit(1)
-                Button("Change…") { sheet = .device }
-                    .accessibilityLabel("Change playback device model")
+                Button("Set Up…", action: openSetup)
+                    .disabled(state.spatialCalibrationContext != nil)
+                    .uiInteractionAnchor("spatial-open-setup")
             }
-            HStack {
-                Text(draft.playbackDevice?.resolvedType.summary ?? "Device type not identified")
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button(draft.playbackDevice?.resolvedType.needsDetails != false ? "Confirm type…" : "Change type…") { sheet = .deviceType }
-                    .accessibilityLabel("Change listening device type")
-            }
-            if draft.playbackDevice?.id == nil {
-                Text("Choose your model for a closer match.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else if draft.playbackDevice?.correction == nil {
-                Text("Generic spatial rendering · no model correction applied.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            JoinedSegmentedControl(options: PersonalSpatialExperience.allCases, selection: Binding(
-                get: { draft.experience }, set: { draft.experience = $0; resetViewport(); commit() }
-            ), title: { $0.title })
-                .accessibilityLabel("Spatial experience")
-                .uiInteractionAnchor("personal-spatial-experience")
-            Text(listening ? "Hear sounds around you, in the positions carried by your audio."
-                : "Hear a matching speaker set or the measured SADIE II studio. Movie settings are saved for Spatial listening.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if listening {
-                Text("Input bus: \(SpatialSourceFormat(layout: draft.inputLayout).displayName) · \(activeInputChannels.count) channels with recent signal")
+                Text("Automatic input: up to \(SpatialSourceFormat(layout: draft.inputLayout).displayName) · \(activeInputChannels.count) channels with recent signal")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("The input bus does not identify the original track format. For already binaural or game-headphone audio, use the app's Direct override.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+
             }
             HStack {
                 Text("Listening distance")
@@ -109,7 +88,6 @@ struct PersonalSpatialEditorView: View {
                         .frame(maxWidth: 220)
                         .accessibilityLabel("Listening distance")
                         .uiInteractionAnchor("personal-spatial-distance")
-                        .help("Starts with sounds closer to you or farther away. You can move them in Fine-tune.")
                 } else {
                     Spacer()
                     Text("1.5 m · measured room").foregroundStyle(.secondary)
@@ -117,19 +95,18 @@ struct PersonalSpatialEditorView: View {
             }
             HStack {
                 Text("Room")
+                DeviceCorrectionHelpIcon(title: "Room", message: adjustable
+                    ? "Adds reflections around the sound sources. At zero, you hear the direct sound without the added room."
+                    : "Adjusts the recorded room tail. At 100%, you hear the complete measured studio response.")
                 SteppedValueSlider(value: Binding(get: { Double(draft.room) }, set: {
                     draft.room = Float($0)
                     if active { state.pcmRouter.setPersonalRoom(draft.room) }
                 }), in: 0...1, step: 0.01, style: .preamp, onEditingChanged: { if !$0 { commit() } })
                     .accessibilityLabel("Room")
-                    .help(adjustable
-                        ? "Adds reflections around the sound sources. At zero, you hear the direct sound without the added room."
-                        : "Adjusts the recorded room tail. At 100%, you hear the complete measured studio response.")
                 Text("\(Int((draft.room * 100).rounded()))%").monospacedDigit().frame(width: 38, alignment: .trailing)
             }
             if listening {
             Toggle("Movie mode", isOn: Binding(get: { draft.movie.enabled }, set: { draft.movie.enabled = $0; commit() }))
-                .help("Makes dialogue and loud moments easier to follow. Uses audio from apps playing through CamiTune.")
             if draft.movie.enabled {
                 HStack {
                     Text("Apps")
@@ -141,7 +118,6 @@ struct PersonalSpatialEditorView: View {
                 Picker("Detection", selection: Binding(get: { draft.movie.detector }, set: { draft.movie.detector = $0; commit() })) {
                     ForEach(MovieDetector.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
-                .help("Basic estimates broad audio patterns. Local AI uses Apple's on-device classifier with about one second of context. Local AI measured about 1–2% of one M2 CPU core in analysis-only tests; total app usage depends on your setup. Audio stays on this Mac. Neither option separates dialogue from music.")
                 if active {
                     Text(movieAnalysis.title).font(.caption).foregroundStyle(.secondary)
                     if case .unavailable(let reason) = movieAnalysis {
@@ -162,10 +138,7 @@ struct PersonalSpatialEditorView: View {
                 Text(reason).font(.caption).foregroundStyle(.orange)
             }
             if let error { Text(error).font(.caption).foregroundStyle(.orange) }
-            if !active {
-                Text("Activate this profile to hear changes and test its speakers.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+
         }
         .font(.callout)
         .disabled(pendingSettings != nil || state.transitionInProgress || state.isSavingProfileSettings)
@@ -190,18 +163,6 @@ struct PersonalSpatialEditorView: View {
         }
         .sheet(item: $sheet) { destination in
             switch destination {
-            case .device:
-                SpatialDevicePicker(endpoint: profile.effectiveEndpointKind, genericName: genericName, current: draft.playbackDevice) { choice in
-                    draft.playbackDevice = choice
-                    sheet = nil
-                    commit()
-                }
-            case .deviceType:
-                SpatialDeviceTypePicker(device: draft.playbackDevice ?? .init(name: genericName, source: "Generic")) { choice in
-                    draft.playbackDevice = choice
-                    sheet = nil
-                    commit()
-                }
             case .speaker(let group):
                 SpatialSpeakerPicker(group: group) { sound in
                     draft.scene.assign(sound, to: group)
@@ -243,36 +204,10 @@ struct PersonalSpatialEditorView: View {
                 ForEach(VirtualSpeakerLayout.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             if adjustable { speakerSetup }
-            else if draft.scene.layout.hasSubwoofer {
-                Text("The studio speakers use measured responses. The added subwoofer is generic; SADIE II has no measured subwoofer response.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
             if draft.scene.layout.hasSurrounds {
                 Toggle("Surround ambience for stereo", isOn: Binding(get: { draft.scene.stereoAmbience }, set: { draft.scene.stereoAmbience = $0; commit() }))
-                    .help("Adds stereo difference information to surround speakers while centered sounds stay in front. Multichannel tracks keep their own channels.")
-                Text("Stereo stays in front unless ambience is on. Multichannel tracks use the speakers carried by the recording.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            } else {
-                Picker("Receive audio", selection: Binding(get: { draft.inputLayout }, set: {
-                    draft.inputLayout = $0
-                    activeInputChannels = []
-                    resetViewport(); commit()
-                })) {
-                    ForEach(inputLayouts, id: \.self) { layout in
-                        Text(SpatialSourceFormat(layout: layout).displayName).tag(layout)
-                    }
-                }
-                Text("Choose the format offered to your apps. Changing it may require selecting CamiTune again in the source app. Stereo remains stereo within a surround bus.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if draft.playbackDevice?.correction != nil {
-                valueSlider(profile.effectiveEndpointKind == .iem ? "Earphone correction" : "Headphone correction",
-                    value: Binding(get: { Double(draft.playbackDevice?.strength ?? 0) }, set: { draft.playbackDevice?.strength = Float($0) }),
-                    range: 0...1, text: "\(Int(((draft.playbackDevice?.strength ?? 0) * 100).rounded()))%")
-                    .help(deviceCorrectionHelp)
-            }
-
             if adjustable {
                 Divider()
                 HStack(spacing: 4) {
@@ -282,16 +217,27 @@ struct PersonalSpatialEditorView: View {
                     Spacer()
                     SectionResetButton("Reset spatial fit") { draft.hrtf = .init(); commit() }
                 }
-                valueSlider("Direction detail", value: Binding(get: { Double(draft.hrtf.strength) }, set: { draft.hrtf.strength = Float($0) }),
-                    range: 0...1.5, step: 0.01, text: "\(Int((draft.hrtf.strength * 100).rounded()))%")
-                    .help("Strength of the fine ear-shape cues in the HRTF. Reduce it if the sound is hollow or seems above you. Timing and broad head-shadow cues remain at zero.")
-                valueSlider("Ear size", value: Binding(get: { Double(draft.hrtf.earSize) }, set: { draft.hrtf.earSize = Float($0) }),
-                    range: 0.8...1.2, step: 0.01, text: "\(Int((draft.hrtf.earSize * 100).rounded()))%")
-                    .disabled(draft.hrtf.strength == 0)
-                    .help("Shifts the fine spectral cues associated with ear size. Adjust until a front speaker sounds naturally in front, rather than above you.")
-                valueSlider("Head size", value: Binding(get: { Double(draft.hrtf.headSize) }, set: { draft.hrtf.headSize = Float($0) }),
-                    range: 0.8...1.2, step: 0.01, text: "\(Int((draft.hrtf.headSize * 100).rounded()))%")
-                    .help("Adjusts the arrival-time difference between your ears. Use a left or right speaker's test and listen for a clear, stable direction.")
+                ValueKnobRow(minimumHorizontalWidth: 450) {
+                    ValueKnob(title: "Direction detail", value: Binding(get: { Double(draft.hrtf.strength) }, set: { draft.hrtf.strength = Float($0) }),
+                        range: 0...1.5, step: 0.01, resetValue: Double(PersonalHRTFTuning().strength),
+                        formattedValue: "\(Int((draft.hrtf.strength * 100).rounded()))%", titleLines: 2, centersResetValue: true,
+                        help: "Strength of the fine ear-shape cues in the HRTF. Reduce it if the sound is hollow or seems above you. Timing and broad head-shadow cues remain at zero.",
+                        onEditingChanged: { if !$0 { commit() } })
+                        .uiInteractionAnchor("personal-spatial-Direction detail")
+                    ValueKnob(title: "Ear size", value: Binding(get: { Double(draft.hrtf.earSize) }, set: { draft.hrtf.earSize = Float($0) }),
+                        range: 0.8...1.2, step: 0.01, resetValue: Double(PersonalHRTFTuning().earSize),
+                        formattedValue: "\(Int((draft.hrtf.earSize * 100).rounded()))%", titleLines: 2,
+                        help: "Shifts the fine spectral cues associated with ear size. Adjust until a front speaker sounds naturally in front, rather than above you.",
+                        onEditingChanged: { if !$0 { commit() } })
+                        .disabled(draft.hrtf.strength == 0)
+                        .uiInteractionAnchor("personal-spatial-Ear size")
+                    ValueKnob(title: "Head size", value: Binding(get: { Double(draft.hrtf.headSize) }, set: { draft.hrtf.headSize = Float($0) }),
+                        range: 0.8...1.2, step: 0.01, resetValue: Double(PersonalHRTFTuning().headSize),
+                        formattedValue: "\(Int((draft.hrtf.headSize * 100).rounded()))%", titleLines: 2,
+                        help: "Adjusts the arrival-time difference between your ears. Use a left or right speaker's test and listen for a clear, stable direction.",
+                        onEditingChanged: { if !$0 { commit() } })
+                        .uiInteractionAnchor("personal-spatial-Head size")
+                }
 
                 Divider()
                 HStack(spacing: 4) {
@@ -306,22 +252,28 @@ struct PersonalSpatialEditorView: View {
                 }
                 valueSlider("Room size", value: Binding(get: { Double(draft.acoustics.size) }, set: { draft.acoustics.size = Float($0) }),
                     range: Double(draft.acoustics.minimumSize(containing: placementPoints))...1.5,
-                    step: 0.01, text: "\(Int((draft.acoustics.size * 100).rounded()))%")
-                    .help("Moves the walls and changes echo spacing. The minimum keeps the current sound sources inside; moving a source does not move the walls.")
-                Text(roomDimensions).font(.caption).foregroundStyle(.secondary)
-                valueSlider("Early reflections", value: Binding(get: { Double(draft.acoustics.earlyReflectionsDB) }, set: { draft.acoustics.earlyReflectionsDB = Float($0) }),
-                    range: -12...3, step: 0.1, text: String(format: "%+.1f dB", draft.acoustics.earlyReflectionsDB))
-                    .help("Level of the first wall, floor and ceiling echoes. More can make speakers feel farther from your head; less keeps the sound drier.")
-                valueSlider("Diffusion", value: Binding(get: { Double(draft.acoustics.diffusion) }, set: { draft.acoustics.diffusion = Float($0) }),
-                    range: 0...1, step: 0.01, text: "\(Int((draft.acoustics.diffusion * 100).rounded()))%")
-                    .help("How quickly later echoes blend into a smooth room tail. Lower values keep echoes more distinct.")
-                valueSlider("Reverberation time", value: Binding(get: { Double(draft.acoustics.decaySeconds) }, set: { draft.acoustics.decaySeconds = Float($0) }),
-                    range: 0.15...0.8, step: 0.01, text: String(format: "%.2f s", draft.acoustics.decaySeconds))
-                    .help("How long the room sound lingers after a sound stops.")
-                if draft.room == 0 {
-                    Text("Room is off. Raise Room to hear these room settings.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    step: 0.01, text: "\(Int((draft.acoustics.size * 100).rounded()))%", help: roomSizeHelp)
+                ValueKnobRow(minimumHorizontalWidth: 450) {
+                    ValueKnob(title: "Early reflections", value: Binding(get: { Double(draft.acoustics.earlyReflectionsDB) }, set: { draft.acoustics.earlyReflectionsDB = Float($0) }),
+                        range: -12...3, step: 0.1, resetValue: Double(PersonalSpatialRoom().earlyReflectionsDB),
+                        formattedValue: String(format: "%+.1f dB", draft.acoustics.earlyReflectionsDB), titleLines: 2, centersResetValue: true,
+                        help: "Level of the first wall, floor and ceiling echoes. More can make speakers feel farther from your head; less keeps the sound drier.",
+                        onEditingChanged: { if !$0 { commit() } })
+                        .uiInteractionAnchor("personal-spatial-Early reflections")
+                    ValueKnob(title: "Diffusion", value: Binding(get: { Double(draft.acoustics.diffusion) }, set: { draft.acoustics.diffusion = Float($0) }),
+                        range: 0...1, step: 0.01, resetValue: Double(PersonalSpatialRoom().diffusion),
+                        formattedValue: "\(Int((draft.acoustics.diffusion * 100).rounded()))%", titleLines: 2,
+                        help: "How quickly later echoes blend into a smooth room tail. Lower values keep echoes more distinct.",
+                        onEditingChanged: { if !$0 { commit() } })
+                        .uiInteractionAnchor("personal-spatial-Diffusion")
+                    ValueKnob(title: "Reverberation time", value: Binding(get: { Double(draft.acoustics.decaySeconds) }, set: { draft.acoustics.decaySeconds = Float($0) }),
+                        range: 0.15...0.8, step: 0.01, resetValue: Double(PersonalSpatialRoom().decaySeconds),
+                        formattedValue: String(format: "%.2f s", draft.acoustics.decaySeconds), titleLines: 2,
+                        help: "How long the room sound lingers after a sound stops.",
+                        onEditingChanged: { if !$0 { commit() } })
+                        .uiInteractionAnchor("personal-spatial-Reverberation time")
                 }
+
             }
 
             Divider()
@@ -338,8 +290,6 @@ struct PersonalSpatialEditorView: View {
             }
             canvas.frame(height: nodes.count > 2 ? 430 : 270)
             HStack(spacing: 8) {
-                Text("Drag empty space to pan. Scroll to move the page.")
-                    .font(.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
                 SectionResetButton("Reset View") { resetViewport() }
                     .uiInteractionAnchor("personal-map-reset")
@@ -355,11 +305,6 @@ struct PersonalSpatialEditorView: View {
                 Spacer()
                 Button(audition?.sourceID == selected ? "Stop" : "Test") { play(selected) }
                     .disabled(!canAudition)
-                    .help(active ? "Plays a short test through the selected virtual speaker." : "Activate this profile to test a speaker.")
-            }
-            if listening, let source = listeningSources.first(where: { $0.id.rawValue == selected }) {
-                Text("\(source.origin.title) · \(source.role.speakerLayer == .height ? "Height channel" : "Source channel")")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             if adjustable {
                 valueSlider("Azimuth", value: Binding(get: { Double(selectedPosition.azimuthDegrees) }, set: { moveSelected(azimuth: Float($0)) }),
@@ -384,7 +329,6 @@ struct PersonalSpatialEditorView: View {
             if !listening && draft.scene.layout.hasSubwoofer {
                 valueSlider("Bass crossover", value: Binding(get: { Double(draft.scene.crossoverHz) }, set: { draft.scene.crossoverHz = Float($0) }),
                     range: 40...160, step: 1, text: String(format: "%.0f Hz", draft.scene.crossoverHz))
-                    .help("Sends bass below this frequency to the virtual subwoofer, along with the source LFE channel.")
                 if adjustable, let recommended = draft.scene.recommendedCrossoverHz {
                     HStack {
                         Text(String(format: "Suggested from the speakers' measured bass extension: %.0f Hz", recommended))
@@ -397,7 +341,6 @@ struct PersonalSpatialEditorView: View {
                     range: -12...6, step: 0.1, text: String(format: "%+.1f dB", draft.scene.subwooferDB))
                 valueSlider("Sub bass extension", value: Binding(get: { Double(draft.scene.subwoofer.extensionHz) }, set: { draft.scene.subwoofer.extensionHz = Float($0) }),
                     range: 15...60, step: 1, text: String(format: "%.0f Hz", draft.scene.subwoofer.extensionHz))
-                    .help("The generic subwoofer's lower −3 dB frequency, with a 12 dB/octave roll-off. Set it from a subwoofer specification or tune it by ear. This is not a measured branded subwoofer.")
             }
             if listening && draft.movie.enabled {
                 Divider()
@@ -412,41 +355,28 @@ struct PersonalSpatialEditorView: View {
                 }
                 valueSlider("Dialogue Clarity", value: Binding(get: { Double(draft.movie.dialogueClarity) }, set: { draft.movie.dialogueClarity = Float($0) }),
                     range: 0...1, text: "\(Int((draft.movie.dialogueClarity * 100).rounded()))%")
-                    .help("Raises a real center channel, or adds broad voice presence when there is no center. Other sounds sharing those channels also change.")
                 Picker("Dynamics", selection: Binding(get: { draft.movie.dynamics }, set: { draft.movie.dynamics = $0; commit() })) {
                     ForEach(MovieDynamics.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
-                .help("Original preserves dynamics. Balanced softens peaks; Night reduces larger level differences. All channels share one fast gain control.")
                 valueSlider("Music preservation", value: Binding(get: { Double(draft.movie.musicPreservation) }, set: { draft.movie.musicPreservation = Float($0) }),
                     range: 0...1, text: "\(Int((draft.movie.musicPreservation * 100).rounded()))%")
-                    .help("Eases speech enhancement and room reduction when music or singing is detected.")
                 valueSlider("Room reduction", value: Binding(get: { Double(draft.movie.roomReduction) }, set: { draft.movie.roomReduction = Float($0) }),
                     range: 0...1, text: "\(Int((draft.movie.roomReduction * 100).rounded()))%")
-                    .help("Reduces only the added late room sound during speech, up to 3 dB. It leaves source positions and early reflections intact.")
                 valueSlider("Adaptation", value: Binding(get: { Double(draft.movie.adaptation) }, set: { draft.movie.adaptation = Float($0) }),
                     range: 0...1, text: "\(Int((draft.movie.adaptation * 100).rounded()))%")
-                    .help("Controls how much detection can adjust your manual settings. At zero, analysis stops and only manual clarity and dynamics remain.")
                 valueSlider("Response speed", value: Binding(get: { Double(draft.movie.responseSpeed) }, set: { draft.movie.responseSpeed = Float($0) }),
                     range: 0...1, text: "\(Int((draft.movie.responseSpeed * 100).rounded()))%")
-                    .help("How quickly context adjustments settle: 200–500 ms to engage, 1–2 seconds to release. Peak protection responds separately.")
                 valueSlider("Extra reduction limit", value: Binding(get: { Double(draft.movie.additionalReductionLimitDB) }, set: { draft.movie.additionalReductionLimitDB = Float($0) }),
                     range: 0...6, step: 0.5, text: String(format: "%.1f dB", draft.movie.additionalReductionLimitDB))
-                    .help("Caps the extra level reduction analysis may request beyond Balanced or Night dynamics. Original ignores this adjustment; no automatic makeup boost is added.")
             }
         }.padding(.top, 6)
     }
 
     private var speakerSetup: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(draft.scene.layout == .source
-                ? "The map follows your audio. Choosing a speaker model starts a stereo set; choose a larger setup whenever you want."
-                : "\(draft.scene.layout.roles.count) speakers\(draft.scene.layout.hasSubwoofer ? " + 1 generic subwoofer" : ""). Your chosen model fills the set automatically. You can change individual speakers below.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if draft.scene.layout.hasSurrounds || draft.scene.layout == .source {
                 DisclosureGroup("Customize speakers", isExpanded: $customizeSpeakers) {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Optional: mix models for dialogue, side or rear speakers. Leave them matching for a complete set with one choice.")
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         ForEach(VirtualSpeakerGroup.allCases.filter { $0 != .front && $0.roles.contains(where: draft.scene.layout.roles.contains) }, id: \.self) {
                             speakerModelRow($0)
                         }
@@ -486,24 +416,16 @@ struct PersonalSpatialEditorView: View {
         }
     }
 
-    private var deviceCorrectionHelp: String {
-        guard let correction = draft.playbackDevice?.correction else { return "" }
-        let target = DeviceCorrectionTargetCatalog().displayName(for: correction.targetSelection.preset, sources: correction.sources)
-        return "AutoEq · \(target). 0% bypasses the measured model correction; 100% applies it fully. User EQ remains separate."
-    }
-    private var roomDimensions: String {
+    private var roomSizeHelp: String {
         let bounds = draft.acoustics.bounds
         return String(format: "Room · %.1f m wide × %.1f m deep × %.1f m high",
             bounds.maximum.x - bounds.minimum.x, bounds.maximum.y - bounds.minimum.y, bounds.maximum.z - bounds.minimum.z)
+            + "\n\nMoves the walls and changes echo spacing. The minimum keeps the current sound sources inside; moving a source does not move the walls."
     }
     private var visibleRoles: [ChannelRole] {
         draft.scene.layout == .source ? VirtualSpeakerScene.roles.filter { knownRoles.contains($0) } : draft.scene.layout.speakerRoles
     }
     private static let zero = SpatialVector3(x: 0, y: 0, z: 0)
-    private var inputLayouts: [LPCMChannelLayout] {
-        [.mono, .stereo, .quad, .fivePointOne, .sevenPointOne, .fivePointOnePointTwo, .fivePointOnePointFour,
-         .sevenPointOnePointTwo, .sevenPointOnePointFour, .ninePointOnePointSix]
-    }
     private var listeningSources: [SpatialListeningSource] { (try? draft.listening.sources(for: draft.inputLayout)) ?? [] }
     private var distanceSelection: ListeningDistance? {
         guard listening else { return draft.scene.isCustom ? nil : draft.scene.resetPreset }
@@ -557,9 +479,12 @@ struct PersonalSpatialEditorView: View {
         case .selectedApplications(let ids): return "Selected apps (\(ids.count))"
         }
     }
-    private func valueSlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double? = nil, text: String) -> some View {
+    private func valueSlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double? = nil, text: String, help: String? = nil) -> some View {
         HStack {
-            Text(title).frame(width: 145, alignment: .leading)
+            HStack(spacing: 4) {
+                Text(title)
+                if let help { DeviceCorrectionHelpIcon(title: title, message: help) }
+            }.frame(width: 145, alignment: .leading)
             SteppedValueSlider(value: value, in: range, step: step, style: .preamp, onEditingChanged: { if !$0 { commit() } }).accessibilityLabel(title)
             Text(text).monospacedDigit().frame(width: 65, alignment: .trailing)
         }.uiInteractionAnchor("personal-spatial-\(title)")
@@ -599,8 +524,10 @@ struct PersonalSpatialEditorView: View {
         var roles = knownRoles
         var channels = Set<Int>()
         for diagnostics in state.perAppAudio.spatialInputDiagnostics.values {
-            if diagnostics.declaredLayout.signalSignature == draft.inputLayout.signalSignature {
-                channels.formUnion(diagnostics.activeChannels)
+            for index in diagnostics.activeChannels where diagnostics.declaredLayout.roles.indices.contains(index) {
+                if let slot = draft.inputLayout.roles.firstIndex(of: diagnostics.declaredLayout.roles[index]) {
+                    channels.insert(slot)
+                }
             }
             for index in diagnostics.provenChannels where diagnostics.declaredLayout.roles.indices.contains(index) {
                 let role = diagnostics.declaredLayout.roles[index]

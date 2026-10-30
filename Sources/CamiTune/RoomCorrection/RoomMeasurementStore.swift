@@ -3,12 +3,11 @@ import CamiTuneDomain
 import AVFoundation
 import Foundation
 
-/// Serializes retention, manifest commits and quit-time cleanup. A retained file
-/// awaiting its manifest must survive cleanup if an import is still finishing.
+/// Serializes copies and manifest commits from concurrent measurement workers.
+/// The editor owns file access through publication, including cancelled workers.
 private final class RoomRecordingFileAccess: @unchecked Sendable {
     static let shared = RoomRecordingFileAccess()
     let lock = NSLock()
-    var pendingImports: Set<URL> = []
 }
 
 struct RoomMeasurementStore: Sendable {
@@ -22,9 +21,6 @@ struct RoomMeasurementStore: Sendable {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let encoder = PropertyListEncoder(); encoder.outputFormat = .binary
         try encoder.encode(session).write(to: folder.appendingPathComponent("session.plist"), options: .atomic)
-        for recording in session.recordings {
-            access.pendingImports.remove(folder.appendingPathComponent(recording.fileName).standardizedFileURL)
-        }
     }
     func load(_ id: UUID) throws -> RoomMeasurementSession {
         let url = folder(id).appendingPathComponent("session.plist")
@@ -41,39 +37,7 @@ struct RoomMeasurementStore: Sendable {
         try FileManager.default.createDirectory(at: folder(sessionID), withIntermediateDirectories: true)
         let destination = folder(sessionID).appendingPathComponent(name)
         try FileManager.default.copyItem(at: url, to: destination)
-        access.pendingImports.insert(destination.standardizedFileURL)
         return .init(fileName: name, sourceFormat: format, isLossy: isLossy, blockIDs: blocks.map(\.id))
-    }
-    /// Only removes app-generated files absent from a readable session manifest.
-    /// Referenced recordings (including shared sessions), originals, unknown
-    /// files, symbolic links and files still being imported remain untouched.
-    @discardableResult
-    func removeUnreferencedRecordings() throws -> Int {
-        let access = RoomRecordingFileAccess.shared
-        access.lock.lock(); defer { access.lock.unlock() }
-        let manager = FileManager.default
-        guard manager.fileExists(atPath: directory.path) else { return 0 }
-        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
-        var removed = 0
-        for folder in try manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys)) {
-            guard let id = UUID(uuidString: folder.lastPathComponent),
-                  let attributes = try? folder.resourceValues(forKeys: keys),
-                  attributes.isDirectory == true, attributes.isSymbolicLink != true,
-                  let manifest = try? folder.appendingPathComponent("session.plist").resourceValues(forKeys: keys),
-                  manifest.isRegularFile == true, manifest.isSymbolicLink != true,
-                  let session = try? load(id) else { continue }
-            let referenced = Set(session.recordings.map(\.fileName))
-            for file in try manager.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys)) {
-                guard !referenced.contains(file.lastPathComponent), !file.pathExtension.isEmpty,
-                      UUID(uuidString: file.deletingPathExtension().lastPathComponent) != nil,
-                      !access.pendingImports.contains(file.standardizedFileURL),
-                      let attributes = try? file.resourceValues(forKeys: keys),
-                      attributes.isRegularFile == true, attributes.isSymbolicLink != true else { continue }
-                try manager.removeItem(at: file)
-                removed += 1
-            }
-        }
-        return removed
     }
     func recordingURL(_ reference: RoomRecordingReference, sessionID: UUID) throws -> URL {
         guard URL(fileURLWithPath: reference.fileName).lastPathComponent == reference.fileName,

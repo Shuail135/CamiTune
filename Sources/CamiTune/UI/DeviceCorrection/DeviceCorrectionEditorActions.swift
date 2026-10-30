@@ -11,6 +11,7 @@ extension DeviceCorrectionEditorView {
     ) {
         do {
             guard let url = try result.get().first else { return }
+            let generation = loadCoordinator.sourceGeneration
             Task { @MainActor in
                 let access = url.startAccessingSecurityScopedResource()
                 defer { if access { url.stopAccessingSecurityScopedResource() } }
@@ -23,6 +24,7 @@ extension DeviceCorrectionEditorView {
                         )
                         return (response, Data(text.utf8))
                     }.value
+                    guard loadCoordinator.sourceGeneration == generation else { return }
                     let response = imported.0
                     if asTarget {
                         clearDeviceMatchTarget(clearSearch: true)
@@ -30,7 +32,6 @@ extension DeviceCorrectionEditorView {
                         targetSelection.preset = .custom
                         targetSelection.customTargetRigIdentity = nil
                     } else {
-                        history.reset()
                         loadCoordinator.sourceGeneration &+= 1
                         isLoadingMeasurements = false
                         clearDeviceMatchTarget(clearSearch: true)
@@ -74,6 +75,7 @@ extension DeviceCorrectionEditorView {
         let capturedSampleRate = sampleRate
         let capturedExisting = existing
 
+        let generation = loadCoordinator.sourceGeneration
         isGenerating = true
         errorMessage = nil
         Task { @MainActor in
@@ -146,7 +148,7 @@ extension DeviceCorrectionEditorView {
                 && autoEQSettings == capturedSettings
                 && generated?.filters == capturedFilters
                 && targetChosen == capturedTargetChosen
-            guard inputsAreCurrent else {
+            guard loadCoordinator.sourceGeneration == generation, inputsAreCurrent else {
                 isGenerating = false
                 return
             }
@@ -167,6 +169,7 @@ extension DeviceCorrectionEditorView {
         guard var generated else { return }
         generated.deviceName = trimmedDeviceName
         generated.isEnabled = true
+        onPersistDraft?(persistentDraft, false)
         guard onLoad(generated) else { return }
         accepted = true
         if embedded { presentation.resultsExpanded = false }
@@ -208,6 +211,7 @@ extension DeviceCorrectionEditorView {
                         measurements: loaded
                     )
                 }.value
+                guard loadCoordinator.sourceGeneration == loadGeneration else { return }
                 sourceMeasurements = loaded
                 measurement = consensus.response
                 reconcileTargetSelection()
@@ -246,7 +250,6 @@ extension DeviceCorrectionEditorView {
     }
 
     func select(_ entry: DeviceCatalogEntry) {
-        history.reset()
         loadCoordinator.sourceGeneration &+= 1
         let loadGeneration = loadCoordinator.sourceGeneration
         clearDeviceMatchTarget(clearSearch: true)
@@ -272,6 +275,8 @@ extension DeviceCorrectionEditorView {
                         measurements: loaded
                     )
                 }.value
+                guard loadCoordinator.sourceGeneration == loadGeneration,
+                      selectedCatalogID == entry.id else { return }
                 sourceMeasurements = loaded
                 measurement = consensus.response
                 reconcileTargetSelection()
@@ -355,6 +360,8 @@ extension DeviceCorrectionEditorView {
                         measurements: loaded
                     )
                 }.value
+                guard loadCoordinator.deviceMatchGeneration == loadGeneration,
+                      selectedDeviceMatchCatalogID == entry.id else { return }
                 guard DeviceMatchPlanner.isCompatible(
                     sourceReferences: targetSources,
                     targetReferences: consensus.sources

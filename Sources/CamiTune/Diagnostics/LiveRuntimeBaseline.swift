@@ -36,7 +36,7 @@ enum LiveRuntimeBaseline {
         defer { box.cleanUp() }
         box.profiles.profiles = original.profiles
         let state = AppState(profiles: box.profiles, perAppAudio: box.perApp)
-        state.runtimeServices.notifyActivation = {}; state.runtimeServices.notifyDeactivation = {}
+        state.runtimeServices.notifyActivation = { _ in }; state.runtimeServices.notifyDeactivation = { _ in }
         for _ in 0..<100 where !state.coreAudio.hasCompletedInitialRefresh { try await Task.sleep(for: .milliseconds(100)) }
         guard let uid = state.coreAudio.defaultOutputUID,
               let profile = original.profiles.first(where: { $0.isEnabled && $0.outputDeviceUID == uid }) else {
@@ -96,8 +96,8 @@ enum LiveRuntimeBaseline {
         defer { box.cleanUp() }
         box.profiles.profiles = original.profiles
         let state = AppState(profiles: box.profiles, perAppAudio: box.perApp)
-        state.runtimeServices.notifyActivation = {}
-        state.runtimeServices.notifyDeactivation = {}
+        state.runtimeServices.notifyActivation = { _ in }
+        state.runtimeServices.notifyDeactivation = { _ in }
         for _ in 0..<100 where !state.coreAudio.hasCompletedInitialRefresh {
             try await Task.sleep(for: .milliseconds(100))
         }
@@ -395,7 +395,7 @@ extension LiveRuntimeBaseline {
         box.profiles.profiles = original.profiles
         let state = AppState(profiles: box.profiles, perAppAudio: box.perApp)
         try configureEngine(ProcessInfo.processInfo.environment["CAMITUNE_DELIVERY_ENGINE"], state: state)
-        state.runtimeServices.notifyActivation = {}; state.runtimeServices.notifyDeactivation = {}
+        state.runtimeServices.notifyActivation = { _ in }; state.runtimeServices.notifyDeactivation = { _ in }
         let audio = state.coreAudioService
         await audio.refreshWithoutBlockingUI()
         guard let uid = state.coreAudio.defaultOutputUID,

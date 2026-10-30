@@ -14,10 +14,12 @@ final class ProfileRepository: @unchecked Sendable {
         let kind: ProfilePersistenceKind
         let ticket: ProfilePersistenceTicket
         let submitted: UInt64
+        let assets: ProfileAssetLease?
     }
     let loadedDocument: ProfileDocument?
     private let url: URL
     private let io: ProfileRepositoryFileIO
+    private let assetStorage: ProfileAssetStorage?
     private let lock = NSCondition()
     private let worker = DispatchQueue(label: "CamiTune.ProfileRepository", qos: .utility)
     private var queue: [Request] = []
@@ -28,10 +30,12 @@ final class ProfileRepository: @unchecked Sendable {
     private var state = ProfileRepositoryStatus()
     var status: ProfileRepositoryStatus { lock.lock(); defer { lock.unlock() }; return state }
 
-    init(url: URL, io: ProfileRepositoryFileIO = .live) {
+    init(url: URL, io: ProfileRepositoryFileIO = .live, assetStorage: ProfileAssetStorage? = nil) {
         self.url = url; self.io = io
+        self.assetStorage = assetStorage
         do { loadedDocument = try io.load(url) }
         catch { loadedDocument = nil; state.protectedStorage = true; state.lastError = "Saved profile storage is unreadable or incompatible." }
+        assetStorage?.setPersistedReferences(state.protectedStorage ? nil : .init(profiles: loadedDocument?.profiles ?? []))
         nextRevision = loadedDocument?.documentRevision.rawValue ?? 0
         state.lastCommittedRevision = .init(rawValue: nextRevision)
     }
@@ -53,7 +57,9 @@ final class ProfileRepository: @unchecked Sendable {
         let removed = queue.filter { $0.kind == .autosave && $0.source <= source }
         queue.removeAll { $0.kind == .autosave && $0.source <= source }
         state.supersededAutosaveCount += UInt64(removed.count)
-        queue.append(.init(document: document, source: source, kind: kind, ticket: ticket, submitted: DispatchTime.now().uptimeNanoseconds))
+        queue.append(.init(document: document, source: source, kind: kind, ticket: ticket,
+            submitted: DispatchTime.now().uptimeNanoseconds,
+            assets: assetStorage?.retain(.init(profiles: document.profiles))))
         updatePending()
         let start = !running; running = true
         lock.unlock()
@@ -74,6 +80,7 @@ final class ProfileRepository: @unchecked Sendable {
                 lock.broadcast(); lock.unlock(); return
             }
             var request = queue.removeFirst(); nextRevision += 1
+            defer { withExtendedLifetime(request.assets) {} }
             request.document.documentRevision = .init(rawValue: nextRevision)
             request.document.schemaVersion = ProfileDocument.currentSchemaVersion
             state.inFlightOperation = request.ticket.id; state.inFlightKind = request.kind
@@ -84,6 +91,7 @@ final class ProfileRepository: @unchecked Sendable {
             let result: Result<ProfileAutosaveResult, Error>
             do {
                 let times = try io.persist(request.document, url)
+                assetStorage?.setPersistedReferences(.init(profiles: request.document.profiles))
                 let receipt = ProfilePersistenceReceipt(operationID: request.ticket.id, kind: request.kind,
                     sourceLibraryRevision: request.source, documentRevision: request.document.documentRevision,
                     completedAt: Date(), submittedAt: .init(rawValue: request.submitted), writeStartedAt: writeStarted,

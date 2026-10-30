@@ -2,6 +2,12 @@ import CamiTuneDomain
 import AVFoundation
 import Foundation
 
+struct AcousticRecording: Sendable {
+    let samples: [Float]
+    let sampleRate: Double
+    let discontinuity: Bool
+}
+
 struct MicrophoneInputLevel: Equatable, Sendable {
     var peakDBFS: Double
     var rmsDBFS: Double

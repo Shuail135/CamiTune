@@ -53,7 +53,7 @@ final class DependencyManager: ObservableObject {
     }
 
     nonisolated private static func createSupportLayout(at base: URL) throws {
-        for directory in ["bin", "configs", "coeffs", "logs"] {
+        for directory in ["bin", "configs", "coeffs"] {
             try FileManager.default.createDirectory(
                 at: base.appendingPathComponent(directory, isDirectory: true),
                 withIntermediateDirectories: true
@@ -360,7 +360,7 @@ final class DependencyManager: ObservableObject {
                 try FileManager.default.moveItem(at: stagedDriver, to: managedDriverURL)
             }
 
-            await coreAudio.destroyAllProfileRoutingDevicesWithoutBlockingUI()
+            try await coreAudio.destroyAllProfileRoutingDevicesWithoutBlockingUI()
             let command = AudioDriverInstallation.replacementCommand(source: managedDriverURL,
                 destination: installedDriverURL, legacyDestinations: AudioDriverInstallation.legacyURLs)
             let script = "do shell script \(appleScriptQuote(command)) with administrator privileges"
@@ -392,7 +392,7 @@ final class DependencyManager: ObservableObject {
         setupMessage = "Removing the System Audio Bridge driver…"
         audioDriverStatus = .working("Waiting for macOS administrator approval…")
         do {
-            await coreAudio.destroyAllProfileRoutingDevicesWithoutBlockingUI()
+            try await coreAudio.destroyAllProfileRoutingDevicesWithoutBlockingUI()
             let targets = ([installedDriverURL] + AudioDriverInstallation.legacyURLs).map(\.path)
             let command = [
                 "/bin/rm -rf \(targets.map(shellQuote).joined(separator: " "))",

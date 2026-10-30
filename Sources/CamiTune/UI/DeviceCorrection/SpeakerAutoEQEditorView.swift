@@ -2,13 +2,6 @@ import CamiTuneDomain
 import AppKit
 import SwiftUI
 
-struct SpeakerAutoEQEditorSnapshot: Equatable {
-    var draft: DeviceCorrectionProfile?
-    var hasManualEdits: Bool
-    var mode: SpeakerListeningMode
-    var settings: SpeakerCorrectionSettings
-}
-
 @MainActor
 final class SpeakerAutoEQEditorModel: ObservableObject {
     @Published var catalog: [SpeakerCatalogEntry] = [] {
@@ -41,35 +34,19 @@ final class SpeakerAutoEQEditorModel: ObservableObject {
     private var sourceOperation: Task<Void, Never>?
     private let provider: any SpeakerMeasurementProvider
     private let engine: SpeakerCorrectionEngine
-    let history = EditorSnapshotHistory<SpeakerAutoEQEditorSnapshot>()
     private var restoringHistory = false
-    private var snapshot: SpeakerAutoEQEditorSnapshot {
-        .init(draft: draft, hasManualEdits: hasManualEdits, mode: mode, settings: settings)
-    }
     init(provider: any SpeakerMeasurementProvider = SpinoramaSpeakerProvider.shared, engine: SpeakerCorrectionEngine = .init()) {
         self.provider = provider; self.engine = engine
-        history.current = snapshot
-        history.restore = { [weak self] snapshot in
-            guard let self else { return }
-            self.cancel()
-            self.restoringHistory = true
-            self.mode = snapshot.mode; self.settings = snapshot.settings
-            self.draft = snapshot.draft; self.hasManualEdits = snapshot.hasManualEdits
-            self.error = nil
-            self.restoringHistory = false
-        }
     }
     func cancel() {
         generation &+= 1; operation?.cancel(); operation = nil; isGenerating = false
     }
     func invalidate() {
         cancel(); draft = nil; hasManualEdits = false; error = nil
-        history.reset(); history.current = snapshot
     }
     private func optionsChanged() {
         guard !restoringHistory else { return }
         cancel(); draft = nil; hasManualEdits = false; error = nil
-        history.record(snapshot)
     }
     func replaceFilters(_ filters: [EQBand], in correction: DeviceCorrectionProfile) {
         guard filters != correction.filters else { return }
@@ -79,7 +56,6 @@ final class SpeakerAutoEQEditorModel: ObservableObject {
         draft = edited
         hasManualEdits = true
         error = nil
-        history.record(snapshot)
     }
     func editBand(_ band: EQBand, in correction: DeviceCorrectionProfile) {
         guard let index = correction.filters.firstIndex(where: { $0.id == band.id }) else { return }
@@ -97,11 +73,9 @@ final class SpeakerAutoEQEditorModel: ObservableObject {
     }
     func close() { cancel(); sourceOperation?.cancel(); sourceOperation = nil }
     func restoreWork(_ saved: SpeakerAutoEQEditorDraft?, existing: DeviceCorrectionProfile?, sampleRate: Double) {
+        close()
         restoringHistory = true
-        defer {
-            restoringHistory = false
-            history.reset(); history.current = snapshot
-        }
+        defer { restoringHistory = false }
         if let saved = saved?.restored(for: sampleRate) {
             speakerID = saved.speakerID; search = saved.searchText; versionID = saved.versionID
             versions = saved.versions; mode = saved.mode; settings = saved.settings
@@ -113,7 +87,9 @@ final class SpeakerAutoEQEditorModel: ObservableObject {
         } else { settings.maxFrequency = min(settings.maxFrequency, sampleRate * 0.49) }
     }
     func savedWork(sampleRate: Double, presentation: AutoEQPresentationPreferences) -> SpeakerAutoEQEditorDraft {
-        .init(sampleRate: sampleRate, searchText: search, speakerID: speakerID, versionID: versionID,
+        // A profile change can be published before this model reloads. Until
+        // then, serialize the rate that actually produced the visible result.
+        .init(sampleRate: draft?.speakerProvenance?.sampleRate ?? sampleRate, searchText: search, speakerID: speakerID, versionID: versionID,
               versions: versions, mode: mode, settings: settings, generated: draft,
               hasManualEdits: hasManualEdits, automaticHeadroomDB: headroomDB, presentation: presentation)
     }
@@ -179,7 +155,6 @@ final class SpeakerAutoEQEditorModel: ObservableObject {
                 guard !Task.isCancelled, generation == token, state.editGeneration == editGeneration else { return }
                 draft = correction; headroomDB = headroom
                 hasManualEdits = false
-                history.record(snapshot)
                 warning = measurement.provenance.isStale ? "Could not refresh Spinorama. Using the last cached measurement." : await provider.currentWarning()
                 isGenerating = false
             } catch { if !Task.isCancelled, generation == token { self.error = error.localizedDescription; isGenerating = false } }
@@ -197,13 +172,12 @@ struct SpeakerAutoEQEditorView: View {
     @State private var equalizerState: GlobalEQHistoryState?
     @State private var presentation = AutoEQPresentationPreferences()
     @State private var selectedBandID: UUID?
-    init(state: AppState, profile: Binding<DeviceProfile>, draftDirectory: URL = CamiTunePaths.supportDirectory,
+    init(state: AppState, profile: Binding<DeviceProfile>, draftDirectory: URL? = nil,
          model: SpeakerAutoEQEditorModel? = nil) {
         self.state = state
         _profile = profile
         _model = StateObject(wrappedValue: model ?? SpeakerAutoEQEditorModel())
-        _draftStore = StateObject(wrappedValue: SpeakerAutoEQDraftStore(url: SpeakerAutoEQDraftStore.url(
-            profileID: profile.wrappedValue.id, endpoint: .speakers, directory: draftDirectory)))
+        _draftStore = StateObject(wrappedValue: state.speakerAutoEQDraftStore(profile: profile.wrappedValue, directory: draftDirectory))
     }
     private var existing: DeviceCorrectionProfile? {
         let correction = equalizerState?.deviceCorrectionProvenance ?? profile.processing.deviceCorrection
@@ -269,7 +243,6 @@ struct SpeakerAutoEQEditorView: View {
 
                         JoinedSegmentedControl(options: SpeakerListeningMode.allCases, selection: $model.mode, title: { $0.title })
                             .accessibilityLabel("Speaker listening setup")
-                            .help("")
                         DisclosureGroup("Advanced", isExpanded: $presentation.advancedExpanded) {
                             VStack(alignment: .leading, spacing: 10) {
                                 Picker("Measurement source/version", selection: $model.versionID) {
@@ -343,7 +316,6 @@ struct SpeakerAutoEQEditorView: View {
             }.padding(.vertical, 5)
         }
         .groupBoxStyle(DeviceCorrectionCardStyle())
-        .modifier(EditorHistoryCommands(history: model.history))
         .disabled(state.isSavingProfileSettings || state.history.isReplaying)
         .task {
             reload()
@@ -353,6 +325,7 @@ struct SpeakerAutoEQEditorView: View {
                 model.restoreWork(saved, existing: existing, sampleRate: Double(profile.sampleRate))
                 if let saved { presentation = saved.presentation }
                 draftLoaded = true
+                draftStore.save(persistentDraft)
             }
             await model.loadSources()
         }
@@ -365,14 +338,20 @@ struct SpeakerAutoEQEditorView: View {
         }
         .task(id: model.search) { await model.searchCatalog() }
         .onChange(of: model.catalog) { _ in Task { await model.searchCatalog() } }
+        .onReceive(draftStore.$replayRevision.dropFirst()) { _ in
+            guard draftLoaded else { return }
+            model.restoreWork(draftStore.latest, existing: existing, sampleRate: Double(profile.sampleRate))
+        }
         .onChange(of: persistentDraft) { _ in persistWork() }
-        .onChange(of: profile.sampleRate) { _ in model.invalidate() }
+        .onChange(of: profile.sampleRate) { _ in
+            model.restoreWork(draftStore.latest, existing: existing, sampleRate: Double(profile.sampleRate))
+        }
         .onChange(of: state.editGeneration) { _ in model.cancel() }
         .onChange(of: profile.processing) { _ in reload() }
         .onChange(of: state.historyReplayRevision) { _ in reload() }
         .onReceive(state.eqDraftChanges.filter { $0 == profile.id }) { _ in reload() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in persistWork(flush: true) }
-        .onDisappear { persistWork(); model.close() }
+        .onDisappear { model.close() }
     }
     private var cannotGenerate: Bool { model.isLoading || model.isGenerating || model.selectedVersion?.supportsCEA2034 != true }
     private func reload() { equalizerState = try? state.globalEQHistoryState(for: profile) }
@@ -384,12 +363,9 @@ struct SpeakerAutoEQEditorView: View {
     private func loadIntoEqualizer() {
         guard let correction = displayed, correction.speakerProvenance?.sampleRate == Double(profile.sampleRate) else { return }
         do {
+            persistWork()
             try state.loadAutoEQCorrectionDraft(correction, for: profile)
             profile = try state.historyProfile(profile.id)
-            var layout = state.profiles.effectiveLayout(for: profile)
-            layout.hidden.remove(.equalizer)
-            if layout.equalizer == .simpleTone { layout.equalizer = .both }
-            profile.sectionLayout = layout
             state.equalizerReplacementChanges.send(profile.id)
             reload()
             presentation.resultsExpanded = false

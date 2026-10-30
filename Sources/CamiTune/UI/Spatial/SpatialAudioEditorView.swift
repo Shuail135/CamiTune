@@ -6,6 +6,7 @@ struct SpatialAudioEditorView: View {
     @ObservedObject var state: AppState
     @Binding var profile: DeviceProfile
     @State private var modePreview: PlaybackMode?
+    @State private var setupProfile: DeviceProfile?
 
     private var displayedMode: PlaybackMode { modePreview ?? profile.playbackMode }
 
@@ -41,13 +42,25 @@ struct SpatialAudioEditorView: View {
                     case .referencePlayback:
                         ReferenceCorrectionView(state: state, profile: $profile)
                     case .spatialRender:
-                        PersonalSpatialEditorView(state: state, profile: profile)
+                        PersonalSpatialEditorView(state: state, profile: profile) { setupProfile = profile }
                     }
                 }
             }.padding(4)
         }
         .onChange(of: profile.id) { _ in modePreview = nil }
         .onChange(of: profile.playbackMode) { _ in modePreview = nil }
+        .task(id: SetupContext(id: profile.id, device: profile.deviceTypeConfigurationKey, mode: profile.playbackMode)) {
+            setupProfile = profile.playbackMode == .spatialRender && profile.needsPersonalSpatialSetup ? profile : nil
+        }
+        .sheet(item: $setupProfile) { profile in
+            PersonalSpatialSetupSheet(state: state, profile: profile)
+        }
+    }
+
+    private struct SetupContext: Equatable {
+        let id: UUID
+        let device: String
+        let mode: PlaybackMode
     }
 
     private var playbackMode: Binding<PlaybackMode> {
@@ -73,7 +86,7 @@ struct SpatialAudioEditorView: View {
         case .spatialRender:
             // The physical-speaker mode keeps its button and saved behavior;
             // virtual-speaker controls belong only to personal listening.
-            return profile.isPersonalListening ? "Listen through virtual speakers around you." : nil
+            return nil
         }
     }
 }

@@ -226,7 +226,7 @@ struct ProfileEditorView: View {
             let profileBinding = $profile
             let currentLayout = layout
             GlobalEqualizerEditorView(state: state, profile: $profile, graphModel: graphModel,
-                presentation: layout.equalizer, needsResponseGraph: sections.contains(.spectrum) || layout.equalizer != .simpleTone,
+                presentation: layout.equalizer, needsResponseGraph: layout.visualDemand(for: profile).spectrum,
                 onPresentationChanged: { presentation in
                     var local = currentLayout
                     local.equalizer = presentation
@@ -238,10 +238,8 @@ struct ProfileEditorView: View {
             if profile.hasPhysicalSpeakerRoute { MultichannelProcessingView(state: state, profile: $profile) }
         case .subwooferControl:
             SubwooferControlView(state: state, store: state.profiles, profile: profile)
-        case .perChannel:
-            PerChannelProcessingView(state: state, profile: $profile)
-        case .convolution:
-            EmptyView() // Legacy layout identifiers are consolidated before presentation.
+        case .perChannel, .convolution:
+            EmptyView() // Nested and legacy sections do not create separate cards.
         }
     }
 

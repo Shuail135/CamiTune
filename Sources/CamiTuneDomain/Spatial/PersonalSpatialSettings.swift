@@ -464,7 +464,9 @@ package struct PersonalSpatialSettings: Codable, Hashable, Sendable {
     package static let supportedSampleRates = [44100, 48000, 88200, 96000, 176400, 192000]
     package var playbackDevice: SpatialPlaybackDevice?
     package var experience: PersonalSpatialExperience = .spatialListening
-    package var inputLayout: LPCMChannelLayout = .sevenPointOnePointFour
+    /// One stable capture capacity for both experiences and per-app overrides.
+    /// Signal activity never changes the format advertised to source apps.
+    package var inputLayout: LPCMChannelLayout { .ninePointOnePointSix }
     package var hrtf = PersonalHRTFTuning()
     /// The cabinet scene is retained while Spatial listening is selected.
     package var scene = VirtualSpeakerScene()
@@ -502,7 +504,7 @@ package struct PersonalSpatialSettings: Codable, Hashable, Sendable {
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let version = try c.decode(Int.self, forKey: .version)
-        guard (1...5).contains(version) else { throw PersonalSpatialError.unsupportedVersion }
+        guard (1...6).contains(version) else { throw PersonalSpatialError.unsupportedVersion }
         playbackDevice = try c.decodeIfPresent(SpatialPlaybackDevice.self, forKey: .playbackDevice)
         scene = try c.decode(VirtualSpeakerScene.self, forKey: .scene)
         movie = try c.decode(MovieSettings.self, forKey: .movie)
@@ -510,33 +512,34 @@ package struct PersonalSpatialSettings: Codable, Hashable, Sendable {
         if version < 5 {
             movie.adaptation = 0
             experience = .speakerMimic
-            inputLayout = .sevenPointOne
             mimicRoom = SpatialRenderIntent.unit(try c.decode(Float.self, forKey: .room))
             let legacy = try c.nestedContainer(keyedBy: LegacySceneKeys.self, forKey: .scene)
             hrtf = try legacy.decodeIfPresent(PersonalHRTFTuning.self, forKey: .hrtf) ?? .init()
         } else {
             experience = try c.decode(PersonalSpatialExperience.self, forKey: .experience)
-            inputLayout = try c.decode(LPCMChannelLayout.self, forKey: .inputLayout)
             hrtf = try c.decode(PersonalHRTFTuning.self, forKey: .hrtf)
             listening = try c.decode(SpatialListeningScene.self, forKey: .listening)
             mimicRoom = try c.decode(Float.self, forKey: .mimicRoom)
             listeningRoom = try c.decode(Float.self, forKey: .listeningRoom)
+            if version == 5 {
+                let previous = try c.decode(LPCMChannelLayout.self, forKey: .inputLayout)
+                try listening.migrateInputPlacement(from: previous, to: inputLayout)
+            }
         }
         try validate()
     }
     package func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(5, forKey: .version)
+        try c.encode(6, forKey: .version)
         try c.encodeIfPresent(playbackDevice, forKey: .playbackDevice)
         try c.encode(scene, forKey: .scene); try c.encode(movie, forKey: .movie)
-        try c.encode(experience, forKey: .experience); try c.encode(inputLayout, forKey: .inputLayout)
+        try c.encode(experience, forKey: .experience)
         try c.encode(hrtf, forKey: .hrtf); try c.encode(listening, forKey: .listening)
         try c.encode(mimicRoom, forKey: .mimicRoom); try c.encode(listeningRoom, forKey: .listeningRoom)
     }
     package static func migrated(_ legacy: VirtualSurroundLayout) -> Self {
         var result = Self()
         result.experience = .speakerMimic
-        result.inputLayout = .sevenPointOne
         // Legacy radius 0.8 represented no measured distance. Infer Near (1.2 m),
         // reverse its negative-front y convention, and reject invalid geometry.
         for (role, p) in legacy.positions where VirtualSpeakerScene.roles.contains(role) {

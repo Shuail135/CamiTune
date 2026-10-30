@@ -46,14 +46,17 @@ struct AutoEQDeviceInfoIcon: View {
     }
 }
 
-/// Nested Auto EQ sections share the surrounding card's surface in both appearances.
+/// Shared layout and border for nested correction sections.
 struct DeviceCorrectionCardStyle: GroupBoxStyle {
+    var background: Color = .clear
+
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             configuration.label.font(.headline)
             configuration.content.frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(8)
+        .background(background, in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 0.5)

@@ -4,15 +4,27 @@ import Foundation
 struct AvailableAppUpdate: Equatable {
     let version: String
     let archiveURL: URL
+    var presentation: AppUpdateCheckPresentation = .sheet
+}
+
+enum AppUpdateCheckPresentation: Equatable {
+    case background, sheet, changelog
+}
+
+enum AppUpdateCheckResult: Equatable {
+    case upToDate, updateAvailable, failed
 }
 
 enum AppUpdatePhase: Equatable {
+    case checking(AppUpdateCheckPresentation), upToDate, checkFailed
     case idle, downloading, verifying, ready, restarting, failed, completed
 }
 
 @MainActor
 final class AppUpdateChecker: ObservableObject {
+    weak var history: UndoCoordinator?
     @Published private(set) var availableUpdate: AvailableAppUpdate?
+    @Published private(set) var lastCheckResult: AppUpdateCheckResult?
     @Published private(set) var phase: AppUpdatePhase = .idle
     @Published private(set) var downloadProgress: Double?
     @Published private(set) var downloadedBytes: Int64 = 0
@@ -20,19 +32,38 @@ final class AppUpdateChecker: ObservableObject {
     @Published private(set) var updateVersion: String?
     @Published private(set) var failureMessage = ""
     @Published var automaticallyChecksForUpdates: Bool {
-        didSet { defaults.set(automaticallyChecksForUpdates, forKey: Keys.automaticallyChecksForUpdates) }
+        didSet {
+            history?.record(actionName: "Change Automatic Updates", target: .preference(.automaticUpdates),
+                before: .boolean(oldValue), after: .boolean(automaticallyChecksForUpdates))
+            defaults.set(automaticallyChecksForUpdates, forKey: Keys.automaticallyChecksForUpdates)
+            scheduleAutomaticCheck()
+        }
     }
 
     var installedVersion: String { Self.currentVersion }
     // The installer owns progress during restart. Leaving our sheet attached
     // would both duplicate its window and prevent AppKit from terminating us.
-    var isPresentingUpdate: Bool { phase != .restarting && (availableUpdate != nil || phase != .idle) }
+    var isPresentingUpdate: Bool {
+        switch phase {
+        case .checking(.background), .checking(.changelog), .restarting: return false
+        case .idle: return availableUpdate.map { $0.presentation != .changelog } ?? false
+        default: return true
+        }
+    }
     var canRetry: Bool { currentUpdate != nil }
+
+    var nextAutomaticCheckDate: Date? {
+        guard automaticallyChecksForUpdates else { return nil }
+        if let reminder = defaults.object(forKey: Keys.remindAfter) as? Date { return reminder }
+        return (defaults.object(forKey: Keys.lastCheck) as? Date)?
+            .addingTimeInterval(Self.checkInterval) ?? now()
+    }
 
     private enum Keys {
         static let automaticallyChecksForUpdates = "appUpdate.automaticallyChecksForUpdates"
         static let skippedVersion = "appUpdate.skippedVersion"
         static let remindAfter = "appUpdate.remindAfter"
+        static let lastCheck = "appUpdate.lastCheck"
     }
 
     private struct GitHubRelease: Decodable {
@@ -72,6 +103,7 @@ final class AppUpdateChecker: ObservableObject {
         case invalidBundle
         case invalidVersion
         case invalidSignature
+        case releaseUnavailable
 
         var errorDescription: String? {
             switch self {
@@ -89,6 +121,8 @@ final class AppUpdateChecker: ObservableObject {
                 return "The downloaded application version does not match the GitHub release."
             case .invalidSignature:
                 return "macOS could not validate the downloaded application bundle."
+            case .releaseUnavailable:
+                return "The latest release does not contain a compatible CamiTune update."
             }
         }
     }
@@ -97,55 +131,115 @@ final class AppUpdateChecker: ObservableObject {
         string: "https://api.github.com/repos/Shuail135/CamiTune/releases/latest"
     )!
     private static let reminderDelay: TimeInterval = 24 * 60 * 60
+    private static let checkInterval: TimeInterval = 3 * 24 * 60 * 60
     private static let bundleIdentifier = "local.camilla.app"
 
     private let defaults: UserDefaults
     private let session: URLSession
-    private var isChecking = false
+    private let now: () -> Date
+    private var hasStarted = false
+    private var checkTask: Task<Void, Never>?
+    private var automaticCheckTimer: Timer?
     private var preparedUpdate: PreparedUpdate?
     private var currentUpdate: AvailableAppUpdate?
     private var updateTask: Task<Void, Never>?
     private var downloadID: UUID?
     private var installationStarted = false
 
-    init(defaults: UserDefaults = .standard, session: URLSession = .shared) {
+    init(defaults: UserDefaults = .standard, session: URLSession = .shared,
+         now: @escaping () -> Date = Date.init) {
         self.defaults = defaults
         self.session = session
+        self.now = now
         automaticallyChecksForUpdates = defaults.object(forKey: Keys.automaticallyChecksForUpdates) as? Bool ?? true
     }
 
+    deinit {
+        checkTask?.cancel()
+        automaticCheckTimer?.invalidate()
+    }
+
     func start() {
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled, let self else { return }
-            if let result = AppUpdateInstaller.consumeResult(for: Bundle.main.bundleURL) {
-                self.updateVersion = result.version
-                if result.succeeded, Self.versionsAreEqual(result.version, Self.currentVersion) {
-                    self.phase = .completed
-                } else {
-                    self.failureMessage = result.succeeded
-                        ? "The update did not finish. You are still using CamiTune \(Self.currentVersion). Please try the update again."
-                        : result.message
-                    self.phase = .failed
-                }
-                return
+        guard !hasStarted else { return }
+        hasStarted = true
+        if let result = AppUpdateInstaller.consumeResult(for: Bundle.main.bundleURL) {
+            updateVersion = result.version
+            if result.succeeded, Self.versionsAreEqual(result.version, Self.currentVersion) {
+                lastCheckResult = .upToDate
+                phase = .completed
+            } else {
+                failureMessage = result.succeeded
+                    ? "The update did not finish. You are still using CamiTune \(Self.currentVersion). Please try the update again."
+                    : result.message
+                phase = .failed
             }
-            await self.checkOnLaunch()
+            return
+        }
+        scheduleAutomaticCheck(minimumDelay: 2)
+    }
+
+    func stop() {
+        hasStarted = false
+        checkTask?.cancel()
+        checkTask = nil
+        automaticCheckTimer?.invalidate()
+        automaticCheckTimer = nil
+        if case .checking = phase { phase = .idle }
+    }
+
+    private func scheduleAutomaticCheck(minimumDelay: TimeInterval = 0) {
+        automaticCheckTimer?.invalidate()
+        automaticCheckTimer = nil
+        guard hasStarted, phase == .idle, availableUpdate == nil,
+              let date = nextAutomaticCheckDate else { return }
+        let fireDate = max(date, now().addingTimeInterval(minimumDelay))
+        let timer = Timer(fire: fireDate, interval: 0, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.hasStarted else { return }
+                await self.checkAutomaticallyIfNeeded()
+            }
+        }
+        // A single wall-clock deadline also catches up after sleep, with no polling.
+        timer.tolerance = min(5 * 60, max(0, fireDate.timeIntervalSince(now()) * 0.1))
+        automaticCheckTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func checkAutomaticallyIfNeeded() async {
+        guard phase == .idle, availableUpdate == nil,
+              let date = nextAutomaticCheckDate, date <= now() else { return }
+        await checkRelease(presentation: .background)
+    }
+
+    func checkForUpdates(presentation: AppUpdateCheckPresentation = .sheet) async {
+        if var update = availableUpdate {
+            update.presentation = presentation
+            availableUpdate = update
+        } else if case .checking(let currentPresentation) = phase {
+            // Share the request, giving an explicitly requested sheet priority.
+            if presentation == .sheet || currentPresentation == .background {
+                phase = .checking(presentation)
+            }
+            await checkTask?.value
+        } else if phase == .idle {
+            await checkRelease(presentation: presentation)
+        } else {
+            await checkTask?.value
         }
     }
 
-    func checkOnLaunch() async {
-        guard automaticallyChecksForUpdates else { return }
-        if let reminderDate = defaults.object(forKey: Keys.remindAfter) as? Date,
-           Date() < reminderDate { return }
-        await fetchLatestRelease()
-    }
-
-    func checkAfterReminderIfNeeded(now: Date = Date()) async {
-        guard automaticallyChecksForUpdates else { return }
-        guard let reminderDate = defaults.object(forKey: Keys.remindAfter) as? Date,
-              now >= reminderDate else { return }
-        await fetchLatestRelease()
+    private func checkRelease(presentation: AppUpdateCheckPresentation) async {
+        automaticCheckTimer?.invalidate()
+        automaticCheckTimer = nil
+        updateVersion = nil
+        failureMessage = ""
+        phase = .checking(presentation)
+        // Record attempts so offline failures cannot cause a tight retry loop.
+        defaults.set(now(), forKey: Keys.lastCheck)
+        defaults.removeObject(forKey: Keys.remindAfter)
+        let task = Task<Void, Never> { [weak self] in await self?.fetchLatestRelease() }
+        checkTask = task
+        await task.value
     }
 
     func skipAvailableVersion() {
@@ -153,14 +247,16 @@ final class AppUpdateChecker: ObservableObject {
         defaults.set(update.version, forKey: Keys.skippedVersion)
         defaults.removeObject(forKey: Keys.remindAfter)
         availableUpdate = nil
+        scheduleAutomaticCheck()
     }
 
     func remindLater() {
         defaults.set(
-            Date().addingTimeInterval(Self.reminderDelay),
+            now().addingTimeInterval(Self.reminderDelay),
             forKey: Keys.remindAfter
         )
         availableUpdate = nil
+        scheduleAutomaticCheck()
     }
 
     func beginUpdate() {
@@ -185,6 +281,11 @@ final class AppUpdateChecker: ObservableObject {
     }
 
     func dismissUpdate() {
+        if phase == .upToDate || phase == .checkFailed {
+            phase = .idle
+            scheduleAutomaticCheck()
+            return
+        }
         guard [.downloading, .ready, .failed, .completed].contains(phase) else { return }
         updateTask?.cancel()
         updateTask = nil
@@ -230,9 +331,12 @@ final class AppUpdateChecker: ObservableObject {
     }
 
     private func fetchLatestRelease() async {
-        guard !isChecking, availableUpdate == nil, phase == .idle else { return }
-        isChecking = true
-        defer { isChecking = false }
+        defer {
+            if !Task.isCancelled {
+                checkTask = nil
+                scheduleAutomaticCheck()
+            }
+        }
 
         var request = URLRequest(url: Self.latestReleaseURL)
         request.timeoutInterval = 15
@@ -245,28 +349,53 @@ final class AppUpdateChecker: ObservableObject {
 
         do {
             let (data, response) = try await session.data(for: request)
+            guard !Task.isCancelled else { return }
             guard let response = response as? HTTPURLResponse,
-                  response.statusCode == 200 else { return }
+                  response.statusCode == 200 else {
+                throw URLError(.badServerResponse)
+            }
 
             let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
-            defaults.removeObject(forKey: Keys.remindAfter)
+            guard case .checking(let presentation) = phase else { return }
+            let automatic = presentation == .background
             let expectedArchiveName = Self.archiveName(for: release.tagName)
 
-            guard !release.draft,
-                  !release.prerelease,
-                  Self.isVersion(release.tagName, newerThan: Self.currentVersion),
-                  defaults.string(forKey: Keys.skippedVersion) != release.tagName,
-                  let archive = release.assets.first(where: { $0.name == expectedArchiveName }) else {
+            guard !release.draft, !release.prerelease,
+                  !Self.numericVersionParts(release.tagName).isEmpty else {
+                throw UpdateError.releaseUnavailable
+            }
+            guard Self.isVersion(release.tagName, newerThan: Self.currentVersion) else {
+                lastCheckResult = .upToDate
+                phase = presentation == .sheet ? .upToDate : .idle
+                return
+            }
+            guard let archive = release.assets.first(where: { $0.name == expectedArchiveName }) else {
+                throw UpdateError.releaseUnavailable
+            }
+            lastCheckResult = .updateAvailable
+            guard !automatic || defaults.string(forKey: Keys.skippedVersion) != release.tagName else {
+                phase = .idle
                 return
             }
 
-            availableUpdate = AvailableAppUpdate(
-                version: release.tagName,
-                archiveURL: archive.browserDownloadURL
-            )
+            if !automatic || automaticallyChecksForUpdates {
+                availableUpdate = AvailableAppUpdate(
+                    version: release.tagName,
+                    archiveURL: archive.browserDownloadURL,
+                    presentation: presentation
+                )
+            }
+            phase = .idle
         } catch {
-            // Update checks must never interrupt audio use. Another launch, or
-            // a return from the menu bar after a reminder expires, can retry.
+            guard !Task.isCancelled else { return }
+            lastCheckResult = .failed
+            if phase == .checking(.sheet) {
+                failureMessage = "CamiTune could not check for updates. \(error.localizedDescription)"
+                phase = .checkFailed
+            } else {
+                // Background failures stay quiet until the next scheduled or manual check.
+                phase = .idle
+            }
         }
     }
 

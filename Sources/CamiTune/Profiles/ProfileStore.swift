@@ -3,7 +3,9 @@ import Foundation
 
 @MainActor
 final class ProfileStore: ObservableObject {
-    weak var history: UndoCoordinator?
+    weak var history: UndoCoordinator? {
+        didSet { history?.retainAssets(in: assetStorage) }
+    }
     private var organizationEditDepth = 0
     func organizationHistoryState() -> ProfileOrganizationHistoryState {
         ProfileOrganizationHistoryState(orderedProfileIDs: profiles.map(\.id), folders: folders, rootOrder: effectiveRootOrder)
@@ -102,7 +104,13 @@ final class ProfileStore: ObservableObject {
         didSet { if oldValue != multichannelDrafts { save() } }
     }
     @Published var showProfileEnabledExplanation = true {
-        didSet { save() }
+        didSet {
+            if !isLoading {
+                history?.record(actionName: "Change Profile Explanation", target: .preference(.enabledExplanation),
+                    before: .boolean(oldValue), after: .boolean(showProfileEnabledExplanation))
+            }
+            save()
+        }
     }
     /// Seed a new library with the shipped global layouts; saved libraries retain their choices.
     private static var firstLaunchLayoutDefaults: [String: ProfileSectionLayout] {
@@ -128,7 +136,10 @@ final class ProfileStore: ObservableObject {
     }
 
     func commitAudioBufferDefault(_ frames: AudioBufferSetting, inheritingProfileIDs: Set<UUID> = []) async throws {
-        _ = try await commit(.audioBufferDefault(frames, inheritingProfileIDs))
+        try await commitAudioBufferDefault(frames, overrides: Dictionary(uniqueKeysWithValues: inheritingProfileIDs.map { ($0, nil) }))
+    }
+    func commitAudioBufferDefault(_ frames: AudioBufferSetting, overrides: [UUID: AudioBufferSetting?]) async throws {
+        _ = try await commit(.audioBufferDefault(frames, overrides))
     }
 
     func defaultLayout(for type: ProfileEndpointKind) -> ProfileSectionLayout {
@@ -138,13 +149,35 @@ final class ProfileStore: ObservableObject {
         profile.sectionLayout ?? layoutDefaults[profile.endpointKind.rawValue] ?? profile.defaultSectionLayout
     }
     func setDefaultLayout(_ layout: ProfileSectionLayout, for type: ProfileEndpointKind) {
+        guard settingsMutationsAllowed else { return }
+        let before = defaultLayout(for: type)
         layoutDefaults[type.rawValue] = layout
+        history?.record(actionName: "Change Default Section Layout", contextName: type.displayName, target: .globalSettings,
+            before: .defaultLayout(type, before), after: .defaultLayout(type, layout))
     }
     func applyDefaultLayout(for type: ProfileEndpointKind, to ids: Set<UUID>) {
+        guard settingsMutationsAllowed else { return }
+        let before = profiles.filter { ids.contains($0.id) && $0.endpointKind == type }
+            .map { ProfileLayoutHistoryState(profileID: $0.id, layout: $0.sectionLayout) }
         // Explicitly opted-in profiles resume inheritance; other local layouts stay intact.
         performBatchUpdate {
             for index in profiles.indices where ids.contains(profiles[index].id) && profiles[index].endpointKind == type {
                 profiles[index].sectionLayout = nil
+            }
+        }
+        history?.record(actionName: "Apply Default Section Layout", target: .globalSettings,
+            before: .profileLayouts(before),
+            after: .profileLayouts(before.map { .init(profileID: $0.profileID, layout: nil) }))
+    }
+
+    func restoreProfileLayouts(_ values: [ProfileLayoutHistoryState]) throws {
+        guard settingsMutationsAllowed else { throw ProfileSettingsError.busy }
+        guard Set(values.map(\.profileID)).isSubset(of: Set(profiles.map(\.id))) else { throw HistoryRestoreError.missingProfile }
+        performBatchUpdate {
+            for value in values {
+                if let index = profiles.firstIndex(where: { $0.id == value.profileID }) {
+                    profiles[index].sectionLayout = value.layout
+                }
             }
         }
     }
@@ -167,9 +200,27 @@ final class ProfileStore: ObservableObject {
 
     @discardableResult
     func commitSettings(_ candidate: DeviceProfile, expected: DeviceProfile,
-                        originalActivation: ProfileActivationMode, activation: ProfileActivationMode) async throws -> ProfilePersistenceReceipt {
+                        originalActivation: ProfileActivationMode, activation: ProfileActivationMode,
+                        restoringRouting: ProfileRoutingHistoryState? = nil) async throws -> ProfilePersistenceReceipt {
         try validateSettingsSnapshot(expected, activation: originalActivation)
-        return try await commit(.settings(candidate, activation))
+        return try await commit(.settings(candidate, activation, restoringRouting))
+    }
+
+    func routingHistoryState(outputUIDs: Set<String>, profileIDs: Set<UUID>) -> ProfileRoutingHistoryState {
+        .init(defaults: physicalDeviceDefaults.filter { outputUIDs.contains($0.physicalDevice.uid) },
+              outputUIDs: outputUIDs,
+              autoActivation: Dictionary(uniqueKeysWithValues: profiles.filter { profileIDs.contains($0.id) }
+                .map { ($0.id, $0.autoActivateWhenProfileDeviceSelected) }))
+    }
+
+    func restoreRoutingHistoryState(_ value: ProfileRoutingHistoryState) throws {
+        guard settingsMutationsAllowed else { throw ProfileSettingsError.busy }
+        var restored = document
+        try restored.restoreRouting(value)
+        performBatchUpdate {
+            profiles = restored.profiles
+            physicalDeviceDefaults = restored.physicalDeviceDefaults
+        }
     }
 
     @Published var selectedProfileID: UUID? {
@@ -178,8 +229,10 @@ final class ProfileStore: ObservableObject {
     @Published private(set) var persistenceError: String?
 
     let repository: ProfileRepository
+    let assetStorage: ProfileAssetStorage
+    private let liveAssets: ProfileAssetLease
     private(set) var libraryRevision = ProfileLibraryRevision(rawValue: 0)
-    private let userDefaults: UserDefaults
+    let userDefaults: UserDefaults
     private var isLoading = true
     private var saveDeferralDepth = 0
     private var needsDeferredSave = false
@@ -190,6 +243,7 @@ final class ProfileStore: ObservableObject {
         let plugin: AudioPluginDescriptor
         let previousState: Data?
         var state: Data
+        var recordHistory: Bool
     }
     private var pendingPluginStates: [UUID: [UUID: PendingPluginState]] = [:]
     private(set) var deferredAutosaveNeeded = false
@@ -204,7 +258,11 @@ final class ProfileStore: ObservableObject {
 
     init(storageURL: URL? = nil, userDefaults: UserDefaults = .standard, fileIO: ProfileRepositoryFileIO = .live) {
         let base = storageURL?.deletingLastPathComponent() ?? CamiTunePaths.supportDirectory
-        self.repository = ProfileRepository(url: storageURL ?? base.appendingPathComponent("profiles.json"), io: fileIO)
+        let assetStorage = storageURL == nil ? ProfileAssetStorage.shared : ProfileAssetStorage(directory: base)
+        self.assetStorage = assetStorage
+        liveAssets = assetStorage.retain()
+        self.repository = ProfileRepository(url: storageURL ?? base.appendingPathComponent("profiles.json"), io: fileIO,
+            assetStorage: assetStorage)
         self.userDefaults = userDefaults
         load()
         sanitizeProfiles()
@@ -219,6 +277,7 @@ final class ProfileStore: ObservableObject {
             selectedProfileID = profiles.first?.id
         }
         isLoading = false
+        liveAssets.update(.init(profiles: profiles))
     }
 
     deinit {
@@ -251,14 +310,24 @@ final class ProfileStore: ObservableObject {
             }
         }
         selectedProfileID = profile.id
+        recordProfileCreation(profile.id)
         return profiles.first { $0.id == profile.id }
     }
 
     /// Persist before publication, selection, or exposing a routing endpoint.
     func insertConfiguredProfile(_ candidate: DeviceProfile) async throws -> UUID {
+        let position = history?.beginPendingEdit()
+        defer { history?.endPendingEdit(position) }
         _ = try await commit(.creation(candidate))
         selectedProfileID = candidate.id
+        recordProfileCreation(candidate.id, position: position)
         return candidate.id
+    }
+
+    private func recordProfileCreation(_ id: UUID, position: HistoryPosition? = nil) {
+        let snapshot = captureDeletionSnapshot(profileIDs: [id])
+        history?.record(actionName: "Add Output Profile", contextName: snapshot.profiles.first?.name, target: .profileOrganization,
+            before: .deletion(snapshot, deleted: true), after: .deletion(snapshot, deleted: false), position: position)
     }
     @discardableResult
     func commitMenuDeactivationPolicy(profileID: UUID) async throws -> ProfilePersistenceReceipt {
@@ -270,9 +339,14 @@ final class ProfileStore: ObservableObject {
         profiles[index].autoActivateWhenProfileDeviceSelected = enabled
     }
 
-    func setProfileEnabled(profileID: UUID, enabled: Bool) {
+    func setProfileEnabled(profileID: UUID, enabled: Bool, recordHistory: Bool = true) {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else { return }
+        let before = profiles[index]
         profiles[index].isEnabled = enabled
+        if recordHistory {
+            history?.record(actionName: enabled ? "Enable Profile" : "Disable Profile", contextName: before.name,
+                target: .profile(profileID), before: .profileEnabled(before.isEnabled), after: .profileEnabled(enabled))
+        }
     }
 
     func setOutputVolumeScalar(profileID: UUID, scalar: Double) {
@@ -605,29 +679,43 @@ final class ProfileStore: ObservableObject {
         folders = result
     }
 
-    func update(_ profile: DeviceProfile) {
+    func update(_ profile: DeviceProfile, recordLayoutHistory: Bool = true) {
         guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
         guard profiles[index] != profile else { return }
         guard ProfileNamePolicy.isAvailable(profile.name, in: profiles, excluding: profile.id) else { return }
+        let previous = profiles[index]
         profiles[index] = profile
+        if recordLayoutHistory, profiles[index].sectionLayout != previous.sectionLayout {
+            history?.record(actionName: "Change Section Layout", contextName: profile.name, target: .globalSettings,
+                before: .profileLayouts([.init(profileID: profile.id, layout: previous.sectionLayout)]),
+                after: .profileLayouts([.init(profileID: profile.id, layout: profile.sectionLayout)]))
+        }
     }
 
     /// Host notifications can arrive while settings own the durable document.
     /// Coalesce only the preset, and never overwrite an explicit replacement or
     /// resurrect a removed slot when that transaction finishes.
-    func capturePluginState(profileID: UUID, slotID: UUID, data: Data) {
+    func capturePluginState(profileID: UUID, slotID: UUID, data: Data, recordHistory: Bool = false) {
         guard !stopping, data.count <= PluginRack.maximumStateBytes,
               var profile = profiles.first(where: { $0.id == profileID }),
               let index = profile.pluginRack.slots.firstIndex(where: { $0.id == slotID }) else { return }
         let slot = profile.pluginRack.slots[index]
         if activeDurableCommit != nil {
             pendingPluginStates[profileID, default: [:]][slotID] = .init(
-                plugin: slot.plugin, previousState: slot.state, state: data)
+                    plugin: slot.plugin, previousState: slot.state, state: data, recordHistory: recordHistory)
             return
         }
         guard slot.state != data else { return }
         profile.pluginRack.slots[index].state = data
         update(profile)
+        if recordHistory { recordPluginState(profile: profile, slotID: slotID, before: slot.state, after: data) }
+    }
+
+    private func recordPluginState(profile: DeviceProfile, slotID: UUID, before: Data?, after: Data) {
+        let target = HistoryTarget.plugin(profile.id, slotID)
+        history?.record(actionName: "Edit Plug-in", contextName: profile.name, target: target,
+            before: .pluginState(before), after: .pluginState(after),
+            coalescingKey: .init(target: target, control: "parameters"))
     }
 
     @discardableResult
@@ -642,6 +730,9 @@ final class ProfileStore: ObservableObject {
                 guard let update = states[slot.id], slot.plugin == update.plugin,
                       slot.state == update.previousState, slot.state != update.state else { continue }
                 document.profiles[profileIndex].pluginRack.slots[slotIndex].state = update.state
+                if update.recordHistory {
+                    recordPluginState(profile: document.profiles[profileIndex], slotID: slot.id, before: slot.state, after: update.state)
+                }
                 changed = true
             }
         }
@@ -710,6 +801,7 @@ final class ProfileStore: ObservableObject {
     }
     private func save() {
         guard !isLoading, !stopping else { return }
+        liveAssets.update(.init(profiles: profiles))
         libraryRevision = .init(rawValue: libraryRevision.rawValue + 1)
         guard !protectsUnreadableStorage else { return }
         if activeDurableCommit != nil { deferredAutosaveNeeded = true; return }
@@ -741,6 +833,7 @@ final class ProfileStore: ObservableObject {
         multichannelDrafts = value.multichannelDrafts
         layoutDefaults = value.layoutDefaults; showProfileEnabledExplanation = value.showProfileEnabledExplanation
         isLoading = false
+        liveAssets.update(.init(profiles: profiles))
         libraryRevision = .init(rawValue: libraryRevision.rawValue + 1)
     }
     private func commit(_ mutation: ProfileDocumentMutation) async throws -> ProfilePersistenceReceipt {

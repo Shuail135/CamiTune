@@ -40,11 +40,13 @@ package struct RuntimePlanDelta: Hashable, Sendable {
 
     package var requirements: RuntimeApplyRequirements {
         let route = physicalRoute.changed || endpoint.uidChanged
-        let pipeline = route || endpoint.routingDescriptorChanged || transport.changed || renderer.referenceTopologyChanged
+        let pipeline = route || transport.sampleRateChanged || transport.routingSemanticsChanged
+        let pcm = pipeline || endpoint.routingDescriptorChanged || transport.changed || renderer.referenceTopologyChanged
         return .init(requiresEndpointMetadataUpdate: endpoint.changed || metadata.profileDisplayNameChanged,
             requiresVolumeSafeHandoff: physicalRoute.outputDeviceUIDChanged || endpoint.uidChanged,
             requiresEngineQuiescence: engine.changed,
             requiresFullRuntimeRestart: pipeline,
+            requiresPCMRestart: pcm,
             requiresGraphUpdate: graph != .unchanged,
             requiresRenderConfigurationUpdate: renderer.changed,
             requiresPCMDeliveryUpdate: pcmDeliveryChanged)
@@ -57,7 +59,7 @@ package struct RuntimePlanDelta: Hashable, Sendable {
     package var disruptionLevel: RuntimeDisruptionLevel {
         let effects = requirements
         if effects.requiresVolumeSafeHandoff { return .routeHandoff }
-        if effects.requiresFullRuntimeRestart { return .pipelineRestart }
+        if effects.requiresPCMRestart { return .pipelineRestart }
         if effects.requiresEngineQuiescence { return .engineQuiescence }
         if effects.requiresGraphUpdate || effects.requiresRenderConfigurationUpdate || effects.requiresPCMDeliveryUpdate { return .inPlace }
         return effects.requiresEndpointMetadataUpdate ? .metadataOnly : .none
@@ -70,6 +72,7 @@ package struct RuntimeApplyRequirements: Hashable, Sendable {
         requiresVolumeSafeHandoff: Bool,
         requiresEngineQuiescence: Bool,
         requiresFullRuntimeRestart: Bool,
+        requiresPCMRestart: Bool,
         requiresGraphUpdate: Bool,
         requiresRenderConfigurationUpdate: Bool,
         requiresPCMDeliveryUpdate: Bool
@@ -78,6 +81,7 @@ package struct RuntimeApplyRequirements: Hashable, Sendable {
         self.requiresVolumeSafeHandoff = requiresVolumeSafeHandoff
         self.requiresEngineQuiescence = requiresEngineQuiescence
         self.requiresFullRuntimeRestart = requiresFullRuntimeRestart
+        self.requiresPCMRestart = requiresPCMRestart
         self.requiresGraphUpdate = requiresGraphUpdate
         self.requiresRenderConfigurationUpdate = requiresRenderConfigurationUpdate
         self.requiresPCMDeliveryUpdate = requiresPCMDeliveryUpdate
@@ -86,7 +90,7 @@ package struct RuntimeApplyRequirements: Hashable, Sendable {
     package let requiresEndpointMetadataUpdate: Bool
     package let requiresVolumeSafeHandoff: Bool
     package var requiresTransportRestart: Bool { requiresFullRuntimeRestart }
-    package var requiresPCMRestart: Bool { requiresFullRuntimeRestart }
+    package let requiresPCMRestart: Bool
     package let requiresEngineQuiescence: Bool
     package let requiresFullRuntimeRestart: Bool
     package let requiresGraphUpdate: Bool
@@ -94,7 +98,7 @@ package struct RuntimeApplyRequirements: Hashable, Sendable {
     package let requiresPCMDeliveryUpdate: Bool
 
     package var requiresRestart: Bool {
-        requiresFullRuntimeRestart || requiresEngineQuiescence
+        requiresPCMRestart || requiresEngineQuiescence
     }
 }
 

@@ -32,7 +32,9 @@ def source_directory(root, without_tests):
     if not without_tests:
         yield root
         return
-    # Keep source paths lightweight, and never copy recordings or build outputs.
+    # Swift rejects inputs edited during compilation. Snapshot source files so
+    # work in the shared workspace cannot invalidate this verification halfway
+    # through. Never copy recordings or generated build outputs.
     with tempfile.TemporaryDirectory(prefix="CamiTune-verification-") as temporary:
         source = Path(temporary)
         for name in ("Package.swift", "Package.resolved", "LICENSE", "THIRD_PARTY.md"):
@@ -44,9 +46,13 @@ def source_directory(root, without_tests):
         schemes = root / "CamiTune.xcodeproj/xcshareddata"
         if schemes.exists():
             shutil.copytree(schemes, project / "xcshareddata")
-        for name in ("Sources", "Resources", "Config", "Scripts", "Tools", "Drivers", "Contributions", "build"):
+        for name in ("Sources", "Resources", "Config", "Scripts", "Tools", "Drivers", "Contributions"):
             if (root / name).exists():
-                (source / name).symlink_to(root / name, target_is_directory=True)
+                shutil.copytree(root / name, source / name,
+                                ignore=shutil.ignore_patterns(".build", "build", "dist", "recordings"))
+        # Native helper caches remain shared and protected by verification_lock.
+        if (root / "build").exists():
+            (source / "build").symlink_to(root / "build", target_is_directory=True)
         yield source
 
 

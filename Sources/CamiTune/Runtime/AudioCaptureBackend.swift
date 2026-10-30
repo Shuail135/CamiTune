@@ -45,7 +45,7 @@ protocol AudioCaptureBackend: AnyObject {
     func profileRouteChanged(from profile: DeviceProfile, to plan: AudioRuntimePlan) -> Bool
     func updatePresentation() async throws
     func cancelPendingOperations()
-    func shutdownSynchronously()
+    func shutdownSynchronously() throws
 }
 
 /// One capture generation. It owns its routing/control resources independently
@@ -60,6 +60,9 @@ protocol AudioCaptureSession: AnyObject {
     var needsBindingRefresh: Bool { get }
     var bindingAction: String { get }
     var bindingSummary: String { get }
+    /// Whether this generation can keep delivering complete intervals while
+    /// the source layout changes. Route and rate changes retire the generation.
+    func canRetainSourceFormat(_ format: AudioFormatDescriptor) -> Bool
     func prepareRoute(profiles: [DeviceProfile], validateHardware: () async throws -> Void,
                       checkCurrent: () throws -> Void, operation: PerformanceOperation?) async throws
     func startControl() async throws

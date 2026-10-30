@@ -6,6 +6,27 @@ struct ReferenceCorrectionSession {
 }
 
 extension AppState: HistoryRestoring {
+    func recordRoutingEdit(_ before: ProfileRoutingHistoryState, position: HistoryPosition? = nil) {
+        let after = profiles.routingHistoryState(outputUIDs: before.outputUIDs, profileIDs: Set(before.autoActivation.keys))
+        history.record(actionName: "Change Activation Mode", target: .globalSettings,
+            before: .routing(before), after: .routing(after), position: position)
+    }
+
+    func setAppearance(_ value: AppAppearance) {
+        let before = profiles.userDefaults.string(forKey: AppAppearance.storageKey) ?? AppAppearance.system.rawValue
+        profiles.userDefaults.set(value.rawValue, forKey: AppAppearance.storageKey)
+        value.apply()
+        history.record(actionName: "Change Appearance", target: .preference(.appearance),
+            before: .appearance(before), after: .appearance(value.rawValue))
+    }
+
+    func setClosingReminder(_ enabled: Bool) {
+        let before = !profiles.userDefaults.bool(forKey: "hideCloseKeepsRunningHint")
+        profiles.userDefaults.set(!enabled, forKey: "hideCloseKeepsRunningHint")
+        history.record(actionName: "Change Closing Reminder", target: .preference(.closingReminder),
+            before: .boolean(before), after: .boolean(enabled))
+    }
+
     func setReferenceCorrectionDraft(_ value: DeviceCorrectionProfile?, for id: UUID) {
         guard let profile = try? historyProfile(id) else { return }
         let before = referenceCorrectionSessions[id]?.draft ?? (referenceCorrectionSessions[id] == nil ? profile.personalReferenceCorrection : nil)
@@ -65,37 +86,93 @@ extension AppState: HistoryRestoring {
         invalidateDeferredEdits()
         do {
             try await restoreHistoryValue(snapshot, target: target)
-            try await persistHistoryChanges(for: snapshot)
+            try await persistHistoryChanges(for: snapshot, target: target)
             if let id = activeProfileID, pendingEditorApplies.contains(id) { try await applyHistoryProfileIfActive(id) }
             publishHistoryReplay()
         } catch {
+            let failure = error
+            // These owners already stage, acknowledge and roll back their
+            // transaction. Retrying the old settings here could affect a newer
+            // runtime after the original transaction was superseded.
+            switch snapshot {
+            case .profileSettings, .globalAudioBuffer, .audioBuffer, .personalSpatial, .multichannel:
+                publishHistoryReplay()
+                throw failure
+            default: break
+            }
             // Restore the same domain slice only. Unrelated state and later
             // runtime observations never come from a historical app snapshot.
-            try? await restoreHistoryValue(previous, target: target)
-            try? await persistHistoryChanges(for: previous)
+            do {
+                try await restoreHistoryValue(previous, target: target)
+                try await persistHistoryChanges(for: previous, target: target)
+            } catch {
+                publishHistoryReplay()
+                throw ProfileSettingsError.rollback(failure.localizedDescription, error.localizedDescription)
+            }
             publishHistoryReplay()
-            throw error
+            throw failure
         }
     }
 
-    private func persistHistoryChanges(for snapshot: HistoryState) async throws {
+    private func persistHistoryChanges(for snapshot: HistoryState, target: HistoryTarget) async throws {
         switch snapshot {
-        case .deviceCorrection, .globalEQ, .channel, .crossfeed, .convolution, .convolutionBatch, .roomCorrectionImport, .profileName, .profileOrganization, .deletion, .referenceTransfer, .pluginRack, .pluginOrder, .pluginMIDI, .audioBuffer:
+        case .deviceCorrection, .globalEQ, .channel, .crossfeed, .convolution, .convolutionBatch, .roomCorrectionImport, .profileName, .profileOrganization, .deletion, .referenceTransfer, .pluginRack, .pluginOrder, .pluginMIDI, .profileEnabled, .routing, .defaultLayout, .profileLayouts:
             try await profiles.persistHistoryChanges()
-        case .perAppAudio, .perAppBatch: try perAppAudio.persistHistoryChanges()
-        case .appAlias, .appPlacement: try perAppAudio.persistPresentationHistoryChanges()
+        case .boolean where target == .preference(.enabledExplanation): try await profiles.persistHistoryChanges()
+        case .perAppAudio, .perAppBatch, .appAudioScope: try perAppAudio.persistHistoryChanges()
+        case .appAlias, .appPlacement, .equalizerPresentation: try perAppAudio.persistPresentationHistoryChanges()
+        case .pluginState: try await profiles.persistHistoryChanges()
         default: break
         }
     }
 
     private func currentHistoryState(matching snapshot: HistoryState, target: HistoryTarget) throws -> HistoryState {
         switch (snapshot, target) {
+        case (.appAudioScope, .profile(let id)):
+            _ = try historyProfile(id)
+            return .appAudioScope(usesGlobal: perAppAudio.usesGlobalSettings(for: id))
+        case (.autoEQDraft, .autoEQ(let id, let endpoint)):
+            _ = try historyProfile(id)
+            guard let value = autoEQDraftStores[.autoEQ(id, endpoint)]?.latest else { throw HistoryRestoreError.invalidStateForTarget }
+            return .autoEQDraft(value)
+        case (.speakerAutoEQDraft, .speakerAutoEQ(let id)):
+            _ = try historyProfile(id)
+            guard let value = speakerAutoEQDraftStores[id]?.latest else { throw HistoryRestoreError.invalidStateForTarget }
+            return .speakerAutoEQDraft(value)
+        case (.profileSettings(let value), .profile(let id)):
+            return .profileSettings(.init(profile: try applyingSessionEQDrafts(to: historyProfile(id)), replacing: value.profile,
+                routing: profiles.routingHistoryState(outputUIDs: value.routing.outputUIDs, profileIDs: Set(value.routing.autoActivation.keys))))
+        case (.profileEnabled, .profile(let id)): return .profileEnabled(try historyProfile(id).isEnabled)
+        case (.routing(let value), .globalSettings):
+            return .routing(profiles.routingHistoryState(outputUIDs: value.outputUIDs, profileIDs: Set(value.autoActivation.keys)))
+        case (.defaultLayout(let type, _), .globalSettings): return .defaultLayout(type, profiles.defaultLayout(for: type))
+        case (.profileLayouts(let values), .globalSettings):
+            return .profileLayouts(try values.map { .init(profileID: $0.profileID, layout: try historyProfile($0.profileID).sectionLayout) })
+        case (.globalAudioBuffer(let value), .globalSettings):
+            return .globalAudioBuffer(try audioBufferHistoryState(profileIDs: Set(value.overrides.keys)))
+        case (.appearance, .preference(.appearance)):
+            return .appearance(profiles.userDefaults.string(forKey: AppAppearance.storageKey) ?? AppAppearance.system.rawValue)
+        case (.boolean, .preference(let preference)):
+            switch preference {
+            case .closingReminder: return .boolean(!profiles.userDefaults.bool(forKey: "hideCloseKeepsRunningHint"))
+            case .enabledExplanation: return .boolean(profiles.showProfileEnabledExplanation)
+            case .automaticUpdates: return .boolean(updateChecker.automaticallyChecksForUpdates)
+            case .notifications: return .boolean(notifications.isEnabled)
+            case .loginStartup: return .boolean(loginItem.isEnabled)
+            case .appearance: throw HistoryRestoreError.invalidStateForTarget
+            }
         case (.pluginOrder, .profile(let id)): return .pluginOrder(try historyProfile(id).pluginRack.slots.map(\.id))
+        case (.pluginState, .plugin(let id, let slotID)):
+            guard let slot = try historyProfile(id).pluginRack.slots.first(where: { $0.id == slotID }) else { throw HistoryRestoreError.invalidStateForTarget }
+            return .pluginState(slot.state)
+        case (.equalizerPresentation, .scopedAppPresentation(let id, let scope)):
+            return .equalizerPresentation(perAppAudio.presentationStore(for: scope).currentDocument.records[id]?.equalizerPresentation ?? .both)
         case (.pluginRack, .profile(let id)): return .pluginRack(try historyProfile(id).pluginRack)
         case (.pluginMIDI, .profile(let id)): return .pluginMIDI(try historyProfile(id).pluginRack.midi)
         case (.audioBuffer, .profile(let id)): return .audioBuffer(try historyProfile(id).audioBufferOverride)
-        case (.roomCorrectionImport, .profile(let id)):
-            return .roomCorrectionImport(try roomCorrectionImportSnapshot(profile: applyingSessionEQDrafts(to: historyProfile(id))))
+        case (.roomCorrectionImport(let value), .profile(let id)):
+            return .roomCorrectionImport(try roomCorrectionImportSnapshot(profile: applyingSessionEQDrafts(to: historyProfile(id)),
+                includingChannels: !value.channels.isEmpty))
         case (.multichannel, .profile(let id)):
             let profile = try historyProfile(id)
             return .multichannel(.init(settings: profile.multichannel, topology: profile.speakerTopology))
@@ -103,6 +180,8 @@ extension AppState: HistoryRestoring {
         case (.globalEQ(let snapshot), .profile(let id)):
             var value = try globalEQHistoryState(for: historyProfile(id))
             value.ownsLegacyCorrectionTransfer = snapshot.ownsLegacyCorrectionTransfer
+            value.ownsSectionLayout = snapshot.ownsSectionLayout
+            value.sectionLayout = snapshot.ownsSectionLayout ? try historyProfile(id).sectionLayout : nil
             return .globalEQ(value)
         case (.channel, .profileChannel(let id, let channel)):
             let profile = try applyingSessionEQDrafts(to: historyProfile(id))
@@ -170,6 +249,52 @@ extension AppState: HistoryRestoring {
     private func restoreHistoryValue(_ snapshot: HistoryState, target: HistoryTarget) async throws {
         var applyID: UUID?
         switch (snapshot, target) {
+        case (.appAudioScope(let value), .profile(let id)):
+            perAppAudio.setUsesGlobalSettings(value, for: id)
+        case (.pluginState(let value), .plugin(let id, let slotID)):
+            var profile = try historyProfile(id)
+            guard let index = profile.pluginRack.slots.firstIndex(where: { $0.id == slotID }),
+                  value.map({ $0.count <= PluginRack.maximumStateBytes }) != false else { throw HistoryRestoreError.invalidStateForTarget }
+            profile.pluginRack.slots[index].state = value
+            profiles.update(profile)
+            applyID = id
+        case (.equalizerPresentation(let value), .scopedAppPresentation(let id, let scope)):
+            perAppAudio.presentationStore(for: scope).setEqualizerPresentation(value, for: id)
+        case (.autoEQDraft(let value), .autoEQ(let id, let endpoint)):
+            guard let store = autoEQDraftStores[.autoEQ(id, endpoint)] else { throw HistoryRestoreError.invalidStateForTarget }
+            try await store.restoreHistory(value)
+        case (.speakerAutoEQDraft(let value), .speakerAutoEQ(let id)):
+            guard let store = speakerAutoEQDraftStores[id] else { throw HistoryRestoreError.invalidStateForTarget }
+            try await store.restoreHistory(value)
+        case (.profileSettings(let value), .profile):
+            try await restoreProfileSettings(value)
+        case (.profileEnabled(let value), .profile(let id)):
+            await setProfileEnabled(id: id, enabled: value)
+        case (.routing(let value), .globalSettings):
+            try profiles.restoreRoutingHistoryState(value)
+            runtimeCoordinator.resetAutomaticPolicy()
+            try await runtimeCoordinator.synchronizeProfileEndpoints()
+        case (.defaultLayout(let type, let value), .globalSettings):
+            profiles.setDefaultLayout(value, for: type)
+            if let id = activeProfileID { applyID = id }
+        case (.profileLayouts(let values), .globalSettings):
+            try profiles.restoreProfileLayouts(values)
+            if let id = activeProfileID, values.contains(where: { $0.profileID == id }) { applyID = id }
+        case (.globalAudioBuffer(let value), .globalSettings):
+            try await saveGlobalAudioBuffer(value.defaultValue, overrides: value.overrides)
+        case (.appearance(let raw), .preference(.appearance)):
+            guard let value = AppAppearance(rawValue: raw) else { throw HistoryRestoreError.invalidStateForTarget }
+            setAppearance(value)
+        case (.boolean(let value), .preference(let preference)):
+            switch preference {
+            case .closingReminder: setClosingReminder(value)
+            case .enabledExplanation: profiles.showProfileEnabledExplanation = value
+            case .automaticUpdates: updateChecker.automaticallyChecksForUpdates = value
+            case .notifications: notifications.isEnabled = value
+            case .loginStartup:
+                if let notice = loginItem.setEnabled(value) { throw ProfileSettingsError.runtime(notice.message) }
+            case .appearance: throw HistoryRestoreError.invalidStateForTarget
+            }
         case let (.pluginOrder(order), .profile(id)):
             try storePluginOrder(order, profileID: id)
             pluginReorderApplies.schedule(id)
@@ -188,11 +313,7 @@ extension AppState: HistoryRestoring {
             pluginRackManager.updateMIDI(profileID: id, rack: rack)
             applyID = id
         case let (.audioBuffer(frames), .profile(id)):
-            if let frames, frames.fixedFrames.map({ $0 <= 0 }) == true { throw HistoryRestoreError.invalidStateForTarget }
-            var profile = try historyProfile(id)
-            profile.audioBufferOverride = frames
-            profiles.update(profile)
-            applyID = id
+            try await commitAudioBufferSize(frames, profileID: id)
         case let (.roomCorrectionImport(value), .profile(id)):
             try storeRoomCorrectionImport(value, profileID: id)
             applyID = id
@@ -208,6 +329,9 @@ extension AppState: HistoryRestoring {
             }
             setGlobalEQHistoryDraft(value, for: id)
             try persistEqualizerEdits(for: id)
+            if value.ownsSectionLayout {
+                try profiles.restoreProfileLayouts([.init(profileID: id, layout: value.sectionLayout)])
+            }
             applyID = id
         case let (.channel(value), .profileChannel(id, channel)):
             let profile = try historyProfile(id)

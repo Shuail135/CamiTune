@@ -20,8 +20,12 @@ struct OutputRestorationContext {
 final class OwnedRuntimeSession {
     let ownershipID: RuntimeOwnershipID
     let publicSession: AudioRuntimeSession
-    var appliedPlan: AudioRuntimePlan
-    var acknowledgedPlan: AudioRuntimePlan?
+    var appliedPlan: AudioRuntimePlan { didSet { retainAssets() } }
+    var acknowledgedPlan: AudioRuntimePlan? { didSet { retainAssets() } }
+    private let retainedAssets: ProfileAssetLease
+    private func retainAssets() {
+        retainedAssets.update(.init(profiles: [appliedPlan.intent] + (acknowledgedPlan.map { [$0.intent] } ?? [])))
+    }
     var restoration: OutputRestorationContext
     var resources: RuntimeResourceOwnership = []
     let capture: any AudioCaptureSession
@@ -29,6 +33,7 @@ final class OwnedRuntimeSession {
         self.capture = capture
         ownershipID = id; publicSession = AudioRuntimeSession(profileID: plan.revision.profileID)
         appliedPlan = plan
+        retainedAssets = ProfileAssetStorage.shared.retain(.init(profiles: [plan.intent]))
         restoration = .init(previousDefaultUID: previousDefaultUID,
             physicalOutputUID: plan.hardwareEvidence.output.uid)
     }
@@ -41,6 +46,7 @@ final class RuntimeSettingsTransaction {
     let intent: DeviceProfile
     let baseOwnershipID: RuntimeOwnershipID?
     let oldPlan: AudioRuntimePlan?
+    private let retainedAssets: ProfileAssetLease
     let previousDefaultUID: String?
     let wasActive: Bool
     let operation: PerformanceOperation?
@@ -50,7 +56,8 @@ final class RuntimeSettingsTransaction {
     var graphAttempted = false
     var rendererApplied = false
     var endpointAttempted = false
-    var restarted = false
+    enum Restart { case none, pcm, pipeline }
+    var restart: Restart = .none
     var receipt: RuntimeApplyReceipt?
     var applyContinuation: CheckedContinuation<RuntimeApplyReceipt, Error>?
     var rollbackContinuation: CheckedContinuation<RuntimeCommandResult, Error>?
@@ -61,6 +68,8 @@ final class RuntimeSettingsTransaction {
         self.id = id; self.generation = generation; self.original = original; self.intent = intent
         baseOwnershipID = owner?.ownershipID; wasActive = owner?.publicSession.profileID == original.id
         oldPlan = wasActive ? owner?.appliedPlan : nil
+        retainedAssets = ProfileAssetStorage.shared.retain(.init(profiles:
+            [original, intent] + (oldPlan.map { [$0.intent] } ?? [])))
         previousDefaultUID = owner?.restoration.previousDefaultUID
         self.operation = operation; self.validatePersistence = validatePersistence
     }

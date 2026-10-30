@@ -130,11 +130,14 @@ struct RoomCorrectionImportPlan {
 }
 
 extension AppState {
-    func roomCorrectionImportSnapshot(profile: DeviceProfile) throws -> RoomCorrectionImportHistoryState {
+    func roomCorrectionImportSnapshot(profile: DeviceProfile, includingChannels: Bool = true) throws -> RoomCorrectionImportHistoryState {
         let processing = try profile.resolvedProcessing()
-        return .init(channels: Dictionary(uniqueKeysWithValues: profile.configuredProcessingChannels.map { channel in
+        var seat = profile.effectiveSpatialSettings.seating
+        // This invalidation counter changes during replay; it is not content.
+        seat?.roomCorrectionRevision = 0
+        return .init(channels: includingChannels ? Dictionary(uniqueKeysWithValues: profile.configuredProcessingChannels.map { channel in
             (channel.index, processing.channels.first { $0.index == channel.index }?.chain ?? .init())
-        }), seat: profile.effectiveSpatialSettings.seating)
+        }) : [:], seat: seat)
     }
 
     func storeRoomCorrectionImport(_ value: RoomCorrectionImportHistoryState, profileID: UUID) throws {
@@ -144,8 +147,8 @@ extension AppState {
             throw HistoryRestoreError.invalidStateForTarget
         }
         profile.captureLegacyPhysicalChannels()
+        profile.resetRoomCorrection()
         var processing = try profile.resolvedProcessing()
-        processing.removeRoomStages()
         for channel in profile.configuredProcessingChannels {
             guard let chain = value.channels[channel.index] else { continue }
             if let index = processing.channels.firstIndex(where: { $0.index == channel.index }) {
@@ -162,7 +165,6 @@ extension AppState {
             seat.roomCorrectionBands = source.roomCorrectionBands
             seat.roomCorrectionTopology = source.roomCorrectionTopology
             seat.roomCorrectionSessionID = source.roomCorrectionSessionID
-            seat.roomCorrectionRevision += 1
             profile.spatialSettings.seating = seat
         }
         profile.synchronizeListeningPositionCorrection()

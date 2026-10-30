@@ -5,8 +5,18 @@ import SwiftUI
 struct AppUpdatePanel<Content: View, Actions: View>: View {
     let title: String
     let subtitle: String
+    let updateChecker: AppUpdateChecker?
     @ViewBuilder let content: Content
     @ViewBuilder let actions: Actions
+
+    init(title: String, subtitle: String, updateChecker: AppUpdateChecker? = nil,
+         @ViewBuilder content: () -> Content, @ViewBuilder actions: () -> Actions) {
+        self.title = title
+        self.subtitle = subtitle
+        self.updateChecker = updateChecker
+        self.content = content()
+        self.actions = actions()
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,7 +26,10 @@ struct AppUpdatePanel<Content: View, Actions: View>: View {
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title).font(.title2.bold()).accessibilityAddTraits(.isHeader)
-                    Text(subtitle).font(.callout).foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        Text(subtitle).font(.callout).foregroundStyle(.secondary)
+                        if let updateChecker { AppUpdateCheckStatusView(checker: updateChecker) }
+                    }
                 }
                 Spacer(minLength: 0)
             }.padding(24)
@@ -50,11 +63,46 @@ struct AppUpdatePanel<Content: View, Actions: View>: View {
 }
 
 @MainActor
+private struct AppUpdateCheckStatusView: View {
+    @ObservedObject var checker: AppUpdateChecker
+
+    var body: some View {
+        Group {
+            if case .checking = checker.phase {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Checking for updates…")
+                }.foregroundStyle(.secondary)
+            } else {
+                switch checker.lastCheckResult {
+                case .upToDate:
+                    Label("Up to date", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                case .updateAvailable:
+                    Label("Update available", systemImage: "arrow.down.circle")
+                        .foregroundStyle(.secondary)
+                case .failed:
+                    Label("Couldn’t check for updates", systemImage: "exclamationmark.circle")
+                        .foregroundStyle(.secondary)
+                case nil:
+                    EmptyView()
+                }
+            }
+        }
+        .font(.callout)
+        .fixedSize()
+    }
+}
+
+@MainActor
 struct AppUpdateProgressView: View {
     @ObservedObject var checker: AppUpdateChecker
 
     private var title: String {
         switch checker.phase {
+        case .checking: return "Checking for updates"
+        case .upToDate: return "You’re up to date"
+        case .checkFailed: return "Could not check for updates"
         case .idle: return "Update available"
         case .downloading: return "Downloading update"
         case .verifying: return "Verifying update"
@@ -74,10 +122,17 @@ struct AppUpdateProgressView: View {
     }
 
     var body: some View {
-        AppUpdatePanel(title: title, subtitle: subtitle) {
+        AppUpdatePanel(title: title, subtitle: subtitle,
+                       updateChecker: checker.phase == .completed ? checker : nil) {
             switch checker.phase {
+            case .checking:
+                status("Checking for a new version of CamiTune…", working: true)
+            case .upToDate:
+                status("You’re using the latest version of CamiTune.", working: false)
+            case .checkFailed:
+                explanation(checker.failureMessage)
             case .idle:
-                explanation("A new version of CamiTune is available. Download it now, then choose when to install and restart.")
+                explanation("A new version of CamiTune is available.")
             case .downloading:
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
@@ -99,17 +154,16 @@ struct AppUpdateProgressView: View {
             case .failed:
                 explanation(checker.failureMessage)
             case .completed:
-                status("CamiTune is up to date.", working: false)
                 AppChangelogView()
             }
         } actions: {
             switch checker.phase {
-            case .idle:
-                Button("Skip Version") { checker.skipAvailableVersion() }
+            case .upToDate, .checkFailed:
                 Spacer()
-                Button("Later", role: .cancel) { checker.remindLater() }
-                Button("Download Update") { checker.beginUpdate() }
-                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                Button("OK") { checker.dismissUpdate() }
+                    .keyboardShortcut(.defaultAction)
+            case .idle:
+                AppUpdateOfferActions(checker: checker)
             case .downloading:
                 Button("Cancel Download", role: .cancel) { checker.dismissUpdate() }
                 Spacer()
@@ -160,18 +214,45 @@ struct AppUpdateProgressView: View {
 }
 
 @MainActor
+private struct AppUpdateOfferActions: View {
+    let checker: AppUpdateChecker
+
+    var body: some View {
+        Button("Skip Version") { checker.skipAvailableVersion() }
+        Spacer()
+        Button("Later", role: .cancel) { checker.remindLater() }
+        Button("Download Update") { checker.beginUpdate() }
+            .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+    }
+}
+
+@MainActor
+private struct AppChangelogActions: View {
+    @ObservedObject var checker: AppUpdateChecker
+    let close: () -> Void
+
+    var body: some View {
+        if checker.availableUpdate?.presentation == .changelog {
+            AppUpdateOfferActions(checker: checker)
+        } else {
+            Spacer()
+            Button("Done", action: close)
+                .keyboardShortcut(.defaultAction)
+        }
+    }
+}
+
+@MainActor
 enum AppChangelogWindow {
     private static var window: NSWindow?
 
-    static func show() {
+    static func show(checker: AppUpdateChecker) {
         if window == nil {
-            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            let content = AppUpdatePanel(title: "Changelog", subtitle: version.map { "CamiTune \($0)" } ?? "CamiTune") {
+            let content = AppUpdatePanel(title: "Changelog", subtitle: "CamiTune \(checker.installedVersion)",
+                                         updateChecker: checker) {
                 AppChangelogView()
             } actions: {
-                Spacer()
-                Button("Done") { window?.close() }
-                    .keyboardShortcut(.defaultAction)
+                AppChangelogActions(checker: checker) { window?.close() }
             }
             let created = NSWindow(contentViewController: NSHostingController(rootView: content))
             created.title = "CamiTune Changelog"
@@ -183,6 +264,8 @@ enum AppChangelogWindow {
         if window?.isMiniaturized == true { window?.deminiaturize(nil) }
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        // The window is retained after closing, so onAppear is not an open event.
+        Task { await checker.checkForUpdates(presentation: .changelog) }
     }
 }
 

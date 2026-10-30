@@ -42,6 +42,17 @@ struct DesiredRuntimeIntent: Sendable {
     let reportErrors: Bool
     let reason: String
     let parentOperation: PerformanceOperationID?
+    let retainedAssets: ProfileAssetLease
+    init(generation: RuntimeIntentGeneration, target: Target, source: RuntimeIntentSource,
+         preparedPlan: AudioRuntimePlan?, reportErrors: Bool, reason: String, parentOperation: PerformanceOperationID?) {
+        self.generation = generation; self.target = target; self.source = source
+        self.preparedPlan = preparedPlan; self.reportErrors = reportErrors
+        self.reason = reason; self.parentOperation = parentOperation
+        var references = ProfileAssetReferences()
+        if case .active(let profile) = target { references.include(profile) }
+        if let preparedPlan { references.include(preparedPlan.intent) }
+        retainedAssets = ProfileAssetStorage.shared.retain(references)
+    }
     var profileID: UUID? { if case .active(let profile) = target { return profile.id }; return nil }
 }
 struct RuntimeTransitionSnapshot: Equatable, Sendable {

@@ -176,21 +176,6 @@ final class MenuBarViewModel: ObservableObject {
         }
     }
 
-    func setMovieEnabled(_ enabled: Bool) {
-        guard !actionInFlight, !state.transitionInProgress, !state.isSavingProfileSettings,
-              let profile, PerAppPlaybackContext(profile: profile).movie != nil else { return }
-        beginAction(profile: profile)
-        var settings = profile.personalSpatial; settings.movie.enabled = enabled
-        Task {
-            defer { finishAction() }
-            do {
-                try await state.setPersonalSpatial(profileID: profile.id, settings: settings,
-                    expectedContext: profile.deviceTypeConfigurationKey)
-            }
-            catch { state.errorMessage = error.localizedDescription }
-        }
-    }
-
     func setPlaybackMode(_ mode: PlaybackMode) {
         guard !actionInFlight,
               !state.transitionInProgress,
@@ -239,7 +224,6 @@ struct MenuBarRootView: View {
                 Button("Open CamiTune") {
                     model.dismissMenu()
                     CamiTunePresentationCoordinator.shared.showMainWindow()
-                    Task { await model.state.updateChecker.checkAfterReminderIfNeeded() }
                 }
                 Button("Quit CamiTune") { NSApp.terminate(nil) }
                     .keyboardShortcut("q")
@@ -336,10 +320,7 @@ struct MenuBarRootView: View {
                             unavailableReason: { profile.playbackReadiness($0).reason })
                         .accessibilityLabel("Mode")
                         .disabled(model.actionInFlight || model.state.transitionInProgress || model.state.isSavingProfileSettings || model.state.spatialCalibrationContext != nil)
-                        if PerAppPlaybackContext(profile: profile).movie != nil {
-                            Toggle("Movie mode", isOn: Binding(get: { profile.personalSpatial.movie.enabled }, set: { model.setMovieEnabled($0) }))
-                                .controlSize(.small).disabled(model.actionInFlight || model.state.isSavingProfileSettings)
-                        }
+
                     }
                 }
             } else {

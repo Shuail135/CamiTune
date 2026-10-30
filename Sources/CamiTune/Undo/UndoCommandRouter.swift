@@ -18,59 +18,44 @@ final class UndoCommandRouter: ObservableObject {
     let history: UndoCoordinator
     private var observations: [AnyCancellable] = []
     private let editors = NSHashTable<EditorHistoryCommandView>.weakObjects()
-    private weak var activeEditor: EditorHistoryCommandView?
-    private var mouseMonitor: Any?
     private var refreshPending = false
+    private var usesNativeTextHistory = true
     var keyWindow: () -> NSWindow? = { NSApp.keyWindow }
     var nativeTextUndoManager: () -> UndoManager? = {
         guard let text = NSApp.keyWindow?.firstResponder as? NSTextView, text.isEditable else { return nil }
         return text.undoManager
-    }
+    } { didSet { usesNativeTextHistory = true } }
     init(history: UndoCoordinator) {
         self.history = history
         history.objectWillChange.sink { [weak self] _ in
-            // Editing another section returns commands to the app's history.
-            self?.activeEditor = nil
+            self?.usesNativeTextHistory = false
             self?.objectWillChange.send()
         }.store(in: &observations)
         for name in [NSText.didBeginEditingNotification, NSText.didEndEditingNotification,
                      NSText.didChangeNotification, NSWindow.didBecomeKeyNotification,
-                     NSWindow.didResignKeyNotification, Notification.Name.NSUndoManagerCheckpoint] {
-            NotificationCenter.default.publisher(for: name).receive(on: RunLoop.main)
-                .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
+                     NSWindow.didResignKeyNotification, Notification.Name.NSUndoManagerDidCloseUndoGroup,
+                     Notification.Name.NSUndoManagerDidUndoChange, Notification.Name.NSUndoManagerDidRedoChange] {
+            // canRedo itself posts a checkpoint. Observing checkpoints would
+            // make menu validation invalidate and rebuild the same menu forever.
+            // AppKit posts these on the main thread. Preserve their order
+            // before a bound control publishes its application history entry.
+            NotificationCenter.default.publisher(for: name)
+                .sink { [weak self] notification in
+                    guard let self else { return }
+                    if !self.history.isReplaying, notification.name == NSText.didChangeNotification {
+                        self.usesNativeTextHistory = true
+                    }
+                    self.objectWillChange.send()
+                }.store(in: &observations)
         }
     }
-    deinit {
-        if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
-    }
-
     func register(_ editor: EditorHistoryCommandView) {
         editors.add(editor)
-        if mouseMonitor == nil {
-            mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-                guard let self, let window = event.window, window === self.keyWindow() else { return event }
-                self.activeEditor = self.editors.allObjects.first {
-                    $0.isAvailable(in: window) && $0.visibleRect.contains($0.convert(event.locationInWindow, from: nil))
-                }
-                self.refreshCommands()
-                return event
-            }
-        }
         refreshCommands()
     }
 
     func unregister(_ editor: EditorHistoryCommandView) {
         editors.remove(editor)
-        if activeEditor === editor { activeEditor = nil }
-        if editors.allObjects.isEmpty, let mouseMonitor {
-            NSEvent.removeMonitor(mouseMonitor)
-            self.mouseMonitor = nil
-        }
-        refreshCommands()
-    }
-
-    func editorDidChange(_ editor: EditorHistoryCommandView) {
-        if editor.isAvailable(in: editor.window) { activeEditor = editor }
         refreshCommands()
     }
 
@@ -85,22 +70,20 @@ final class UndoCommandRouter: ObservableObject {
     }
 
     private var editorContext: EditorHistoryCommandView? {
-        let window = keyWindow()
-        // A wizard owns its entire window, including an empty undo stack.
-        if let modal = editors.allObjects.first(where: { $0.isExclusive && $0.isInWindow(window) }) { return modal }
-        guard let activeEditor, activeEditor.isAvailable(in: window) else { return nil }
-        return activeEditor
+        editors.allObjects.first { $0.isInWindow(keyWindow()) }
     }
 
     private func allowsAppHistory(editor: UndoManager?) -> Bool {
-        editor != nil || editorContext?.isExclusive != true
+        editor == nil && editorContext == nil
     }
 
     private func manager(forUndo: Bool, editor: UndoManager?) -> UndoManager? {
-        // Text editing keeps its native history; editor drafts precede saved app edits.
+        // Only an open, cancelable dialog owns a separate draft transaction.
         let context = editorContext
         let local = context?.isAvailable(in: keyWindow()) == true ? context?.manager : nil
-        for manager in [nativeTextUndoManager(), editor ?? local].compactMap({ $0 }) {
+        guard !history.isReplaying else { return nil }
+        let text = usesNativeTextHistory || context != nil || editor != nil ? nativeTextUndoManager() : nil
+        for manager in [text, editor ?? local].compactMap({ $0 }) {
             if forUndo ? manager.canUndo : manager.canRedo { return manager }
         }
         return nil
@@ -122,10 +105,12 @@ final class UndoCommandRouter: ObservableObject {
         return history.redoTitle.map { "Redo " + $0 } ?? "Redo"
     }
     func performUndo(editor: UndoManager? = nil) {
+        guard !history.isReplaying else { return }
         if let manager = manager(forUndo: true, editor: editor) { manager.undo(); objectWillChange.send() }
         else if allowsAppHistory(editor: editor) { Task { await history.undo() } }
     }
     func performRedo(editor: UndoManager? = nil) {
+        guard !history.isReplaying else { return }
         if let manager = manager(forUndo: false, editor: editor) { manager.redo(); objectWillChange.send() }
         else if allowsAppHistory(editor: editor) { Task { await history.redo() } }
     }

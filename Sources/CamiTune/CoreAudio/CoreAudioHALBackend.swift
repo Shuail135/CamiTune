@@ -1,6 +1,7 @@
 import Foundation
 import CoreAudio
 import SystemAudioBridgeC
+import CamiTuneDomain
 
 struct CoreAudioBridgeCapabilities: Sendable {
     let transportSupported: Bool
@@ -8,7 +9,7 @@ struct CoreAudioBridgeCapabilities: Sendable {
     let sourceDeviceID: UInt32
 
     var supportsProfileRouting: Bool {
-        transportSupported && profileFormatVersion == 1 && sourceDeviceID != 0
+        transportSupported && profileFormatVersion == SABR_PROFILE_FORMAT_VERSION && sourceDeviceID != 0
     }
 }
 
@@ -77,11 +78,40 @@ struct CoreAudioHALBackend: Sendable {
         })
 }
 
+extension CoreAudioHALBackend {
+    /// Termination and maintenance must acknowledge the physical route before
+    /// removing a selected virtual endpoint. HAL acceptance alone is not completion.
+    func setDefaultOutputAndWaitSynchronously(uid: String) throws {
+        if readDefaultOutput() == uid { return }
+        guard let device = resolve(uid) else { throw CoreAudioService.AudioError.deviceNotFound(uid) }
+        try setDefaultOutput(device)
+        let result = CoreAudioConditionWaiter.waitSynchronously(backend: self, events: [.defaultOutput],
+            timeout: .seconds(1), condition: { readDefaultOutput() == uid })
+        if result.source == .cancelled { throw CancellationError() }
+        guard result.source != .timedOut else { throw CoreAudioService.AudioError.defaultOutputDidNotApply(uid) }
+    }
+
+    func removeProfileEndpoints() throws {
+        if let selected = readDefaultOutput(),
+           selected == AudioDeviceInfo.systemAudioBridgeUID || ProfileRoutingDescriptor.isProfileRoutingUID(selected) {
+            guard let physical = enumerateOutputs().first(where: { !$0.isRoutingDevice }) else {
+                throw CoreAudioService.AudioError.deviceNotFound("An available physical output")
+            }
+            try setDefaultOutputAndWaitSynchronously(uid: physical.id)
+        }
+        // The native publisher serializes with a cancelled transaction and its
+        // rollback, so that neither can recreate devices after this removal.
+        if let bridge = resolve(AudioDeviceInfo.systemAudioBridgeUID) { _ = try publishEndpoints(bridge, []) }
+    }
+}
+
 enum CoreAudioEvent: Hashable, Sendable {
-    case devices, defaultOutput, nominalRate(UInt32)
+    case devices, defaultOutput, nominalRate(UInt32), streamConfiguration(UInt32), channelLayout(UInt32)
     var objectID: AudioObjectID {
-        if case .nominalRate(let id) = self { return id }
-        return AudioObjectID(kAudioObjectSystemObject)
+        switch self {
+        case .nominalRate(let id), .streamConfiguration(let id), .channelLayout(let id): return id
+        case .devices, .defaultOutput: return AudioObjectID(kAudioObjectSystemObject)
+        }
     }
     var address: AudioObjectPropertyAddress {
         let selector: AudioObjectPropertySelector
@@ -89,8 +119,15 @@ enum CoreAudioEvent: Hashable, Sendable {
         case .devices: selector = kAudioHardwarePropertyDevices
         case .defaultOutput: selector = kAudioHardwarePropertyDefaultOutputDevice
         case .nominalRate: selector = kAudioDevicePropertyNominalSampleRate
+        case .streamConfiguration: selector = kAudioDevicePropertyStreamConfiguration
+        case .channelLayout: selector = kAudioDevicePropertyPreferredChannelLayout
         }
-        return .init(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        let scope: AudioObjectPropertyScope
+        switch self {
+        case .streamConfiguration, .channelLayout: scope = kAudioObjectPropertyScopeOutput
+        default: scope = kAudioObjectPropertyScopeGlobal
+        }
+        return .init(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
     }
 }
 

@@ -20,6 +20,7 @@ struct RoomCorrectionView: View {
     @State private var replacementMessage: String?
     @State private var confirmReplacement = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     private var saved: SpatialSeatingCalibration? { profile.effectiveSpatialSettings.seating }
     private var stepIndex: Int { RoomCorrectionEditorState.Tab.allCases.firstIndex(of: editor.tab) ?? 0 }
     init(state: AppState, profile: Binding<DeviceProfile>, isVisible: Bool = true,
@@ -36,10 +37,11 @@ struct RoomCorrectionView: View {
                 Spacer()
             }
             tabs
+            if editor.source.kind == .recorder && editor.session != nil { simpleModeGuide }
             SelectedEditorPageLayout(selection: stepIndex) {
                 step(.measure) {
                     VStack(alignment: .leading, spacing: 12) {
-                        recordingSelection
+                        if editor.session == nil { recordingSelection }
                         if editor.measurementOpen && editor.profileIsActive { measure }
                     }
                 }
@@ -65,6 +67,7 @@ struct RoomCorrectionView: View {
         .onChange(of: editor.source.kind) { _ in editor.normalizeCorrectionSettings() }
         .onDisappear { importPanel?.cancel(nil); editor.close() }
         .onChange(of: saved?.id) { _ in editor.selectSeat(profile: profile, app: state) }
+        .onChange(of: saved?.roomCorrectionRevision) { _ in editor.selectSeat(profile: profile, app: state) }
         .onChange(of: isVisible) { visible in
             if !visible { importPanel?.cancel(nil); editor.endCompare(); editor.pauseMeasurement() }
         }
@@ -106,6 +109,92 @@ struct RoomCorrectionView: View {
     }
 
     private var hasImportedAnalysis: Bool { importedRecording != nil && editor.hasMeasurements }
+
+    private enum SimpleGuideStep: Int, CaseIterable {
+        case volumeCheck = 1, record, importRecording, review, apply
+
+        var title: String {
+            switch self {
+            case .volumeCheck: return "Volume Check"
+            case .record: return "Record"
+            case .importRecording: return "Import recording"
+            case .review: return "Review"
+            case .apply: return "Apply"
+            }
+        }
+    }
+
+    private var simpleGuideStep: SimpleGuideStep {
+        if editor.importingRecording { return .importRecording }
+        if importedRecording != nil {
+            return editor.tab == .correction && editor.hasMeasurements ? .apply : .review
+        }
+        if editor.measuring { return .record }
+        if editor.recorderPlaybackComplete { return .importRecording }
+        return editor.recorderNeedsPreparation ? .volumeCheck : .record
+    }
+
+    private var simpleGuideInstruction: String {
+        switch simpleGuideStep {
+        case .volumeCheck:
+            return "Use a decibel meter or phone app.\nPlay Test Sound and adjust Test volume until the meter reads about 20–30 dB above the room’s background level.\nTry to keep your room as quite as possible."
+        case .record:
+            if editor.measuring {
+                return "Try Keep your phone still"
+            }
+            if editor.session?.blocks.isEmpty != false {
+                return "Choose how many positions to record. More positions can improve accuracy across your listening area.\nPlace your phone upside down at the graph’s blue marker, with its microphone at ear level. Press Record in your recorder, then Play Sound here."
+            }
+            return "Keep the same recording running. Move your phone to the next blue marker, with its microphone at ear level, then press \(editor.recorderActionTitle). Keep it still while sound plays."
+        case .importRecording:
+            if editor.importingRecording {
+                return "Analyzing your recording. The graphs will appear in Analysis when it finishes."
+            }
+            return "After all positions finish, stop recording and choose Import Recording… in Measure."
+        case .review:
+            if !editor.hasMeasurements {
+                return "No usable measurements were found. Remove the imported file to choose another recording, or reset room correction to record again."
+            }
+            return "Analysis section here. Press next to calculate correction."
+        case .apply:
+            if let result = saved?.roomCorrectionResult,
+               editor.calculatedResult?.generatedAt == result.generatedAt,
+               editor.settings == result.settings, editor.verificationIsCurrent(profile: profile) {
+                return "Correction imported. The filters are now in the channel processing and/or FIR."
+            }
+            if editor.canImport {
+                return "Review the calculated filters under Calculation, then choose Import to apply them. Import replaces the channel processing and/or FIR."
+            }
+            return "Press calculate. Review Calculation, then choose Import to apply the filters. Import replaces the channel processing andor FIR."
+        }
+    }
+
+    private var simpleModeGuide: some View {
+        let current = simpleGuideStep
+        return GroupBox {
+            WrappingControlLayout(horizontalSpacing: 14, verticalSpacing: 8) {
+                ForEach(SimpleGuideStep.allCases, id: \.self) { step in
+                    HStack(spacing: 4) {
+                        Image(systemName: "\(step.rawValue).circle\(step == current ? ".fill" : "")")
+                            .accessibilityHidden(true)
+                        Text(step.title)
+                    }
+                    .font(.caption.weight(step == current ? .semibold : .regular))
+                    .foregroundStyle(step == current ? Color.blue : Color.secondary)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Step \(step.rawValue): \(step.title)")
+                    .accessibilityValue(step == current ? "Current step" : "")
+                }
+            }
+            Text(simpleGuideInstruction)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } label: {
+            Text("Simple mode guide")
+        }
+        .groupBoxStyle(DeviceCorrectionCardStyle(background: .white.opacity(colorScheme == .dark ? 0.10 : 0.65)))
+        .uiInteractionAnchor("room-simple-mode-guide")
+    }
 
     private func calculateCorrection() {
         NSApp.keyWindow?.makeFirstResponder(nil)
@@ -236,11 +325,19 @@ struct RoomCorrectionView: View {
                     .disabled(editor.busy)
                     .uiInteractionAnchor("room-correction-remeasure")
             }
-            if editor.importingRecording || ((editor.tab == .measure && editor.measurementOpen || editor.measuring)
+            if editor.tab == .measure && editor.measurementOpen && editor.recorderNeedsPreparation {
+                Button("Continue") { editor.confirmRecorderPreparation() }
+                .buttonStyle(.borderedProminent).disabled(editor.busy)
+                .uiInteractionAnchor("room-prepare-confirm")
+                .accessibilityIdentifier("room-prepare-confirm")
+            } else if editor.importingRecording || ((editor.tab == .measure && editor.measurementOpen || editor.measuring)
                 && editor.source.kind == .recorder && importedRecording == nil) {
+                if editor.session?.blocks.isEmpty == true && !editor.measuring {
+                    Button("Back to Volume Check") { editor.reviewRecorderPreparation() }
+                        .disabled(editor.busy).uiInteractionAnchor("room-prepare-back")
+                }
                 if editor.tab == .measure && editor.recorderPlaybackComplete && !editor.busy {
                     Button("Play Again") { editor.measure(profile: profile, selectedChannel: nil) }
-                        .help("Keep the same phone recording running while repeating the selected position, then import that complete audio file.")
                         .uiInteractionAnchor("room-recorder-replay")
                 }
                 Button(editor.recorderActionTitle) {
@@ -342,44 +439,52 @@ struct RoomCorrectionView: View {
                         message: "Use the calibration file for this microphone and input channel. Match its orientation to the file. Use a stand, keep the room quiet, and disable input gain automation and voice/noise processing.")
                 }
             }
-            if editor.session != nil {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 10) {
-                        Text("Test volume")
-                        SteppedValueSlider(value: Binding(get: { editor.testVolumeDB }, set: { editor.setTestVolumeDB($0) }),
-                            in: editor.testVolumeRangeDB, step: 1, style: .preamp)
-                            .frame(width: 160).accessibilityLabel("Test volume")
-                            .uiInteractionAnchor("room-test-volume")
-                            .disabled(editor.busy && !editor.testingSound)
-                        Text(String(format: "%+.0f dB", editor.testVolumeDB)).monospacedDigit().frame(width: 55, alignment: .trailing)
-                        Button {
-                            if editor.testingSound { editor.cancel() }
-                            else { editor.measure(profile: profile, selectedChannel: nil, preview: true) }
-                        } label: {
-                            Image(systemName: editor.testingSound ? "stop.fill" : "speaker.wave.2")
-                                .frame(width: 22, height: 22)
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(editor.busy && !editor.testingSound)
-                        .uiInteractionAnchor("room-test-sound")
-                        .accessibilityLabel(editor.testingSound ? "Stop Sound" : "Test Sound")
-                        DeviceCorrectionHelpIcon(title: "Test sound",
-                            message: "Volume should aim for roughly 20–30 dB above background noise."
-                                + (editor.source.kind == .microphone
-                                    ? "dBFS shows microphone recording level. Leave at least 6 dB of input peak headroom."
-                                    : "Use a decibel meter app if you don't have physical one."))
-                    }
-                    if editor.source.kind == .microphone {
-                        if let level = editor.microphoneLevel, editor.busy {
-                            HStack {
-                                Text(String(format: "Microphone · peak %.1f dBFS · RMS %.1f dBFS", level.peakDBFS, level.rmsDBFS)).monospacedDigit()
-                                Text(level.clipped ? "Clipping — lower the level" : level.peakDBFS > -6 ? "Leave more headroom" : "")
-                                    .foregroundStyle(level.clipped ? Color.red : Color.orange)
-                            }.font(.caption).uiInteractionAnchor("room-microphone-level")
-                        }
-                    }
-                }
+            if editor.session != nil && (editor.source.kind == .microphone || editor.recorderNeedsPreparation) {
+                testSoundControls
             }
+            if !editor.recorderNeedsPreparation { measurementPositions }
+        }
+    }
+
+    private var testSoundControls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Text("Test volume")
+                SteppedValueSlider(value: Binding(get: { editor.testVolumeDB }, set: { editor.setTestVolumeDB($0) }),
+                    in: editor.testVolumeRangeDB, step: 1, style: .preamp)
+                    .frame(width: 160).accessibilityLabel("Test volume")
+                    .uiInteractionAnchor("room-test-volume")
+                    .disabled(editor.busy && !editor.testingSound)
+                Text(String(format: "%+.0f dB", editor.testVolumeDB)).monospacedDigit().frame(width: 55, alignment: .trailing)
+                Button {
+                    if editor.testingSound { editor.cancel() }
+                    else { editor.measure(profile: profile, selectedChannel: nil, preview: true) }
+                } label: {
+                    Image(systemName: editor.testingSound ? "stop.fill" : "speaker.wave.2")
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.borderless)
+                .disabled(editor.busy && !editor.testingSound)
+                .uiInteractionAnchor("room-test-sound")
+                .accessibilityLabel(editor.testingSound ? "Stop Sound" : "Test Sound")
+                DeviceCorrectionHelpIcon(title: "Test sound",
+                    message: "Volume should aim for roughly 20–30 dB above background noise. "
+                        + (editor.source.kind == .microphone
+                            ? "dBFS shows microphone recording level. Leave at least 6 dB of input peak headroom."
+                            : "Use a decibel meter app if you do not have a physical meter."))
+            }
+            if editor.source.kind == .microphone, let level = editor.microphoneLevel, editor.busy {
+                HStack {
+                    Text(String(format: "Microphone · peak %.1f dBFS · RMS %.1f dBFS", level.peakDBFS, level.rmsDBFS)).monospacedDigit()
+                    Text(level.clipped ? "Clipping — lower the level" : level.peakDBFS > -6 ? "Leave more headroom" : "")
+                        .foregroundStyle(level.clipped ? Color.red : Color.orange)
+                }.font(.caption).uiInteractionAnchor("room-microphone-level")
+            }
+        }
+    }
+
+    private var measurementPositions: some View {
+        VStack(alignment: .leading, spacing: 12) {
             positionCountControl(microphone: editor.source.kind == .microphone)
             if let session = editor.session, let position = editor.position {
                 positionNavigation(session)

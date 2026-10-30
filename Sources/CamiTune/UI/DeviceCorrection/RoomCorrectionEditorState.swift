@@ -39,6 +39,21 @@ final class RoomCorrectionEditorState: ObservableObject {
     @Published private(set) var playingOutput: PhysicalOutputID?
     @Published private(set) var profileIsActive = false
     @Published private(set) var measurementOpen = false
+    @Published private var preparedRecorderSessionID: UUID?
+    var recorderNeedsPreparation: Bool {
+        guard let session, session.source.kind == .recorder else { return false }
+        return preparedRecorderSessionID != session.id && session.blocks.isEmpty
+            && session.recordings.isEmpty && !hasMeasurements
+    }
+    func confirmRecorderPreparation() {
+        guard !busy, measurementOpen, profileIsActive, let session, session.source.kind == .recorder else { return }
+        preparedRecorderSessionID = session.id
+    }
+    func reviewRecorderPreparation() {
+        guard !busy, let session, session.source.kind == .recorder,
+              session.blocks.isEmpty, session.recordings.isEmpty, !hasMeasurements else { return }
+        preparedRecorderSessionID = nil
+    }
     private var runtimeObservation: AnyCancellable?
     private var levelCheckCeilingDB: Double?
     @Published private(set) var testVolumeDB = RoomMeasurementSignal.defaultVolumeDB
@@ -55,31 +70,46 @@ final class RoomCorrectionEditorState: ObservableObject {
     @Published var error: String?
     var comparing: Bool { comparisonPlayback != nil }
     @Published private(set) var revision = 0
-    @Published private(set) var calculatedResult: RoomCorrectionResult?
+    @Published private(set) var calculatedResult: RoomCorrectionResult? { didSet { retainAssets() } }
     @Published private(set) var isVerifying = false
     @Published private(set) var verificationMessage = ""
-    private var verificationBaseline: RoomMeasurementSession?
-    private var verificationCorrection: RoomCorrectionResult?
+    private var verificationBaseline: RoomMeasurementSession? { didSet { retainAssets() } }
+    private var verificationCorrection: RoomCorrectionResult? { didSet { retainAssets() } }
     @Published private(set) var calculationRevision = 0
     @Published private(set) var importRevision = 0
     private var importedContext: RoomMeasurementContext?
     private var importedMeasurementContext: RoomMeasurementContext?
-    var session: RoomMeasurementSession? { didSet { refreshSimpleRecordingQuality() } }
+    var session: RoomMeasurementSession? {
+        didSet {
+            if session?.id != oldValue?.id { preparedRecorderSessionID = nil }
+            refreshSimpleRecordingQuality(); retainAssets()
+        }
+    }
     @Published private(set) var simpleRecordingQuality: RoomSimpleRecordingQuality?
-    var comparison: RoomMeasurementSession?
+    var comparison: RoomMeasurementSession? { didSet { retainAssets() } }
     private var task: Task<Void, Never>?
     private var savingSessionSetup = false
     private var capture: SpatialMicrophoneCapture?
     private var context: SpatialCalibrationContext?
     private var loadedProfile: UUID?
     private var loadedSeatID: UUID?
+    private var loadedCorrectionRevision: Int?
     private weak var app: AppState?
     private var profileID: UUID?
-    private var drafts: [RoomMeasurementSource.Kind: RoomMeasurementSession] = [:]
+    private var drafts: [RoomMeasurementSource.Kind: RoomMeasurementSession] = [:] { didSet { retainAssets() } }
     private var measurementChannels: [Int] = []
     private var issuedTokens: Set<UInt32> = []
     private let playbackClockID = UUID()
     private let measurementStore: RoomMeasurementStore
+    private var retainedAssets: ProfileAssetLease?
+    private func retainAssets() {
+        var references = ProfileAssetReferences()
+        for session in [session, comparison, verificationBaseline].compactMap({ $0 }) + Array(drafts.values) {
+            references.include(session)
+        }
+        for result in [calculatedResult, verificationCorrection].compactMap({ $0 }) { references.include(result) }
+        retainedAssets?.update(references)
+    }
     init(measurementStore: RoomMeasurementStore = .init()) { self.measurementStore = measurementStore }
     var hasMicrophoneCaptures: Bool {
         session?.source.kind == .microphone && (session?.blocks.isEmpty == false || session?.recordings.isEmpty == false)
@@ -266,6 +296,8 @@ final class RoomCorrectionEditorState: ObservableObject {
         self.activity = activity; error = nil
         task = Task { [weak self] in
             guard let self else { return }
+            let access = (app?.profiles.assetStorage ?? .shared).beginAccess()
+            defer { withExtendedLifetime(access) {} }
             defer {
                 self.activity = .idle
                 self.playingOutput = nil
@@ -313,7 +345,8 @@ final class RoomCorrectionEditorState: ObservableObject {
         return value
     }
     func selectSeat(profile: DeviceProfile, app: AppState) {
-        guard loadedSeatID != profile.effectiveSpatialSettings.seating?.id else { return }
+        let seat = profile.effectiveSpatialSettings.seating
+        guard loadedSeatID != seat?.id || loadedCorrectionRevision != seat?.roomCorrectionRevision else { return }
         let previous = task
         previous?.cancel()
         Task { [weak self] in
@@ -332,17 +365,17 @@ final class RoomCorrectionEditorState: ObservableObject {
             throw CancellationError()
         }
     }
-    private func publishRoomProfile(_ profile: DeviceProfile, app: AppState) {
-        var updated = profile
-        if let latest = app.profiles.profiles.first(where: { $0.id == profile.id }) {
-            updated.outputVolumeScalar = latest.outputVolumeScalar
-        }
-        app.profiles.update(updated)
+    private func publishRoomCorrection(_ profile: DeviceProfile, app: AppState, includingChannels: Bool = false) throws {
+        let snapshot = try app.roomCorrectionImportSnapshot(profile: profile, includingChannels: includingChannels)
+        try app.storeRoomCorrectionImport(snapshot, profileID: profile.id)
+        loadedCorrectionRevision = try app.historyProfile(profile.id).effectiveSpatialSettings.seating?.roomCorrectionRevision
     }
     func load(profile: DeviceProfile, app: AppState) {
         guard loadedProfile != profile.id else { return }
         isVerifying = false; verificationBaseline = nil; verificationCorrection = nil; verificationMessage = ""
         self.app = app; profileID = profile.id; loadedProfile = profile.id
+        retainedAssets = app.profiles.assetStorage.retain()
+        retainAssets()
         measurementOpen = false
         runtimeObservation = app.runtimeSnapshots.sink { [weak self] snapshot in
                 guard let self else { return }
@@ -358,6 +391,7 @@ final class RoomCorrectionEditorState: ObservableObject {
         measurementChannels = profile.configuredProcessingChannels.map(\.index)
         let seat = profile.effectiveSpatialSettings.seating
         loadedSeatID = seat?.id
+        loadedCorrectionRevision = seat?.roomCorrectionRevision
         tab = seat?.roomCorrectionResult != nil || seat?.roomCorrectionBands.isEmpty == false ? .correction : .measure
         settings = profile.effectiveSpatialSettings.seating?.roomCorrectionSettings ?? .init()
         if settings.method == .hybrid { settings.method = .iir }
@@ -901,7 +935,7 @@ final class RoomCorrectionEditorState: ObservableObject {
         let report = try RoomCorrectionVerification.evaluate(baseline: baseline, measured: measured, result: result)
         result.verification = report
         current.spatialSettings.seating?.roomCorrectionResult = result
-        publishRoomProfile(current, app: app)
+        try publishRoomCorrection(current, app: app)
         calculatedResult = result; verificationCorrection = result
         verificationMessage = report.reason; status = report.reason; tab = .analysis
     }
@@ -968,6 +1002,8 @@ final class RoomCorrectionEditorState: ObservableObject {
         status = "Importing correction…"
         run(.correction) { [self] in
             guard let app, app.profiles.settingsMutationsAllowed else { throw ProfileSettingsError.busy }
+            let position = app.history.beginPendingEdit()
+            defer { app.history.endPendingEdit(position) }
             let saved = try app.historyProfile(profile.id)
             let current = try app.applyingSessionEQDrafts(to: saved)
             let plan = try RoomCorrectionImportPlan(result: result, profile: current)
@@ -1006,10 +1042,11 @@ final class RoomCorrectionEditorState: ObservableObject {
                     throw error
                 }
             }
-            publishRoomProfile(candidate, app: app)
+            try publishRoomCorrection(candidate, app: app, includingChannels: true)
             for channel in after.channels.keys { app.clearChannelEQDraft(for: profile.id, channelIndex: channel) }
             app.history.record(actionName: "Import Room Correction", contextName: current.name,
-                target: .profile(profile.id), before: .roomCorrectionImport(before), after: .roomCorrectionImport(after))
+                target: .profile(profile.id), before: .roomCorrectionImport(before), after: .roomCorrectionImport(after),
+                position: position)
             importedContext = try candidate.roomMeasurementContext()
             importedMeasurementContext = result.context
             app.publishHistoryReplay()
@@ -1020,7 +1057,10 @@ final class RoomCorrectionEditorState: ObservableObject {
     func setEnabled(_ enabled: Bool, profile: DeviceProfile) {
         run { [self] in
             guard let app else { return }
+            let position = app.history.beginPendingEdit()
+            defer { app.history.endPendingEdit(position) }
             var current = app.profiles.profiles.first(where: { $0.id == profile.id }) ?? profile
+            let before = try app.roomCorrectionImportSnapshot(profile: current, includingChannels: false)
             if enabled && current.roomCorrectionIsStale { throw RoomCorrectionError.stale }
             if enabled && current.effectiveSpatialSettings.seating?.roomCorrectionResult?.hasCorrection == false { return }
             current.spatialSettings.seating?.roomCorrectionEnabled = enabled
@@ -1030,7 +1070,10 @@ final class RoomCorrectionEditorState: ObservableObject {
                 guard app.runtimeCoordinator.appliedProfile?.effectiveSpatialSettings.seating?.roomCorrectionEnabled == enabled else { throw RoomCorrectionError.routeUnavailable }
             }
             try await validateCommit(current, app: app)
-            publishRoomProfile(current, app: app); comparisonPlayback = nil
+            try publishRoomCorrection(current, app: app); comparisonPlayback = nil
+            app.history.record(actionName: enabled ? "Enable Room Correction" : "Disable Room Correction",
+                contextName: current.name, target: .profile(profile.id), before: .roomCorrectionImport(before),
+                after: .roomCorrectionImport(try app.roomCorrectionImportSnapshot(profile: current, includingChannels: false)), position: position)
             status = enabled ? "Room Correction ON" : "Room Correction OFF"
         }
     }
@@ -1039,8 +1082,11 @@ final class RoomCorrectionEditorState: ObservableObject {
         if isVerifying { endVerification() }
         run { [self] in
             if let app {
+                let position = app.history.beginPendingEdit()
+                defer { app.history.endPendingEdit(position) }
                 guard var current = app.profiles.profiles.first(where: { $0.id == profile.id }),
                       current.effectiveSpatialSettings.seating?.id == profile.effectiveSpatialSettings.seating?.id else { throw CancellationError() }
+                let before = try app.roomCorrectionImportSnapshot(profile: current, includingChannels: false)
                 current.resetRoomCorrection()
                 if app.activeProfileID == current.id {
                     await app.apply(profile: current)
@@ -1050,7 +1096,10 @@ final class RoomCorrectionEditorState: ObservableObject {
                           applied.effectiveSpatialSettings.seating?.roomCorrectionBands.isEmpty != false else { throw RoomCorrectionError.routeUnavailable }
                 }
                 try await validateCommit(current, app: app)
-                publishRoomProfile(current, app: app)
+                try publishRoomCorrection(current, app: app)
+                app.history.record(actionName: "Reset Room Correction", contextName: current.name,
+                    target: .profile(profile.id), before: .roomCorrectionImport(before),
+                    after: .roomCorrectionImport(try app.roomCorrectionImportSnapshot(profile: current, includingChannels: false)), position: position)
                 loadedSeatID = current.effectiveSpatialSettings.seating?.id
             }
             // Detach saved bundles instead of deleting files that another seat

@@ -70,8 +70,6 @@ struct SignalMetersView: View {
     private func meterGroup(_ title: String, capture: Bool, layout: MultichannelMeterLayout) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.headline)
-                .help(capture ? "Source audio before profile processing and plug-ins, showing channels represented by the physical speaker setup."
-                    : "Final audio sent to the output device, after processing and output protection.")
             LiveChannelMeterBars(meters: meters, profileID: profile.id, capture: capture,
                 rows: capture ? layout.sourceChannels : (layout.usesGroups && !showAllChannels ? layout.groups : layout.channels))
         }.frame(maxWidth: .infinity)
@@ -90,7 +88,6 @@ struct LiveClippingWarning: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
-                .help("Final output clipping detected. Reduce processing gain or check output protection.")
                 .accessibilityHint("Reduce processing gain or check output protection.")
         }
     }
@@ -184,7 +181,6 @@ struct AudioRuntimeStatusContent: View {
                 accent: activeStatus.clippingIsRecent ? .red : nil)
             RuntimeStatusRow(title: "Output clipped samples", value: telemetryIsFresh ? "\(activeStatus.outputClippedSamples)" : "—")
             RuntimeStatusRow(title: "Source full-scale samples", value: hasRoute ? "\(activeStatus.sourceClippedSamples)" : "—")
-                .help("Observed source samples at or above full scale. This does not indicate clipping at CamiTune's final output.")
         }
     }
 

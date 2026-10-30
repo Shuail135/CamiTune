@@ -36,6 +36,8 @@ struct AutomaticActivationRetryState: Equatable, Sendable {
 @MainActor
 final class AppState: NSObject, ObservableObject {
     let history = UndoCoordinator()
+    var autoEQDraftStores: [HistoryTarget: AutoEQDraftStore] = [:]
+    var speakerAutoEQDraftStores: [UUID: SpeakerAutoEQDraftStore] = [:]
     lazy var undoCommands = UndoCommandRouter(history: history)
     @Published private(set) var historyReplayRevision: UInt64 = 0
     private(set) var editGeneration: UInt64 = 0
@@ -144,7 +146,7 @@ final class AppState: NSObject, ObservableObject {
     let spectrum = SpectrumAnalyzer()
     let pcmRouter = PCMRouter()
     lazy var pluginCatalog = PluginCatalog()
-    var pluginEditorHistory: [UUID: PluginRack] = [:]
+    var editingPluginSlots: Set<UUID> = []
     lazy var pluginReorderApplies = PluginRackReorderApply { [weak self] id, isCurrent in
         guard let self else { return true }
         while (self.isSavingProfileSettings || self.transitionInProgress || self.profiles.hasDurableCommit), isCurrent() {
@@ -177,7 +179,7 @@ final class AppState: NSObject, ObservableObject {
     lazy var captureDelivery = AudioCaptureDelivery(router: pcmRouter, applications: perAppAudio)
     let updateChecker = AppUpdateChecker()
 
-    private let notifications = NotificationManager()
+    let notifications = NotificationManager()
     private let processingBackend: any AudioProcessingBackend
     private var monitorTimer: Timer?
     private var startupConfigurationTask: Task<Void, Never>?
@@ -213,6 +215,9 @@ final class AppState: NSObject, ObservableObject {
         perAppAudio.history = history
         perAppAudio.presentationStore.history = history
         profiles.history = history
+        updateChecker.history = history
+        notifications.history = history
+        loginItem.history = history
         profiles.performanceRecorder = performanceRecorder
         historyErrorObservation = history.$lastError.compactMap { $0 }.sink { [weak self] in self?.errorMessage = $0 }
 
@@ -433,12 +438,14 @@ final class AppState: NSObject, ObservableObject {
     }
 
     func renameProfile(id: UUID, to requestedName: String) async {
+        let position = history.beginPendingEdit()
+        defer { history.endPendingEdit(position) }
         guard let profile = profiles.profiles.first(where: { $0.id == id }) else { return }
         do {
             try await commitProfileRename(id: id, to: requestedName)
             guard let renamed = profiles.profiles.first(where: { $0.id == id }) else { return }
             history.record(actionName: "Rename Profile", contextName: profile.name, target: .profile(id),
-                before: .profileName(profile.name), after: .profileName(renamed.name))
+                before: .profileName(profile.name), after: .profileName(renamed.name), position: position)
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -462,14 +469,16 @@ final class AppState: NSObject, ObservableObject {
     }
 
     func deleteProfileWithHistory(id: UUID) async {
+        let position = history.beginPendingEdit()
+        defer { history.endPendingEdit(position) }
         guard profiles.settingsMutationsAllowed, !isSavingProfileSettings else { return }
         guard let profile = profiles.profiles.first(where: { $0.id == id }) else { return }
         let snapshot = profiles.captureDeletionSnapshot(profileIDs: [id])
-        await setProfileEnabled(id: id, enabled: false)
+        await setProfileEnabled(id: id, enabled: false, recordHistory: false)
         if activeProfileID == id { await deactivate(manual: true) }
         profiles.deleteProfile(id: id)
         history.record(actionName: "Delete Profile", contextName: profile.name, target: .profileOrganization,
-            before: .deletion(snapshot, deleted: false), after: .deletion(snapshot, deleted: true))
+            before: .deletion(snapshot, deleted: false), after: .deletion(snapshot, deleted: true), position: position)
         do {
             try await runtimeCoordinator.synchronizeProfileEndpoints()
         } catch { errorMessage = error.localizedDescription }
@@ -477,6 +486,8 @@ final class AppState: NSObject, ObservableObject {
 
     /// Delete only the folder membership explicitly shown in the confirmation.
     func deleteProfileFolder(id: UUID, confirmedProfileIDs: Set<UUID>) async -> Bool {
+        let position = history.beginPendingEdit()
+        defer { history.endPendingEdit(position) }
         guard profiles.settingsMutationsAllowed, !isSavingProfileSettings else { return false }
         func stillMatchesConfirmation() -> Bool {
             profiles.folders.contains { $0.id == id }
@@ -490,7 +501,7 @@ final class AppState: NSObject, ObservableObject {
         // Remove eligibility before waiting on a startup or route transition.
         // The existing disable path also restores a selected profile endpoint.
         for profileID in confirmedProfileIDs {
-            await setProfileEnabled(id: profileID, enabled: false)
+            await setProfileEnabled(id: profileID, enabled: false, recordHistory: false)
         }
         while transitionInProgress {
             try? await Task.sleep(for: .milliseconds(25))
@@ -504,7 +515,7 @@ final class AppState: NSObject, ObservableObject {
         }
         profiles.deleteFolder(id: id)
         history.record(actionName: "Delete Folder", target: .profileOrganization,
-            before: .deletion(deletionSnapshot, deleted: false), after: .deletion(deletionSnapshot, deleted: true))
+            before: .deletion(deletionSnapshot, deleted: false), after: .deletion(deletionSnapshot, deleted: true), position: position)
         do {
             try await runtimeCoordinator.synchronizeProfileEndpoints()
         } catch {
@@ -513,13 +524,13 @@ final class AppState: NSObject, ObservableObject {
         return true
     }
 
-    func setProfileEnabled(id: UUID, enabled: Bool) async {
+    func setProfileEnabled(id: UUID, enabled: Bool, recordHistory: Bool = true) async {
         guard !isSavingProfileSettings, profiles.settingsMutationsAllowed else { return }
         guard let profile = profiles.profiles.first(where: { $0.id == id }),
               profile.isEnabled != enabled else { return }
 
-        profiles.setProfileEnabled(profileID: id, enabled: enabled)
-        if enabled && profiles.showProfileEnabledExplanation { profileConfirmations.showEnabledExplanation = true }
+        profiles.setProfileEnabled(profileID: id, enabled: enabled, recordHistory: recordHistory)
+        if enabled && !history.isReplaying && profiles.showProfileEnabledExplanation { profileConfirmations.showEnabledExplanation = true }
         // activeProfileID is published only after activation completes. Track
         // the profile currently acquiring the route so disabling it during
         // startup queues a stop instead of letting a disabled profile go live.
@@ -629,6 +640,17 @@ final class AppState: NSObject, ObservableObject {
     }
 
     func saveGlobalAudioBuffer(_ frames: AudioBufferSetting, inheritingProfileIDs: Set<UUID> = []) async throws {
+        try await saveGlobalAudioBuffer(frames, overrides: Dictionary(uniqueKeysWithValues: inheritingProfileIDs.map { ($0, nil) }))
+    }
+
+    func audioBufferHistoryState(profileIDs: Set<UUID>) throws -> AudioBufferHistoryState {
+        .init(defaultValue: profiles.audioBufferDefault,
+            overrides: try Dictionary(uniqueKeysWithValues: profileIDs.map { ($0, try historyProfile($0).audioBufferOverride) }))
+    }
+
+    func saveGlobalAudioBuffer(_ frames: AudioBufferSetting, overrides: [UUID: AudioBufferSetting?]) async throws {
+        let position = history.beginPendingEdit()
+        defer { history.endPendingEdit(position) }
         guard !isSavingProfileSettings, !profiles.hasDurableCommit, !transitionInProgress,
               !runtimeCoordinator.hasLiveApplyWork, spatialCalibrationContext == nil else {
             throw ProfileSettingsError.busy
@@ -638,18 +660,25 @@ final class AppState: NSObject, ObservableObject {
         }
         isSavingProfileSettings = true
         defer { finishSavingSettings() }
+        let before = try audioBufferHistoryState(profileIDs: Set(overrides.keys))
+        func recordChange() throws {
+            history.record(actionName: "Change Default Buffer Size", target: .globalSettings,
+                before: .globalAudioBuffer(before),
+                after: .globalAudioBuffer(try audioBufferHistoryState(profileIDs: Set(overrides.keys))), position: position)
+        }
         let oldDefault = profiles.audioBufferDefault
         let draftRevision = eqDraftRevision
         // Reconfigure the live profile only when it follows this default.
         guard let original = profiles.profiles.first(where: { $0.id == activeProfileID }),
-              original.usesGlobalAudioBuffer || inheritingProfileIDs.contains(original.id) else {
-            try await profiles.commitAudioBufferDefault(frames, inheritingProfileIDs: inheritingProfileIDs)
+              original.usesGlobalAudioBuffer || overrides.keys.contains(original.id) else {
+            try await profiles.commitAudioBufferDefault(frames, overrides: overrides)
             await runtimeCoordinator.refreshAudioBuffer(from: profiles.profiles)
+            try recordChange()
             return
         }
         let activation = profiles.activationMode(for: original)
         var candidate = original
-        if inheritingProfileIDs.contains(candidate.id) { candidate.audioBufferOverride = nil }
+        if let value = overrides[candidate.id] { candidate.audioBufferOverride = value }
         candidate.resolveAudioBuffer(default: frames)
         let newRuntime = try applyingSessionEQDrafts(to: candidate)
         func validatePersistence() throws {
@@ -663,9 +692,10 @@ final class AppState: NSObject, ObservableObject {
         do {
             try validatePersistence()
             try runtimeCoordinator.validate(receipt)
-            try await profiles.commitAudioBufferDefault(frames, inheritingProfileIDs: inheritingProfileIDs)
+            try await profiles.commitAudioBufferDefault(frames, overrides: overrides)
             runtimeCoordinator.persistenceCommitted(receipt)
             await runtimeCoordinator.refreshAudioBuffer(from: profiles.profiles)
+            try recordChange()
         } catch {
             let failure = error
             do { _ = try await runtimeCoordinator.persistenceFailed(receipt) }
@@ -674,33 +704,60 @@ final class AppState: NSObject, ObservableObject {
         }
     }
 
-    func saveProfileSettings(_ draft: ProfileSettingsDraft) async throws {
+    func saveProfileSettings(_ draft: ProfileSettingsDraft, historyAction: String? = "Change Profile Settings") async throws {
+        let preview = try draft.preview()
+        try await commitProfileSettings(profileID: draft.original.id,
+            hidesPlugins: !preview.isSectionEnabled(.plugins) && !preview.usesExclusivePluginOutput,
+            historyAction: historyAction) { original, originalActivation in
+            guard draft.activation == draft.originalActivation || originalActivation == draft.originalActivation
+                    || originalActivation == draft.activation else { throw ProfileSettingsError.staleDraft }
+            let activation = draft.activation == draft.originalActivation ? originalActivation : draft.activation
+            var candidate = try draft.candidate(applyingTo: original)
+            if candidate.deviceTypeConfigurationKey != original.deviceTypeConfigurationKey {
+                candidate = try draft.candidate(applyingTo: self.applyingSessionEQDrafts(to: original))
+            }
+            return (candidate, activation, draft.replacesUserEqualizer)
+        }
+    }
+
+    func restoreProfileSettings(_ value: ProfileSettingsHistoryState) async throws {
+        try await commitProfileSettings(profileID: value.profile.id,
+            hidesPlugins: !value.profile.isSectionEnabled(.plugins) && !value.profile.usesExclusivePluginOutput,
+            historyAction: nil, restoringRouting: value.routing) { original, _ in
+            let current = try self.applyingSessionEQDrafts(to: original)
+            let candidate = try current.restoringSettings(value.profile, replacing: value.replacing)
+            let automatic = value.routing.defaults.contains { $0.profileID == candidate.id }
+            let activation: ProfileActivationMode = automatic ? .physicalOutput
+                : (value.routing.autoActivation[candidate.id] == true ? .profileAudioDevice : .manual)
+            return (candidate, activation, candidate.processing != current.processing)
+        }
+    }
+
+    private func commitProfileSettings(profileID: UUID, hidesPlugins: Bool, historyAction: String?,
+        restoringRouting: ProfileRoutingHistoryState? = nil,
+        prepare: (DeviceProfile, ProfileActivationMode) throws -> (DeviceProfile, ProfileActivationMode, Bool)) async throws {
         guard !isSavingProfileSettings, !profiles.hasDurableCommit, !transitionInProgress, !runtimeCoordinator.hasLiveApplyWork,
               spatialCalibrationContext == nil else { throw ProfileSettingsError.busy }
+        let position = historyAction == nil ? nil : history.beginPendingEdit()
+        defer { history.endPendingEdit(position) }
         let operation = performanceRecorder.begin("Profile Save", reason: "settingsTransaction")
         var performanceResult = "failed"
         defer { operation?.finish(performanceResult) }
         let draftRevision = eqDraftRevision
         isSavingProfileSettings = true
         defer { finishSavingSettings() }
-        if let preview = try? draft.preview(), !preview.isSectionEnabled(.plugins) && !preview.usesExclusivePluginOutput {
-            await pluginRackManager.flushEditors(profileID: draft.original.id, close: false)
-        }
-        guard let original = profiles.profiles.first(where: { $0.id == draft.original.id }) else { throw ProfileSettingsError.staleDraft }
+        if hidesPlugins { await pluginRackManager.flushEditors(profileID: profileID, close: false) }
+        let original = try historyProfile(profileID)
         let originalActivation = profiles.activationMode(for: original)
-        guard draft.activation == draft.originalActivation || originalActivation == draft.originalActivation || originalActivation == draft.activation else { throw ProfileSettingsError.staleDraft }
-        let activation = draft.activation == draft.originalActivation ? originalActivation : draft.activation
-        var candidate = try draft.candidate(applyingTo: original)
-        let changingDeviceType = candidate.endpointKind != original.endpointKind
-            || candidate.effectiveEndpointKind != original.effectiveEndpointKind
-        if changingDeviceType {
-            // Save pending tuning with the outgoing context, never overlay it
-            // onto the incoming device's freshly selected configuration.
-            candidate = try draft.candidate(applyingTo: applyingSessionEQDrafts(to: original))
-        }
+        let prepared = try prepare(original, originalActivation)
+        var candidate = prepared.0
+        let activation = prepared.1, replacesUserEqualizer = prepared.2
+        let changingDeviceType = candidate.deviceTypeConfigurationKey != original.deviceTypeConfigurationKey
+        let before = try applyingSessionEQDrafts(to: original)
+        let routingBefore = profiles.routingHistoryState(outputUIDs: [original.outputDeviceUID, candidate.outputDeviceUID], profileIDs: [profileID])
         candidate.resolveAudioBuffer(default: profiles.audioBufferDefault)
         candidate.autoActivateWhenProfileDeviceSelected = activation == .profileAudioDevice
-        let newRuntime = changingDeviceType ? candidate : try applyingSessionEQDrafts(to: candidate, replacingGlobalEqualizer: draft.replacesUserEqualizer)
+        let newRuntime = changingDeviceType ? candidate : try applyingSessionEQDrafts(to: candidate, replacingGlobalEqualizer: replacesUserEqualizer)
         func validatePersistence() throws {
             guard draftRevision == self.eqDraftRevision else { throw ProfileSettingsError.busy }
             try self.profiles.validateSettingsSnapshot(original, activation: originalActivation)
@@ -713,7 +770,7 @@ final class AppState: NSObject, ObservableObject {
             try runtimeCoordinator.validate(receipt)
             operation?.mark("persistence begins")
             _ = try await profiles.commitSettings(candidate, expected: original,
-                originalActivation: originalActivation, activation: activation)
+                originalActivation: originalActivation, activation: activation, restoringRouting: restoringRouting)
             operation?.mark("persistence complete")
             resolution = runtimeCoordinator.persistenceCommitted(receipt)
             operation?.mark("runtime persistence finalization")
@@ -732,9 +789,8 @@ final class AppState: NSObject, ObservableObject {
             multichannelEditSessions[candidate.id] = nil
             multichannelAutosaveErrors[candidate.id] = nil
             clearPendingEditorApply(candidate.id)
-            history.discardDeviceConfiguration(for: candidate.id)
             equalizerReplacementChanges.send(candidate.id)
-        } else if draft.replacesUserEqualizer && eqDraftRevision == draftRevision {
+        } else if replacesUserEqualizer && eqDraftRevision == draftRevision {
             clearEQDraft(for: candidate.id)
             equalizerReplacementChanges.send(candidate.id)
         }
@@ -744,22 +800,33 @@ final class AppState: NSObject, ObservableObject {
         if !candidate.isSectionEnabled(.plugins) && !candidate.usesExclusivePluginOutput {
             pluginRackManager.retireHiddenSection(profileID: candidate.id)
         }
+        if let historyAction {
+            let after = try applyingSessionEQDrafts(to: historyProfile(profileID))
+            let routingAfter = profiles.routingHistoryState(outputUIDs: routingBefore.outputUIDs, profileIDs: [profileID])
+            if ProfileStore.settingsSnapshot(before) != ProfileStore.settingsSnapshot(after) || routingBefore != routingAfter {
+                history.record(actionName: historyAction, contextName: original.name, target: .profile(profileID),
+                    before: .profileSettings(.init(profile: before, replacing: after, routing: routingBefore)),
+                    after: .profileSettings(.init(profile: after, replacing: before, routing: routingAfter)), position: position)
+            }
+        }
         operation?.mark("final publication")
         performanceResult = "success"
     }
 
     func setPersonalSpatial(profileID: UUID, settings: PersonalSpatialSettings, expectedContext: String, recordHistory: Bool = true) async throws {
+        let position = history.beginPendingEdit()
+        defer { history.endPendingEdit(position) }
         guard let profile = profiles.profiles.first(where: { $0.id == profileID }), profile.isPersonalListening,
               expectedContext == profile.deviceTypeConfigurationKey else {
             throw ProfileSettingsError.runtime("The playback device changed. Reopen Spatial and try again.")
         }
         var draft = ProfileSettingsDraft(profile: profile, activation: profiles.activationMode(for: profile))
         draft.personalSpatial = settings
-        try await saveProfileSettings(draft)
+        try await saveProfileSettings(draft, historyAction: nil)
         if recordHistory {
             history.record(actionName: "Adjust Virtual Speakers", contextName: profile.name, target: .profile(profileID),
                 before: .personalSpatial(context: profile.deviceTypeConfigurationKey, settings: profile.personalSpatial),
-                after: .personalSpatial(context: profile.deviceTypeConfigurationKey, settings: settings))
+                after: .personalSpatial(context: profile.deviceTypeConfigurationKey, settings: settings), position: position)
         }
     }
 
@@ -774,18 +841,24 @@ final class AppState: NSObject, ObservableObject {
     }
 
     func setActivationMode(profileID: UUID, mode: ProfileActivationMode) async {
-        guard !isSavingProfileSettings, profiles.settingsMutationsAllowed else { return }
-        guard let profile = profiles.profiles.first(where: { $0.id == profileID }) else { return }
+        guard !isSavingProfileSettings, profiles.settingsMutationsAllowed,
+              let profile = profiles.profiles.first(where: { $0.id == profileID }) else { return }
+        let before = profiles.routingHistoryState(outputUIDs: [profile.outputDeviceUID], profileIDs: [profileID])
+        let position = history.beginPendingEdit()
+        defer {
+            recordRoutingEdit(before, position: position)
+            history.endPendingEdit(position)
+        }
         switch mode {
         case .physicalOutput:
-            await setAutomaticProfile(for: profile.outputDevice, profileID: profileID)
+            await setAutomaticProfile(for: profile.outputDevice, profileID: profileID, recordHistory: false)
         case .profileAudioDevice:
-            await setAutoActivateWhenProfileDeviceSelected(id: profileID, enabled: true)
+            await setAutoActivateWhenProfileDeviceSelected(id: profileID, enabled: true, recordHistory: false)
         case .manual:
             if profiles.activationMode(for: profile) == .physicalOutput {
-                await setAutomaticProfile(for: profile.outputDevice, profileID: nil)
+                await setAutomaticProfile(for: profile.outputDevice, profileID: nil, recordHistory: false)
             }
-            await setAutoActivateWhenProfileDeviceSelected(id: profileID, enabled: false)
+            await setAutoActivateWhenProfileDeviceSelected(id: profileID, enabled: false, recordHistory: false)
         }
     }
 
@@ -822,7 +895,13 @@ final class AppState: NSObject, ObservableObject {
         let session = activeSession?.id
         if mode == .physicalOutput {
             guard physicalOutputConfirmed else { return }
-            do { _ = try await profiles.commitMenuDeactivationPolicy(profileID: profileID) }
+            let before = profiles.routingHistoryState(outputUIDs: [profile.outputDeviceUID], profileIDs: [profileID])
+            let position = history.beginPendingEdit()
+            defer { history.endPendingEdit(position) }
+            do {
+                _ = try await profiles.commitMenuDeactivationPolicy(profileID: profileID)
+                recordRoutingEdit(before, position: position)
+            }
             catch { errorMessage = error.localizedDescription; return }
             // The policy may commit after a separate Stop/switch. It has no
             // authority to stop the newer runtime that appeared during I/O.
@@ -837,9 +916,16 @@ final class AppState: NSObject, ObservableObject {
 
     func setAutomaticProfile(
         for physicalDevice: PhysicalOutputIdentity,
-        profileID: UUID?
+        profileID: UUID?, recordHistory: Bool = true
     ) async {
         guard profiles.settingsMutationsAllowed, !isSavingProfileSettings else { return }
+        let ids = Set(profiles.profiles.filter { $0.outputDeviceUID == physicalDevice.uid }.map(\.id))
+        let before = profiles.routingHistoryState(outputUIDs: [physicalDevice.uid], profileIDs: ids)
+        let position = recordHistory ? history.beginPendingEdit() : nil
+        defer {
+            if recordHistory { recordRoutingEdit(before, position: position) }
+            history.endPendingEdit(position)
+        }
         runtimeCoordinator.resetAutomaticPolicy(outputUID: physicalDevice.uid)
         profiles.setAutomaticProfile(physicalDevice: physicalDevice, profileID: profileID)
         if let profileID {
@@ -848,10 +934,16 @@ final class AppState: NSObject, ObservableObject {
         if profileID != nil { await monitorRouting() }
     }
 
-    func setAutoActivateWhenProfileDeviceSelected(id: UUID, enabled: Bool) async {
+    func setAutoActivateWhenProfileDeviceSelected(id: UUID, enabled: Bool, recordHistory: Bool = true) async {
         guard profiles.settingsMutationsAllowed, !isSavingProfileSettings else { return }
         runtimeCoordinator.resetAutomaticPolicy()
         guard let profile = profiles.profiles.first(where: { $0.id == id }) else { return }
+        let before = profiles.routingHistoryState(outputUIDs: [profile.outputDeviceUID], profileIDs: [id])
+        let position = recordHistory ? history.beginPendingEdit() : nil
+        defer {
+            if recordHistory { recordRoutingEdit(before, position: position) }
+            history.endPendingEdit(position)
+        }
         if enabled,
            profiles.automaticProfileID(forPhysicalDeviceUID: profile.outputDeviceUID) == id {
             profiles.setAutomaticProfile(physicalDevice: profile.outputDevice, profileID: nil)
@@ -1001,13 +1093,14 @@ final class AppState: NSObject, ObservableObject {
 
     @objc private func applicationWillTerminate(_ notification: Notification) {
         shutdownSynchronously()
-        do { try RoomMeasurementStore().removeUnreferencedRecordings() }
-        catch { NSLog("Room recording cleanup will be retried at the next quit: %@", error.localizedDescription) }
+        do { try profiles.assetStorage.collectSynchronously(persistedOnly: true) }
+        catch { NSLog("Profile asset cleanup failed at termination: %@", error.localizedDescription) }
     }
 
     func shutdownSynchronously() {
         guard !hasShutdown else { return }
         hasShutdown = true
+        updateChecker.stop()
         automaticBufferTask?.cancel(); automaticBufferTask = nil
         monitorTimer?.invalidate(); monitorTimer = nil
         startupConfigurationTask?.cancel(); startupConfigurationTask = nil
@@ -1017,6 +1110,8 @@ final class AppState: NSObject, ObservableObject {
         profiles.shutdownSynchronously()
         runtimeCoordinator.shutdownSynchronously()
         pluginRackManager.stopForTermination()
+        for store in autoEQDraftStores.values { store.flush() }
+        for store in speakerAutoEQDraftStores.values { store.flush() }
         perAppAudio.flushPendingSaveSynchronously()
     }
 
@@ -1107,6 +1202,7 @@ extension AppState {
             physicalOutputs: { [coreAudioService] in coreAudioService.physicalOutputDevices },
             automaticBufferSize: { [unowned self] in automaticBuffers.recommendedFrames(for: $0) },
             synchronous: .init(
+                readDefaultOutput: { [coreAudioService] in coreAudioService.readDefaultOutputSynchronously() },
                 stopPCM: { [unowned self] in pcmRouter.stop(); pluginRackManager.stop() },
                 closeEngineInput: { [unowned self] in processingBackend.closeInputSynchronously() },
                 stopSpectrum: { [spectrum] in spectrum.stop() },
@@ -1215,8 +1311,8 @@ extension AppState {
                 await processingBackend.stop()
             },
             deliveryError: { [unowned self] in pcmRouter.statistics.deliveryError ?? directOutputError },
-            notifyActivation: { [unowned self] in notifications.activated() },
-            notifyDeactivation: { [unowned self] in notifications.deactivated() },
+            notifyActivation: { [unowned self] in notifications.activated(profileName: $0) },
+            notifyDeactivation: { [unowned self] in notifications.deactivated(profileName: $0) },
             sleep: { try await Task.sleep(for: $0) },
             transitionFinished: { _ in }
         )

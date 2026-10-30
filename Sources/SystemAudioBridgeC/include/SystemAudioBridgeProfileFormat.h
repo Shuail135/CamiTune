@@ -8,9 +8,9 @@
 #include <stdint.h>
 
 /* Versioned control-plane payload; independent of the shared-memory audio ABI.
- * v1 pins each endpoint to the prepared runtime's rate. Changing the format
- * requires removing the idle endpoint and publishing it again. */
-#define SABR_PROFILE_FORMAT_VERSION 1
+ * v2 changes existing endpoint formats through HAL configuration requests,
+ * retaining device identity and registered clients across the interruption. */
+#define SABR_PROFILE_FORMAT_VERSION 2
 #define SABR_PROFILE_KEY_VERSION "profileFormatVersion"
 #define SABR_PROFILE_KEY_CHANNEL_COUNT "channelCount"
 #define SABR_PROFILE_KEY_LAYOUT_TAG "channelLayoutTag"

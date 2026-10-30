@@ -201,9 +201,14 @@ struct ConvolutionControl: View {
     }
 
     private func imported(_ asset: ImpulseResponseAsset) {
-        // A WAV channel is one IR, not an output assignment. The editor's target
-        // determines its destinations; a global FIR broadcasts this same IR.
-        convolution = .init(asset: asset, impulseChannel: 0)
+        var processor = ConvolutionProcessor(asset: asset, impulseChannel: 0)
+        if supportsCorrespondingChannels,
+           let assignments = try? ImpulseResponseAssignmentPlanner().correspondingAssignments(
+               asset: asset, channels: context.channels, sampleRate: context.sampleRate) {
+            processor.usesCorrespondingChannels = true
+            processor.channelAssignments = assignments
+        }
+        convolution = processor
         isEnabled = true
         onCommit()
     }
@@ -228,7 +233,6 @@ private struct ConvolutionChannelResponse: View {
                 Text("Peak gain: \(analysis.peakGainDB, format: .number.precision(.fractionLength(2))) dB")
                 if let latency = analysis.latencyMilliseconds {
                     Text("Latency: \(latency, format: .number.precision(.fractionLength(2))) ms")
-                        .help("Estimated delay to the impulse response's largest absolute sample. Excludes device and processing-buffer latency.")
                 }
             }
             .font(.caption.monospacedDigit())

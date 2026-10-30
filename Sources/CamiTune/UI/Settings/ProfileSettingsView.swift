@@ -14,6 +14,7 @@ struct ProfileSettingsView: View {
     @ObservedObject private var store: ProfileStore
     @ObservedObject private var audio: CoreAudioSnapshotStore
     @State private var draft: ProfileSettingsDraft
+    @StateObject private var draftHistory = EditorSnapshotHistory<ProfileSettingsDraft>(actionName: "Edit Profile Settings", coalescingInterval: 0)
     @State private var category = "General"
     @State private var speakerToReveal: PhysicalOutputID?
     @State private var saving = false
@@ -71,7 +72,12 @@ struct ProfileSettingsView: View {
                         draft.speakerTopology = value.speakerTopology
                         draft.spatialSettings = value.spatialSettings
                         draft.multichannel = value.multichannel
-                    }), draftOnly: true, embedded: true, compact: true, initialSelectedSpeaker: initialSpeaker)
+                    }), draftOnly: true, embedded: true, compact: true, initialSelectedSpeaker: initialSpeaker,
+                    draftHistoryReplayRevision: draftHistory.replayRevision,
+                    onDraftEditingChanged: { editing in
+                        if editing { draftHistory.beginGesture(draft) }
+                        else { draftHistory.endGesture(draft) }
+                    })
                     .id(preview.deviceTypeConfigurationKey)
             }
         }
@@ -198,6 +204,14 @@ struct ProfileSettingsView: View {
             }.padding(16)
         }
         .frame(width: 780, height: 620)
+        .modifier(EditorHistoryCommands(history: draftHistory))
+        .environment(\.undoCommandRouter, state.undoCommands)
+        .onAppear {
+            draftHistory.current = draft
+            draftHistory.restore = { draft = $0 }
+        }
+        .onChange(of: draft) { draftHistory.record($0) }
+        .onDisappear { draftHistory.restore = nil }
         .disabled(saving)
         .interactiveDismissDisabled(hasChanges || saving)
         .alert("Save changes to this profile?", isPresented: $confirmClose) {
@@ -217,6 +231,7 @@ struct ProfileSettingsView: View {
                         .keyboardShortcut(.defaultAction).disabled(needsSpeakerConfiguration)
                 }
             }.padding(24).frame(width: 720, height: 600)
+                .modifier(EditorHistoryCommands(history: draftHistory))
         }
         .onChange(of: draft.selectedType) { _ in
             if !categories.contains(category) { category = "General" }

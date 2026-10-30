@@ -150,18 +150,7 @@ struct AddOutputProfileSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: 12) {
-                Image(systemName: "speaker.wave.2.circle.fill")
-                    .font(.system(size: 38)).foregroundStyle(Color.accentColor)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Add Output Profile").font(.title2.bold())
-                    Text(pageTitles[step]).font(.callout).foregroundStyle(.secondary)
-                }
-                Spacer()
-            }.padding(24)
-            Divider()
+        SetupSheet(title: "Add Output Profile", subtitle: pageTitles[step], symbol: "speaker.wave.2.circle.fill") {
             ZStack(alignment: .topLeading) {
                 stepPage
                     .id(step)
@@ -180,28 +169,24 @@ struct AddOutputProfileSheet: View {
                 Text("Connect the selected output device to continue.").font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 24).padding(.bottom, 12)
             }
-            Divider()
-            HStack(spacing: 12) {
-                Button("Cancel") { onCancel() }.keyboardShortcut(.cancelAction)
-                    .uiInteractionAnchor("add-output-cancel")
-                Spacer()
-                if busy { ProgressView().controlSize(.small) }
-                if step > 0 {
-                    Button("Back") { move(to: step - 1) }.frame(minWidth: 70)
-                        .uiInteractionAnchor("add-output-back")
-                }
-                Button(step == lastStep ? "Add Profile" : "Next") {
-                    guard canProceed else { incomplete(); return }
-                    if step == lastStep { add() } else { move(to: step + 1) }
-                }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
-                .disabled(!canProceed)
-                .uiInteractionAnchor("add-output-next")
-            }.controlSize(.regular).padding(.horizontal, 24).padding(.vertical, 16)
+        } actions: {
+            Button("Cancel") { onCancel() }.keyboardShortcut(.cancelAction)
+                .uiInteractionAnchor("add-output-cancel")
+            Spacer()
+            if busy { ProgressView().controlSize(.small) }
+            if step > 0 {
+                Button("Back") { move(to: step - 1) }.frame(minWidth: 70)
+                    .uiInteractionAnchor("add-output-back")
+            }
+            Button(step == lastStep ? "Add Profile" : "Next") {
+                guard canProceed else { incomplete(); return }
+                if step == lastStep { add() } else { move(to: step + 1) }
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+            .disabled(!canProceed)
+            .uiInteractionAnchor("add-output-next")
         }
-        .frame(width: 780, height: 760)
-        .background(Color(nsColor: .windowBackgroundColor))
         .modifier(EditorHistoryCommands(history: history, isExclusive: true))
         .environment(\.undoCommandRouter, state.undoCommands)
         .disabled(busy)

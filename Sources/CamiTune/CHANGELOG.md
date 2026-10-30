@@ -1,5 +1,8 @@
 # **v0.3.3**
 - UI & Audio Latency Optimization
+- Room Correction Simple mode guide
+- Some UI adjustment
+- Better compatibility with multi-channels 
 
 ***
 
