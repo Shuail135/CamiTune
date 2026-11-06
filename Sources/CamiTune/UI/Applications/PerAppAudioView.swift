@@ -21,8 +21,8 @@ struct PerAppAudioView: View {
         ScopedPerAppAudioView(state: state, profile: profile, scope: scope,
             audioPresentation: audioPresentation, presentation: controller.presentationStore(for: scope))
             .id(scope)
-            .onAppear { controller.setMeterPresentationActive(true, source: "main") }
-            .onDisappear { controller.setMeterPresentationActive(false, source: "main") }
+            .onAppear { controller.setMeterPresentationActive(true, source: .applications) }
+            .onDisappear { controller.setMeterPresentationActive(false, source: .applications) }
     }
 }
 

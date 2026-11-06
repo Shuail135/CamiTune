@@ -2,12 +2,11 @@ import SwiftUI
 import Foundation
 
 enum SidebarDestination: Hashable, Sendable {
-    case empty, applications, settings, profile(UUID)
+    case empty, settings, profile(UUID)
 
     var storageValue: String {
         switch self {
         case .empty: return "empty"
-        case .applications: return "applications"
         case .settings: return "settings"
         case .profile(let id): return id.uuidString
         }
@@ -101,13 +100,7 @@ struct ContentView: View {
             switch request.intent {
             case .settings: selection = .settings
             case .appAudio:
-                if let id = state.profiles.selectedProfileID ?? state.activeProfileID ?? state.profiles.profiles.first?.id {
-                    selection = .profile(id)
-                    commands.appAudioRevealProfileID = id
-                } else {
-                    commands.settingsCategory = "App Audio"
-                    selection = .settings
-                }
+                selection = commands.appAudioDestination(in: state.profiles, activeProfileID: state.activeProfileID)
             case .addOutput: Task { await beginAddingOutput() }
             case .openSetup:
                 state.setupPresentation.isPresented = true

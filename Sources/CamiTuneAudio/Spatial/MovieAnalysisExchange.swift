@@ -6,7 +6,7 @@ package struct MovieAnalysisIntent: Equatable, Sendable {
     package let scope: MovieApplicationScope
     package init?(configuration: RenderConfiguration) {
         guard configuration.playbackMode == .spatialRender, let personal = configuration.personalSpatial,
-              personal.experience == .spatialListening, personal.movie.analyzesContent else { return nil }
+              personal.experience == .movie, personal.movie.analyzesContent else { return nil }
         detector = personal.movie.detector; scope = personal.movie.scope
     }
 }
@@ -26,10 +26,10 @@ package enum MovieAnalysisPhase: UInt64, Sendable {
     case overflow, unsupportedFormat, stale, modelFailure
     package var failureMessage: String? {
         switch self {
-        case .overflow: return "Analysis could not keep up. Playback and manual enhancement continue. Turn Movie off and on to retry."
+        case .overflow: return "Analysis could not keep up. Playback and manual enhancement continue. Switch modes and return to Movie to retry."
         case .unsupportedFormat: return "Analysis does not match the current input format. Playback and manual enhancement continue."
-        case .stale: return "Analysis fell behind the playing audio. Playback and manual enhancement continue. Turn Movie off and on to retry."
-        case .modelFailure: return "The local sound detector is unavailable. Playback and manual enhancement continue. Turn Movie off and on to retry."
+        case .stale: return "Analysis fell behind the playing audio. Playback and manual enhancement continue. Switch modes and return to Movie to retry."
+        case .modelFailure: return "The local sound detector is unavailable. Playback and manual enhancement continue. Switch modes and return to Movie to retry."
         default: return nil
         }
     }

@@ -31,6 +31,13 @@ struct PerAppPlaybackModeMenu: View {
                         Label(mode.compactDisplayName + (ready ? "" : " — " + (context.readiness[mode]?.reason ?? "Unavailable")), systemImage: mode.systemImageName)
                     }.disabled(!ready)
                 }
+                if context.isPersonalSpatial {
+                    Divider()
+                    Toggle("Already processed for headphones", isOn: Binding(
+                        get: { application.settings.alreadyBinaural },
+                        set: { controller.setAlreadyBinaural($0, for: application.id, scope: scope) }
+                    ))
+                }
                 if let saved = application.settings.playbackModeOverride, saved != effective {
                     Divider()
                     Text("\(saved.compactDisplayName) saved; following profile until available")

@@ -452,9 +452,9 @@ package enum PersonalSpatialError: Error, LocalizedError {
 /// Only values that require a prepared bank. Room amount and Movie controls
 /// remain inexpensive, smoothed render parameters.
 package struct PersonalSpatialRenderIntent: Hashable, Sendable {
-    package var scene: PersonalSpatialSceneIntent
-    package var hrtf: PersonalHRTFTuning
-    package var playbackDevice: SpatialPlaybackDevice?
+    package let scene: PersonalSpatialSceneIntent
+    package let hrtf: PersonalHRTFTuning
+    package let playbackDevice: SpatialPlaybackDevice?
     package init(scene: PersonalSpatialSceneIntent, hrtf: PersonalHRTFTuning = .init(), playbackDevice: SpatialPlaybackDevice? = nil) {
         self.scene = scene; self.hrtf = hrtf; self.playbackDevice = playbackDevice
     }
@@ -463,52 +463,75 @@ package struct PersonalSpatialRenderIntent: Hashable, Sendable {
 package struct PersonalSpatialSettings: Codable, Hashable, Sendable {
     package static let supportedSampleRates = [44100, 48000, 88200, 96000, 176400, 192000]
     package var playbackDevice: SpatialPlaybackDevice?
-    package var experience: PersonalSpatialExperience = .spatialListening
-    /// One stable capture capacity for both experiences and per-app overrides.
-    /// Signal activity never changes the format advertised to source apps.
+    package var experience: PersonalSpatialExperience = .gaming
+    /// Capacity is independent of selected experience and observed activity.
     package var inputLayout: LPCMChannelLayout { .ninePointOnePointSix }
     package var hrtf = PersonalHRTFTuning()
-    /// The cabinet scene is retained while Spatial listening is selected.
     package var scene = VirtualSpeakerScene()
-    package var listening = SpatialListeningScene()
+    package var movieScene = SpatialListeningScene()
+    package var gamingScene = SpatialListeningScene()
+    package var gamingRendering: GamingRendering = .headphones
     package var mimicRoom: Float = 0.25
-    package var listeningRoom: Float = 0.25
+    package var movieRoom: Float = 0.25
+    package var gamingRoom: Float = 0
+    package var listening: SpatialListeningScene {
+        get { experience == .movie ? movieScene : gamingScene }
+        set { if experience == .movie { movieScene = newValue } else { gamingScene = newValue } }
+    }
     package var room: Float {
-        get { experience == .spatialListening ? listeningRoom : mimicRoom }
-        set { if experience == .spatialListening { listeningRoom = newValue } else { mimicRoom = newValue } }
+        get { room(for: experience) }
+        set {
+            switch experience {
+            case .movie: movieRoom = newValue
+            case .gaming: gamingRoom = newValue
+            case .speakerMimic: mimicRoom = newValue
+            }
+        }
     }
     package var acoustics: PersonalSpatialRoom {
-        get { experience == .spatialListening ? listening.acoustics : scene.acoustics }
-        set { if experience == .spatialListening { listening.acoustics = newValue } else { scene.acoustics = newValue } }
+        get { experience == .speakerMimic ? scene.acoustics : listening.acoustics }
+        set { if experience == .speakerMimic { scene.acoustics = newValue } else { listening.acoustics = newValue } }
     }
     package var movie = MovieSettings()
     package var renderIntent: PersonalSpatialRenderIntent {
-        .init(scene: experience == .spatialListening ? .spatialListening(listening, inputLayout.signalSignature) : .speakerMimic(scene),
-            hrtf: hrtf, playbackDevice: playbackDevice)
+        let selected: PersonalSpatialSceneIntent
+        switch experience {
+        case .movie: selected = .movie(movieScene, inputLayout.signalSignature)
+        case .gaming: selected = .gaming(gamingScene, inputLayout.signalSignature)
+        case .speakerMimic: selected = .speakerMimic(scene)
+        }
+        return .init(scene: selected, hrtf: hrtf, playbackDevice: playbackDevice)
     }
     package func room(for experience: PersonalSpatialExperience) -> Float {
-        experience == .spatialListening ? listeningRoom : mimicRoom
+        switch experience {
+        case .movie: return movieRoom
+        case .gaming: return gamingRoom
+        case .speakerMimic: return mimicRoom
+        }
     }
     package func validate() throws {
-        try scene.validate(); try listening.validate(); try hrtf.validate(); try playbackDevice?.validate(); try movie.validate()
-        _ = try listening.sources(for: inputLayout)
-        guard [mimicRoom, listeningRoom].allSatisfy({ $0.isFinite && (0...1).contains($0) }) else {
+        try scene.validate(); try movieScene.validate(); try gamingScene.validate()
+        try hrtf.validate(); try playbackDevice?.validate(); try movie.validate()
+        _ = try movieScene.sources(for: inputLayout)
+        _ = try gamingScene.sources(for: inputLayout)
+        guard [mimicRoom, movieRoom, gamingRoom].allSatisfy({ $0.isFinite && (0...1).contains($0) }) else {
             throw PersonalSpatialError.invalidRoom
         }
     }
     package init() {}
     private enum CodingKeys: String, CodingKey {
         case version, playbackDevice, scene, room, movie, experience, inputLayout, hrtf, listening, mimicRoom, listeningRoom
+        case movieScene, gamingScene, movieRoom, gamingRoom, gamingRendering
     }
     private enum LegacySceneKeys: String, CodingKey { case hrtf }
+    private enum LegacyMovieKeys: String, CodingKey { case enabled }
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let version = try c.decode(Int.self, forKey: .version)
-        guard (1...6).contains(version) else { throw PersonalSpatialError.unsupportedVersion }
+        guard (1...7).contains(version) else { throw PersonalSpatialError.unsupportedVersion }
         playbackDevice = try c.decodeIfPresent(SpatialPlaybackDevice.self, forKey: .playbackDevice)
         scene = try c.decode(VirtualSpeakerScene.self, forKey: .scene)
         movie = try c.decode(MovieSettings.self, forKey: .movie)
-        movie.dialogueClarity = SpatialRenderIntent.unit(movie.dialogueClarity)
         if version < 5 {
             movie.adaptation = 0
             experience = .speakerMimic
@@ -516,26 +539,48 @@ package struct PersonalSpatialSettings: Codable, Hashable, Sendable {
             let legacy = try c.nestedContainer(keyedBy: LegacySceneKeys.self, forKey: .scene)
             hrtf = try legacy.decodeIfPresent(PersonalHRTFTuning.self, forKey: .hrtf) ?? .init()
         } else {
-            experience = try c.decode(PersonalSpatialExperience.self, forKey: .experience)
             hrtf = try c.decode(PersonalHRTFTuning.self, forKey: .hrtf)
-            listening = try c.decode(SpatialListeningScene.self, forKey: .listening)
             mimicRoom = try c.decode(Float.self, forKey: .mimicRoom)
-            listeningRoom = try c.decode(Float.self, forKey: .listeningRoom)
-            if version == 5 {
-                let previous = try c.decode(LPCMChannelLayout.self, forKey: .inputLayout)
-                try listening.migrateInputPlacement(from: previous, to: inputLayout)
+            if version < 7 {
+                let oldExperience = try c.decode(String.self, forKey: .experience)
+                guard ["spatialListening", "speakerMimic"].contains(oldExperience) else {
+                    throw PersonalSpatialError.unsupportedVersion
+                }
+                let legacyMovie = try c.nestedContainer(keyedBy: LegacyMovieKeys.self, forKey: .movie)
+                let enabled = try legacyMovie.decode(Bool.self, forKey: .enabled)
+                experience = oldExperience == "speakerMimic" ? .speakerMimic : enabled ? .movie : .gaming
+                var previousScene = try c.decode(SpatialListeningScene.self, forKey: .listening)
+                guard previousScene.placements.count <= 16 else { throw PersonalSpatialError.invalidSourcePlacement }
+                if version == 5 {
+                    try previousScene.validate()
+                    let previous = try c.decode(LPCMChannelLayout.self, forKey: .inputLayout)
+                    try previousScene.migrateInputPlacement(from: previous, to: inputLayout)
+                }
+                // Copy the formerly shared scene once; subsequent edits are independent.
+                movieScene = previousScene; gamingScene = previousScene
+                movieRoom = try c.decode(Float.self, forKey: .listeningRoom)
+                gamingRoom = movieRoom
+                gamingRendering = .channels
+            } else {
+                experience = try c.decode(PersonalSpatialExperience.self, forKey: .experience)
+                movieScene = try c.decode(SpatialListeningScene.self, forKey: .movieScene)
+                gamingScene = try c.decode(SpatialListeningScene.self, forKey: .gamingScene)
+                movieRoom = try c.decode(Float.self, forKey: .movieRoom)
+                gamingRoom = try c.decode(Float.self, forKey: .gamingRoom)
+                gamingRendering = try c.decode(GamingRendering.self, forKey: .gamingRendering)
             }
         }
         try validate()
     }
     package func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(6, forKey: .version)
+        try c.encode(7, forKey: .version)
         try c.encodeIfPresent(playbackDevice, forKey: .playbackDevice)
         try c.encode(scene, forKey: .scene); try c.encode(movie, forKey: .movie)
-        try c.encode(experience, forKey: .experience)
-        try c.encode(hrtf, forKey: .hrtf); try c.encode(listening, forKey: .listening)
-        try c.encode(mimicRoom, forKey: .mimicRoom); try c.encode(listeningRoom, forKey: .listeningRoom)
+        try c.encode(experience, forKey: .experience); try c.encode(hrtf, forKey: .hrtf)
+        try c.encode(movieScene, forKey: .movieScene); try c.encode(gamingScene, forKey: .gamingScene)
+        try c.encode(mimicRoom, forKey: .mimicRoom); try c.encode(movieRoom, forKey: .movieRoom)
+        try c.encode(gamingRoom, forKey: .gamingRoom); try c.encode(gamingRendering, forKey: .gamingRendering)
     }
     package static func migrated(_ legacy: VirtualSurroundLayout) -> Self {
         var result = Self()

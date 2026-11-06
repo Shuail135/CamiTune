@@ -52,7 +52,6 @@ extension AppState {
     }
 
     func commitDeviceCorrection(_ correction: DeviceCorrectionProfile?, profileID: UUID) throws {
-        guard profiles.settingsMutationsAllowed else { throw ProfileSettingsError.busy }
         let profile = try historyProfile(profileID)
         let before = profile.processing.deviceCorrection
         try mutateSavedProcessing(profileID: profileID) { $0.setDeviceCorrection(correction) }

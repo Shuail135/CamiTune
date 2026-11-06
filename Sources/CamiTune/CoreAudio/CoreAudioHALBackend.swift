@@ -54,9 +54,9 @@ struct CoreAudioHALBackend: Sendable {
                 profileFormatVersion: sabr_client_profile_format_version(bridge.objectID),
                 sourceDeviceID: sabr_client_source_device_id(bridge.objectID))
         },
-        publishEndpoints: { bridge, endpoints in
+        publishEndpoints: { _, endpoints in
             let log = CoreAudioWaitLog()
-            try ProfileEndpointPublication.publish(endpoints, using: NativeProfileEndpointBackend(bridgeID: bridge.objectID, waitObserver: { log.append($0) }))
+            try ProfileEndpointPublication.publish(endpoints, using: NativeProfileEndpointBackend(waitObserver: { log.append($0) }))
             return log.values
         },
         setDefaultOutput: { device in

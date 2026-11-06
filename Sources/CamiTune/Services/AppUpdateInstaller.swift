@@ -130,7 +130,7 @@ enum AppUpdateInstaller {
 
     /// The replacement app acknowledges only after its main window is visible.
     @MainActor
-    static func acknowledgeRelaunch() {
+    static func acknowledgeRelaunch() -> String? {
         let request: Request?
         if let index = CommandLine.arguments.firstIndex(of: "--app-update-relaunch"),
            CommandLine.arguments.count > index + 1,
@@ -139,9 +139,21 @@ enum AppUpdateInstaller {
         } else if let active = activeInstallation(), !active.isReplacing {
             request = active.request
         } else { request = nil }
-        guard let request,
-              request.target.standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL else { return }
-        try? Data().write(to: request.marker("reopened"), options: .atomic)
+        guard let request else { return nil }
+        return try? acknowledgeRelaunch(request, appURL: Bundle.main.bundleURL)
+    }
+
+    static func acknowledgeRelaunch(_ request: Request, appURL: URL) throws -> String? {
+        guard request.target.standardizedFileURL == appURL.standardizedFileURL else { return nil }
+        let marker = request.marker("reopened")
+        let descriptor = Darwin.open(marker.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else {
+            let code = errno
+            if code == EEXIST { return nil }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [NSFilePathErrorKey: marker.path])
+        }
+        Darwin.close(descriptor)
+        return request.version
     }
 
     static func consumeResult(for appURL: URL, at url: URL = resultURL) -> Result? {
@@ -152,8 +164,8 @@ enum AppUpdateInstaller {
         return result
     }
 
-    static func recordResult(_ request: Request, succeeded: Bool, message: String) throws {
-        let result = Result(version: request.version, target: request.target, succeeded: succeeded, message: message)
+    static func recordFailure(_ request: Request, message: String) throws {
+        let result = Result(version: request.version, target: request.target, succeeded: false, message: message)
         try JSONEncoder().encode(result).write(to: resultURL, options: .atomic)
     }
 
@@ -264,7 +276,7 @@ private final class AppUpdateInstallerWindow: NSObject, NSApplicationDelegate, O
             // dialog. Once it can resume, handoff surfaces the same error in
             // the app and retires this helper.
             if Darwin.kill(request.parentPID, 0) != 0 {
-                try? AppUpdateInstaller.recordResult(request, succeeded: false, message: error.localizedDescription)
+                try? AppUpdateInstaller.recordFailure(request, message: error.localizedDescription)
             }
             showRecovery(title: "Update could not finish", message: error.localizedDescription)
         }
@@ -303,14 +315,9 @@ private final class AppUpdateInstallerWindow: NSObject, NSApplicationDelegate, O
                 }
                 try await Task.sleep(for: .milliseconds(100))
             }
-            if installed {
-                do { try AppUpdateInstaller.recordResult(request, succeeded: true, message: "") }
-                catch {
-                    AppUpdateInstaller.clearActive(request)
-                    showRecovery(title: "CamiTune reopened", message: "The update opened successfully, but its completion could not be saved. \(error.localizedDescription)")
-                    return
-                }
-            }
+            // The reopened app owns successful completion at its visible-window
+            // acknowledgement. Writing it here would arrive after startup and
+            // incorrectly defer its release notes until another launch.
             try? FileManager.default.removeItem(at: request.backup)
             try? FileManager.default.removeItem(at: request.candidate)
             AppUpdateInstaller.clearActive(request)
@@ -352,12 +359,12 @@ private final class AppUpdateInstallerWindow: NSObject, NSApplicationDelegate, O
             }
             try await Task.detached { try AppUpdateInstaller.restorePreviousApplication(request) }.value
             installed = false
-            try AppUpdateInstaller.recordResult(request, succeeded: false,
+            try AppUpdateInstaller.recordFailure(request,
                 message: "CamiTune \(request.version) could not reopen. Your previous version has been restored. \(reason)")
             await reopen()
         } catch {
             AppUpdateInstaller.clearActive(request)
-            try? AppUpdateInstaller.recordResult(request, succeeded: false, message: error.localizedDescription)
+            try? AppUpdateInstaller.recordFailure(request, message: error.localizedDescription)
             showRecovery(title: "Update recovery needs attention", message: error.localizedDescription)
         }
     }

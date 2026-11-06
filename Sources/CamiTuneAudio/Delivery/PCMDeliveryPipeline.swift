@@ -45,19 +45,6 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
 
     private var publishedReferenceDiagnostics: ReferenceSpeakerDiagnostics?
     private var publishedRenderDiagnostics: SpatialRenderDiagnostics?
-    private var renderSettings: SpatialRenderSettings {
-        get { renderConfiguration.spatialSettings }
-        set { renderConfiguration.spatialSettings = newValue }
-    }
-    private var renderOutput: SpatialOutputKind {
-        get { renderConfiguration.spatialOutput }
-        set { renderConfiguration.spatialOutput = newValue }
-    }
-
-    private var spatialRenderingMode: SpatialRenderingMode {
-        get { renderConfiguration.spatialRenderingMode }
-        set { renderConfiguration.spatialRenderingMode = newValue }
-    }
     private var calibrationID: UUID?
     private var calibrationPlayback: SpatialCalibrationPlayback?
     private var measurementHold = false
@@ -301,24 +288,6 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
         }
         pluginWasFailing = failed
         pluginProtection.process(&samples, sampleRate: sampleRate, enabled: processor != nil && !bypass, channelCount: expectedOutputChannelCount)
-    }
-
-    package func setSpatialSettings(_ settings: SpatialRenderSettings, output: SpatialOutputKind) {
-        condition.lock()
-        renderSettings = settings
-        renderOutput = output
-        condition.unlock()
-    }
-
-    package func setSpatialRenderingMode(_ mode: SpatialRenderingMode) {
-        condition.lock()
-        let normalized: SpatialRenderingMode = mode == .standard ? .standard : .spatialAudio
-        if mode == .frontStage || mode == .virtualSurround { renderSettings.enabled = true }
-        if spatialRenderingMode != normalized {
-            spatialRenderingMode = normalized
-            needsSpatialReset = true
-        }
-        condition.unlock()
     }
 
     package func start() {

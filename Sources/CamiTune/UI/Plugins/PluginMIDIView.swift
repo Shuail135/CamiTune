@@ -113,20 +113,7 @@ struct PluginMapButton: View {
         VStack(alignment: .trailing, spacing: 4) {
             Button(model.mappingActive ? "Done Mapping" : "Map") {
                 if model.mappingActive { state.pluginRackManager.finishMapping(slotID: slot.id) }
-                else {
-                    starting = true
-                    Task {
-                        defer { starting = false }
-                        do {
-                            if !profile.pluginRack.midi.isEnabled {
-                                var midi = profile.pluginRack.midi; midi.isEnabled = true
-                                try await state.commitPluginMIDI(midi, profileID: profile.id, action: "Enable MIDI Mapping")
-                            }
-                            try await state.pluginRackManager.startMapping(slot: slot, profile: profile)
-                            state.editingPluginSlots.insert(slot.id)
-                        } catch { model.error = error.localizedDescription }
-                    }
-                }
+                else { starting = true }
             }
             .foregroundStyle(model.mappingActive ? Color.accentColor : Color.primary)
             .disabled(starting)
@@ -143,6 +130,22 @@ struct PluginMapButton: View {
                 Text(error).font(.caption).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 220)
             }
+        }
+        .task(id: starting) {
+            guard starting else { return }
+            defer { starting = false }
+            do {
+                try await state.pluginRackManager.startMapping(slotID: slot.id, profileID: profile.id) {
+                    let current = try state.historyProfile(profile.id)
+                    if !current.pluginRack.midi.isEnabled {
+                        var midi = current.pluginRack.midi; midi.isEnabled = true
+                        try await state.commitPluginMIDI(midi, profileID: current.id, action: "Enable MIDI Mapping")
+                    }
+                    return try state.historyProfile(current.id)
+                }
+                state.editingPluginSlots.insert(slot.id)
+            } catch is CancellationError { }
+            catch { model.error = error.localizedDescription }
         }
         .onChange(of: profile.pluginRack.midi.isEnabled) { enabled in
             if !enabled { state.pluginRackManager.finishMapping(slotID: slot.id) }

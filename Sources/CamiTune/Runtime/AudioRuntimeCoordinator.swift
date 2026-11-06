@@ -167,7 +167,6 @@ final class AudioRuntimeCoordinator: ObservableObject {
         try await owner.capture.prepareIncoming()
         guard owns(owner.ownershipID) else { throw CancellationError() }
     }
-    func restoreRenderConfiguration() { if let plan = activeRuntimePlan { applyRenderer(plan) } }
     func handleDefaultOutputChange(_ uid: String?) {
         if let suppressedAutoUID, let uid, uid != suppressedAutoUID,
            !runtimeServices.captureBackend.isCaptureDevice(uid) { self.suppressedAutoUID = nil }
@@ -706,12 +705,9 @@ final class AudioRuntimeCoordinator: ObservableObject {
         }
         let delta = compareRuntimePlans(from: old, to: candidate, reason: reason, parentOperation: operation?.id)
         if delta.isNoOp { return }
-        if candidate.usesExclusivePluginOutput && old.usesExclusivePluginOutput && delta.engine.changed {
-            try await replacePipeline(candidate, intent: intent, reason: "directOutputBufferChange")
-            return
-        }
         if delta.requirements.requiresFullRuntimeRestart
-            || (delta.requirements.requiresPCMRestart && !owner.capture.canRetainSourceFormat(candidate.sourceFormat)) {
+            || (delta.requirements.requiresPCMRestart
+                && (candidate.usesExclusivePluginOutput || !owner.capture.canRetainSourceFormat(candidate.sourceFormat))) {
             try await replacePipeline(candidate, intent: intent, reason: "liveApplyRestart"); return
         }
         if delta.requirements.requiresEngineQuiescence {
@@ -901,6 +897,10 @@ final class AudioRuntimeCoordinator: ObservableObject {
             if let preferred = owner.restoration.previousDefaultUID,
                await runtimeServices.resolveOutput(preferred) != nil { restore = preferred }
             guard owns(owner.ownershipID) else { return }
+            // Retirement and output discovery can suspend. Restore only while
+            // macOS still selects this session's route, preserving a newer choice.
+            let selected = await runtimeServices.freshDefaultOutput()
+            guard owns(owner.ownershipID), selected == owner.capture.selectionUID else { return }
             do { try await runtimeServices.setDefaultOutput(restore) }
             catch { callbacks.reportMessage("EQ stopped, but macOS could not switch back to the physical output: \(error.localizedDescription)") }
         }
@@ -923,12 +923,6 @@ final class AudioRuntimeCoordinator: ObservableObject {
         guard let transaction = activeTransaction, receiptIsCurrent(receipt, transaction: transaction) else {
             throw ProfileSettingsError.cancelled
         }
-    }
-    /// Compatibility for coordinator regression tests: explicit persistence
-    /// outcomes below are used by the application facade.
-    func commit(_ receipt: RuntimeApplyReceipt) throws {
-        try validate(receipt)
-        _ = persistenceCommitted(receipt)
     }
     @discardableResult
     func persistenceCommitted(_ receipt: RuntimeApplyReceipt) -> RuntimePersistenceResolution {
@@ -998,7 +992,8 @@ final class AudioRuntimeCoordinator: ObservableObject {
             if let delta = transaction.delta, !delta.isNoOp {
                 let effects = delta.requirements
                 if effects.requiresFullRuntimeRestart
-                    || (effects.requiresPCMRestart && ownedSession?.capture.canRetainSourceFormat(candidate.sourceFormat) != true) {
+                    || (effects.requiresPCMRestart && (candidate.usesExclusivePluginOutput
+                        || ownedSession?.capture.canRetainSourceFormat(candidate.sourceFormat) != true)) {
                     transaction.restart = .pipeline
                     try await replacePipeline(candidate, intent: desiredRuntime, reason: "settingsTransaction", acknowledgeOnSuccess: false)
                 } else if effects.requiresEngineQuiescence {

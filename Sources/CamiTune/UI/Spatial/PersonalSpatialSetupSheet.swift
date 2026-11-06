@@ -94,7 +94,8 @@ struct PersonalSpatialSetupSheet: View {
 
     private var experiencePage: some View {
         HStack(spacing: 16) {
-            experienceChoice(.spatialListening, title: "Spatial sound", symbol: "waveform.circle")
+            experienceChoice(.movie, title: "Movie", symbol: "film")
+            experienceChoice(.gaming, title: "Gaming", symbol: "gamecontroller")
             experienceChoice(.speakerMimic, title: "Mimic speakers", symbol: "hifispeaker.2")
         }
     }

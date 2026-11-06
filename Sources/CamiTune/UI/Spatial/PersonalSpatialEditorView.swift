@@ -9,7 +9,7 @@ struct PersonalSpatialEditorView: View {
     let openSetup: () -> Void
     @State private var draft: PersonalSpatialSettings
     @State private var selectionPreference: String?
-    @State private var activeInputChannels: Set<Int> = []
+    @State private var activeInputChannelCount = 0
     @State private var fineTune = false
     @State private var customizeSpeakers = false
     @State private var sheet: Sheet?
@@ -41,8 +41,9 @@ struct PersonalSpatialEditorView: View {
 
     private var active: Bool { state.isActive && state.activeProfileID == profile.id }
     private var canAudition: Bool { active && pendingSettings == nil && preparation == .active(draft.renderIntent) }
-    private var listening: Bool { draft.experience == .spatialListening }
-    private var movieVisible: Bool { listening && draft.movie.enabled && active }
+    private var listening: Bool { draft.experience != .speakerMimic }
+    private var movieVisible: Bool { draft.experience == .movie && active }
+    private var preservesHeadphoneMix: Bool { draft.experience == .gaming && draft.gamingRendering == .headphones }
     private var adjustable: Bool { listening || draft.scene.roomModel == .generic }
     private var listener: SpatialVector3 {
         listening ? draft.listening.placement(for: draft.inputLayout).listener : draft.scene.effectiveListener
@@ -63,11 +64,39 @@ struct PersonalSpatialEditorView: View {
                     .disabled(state.spatialCalibrationContext != nil)
                     .uiInteractionAnchor("spatial-open-setup")
             }
-            if listening {
-                Text("Automatic input: up to \(SpatialSourceFormat(layout: draft.inputLayout).displayName) · \(activeInputChannels.count) channels with recent signal")
-                    .font(.caption).foregroundStyle(.secondary)
-
+            HStack {
+                Text(draft.playbackDevice?.resolvedType.summary ?? "Device type not identified")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Change type…", action: openSetup)
+                    .disabled(state.spatialCalibrationContext != nil)
+            }.font(.caption)
+            if let device = draft.playbackDevice {
+                Text(device.typeProvenance).font(.caption).foregroundStyle(.secondary)
             }
+            JoinedSegmentedControl(options: PersonalSpatialExperience.allCases, selection: Binding(
+                get: { draft.experience }, set: { draft.experience = $0; resetViewport(); commit() }
+            ), title: { $0.title })
+                .accessibilityLabel("Spatial experience")
+                .uiInteractionAnchor("personal-spatial-experience")
+            Text("Automatic input: up to \(SpatialSourceFormat(layout: draft.inputLayout).displayName) · \(activeInputChannelCount) channels with recent signal → headphones")
+                    .font(.caption).foregroundStyle(.secondary)
+            if draft.experience == .gaming {
+                Text("Keep the game's directions and timing intact.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Picker("Game audio", selection: Binding(get: { draft.gamingRendering }, set: {
+                    draft.gamingRendering = $0; commit()
+                })) {
+                    ForEach(GamingRendering.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                Text("System audio supplies decoded channels, without game-object positions."
+                    + (preservesHeadphoneMix ? " Spatial filtering is bypassed." : " Rendering declared speaker channels."))
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else if draft.experience == .movie {
+                Text("Channel rendering with optional dialogue and loud-moment control. Adaptive layout expansion is not available yet.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if !preservesHeadphoneMix {
             HStack {
                 Text("Listening distance")
                 if adjustable {
@@ -105,18 +134,16 @@ struct PersonalSpatialEditorView: View {
                     .accessibilityLabel("Room")
                 Text("\(Int((draft.room * 100).rounded()))%").monospacedDigit().frame(width: 38, alignment: .trailing)
             }
-            if listening {
-            Toggle("Movie mode", isOn: Binding(get: { draft.movie.enabled }, set: { draft.movie.enabled = $0; commit() }))
-            if draft.movie.enabled {
+            }
+            if draft.experience == .movie {
+                valueSlider("Dialogue Clarity", value: Binding(get: { Double(draft.movie.dialogueClarity) }, set: { draft.movie.dialogueClarity = Float($0) }),
+                    range: 0...1, text: "\(Int((draft.movie.dialogueClarity * 100).rounded()))%", help: "0% leaves dialogue unchanged; 100% applies the maximum clarity shaping. This also affects sounds sharing the voice frequencies or center channel.")
                 HStack {
                     Text("Apps")
                     Spacer()
                     Text(scopeLabel).foregroundStyle(.secondary)
                     Button(draft.movie.scope == .allApplications ? "Choose…" : "Change…") { sheet = .applications }
                         .accessibilityLabel("Choose Movie apps")
-                }
-                Picker("Detection", selection: Binding(get: { draft.movie.detector }, set: { draft.movie.detector = $0; commit() })) {
-                    ForEach(MovieDetector.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
                 if active {
                     Text(movieAnalysis.title).font(.caption).foregroundStyle(.secondary)
@@ -125,16 +152,17 @@ struct PersonalSpatialEditorView: View {
                     }
                 }
             }
-            }
+            if !preservesHeadphoneMix {
             DisclosureGroup("Fine-tune", isExpanded: $fineTune) {
                 fineTuneControls
             }.disclosureGroupStyle(SectionDisclosureStyle())
                 .uiInteractionAnchor("personal-spatial-fine-tune")
+            }
 
             if pendingSettings != nil || (active && preparation == .preparing) {
                 Text("Preparing…").font(.caption).foregroundStyle(.secondary)
             }
-            if active, case .unavailable(let reason) = preparation {
+            if active, !preservesHeadphoneMix, case .unavailable(let reason) = preparation {
                 Text(reason).font(.caption).foregroundStyle(.orange)
             }
             if let error { Text(error).font(.caption).foregroundStyle(.orange) }
@@ -146,17 +174,21 @@ struct PersonalSpatialEditorView: View {
         .onReceive(state.pcmRouter.personalSpatialChanges) { preparation = $0 }
         .onReceive(state.pcmRouter.movieAnalysisChanges) { movieAnalysis = $0 }
         .onChange(of: movieVisible) { state.setMovieAnalysisPresentation(profileID: profile.id, active: $0) }
-        .onReceive(state.perAppAudio.$applications) { _ in
+        .onReceive(state.perAppAudio.presentationChanges) { _ in
             if state.mainWindowPresentationActive { updateInputEvidence() }
         }
-        .onChange(of: fineTune) { if $0 { updateInputEvidence() } }
-        .onChange(of: active) { if $0 && fineTune { updateInputEvidence() } }
+        .onChange(of: active) {
+            state.perAppAudio.setMeterPresentationActive($0, source: .spatial)
+            updateInputEvidence()
+        }
         .onAppear {
+            state.perAppAudio.setMeterPresentationActive(active, source: .spatial)
             updateInputEvidence()
             movieAnalysis = state.pcmRouter.movieAnalysisStatus
             state.setMovieAnalysisPresentation(profileID: profile.id, active: movieVisible)
         }
         .onDisappear {
+            state.perAppAudio.setMeterPresentationActive(false, source: .spatial)
             stopAudition()
             state.setMovieAnalysisPresentation(profileID: profile.id, active: false)
             if active, let saved = currentProfile { state.pcmRouter.setPersonalRoom(saved.personalSpatial.room) }
@@ -306,6 +338,9 @@ struct PersonalSpatialEditorView: View {
                 Button(audition?.sourceID == selected ? "Stop" : "Test") { play(selected) }
                     .disabled(!canAudition)
             }
+            if listening, let source = listeningSources.first(where: { $0.id.rawValue == selected }) {
+                Text(source.origin.title).font(.caption).foregroundStyle(.secondary)
+            }
             if adjustable {
                 valueSlider("Azimuth", value: Binding(get: { Double(selectedPosition.azimuthDegrees) }, set: { moveSelected(azimuth: Float($0)) }),
                     range: -180...180, text: String(format: "%+.0f°", selectedPosition.azimuthDegrees))
@@ -342,32 +377,38 @@ struct PersonalSpatialEditorView: View {
                 valueSlider("Sub bass extension", value: Binding(get: { Double(draft.scene.subwoofer.extensionHz) }, set: { draft.scene.subwoofer.extensionHz = Float($0) }),
                     range: 15...60, step: 1, text: String(format: "%.0f Hz", draft.scene.subwoofer.extensionHz))
             }
-            if listening && draft.movie.enabled {
+            if draft.experience == .movie {
                 Divider()
                 HStack {
                     Text("Movie options").font(.headline)
                     Spacer()
                     SectionResetButton("Reset Movie adjustments") {
                         var reset = MovieSettings()
-                        reset.enabled = draft.movie.enabled; reset.scope = draft.movie.scope; reset.detector = draft.movie.detector
+                        reset.scope = draft.movie.scope; reset.detector = draft.movie.detector
                         draft.movie = reset; commit()
                     }
                 }
-                valueSlider("Dialogue Clarity", value: Binding(get: { Double(draft.movie.dialogueClarity) }, set: { draft.movie.dialogueClarity = Float($0) }),
-                    range: 0...1, text: "\(Int((draft.movie.dialogueClarity * 100).rounded()))%")
+                Picker("Detection", selection: Binding(get: { draft.movie.detector }, set: { draft.movie.detector = $0; commit() })) {
+                    ForEach(MovieDetector.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
                 Picker("Dynamics", selection: Binding(get: { draft.movie.dynamics }, set: { draft.movie.dynamics = $0; commit() })) {
                     ForEach(MovieDynamics.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
                 valueSlider("Music preservation", value: Binding(get: { Double(draft.movie.musicPreservation) }, set: { draft.movie.musicPreservation = Float($0) }),
-                    range: 0...1, text: "\(Int((draft.movie.musicPreservation * 100).rounded()))%")
+                    range: 0...1, text: "\(Int((draft.movie.musicPreservation * 100).rounded()))%",
+                    help: "Reduces automatic speech enhancement when music or singing is detected. 0% disables this protection; 100% gives it full weight.")
                 valueSlider("Room reduction", value: Binding(get: { Double(draft.movie.roomReduction) }, set: { draft.movie.roomReduction = Float($0) }),
-                    range: 0...1, text: "\(Int((draft.movie.roomReduction * 100).rounded()))%")
+                    range: 0...1, text: "\(Int((draft.movie.roomReduction * 100).rounded()))%",
+                    help: "Reduces only the added late room during speech, by up to 3 dB at 100%. It does not remove room sound in the recording.")
                 valueSlider("Adaptation", value: Binding(get: { Double(draft.movie.adaptation) }, set: { draft.movie.adaptation = Float($0) }),
-                    range: 0...1, text: "\(Int((draft.movie.adaptation * 100).rounded()))%")
+                    range: 0...1, text: "\(Int((draft.movie.adaptation * 100).rounded()))%",
+                    help: "0% stops content analysis and uses fixed manual clarity and dynamics. 100% allows the full bounded automatic adjustment.")
                 valueSlider("Response speed", value: Binding(get: { Double(draft.movie.responseSpeed) }, set: { draft.movie.responseSpeed = Float($0) }),
-                    range: 0...1, text: "\(Int((draft.movie.responseSpeed * 100).rounded()))%")
+                    range: 0...1, text: "\(Int((draft.movie.responseSpeed * 100).rounded()))%",
+                    help: "Automatic adjustments respond in 500–200 ms and release in 2–1 seconds from slow to fast. Loud-moment detection keeps its separate fast response.")
                 valueSlider("Extra reduction limit", value: Binding(get: { Double(draft.movie.additionalReductionLimitDB) }, set: { draft.movie.additionalReductionLimitDB = Float($0) }),
-                    range: 0...6, step: 0.5, text: String(format: "%.1f dB", draft.movie.additionalReductionLimitDB))
+                    range: 0...6, step: 0.5, text: String(format: "%.1f dB", draft.movie.additionalReductionLimitDB),
+                    help: "Caps extra automatic loud-moment reduction at 0–6 dB. Original dynamics disables this additional reduction.")
             }
         }.padding(.top, 6)
     }
@@ -518,7 +559,10 @@ struct PersonalSpatialEditorView: View {
         viewportResetRevision &+= 1
     }
     private func updateInputEvidence() {
-        guard active else { return }
+        guard active else {
+            if activeInputChannelCount != 0 { activeInputChannelCount = 0 }
+            return
+        }
         // Remember verified source roles through quiet passages. Saved placement
         // is not evidence that a source actually supplied a channel.
         var roles = knownRoles
@@ -535,7 +579,7 @@ struct PersonalSpatialEditorView: View {
             }
         }
         if roles != knownRoles { knownRoles = roles }
-        if channels != activeInputChannels { activeInputChannels = channels }
+        if channels.count != activeInputChannelCount { activeInputChannelCount = channels.count }
     }
     private func commit() {
         guard pendingSettings == nil, let saved = currentProfile, draft != saved.personalSpatial else { return }

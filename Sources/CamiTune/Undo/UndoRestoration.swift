@@ -53,6 +53,7 @@ extension AppState: HistoryRestoring {
 
     /// Saved processing mutations preserve every current session draft.
     func mutateSavedProcessing(profileID: UUID, _ mutation: (inout ProcessingProfile) throws -> Void) throws {
+        guard profiles.settingsMutationsAllowed else { throw ProfileSettingsError.busy }
         var profile = try historyProfile(profileID)
         var processing = try profile.resolvedProcessing()
         let previousChannels = processing.channels

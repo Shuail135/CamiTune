@@ -45,20 +45,22 @@ final class ProfileStore: ObservableObject {
         get { libraryProfiles }
         set {
             guard !stopping || isLoading else { return }
-            if activeDurableCommit != nil && !isLoading {
-                let old = Dictionary(uniqueKeysWithValues: libraryProfiles.map { ($0.id, Self.settingsSnapshot($0)) })
-                guard newValue.count == libraryProfiles.count,
-                      Set(newValue.map(\.id)).count == newValue.count,
-                      newValue.allSatisfy({ old[$0.id] == Self.settingsSnapshot($0) }) else { return }
-                if activeDurableCommit?.mutation.kind == .history,
-                   newValue.map(\.id) != libraryProfiles.map(\.id) { return }
-            }
-            libraryProfiles = newValue.map { profile in
+            let resolved = newValue.map { profile in
                 var resolved = profile
                 resolved.resolveAudioBuffer(default: audioBufferDefault)
                 resolved.inheritedSectionLayouts = layoutDefaults
                 return resolved
             }
+            guard resolved != libraryProfiles else { return }
+            if activeDurableCommit != nil && !isLoading {
+                let old = Dictionary(uniqueKeysWithValues: libraryProfiles.map { ($0.id, Self.settingsSnapshot($0)) })
+                guard resolved.count == libraryProfiles.count,
+                      Set(resolved.map(\.id)).count == resolved.count,
+                      resolved.allSatisfy({ old[$0.id] == Self.settingsSnapshot($0) }) else { return }
+                if activeDurableCommit?.mutation.kind == .history,
+                   resolved.map(\.id) != libraryProfiles.map(\.id) { return }
+            }
+            libraryProfiles = resolved
             save()
         }
     }
@@ -681,6 +683,8 @@ final class ProfileStore: ObservableObject {
 
     func update(_ profile: DeviceProfile, recordLayoutHistory: Bool = true) {
         guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
+        // Canonical editor bindings can skip resolving every library profile.
+        // The owning setter also compares values after inherited preferences resolve.
         guard profiles[index] != profile else { return }
         guard ProfileNamePolicy.isAvailable(profile.name, in: profiles, excluding: profile.id) else { return }
         let previous = profiles[index]

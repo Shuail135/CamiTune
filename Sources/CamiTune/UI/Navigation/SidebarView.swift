@@ -6,7 +6,7 @@ import Combine
 /// Lightweight presentation data: EQ edits must not reload the native table.
 struct SidebarRow: Equatable {
     enum Kind: Hashable {
-        case navigation(SidebarDestination), addOutput, heading, folder(UUID), profile(UUID)
+        case addOutput, heading, folder(UUID), profile(UUID)
     }
     let kind: Kind
     let title: String
@@ -18,7 +18,6 @@ struct SidebarRow: Equatable {
 
     var selectionID: SidebarDestination? {
         switch kind {
-        case .navigation(let id): return id
         case .profile(let id): return .profile(id)
         default: return nil
         }
@@ -897,8 +896,6 @@ private final class SidebarCell: NSTableCellView {
         icon.contentTintColor = .secondaryLabelColor
         let symbol: String
         switch row.kind {
-        case .navigation(let id):
-            symbol = id == .applications ? "square.stack.3d.up.fill" : "gearshape"
         case .addOutput: symbol = "plus"
         case .heading:
             symbol = "hifispeaker.2"

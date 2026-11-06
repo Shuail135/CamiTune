@@ -20,7 +20,7 @@ When adding an editor:
 
 ## Validation
 
-`--ui-self-test <artifact-directory>` runs native control, focus, layout, resizing, and scrolling-cadence checks in a Debug build. `--ui-app-self-test <artifact-directory>` exercises the complete window, profile navigation, settings, continuous telemetry, scrolling, editing, and the menu bar.
+UI regression runners live in the ignored `Tests/CamiTuneTestSupport` folder. Run them through `CAMITUNE_LOCAL_TESTS=diagnostics swift test --filter LocalIntegrationTests` in a Debug build. Set `CAMITUNE_UI_ARTIFACT_DIRECTORY` for control and layout checks, or `CAMITUNE_UI_APP_ARTIFACT_DIRECTORY` for complete-window navigation, settings, scrolling, editing, and menu-bar checks. Without those variables the UI tests are skipped.
 
 The full-window test uses simulated audio services and temporary profiles. Optional environment variables:
 
@@ -31,6 +31,6 @@ The full-window test uses simulated audio services and temporary profiles. Optio
 - `CAMITUNE_UI_EDIT_ONLY=1`: isolate the real channel-gain field edit, with a five-second pause before editing to attach a sampler. The edit must save and meet the interaction budget.
 - `CAMITUNE_UI_RESIZE_ONLY=1`: check narrow, short, and restored window sizes, sidebar leading content/selection, and title-bar clearance. Uses the production window configuration and requires a connected macOS display.
 
-Performance artifacts report main-loop scheduling gaps and process memory. These are regression measurements, not display-frame-rate guarantees. Compare the same configuration and fixtures without concurrent builds. For optimized measurements with diagnostic entry points enabled, use `swift build -c release -Xswiftc -DDEBUG`.
+Performance artifacts report main-loop scheduling gaps and process memory. These are regression measurements, not display-frame-rate guarantees. Compare the same configuration and fixtures without concurrent builds. For optimized measurements with diagnostic entry points enabled, use `CAMITUNE_LOCAL_TESTS=diagnostics swift test -c release -Xswiftc -enable-testing -Xswiftc -DDEBUG`.
 
-Also run the full `--self-test` suite, an Xcode build, and `Scripts/verify-source-targets.py` when files move between folders or targets.
+Run `CAMITUNE_LOCAL_TESTS=diagnostics swift test`, an Xcode app build, and `Scripts/verify-source-targets.py` when files move between folders or targets. The app’s `--self-test` command runs only computer-dependent benchmarks. Local regression sources are never included in app targets or published checkouts.

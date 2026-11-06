@@ -261,7 +261,6 @@ final class AppState: NSObject, ObservableObject {
         monitorTimer?.tolerance = 0.3
 
         Task { await notifications.requestAuthorization() }
-        updateChecker.start()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(applicationWillTerminate(_:)),
@@ -393,7 +392,7 @@ final class AppState: NSObject, ObservableObject {
         guard mainWindowPresentationActive != active else { return }
         mainWindowPresentationActive = active
         updateMovieAnalysisPresentation()
-        perAppAudio.setMeterPresentationSuspended(!active, source: "main")
+        perAppAudio.setMainWindowPresentationActive(active)
         guard let requestedRuntimeVisualProfileID else { return }
         spectrum.setPresentationActive(active && requestedSpectrumVisuals, profileID: requestedRuntimeVisualProfileID)
         meters.setPresentationActive(active && requestedMeterVisuals, profileID: requestedRuntimeVisualProfileID)
@@ -457,6 +456,8 @@ final class AppState: NSObject, ObservableObject {
         guard ProfileNamePolicy.isAvailable(name, in: profiles.profiles, excluding: id) else {
             throw ProfileSettingsError.runtime("A profile named \"\(name)\" already exists. Profile names must be unique.")
         }
+        isSavingProfileSettings = true
+        defer { finishSavingSettings() }
         let previousName = profiles.profiles[index].name
         profiles.profiles[index].name = name
         do {
@@ -995,17 +996,13 @@ final class AppState: NSObject, ObservableObject {
               let session = activeSession, session.profileID == profileID,
               let rate = activeSampleRate,
               coreAudio.defaultOutputUID == activeRoutingUID,
-              let profile = profiles.profiles.first(where: { $0.id == profileID }),
+              let profile = runtimeCoordinator.appliedProfile, profile.id == profileID,
               (profile.effectiveSpatialRenderingMode == .spatialAudio || profile.usesReferenceSpeakers || (roomMeasurement && (try? profile.validatedPhysicalSpeakerTopology()) != nil)),
               profile.outputDeviceUID == activePhysicalOutputUID else { return nil }
         let context = SpatialCalibrationContext(
             id: UUID(), runtimeSessionID: session.id, profileID: profileID,
             outputDeviceUID: profile.outputDeviceUID, sampleRate: Double(rate)
         )
-        // Spatial mode is a local PCM setting. Do not let a pending graph RPC
-        // leave the first audition in the previously selected Standard mode.
-        pcmRouter.setSpatialRenderingMode(profile.effectiveSpatialRenderingMode)
-        pcmRouter.setSpatialSettings(profile.effectiveSpatialSettings, output: profile.effectiveSpatialSettings.resolvedOutput(deviceName: profile.outputDeviceName))
         guard pcmRouter.beginSpatialCalibration(id: context.id) else {
             return nil
         }
@@ -1044,7 +1041,6 @@ final class AppState: NSObject, ObservableObject {
     func endSpatialCalibration(id: UUID) {
         guard spatialCalibrationContext?.id == id else { return }
         pcmRouter.endSpatialCalibration(id: id)
-        runtimeCoordinator.restoreRenderConfiguration()
         spatialCalibrationContext = nil
     }
 

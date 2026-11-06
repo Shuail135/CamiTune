@@ -6,9 +6,7 @@ package struct RenderConfiguration: Codable, Hashable, Sendable {
     package var spatialRenderingMode: SpatialRenderingMode
     package var spatialSettings: SpatialRenderSettings
     package var spatialOutput: SpatialOutputKind
-    package var spatialListenerTuning: SpatialListenerTuning
     package var spatialContentMode: SpatialContentMode
-    package var virtualSurroundLayout: VirtualSurroundLayout
     package var personalSpatial: PersonalSpatialSettings?
     package var referenceCorrection: DeviceCorrectionProfile?
     package var pluginRack: PluginRack? = nil
@@ -20,9 +18,7 @@ package struct RenderConfiguration: Codable, Hashable, Sendable {
         spatialRenderingMode = playbackMode == .spatialRender ? .spatialAudio : .standard
         spatialSettings = profile.effectiveSpatialSettings
         spatialOutput = spatialSettings.resolvedOutput(deviceName: profile.outputDeviceName)
-        spatialListenerTuning = profile.spatialListenerTuning.validated
         spatialContentMode = profile.spatialContentMode
-        virtualSurroundLayout = profile.virtualSurroundLayout
         personalSpatial = profile.isPersonalListening && !profile.usesExclusivePluginOutput && PersonalSpatialSettings.supportedSampleRates.contains(profile.sampleRate) ? profile.personalSpatial : nil
         referenceCorrection = profile.isSectionEnabled(.mode) ? profile.personalReferenceCorrection : nil
         pluginRack = profile.effectivePluginRack

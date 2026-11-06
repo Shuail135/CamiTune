@@ -67,7 +67,6 @@ protocol ProfileEndpointPublicationBackend {
     func endpointsAreReady(_ endpoints: [ProfileEndpointState]) -> Bool
     func waitForVisibility(_ endpoints: [ProfileEndpointState], present: Bool) throws
     func defaultOutputUID() throws -> String?
-    func restoreDefaultOutput(_ uid: String) throws
 }
 
 enum ProfileEndpointPublication {
@@ -93,12 +92,9 @@ enum ProfileEndpointPublication {
             }
             return
         }
-        let defaultUID = try backend.defaultOutputUID()
+        try validateRemoval(from: previous, to: desired, using: backend)
         do {
             try apply(from: previous, to: desired, using: backend)
-            if let uid = defaultUID, desired.contains(where: { $0.uid == uid }), try backend.defaultOutputUID() != uid {
-                try backend.restoreDefaultOutput(uid)
-            }
         } catch {
             let failure = error
             do {
@@ -107,8 +103,8 @@ enum ProfileEndpointPublication {
                 // A timed-out HAL request may still be pending even when the
                 // acknowledged descriptors have not changed. Republish rollback
                 // to supersede that request before releasing this transaction.
+                try validateRemoval(from: current, to: previous, using: backend)
                 try apply(from: current, to: previous, using: backend)
-                if let uid = defaultUID, try backend.defaultOutputUID() != uid { try backend.restoreDefaultOutput(uid) }
                 }
             } catch { throw ProfileSettingsError.rollback(failure.localizedDescription, error.localizedDescription) }
             throw failure
@@ -117,6 +113,17 @@ enum ProfileEndpointPublication {
 
     private static func equivalent(_ lhs: [ProfileEndpointState], _ rhs: [ProfileEndpointState]) -> Bool {
         lhs.sorted { $0.uid < $1.uid } == rhs.sorted { $0.uid < $1.uid }
+    }
+
+    private static func validateRemoval(from current: [ProfileEndpointState], to desired: [ProfileEndpointState],
+                                        using backend: ProfileEndpointPublicationBackend) throws {
+        let removed = Set(current.map(\.uid)).subtracting(desired.map(\.uid))
+        // Capture/maintenance must acknowledge its output handoff before
+        // removing a selected endpoint. Publication never owns that selection,
+        // including a user choice made while a failed publication was pending.
+        if !removed.isEmpty, let selected = try backend.defaultOutputUID(), removed.contains(selected) {
+            throw ProfileSettingsError.runtime("Select another macOS output before removing its profile audio device.")
+        }
     }
 
     private static func apply(from current: [ProfileEndpointState], to desired: [ProfileEndpointState],
@@ -132,7 +139,6 @@ enum ProfileEndpointPublication {
 }
 
 struct NativeProfileEndpointBackend: ProfileEndpointPublicationBackend {
-    let bridgeID: AudioObjectID // compatibility initializer only; never trusted across publication
     var waitObserver: @Sendable (CoreAudioWaitResult) -> Void = { _ in }
     private var currentBridgeID: AudioObjectID { Self.resolve(AudioDeviceInfo.systemAudioBridgeUID) }
 
@@ -212,24 +218,6 @@ struct NativeProfileEndpointBackend: ProfileEndpointPublicationBackend {
             throw ProfileSettingsError.runtime("Could not preserve the current macOS output.")
         }
         return uid as String?
-    }
-
-    func restoreDefaultOutput(_ uid: String) throws {
-        var id = Self.resolve(uid)
-        guard id != kAudioObjectUnknown else { throw ProfileSettingsError.runtime("The previous macOS output is unavailable.") }
-        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        let status = AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil,
-            UInt32(MemoryLayout<AudioObjectID>.size), &id)
-        guard status == noErr else { throw ProfileSettingsError.runtime("The macOS output could not be restored (\(status)).") }
-        let result = CoreAudioConditionWaiter.waitSynchronously(backend: .live, events: [.defaultOutput], timeout: .seconds(3)) {
-            (try? self.defaultOutputUID()) == uid
-        }
-        waitObserver(result)
-        if result.source == .cancelled { throw CancellationError() }
-        guard result.source != .timedOut else {
-            throw ProfileSettingsError.runtime("macOS did not finish restoring the selected profile audio device.")
-        }
     }
 
     private static func resolve(_ uid: String) -> AudioObjectID {

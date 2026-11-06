@@ -24,6 +24,17 @@ struct PresentationPublicationScheduling: @unchecked Sendable {
 
 enum ApplicationPublicationRequest { case meter, immediate }
 
+enum ApplicationPresentationSource: Hashable, Sendable {
+    case applications, spatial, menu
+
+    var belongsToMainWindow: Bool {
+        switch self {
+        case .applications, .spatial: return true
+        case .menu: return false
+        }
+    }
+}
+
 /// Audio/control state → presentation, never the reverse.
 /// Lock order: audioLock is never used here. The request lock protects scalar
 /// scheduling state only, and is released before input capture takes stateLock.
@@ -44,9 +55,11 @@ final class PerAppPresentationPublisher: @unchecked Sendable {
     private var generation: UInt64 = 0
     private var trailingCancel: PresentationPublicationScheduling.Job?
     private var statisticsValue = PresentationPublicationStatistics()
-    private var activeSources: Set<String> = []
-    private var suspendedSources: Set<String> = []
-    private var visible = false
+    private var activeSources: Set<ApplicationPresentationSource> = []
+    private var mainWindowActive = false
+    private var visible: Bool {
+        activeSources.contains { !$0.belongsToMainWindow || mainWindowActive }
+    }
     // Worker-only state.
     private var lastPublished: PerformanceTick?
     private var mainScheduled = false
@@ -71,17 +84,15 @@ final class PerAppPresentationPublisher: @unchecked Sendable {
     }
 
     /// Only publisher policy examines visibility; callers still record identity evidence.
-    func setActive(_ active: Bool, source: String) -> Bool {
+    func setActive(_ active: Bool, source: ApplicationPresentationSource) -> Bool {
         requestLock.lock(); defer { requestLock.unlock() }
         if active { activeSources.insert(source) } else { activeSources.remove(source) }
-        visible = !activeSources.subtracting(suspendedSources).isEmpty
-        return active && !suspendedSources.contains(source)
+        return active && (!source.belongsToMainWindow || mainWindowActive)
     }
-    func setSuspended(_ suspended: Bool, source: String) -> Bool {
+    func setMainWindowActive(_ active: Bool) -> Bool {
         requestLock.lock(); defer { requestLock.unlock() }
-        if suspended { suspendedSources.insert(source) } else { suspendedSources.remove(source) }
-        visible = !activeSources.subtracting(suspendedSources).isEmpty
-        return !suspended && activeSources.contains(source)
+        mainWindowActive = active
+        return active && activeSources.contains { $0.belongsToMainWindow }
     }
 
     func request(_ request: ApplicationPublicationRequest) {

@@ -64,6 +64,7 @@ final class AppUpdateChecker: ObservableObject {
         static let skippedVersion = "appUpdate.skippedVersion"
         static let remindAfter = "appUpdate.remindAfter"
         static let lastCheck = "appUpdate.lastCheck"
+        static let presentedUpdateVersion = "appUpdate.presentedUpdateVersion"
     }
 
     private struct GitHubRelease: Decodable {
@@ -137,6 +138,7 @@ final class AppUpdateChecker: ObservableObject {
     private let defaults: UserDefaults
     private let session: URLSession
     private let now: () -> Date
+    private let resultURL: URL
     private var hasStarted = false
     private var checkTask: Task<Void, Never>?
     private var automaticCheckTimer: Timer?
@@ -147,10 +149,11 @@ final class AppUpdateChecker: ObservableObject {
     private var installationStarted = false
 
     init(defaults: UserDefaults = .standard, session: URLSession = .shared,
-         now: @escaping () -> Date = Date.init) {
+         now: @escaping () -> Date = Date.init, resultURL: URL = AppUpdateInstaller.resultURL) {
         self.defaults = defaults
         self.session = session
         self.now = now
+        self.resultURL = resultURL
         automaticallyChecksForUpdates = defaults.object(forKey: Keys.automaticallyChecksForUpdates) as? Bool ?? true
     }
 
@@ -159,21 +162,32 @@ final class AppUpdateChecker: ObservableObject {
         automaticCheckTimer?.invalidate()
     }
 
-    func start() {
+    func start(relaunchedVersion: String? = nil) {
         guard !hasStarted else { return }
         hasStarted = true
-        if let result = AppUpdateInstaller.consumeResult(for: Bundle.main.bundleURL) {
-            updateVersion = result.version
-            if result.succeeded, Self.versionsAreEqual(result.version, Self.currentVersion) {
+        let savedResult = AppUpdateInstaller.consumeResult(for: Bundle.main.bundleURL, at: resultURL)
+        if let version = relaunchedVersion ?? savedResult?.version {
+            updateVersion = version
+            if (relaunchedVersion != nil || savedResult?.succeeded == true),
+               Self.versionsAreEqual(version, Self.currentVersion) {
                 lastCheckResult = .upToDate
-                phase = .completed
+                // The initiating helper may belong to an older release and
+                // write its success after this app has acknowledged reopening.
+                let presented = defaults.string(forKey: Keys.presentedUpdateVersion) ?? ""
+                if !Self.versionsAreEqual(version, presented) {
+                    defaults.set(version, forKey: Keys.presentedUpdateVersion)
+                    phase = .completed
+                    return
+                }
             } else {
-                failureMessage = result.succeeded
-                    ? "The update did not finish. You are still using CamiTune \(Self.currentVersion). Please try the update again."
-                    : result.message
+                if let savedResult, !savedResult.succeeded {
+                    failureMessage = savedResult.message
+                } else {
+                    failureMessage = "The update did not finish. You are still using CamiTune \(Self.currentVersion). Please try the update again."
+                }
                 phase = .failed
+                return
             }
-            return
         }
         scheduleAutomaticCheck(minimumDelay: 2)
     }
@@ -553,8 +567,10 @@ final class AppUpdateChecker: ObservableObject {
               components.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) }) else {
             return []
         }
-        let values = components.compactMap { Int($0) }
-        return values.count == components.count ? values : []
+        var values = components.compactMap { Int($0) }
+        guard values.count == components.count else { return [] }
+        while values.count > 1 && values.last == 0 { values.removeLast() }
+        return values
     }
 }
 

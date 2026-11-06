@@ -33,7 +33,7 @@ package final class PerAppDSPRuntime {
     ) -> SpatialInputDiagnostics? {
         if sourceDetectors[clientKey]?.processID != processID ||
             sourceDetectors[clientKey]?.generation != generation {
-            if sourceDetectors.count >= 256, let oldest = sourceDetectors.keys.first {
+            if sourceDetectors[clientKey] == nil, sourceDetectors.count >= 256, let oldest = sourceDetectors.keys.first {
                 sourceDetectors.removeValue(forKey: oldest)
             }
             sourceDetectors[clientKey] = SourceDetector(processID: processID, generation: generation)

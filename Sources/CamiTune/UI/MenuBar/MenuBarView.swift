@@ -127,13 +127,13 @@ final class MenuBarViewModel: ObservableObject {
         guard !isOpen else { return }
         isOpen = true
         startDismissalMonitoring()
-        state.perAppAudio.setMeterPresentationActive(true, source: "menu")
+        state.perAppAudio.setMeterPresentationActive(true, source: .menu)
     }
 
     func close() {
         isOpen = false
         stopDismissalMonitoring()
-        state.perAppAudio.setMeterPresentationActive(false, source: "menu")
+        state.perAppAudio.setMeterPresentationActive(false, source: .menu)
         reorder.cancel()
     }
 
@@ -173,6 +173,22 @@ final class MenuBarViewModel: ObservableObject {
         Task {
             defer { finishAction() }
             await state.setProfileRuntimeActive(profileID: id, active: true)
+        }
+    }
+
+    func setSpatialExperience(_ experience: PersonalSpatialExperience) {
+        guard !actionInFlight, !state.transitionInProgress, !state.isSavingProfileSettings,
+              state.spatialCalibrationContext == nil, let profile,
+              profile.personalSpatial.experience != experience else { return }
+        var settings = profile.personalSpatial
+        settings.experience = experience
+        beginAction(profile: profile)
+        Task {
+            defer { finishAction() }
+            do {
+                try await state.setPersonalSpatial(profileID: profile.id, settings: settings,
+                    expectedContext: profile.deviceTypeConfigurationKey)
+            } catch { state.errorMessage = error.localizedDescription }
         }
     }
 
@@ -320,6 +336,14 @@ struct MenuBarRootView: View {
                             unavailableReason: { profile.playbackReadiness($0).reason })
                         .accessibilityLabel("Mode")
                         .disabled(model.actionInFlight || model.state.transitionInProgress || model.state.isSavingProfileSettings || model.state.spatialCalibrationContext != nil)
+                        if profile.isPersonalListening && profile.effectivePlaybackMode == .spatialRender {
+                            JoinedSegmentedControl(options: PersonalSpatialExperience.allCases, selection: Binding(
+                                get: { profile.personalSpatial.experience }, set: { model.setSpatialExperience($0) }
+                            ), title: { $0.title })
+                            .accessibilityLabel("Spatial experience")
+                            .disabled(model.actionInFlight || model.state.transitionInProgress || model.state.isSavingProfileSettings
+                                || model.state.spatialCalibrationContext != nil || profile.effectivePluginRack.outputMode == .exclusive)
+                        }
 
                     }
                 }

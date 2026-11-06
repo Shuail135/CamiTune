@@ -636,7 +636,8 @@ final class CamiTuneAppDelegate: NSObject, NSApplicationDelegate {
             installCloseDelegate(on: window)
         }
         CamiTunePresentationCoordinator.shared.showMainWindow()
-        AppUpdateInstaller.acknowledgeRelaunch()
+        let relaunchedVersion = AppUpdateInstaller.acknowledgeRelaunch()
+        CamiTunePresentationCoordinator.shared.state.updateChecker.start(relaunchedVersion: relaunchedVersion)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

@@ -175,7 +175,7 @@ struct CrossfeedEditorView: View {
         pendingCommitGeneration &+= 1
         hasPendingCommit = true
         guard continuousEditDepth == 0 else { return }
-        recordEdit()
+        guard recordEdit() else { return }
         scheduleCommit(milliseconds: 120)
     }
 
@@ -191,9 +191,9 @@ struct CrossfeedEditorView: View {
         }
         continuousEditDepth = max(0, continuousEditDepth - 1)
         guard continuousEditDepth == 0 else { return }
+        guard saveCurrentState() else { return }
         state.history.endGesture(key: gestureKey, after: .crossfeed(currentHistoryState))
         historyBaseline = currentHistoryState
-        saveCurrentState()
         guard hasPendingCommit else { return }
         scheduleCommit(milliseconds: 50)
     }
@@ -203,8 +203,6 @@ struct CrossfeedEditorView: View {
         liveApplyTask?.cancel()
         let editGeneration = state.editGeneration
         let generation = pendingCommitGeneration
-        let pendingSettings = settings
-        let pendingEnabled = isEnabled
         let profileID = profile.id
         liveApplyTask = Task { @MainActor in
             do {
@@ -216,11 +214,7 @@ struct CrossfeedEditorView: View {
                   continuousEditDepth == 0,
                   profile.id == profileID,
                   pendingCommitGeneration == generation else { return }
-            await persist(
-                pendingSettings,
-                enabled: pendingEnabled,
-                profileID: profileID
-            )
+            await apply(profileID: profileID)
             if pendingCommitGeneration == generation {
                 hasPendingCommit = false
             }
@@ -232,17 +226,11 @@ struct CrossfeedEditorView: View {
         liveApplyTask?.cancel()
         let editGeneration = state.editGeneration
         let generation = pendingCommitGeneration
-        let pendingSettings = settings
-        let pendingEnabled = isEnabled
         let profileID = profile.id
         Task { @MainActor in
             guard editGeneration == state.editGeneration, profile.id == profileID,
                   pendingCommitGeneration == generation else { return }
-            await persist(
-                pendingSettings,
-                enabled: pendingEnabled,
-                profileID: profileID
-            )
+            await apply(profileID: profileID)
             if pendingCommitGeneration == generation {
                 hasPendingCommit = false
             }
@@ -250,11 +238,7 @@ struct CrossfeedEditorView: View {
     }
 
     @MainActor
-    private func persist(
-        _ pendingSettings: CrossfeedProcessor,
-        enabled: Bool,
-        profileID: UUID
-    ) async {
+    private func apply(profileID: UUID) async {
         guard profile.id == profileID else { return }
         do {
             try await state.applyHistoryProfileIfActive(profileID)
@@ -262,17 +246,24 @@ struct CrossfeedEditorView: View {
     }
     private var gestureKey: GestureKey { GestureKey(target: .profile(profile.id), control: "crossfeed") }
     private var currentHistoryState: CrossfeedHistoryState { CrossfeedHistoryState(processor: settings, isEnabled: isEnabled) }
-    private func recordEdit() {
+    private func recordEdit() -> Bool {
+        guard saveCurrentState() else { return false }
         if let before = historyBaseline {
             state.history.record(actionName: "Edit Crossfeed", contextName: profile.name, target: .profile(profile.id),
                 before: .crossfeed(before), after: .crossfeed(currentHistoryState))
         }
         historyBaseline = currentHistoryState
-        saveCurrentState()
+        return true
     }
-    private func saveCurrentState() {
-        do { try state.mutateSavedProcessing(profileID: profile.id) { $0.setCrossfeed(settings, enabled: isEnabled) } }
-        catch { state.errorMessage = error.localizedDescription }
+    private func saveCurrentState() -> Bool {
+        do {
+            try state.mutateSavedProcessing(profileID: profile.id) { $0.setCrossfeed(settings, enabled: isEnabled) }
+            return true
+        } catch {
+            state.errorMessage = error.localizedDescription
+            load()
+            return false
+        }
     }
 }
 

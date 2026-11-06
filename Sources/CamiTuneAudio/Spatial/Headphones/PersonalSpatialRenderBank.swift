@@ -55,7 +55,6 @@ package final class MovieEnhancer {
             if roles[index] == .center { centerMask |= 1 << index }
             if roles[index] == .lowFrequencyEffects { lfeMask |= 1 << index }
         }
-        let hasCenter = centerMask != 0
         let targetPresence = pow(10, controls.presenceDB / 20)
         let targetCenter = pow(10, controls.centerDB / 20)
         let targetAdditional = pow(10, -controls.additionalReductionDB / 20)
@@ -78,7 +77,9 @@ package final class MovieEnhancer {
                             let x = SpatialSafety.sample(samples[i])
                             lows[c] += lower * (x - lows[c]); highs[c] += upper * (x - highs[c])
                             let value: Float
-                            if hasCenter { value = x * (centerMask & (1 << c) != 0 ? (1 + 0.2589254 * clarity) * centerGain : 1) }
+                            // A declared center slot may be silent padding on the
+                            // shared bus; it must not disable clarity on other roles.
+                            if centerMask & (1 << c) != 0 { value = x * ((1 + 0.2589254 * clarity) * centerGain) }
                             else {
                                 let manual = 0.2589254 * clarity
                                 let presence = manual + (1 + manual) * (presenceGain - 1)
@@ -132,7 +133,7 @@ package final class PersonalSpatialRenderBank {
         if cohort == .spatialMovie {
             var processed = frame
             var controls = MovieAutomaticControls.neutral
-            if intent.scene.experience == .spatialListening && settings.experience == .spatialListening && settings.movie.enabled {
+            if intent.scene.experience == .movie && settings.experience == .movie {
                 controls = MovieEnhancementPolicy.controls(scores: movieScores ?? .init(), settings: settings.movie)
                 enhancer.process(&processed, settings: settings.movie, controls: controls)
             }
@@ -148,7 +149,6 @@ package final class PersonalSpatialRenderBank {
 package final class PersonalSpatialTransition {
     package private(set) var active: PersonalSpatialRenderBank
     private var incoming: PersonalSpatialRenderBank?
-    private var retired: PersonalSpatialRenderBank?
     private var position = 0
     private var warmFrames: Int
     private let fadeFrames: Int
@@ -158,7 +158,7 @@ package final class PersonalSpatialTransition {
         fadeFrames = Int(initial.rate * 0.05)
     }
     package func replace(_ next: PersonalSpatialRenderBank) -> Bool {
-        guard incoming == nil, retired == nil, next.rate == active.rate else { return false }
+        guard incoming == nil, next.rate == active.rate else { return false }
         incoming = next; warmFrames = next.ordinary.warmupFrames; position = 0; return true
     }
     package func reset() { active.reset(); incoming?.reset(); position = 0 }
@@ -177,12 +177,12 @@ package final class PersonalSpatialTransition {
         return output
     }
     package func finishInterval(frames: Int) -> PersonalSpatialRenderBank? {
-        if let incoming {
-            position += frames
-            if position >= warmFrames + fadeFrames {
-                retired = active; active = incoming; self.incoming = nil
-            }
-        }
-        let result = retired; retired = nil; return result
+        guard let incoming else { return nil }
+        position += frames
+        guard position >= warmFrames + fadeFrames else { return nil }
+        let outgoing = active
+        active = incoming
+        self.incoming = nil
+        return outgoing
     }
 }

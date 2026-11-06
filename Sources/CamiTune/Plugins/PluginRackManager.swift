@@ -30,6 +30,9 @@ final class PluginRackManager: ObservableObject {
         let requestedRack: PluginRack
         let blockFrames: Int
         var session: PluginHostSession?
+        var editorAcquisition: Task<PluginHostSession, Error>?
+        var editorConsumers = 0
+        var editorAdmissionRevision: UInt64 = 0
         var needsReload = false
         init(profileID: UUID, format: AudioFormatDescriptor, rack: PluginRack, blockFrames: Int = PluginHostSession.maximumFrames) {
             self.profileID = profileID; self.format = format.signalSignature; self.rack = rack; self.requestedRack = rack
@@ -64,6 +67,7 @@ final class PluginRackManager: ObservableObject {
     // Keep the old prepared rack alive through transactional rollback.
     private var previous: Prepared?
     private var editors: [UUID: Prepared] = [:]
+    private var mappingRequest: (id: UUID, profileID: UUID, slotID: UUID)?
     private var generation: UInt64 = 0
 
     init(sidechains: PluginSidechainHub = PluginSidechainHub()) {
@@ -140,6 +144,7 @@ final class PluginRackManager: ObservableObject {
     /// the retired rack. Dropping the sessions also stops idle helper processes.
     func retireHiddenSection(profileID: UUID) {
         guard active?.profileID != profileID || active?.rack.isProcessing == false else { return }
+        if let request = mappingRequest, request.profileID == profileID { finishMapping(slotID: request.slotID) }
         if previous?.profileID == profileID { previous = nil }
         if pending?.profileID == profileID { pending = nil }
         for (id, editor) in editors where editor.profileID == profileID {
@@ -182,36 +187,80 @@ final class PluginRackManager: ObservableObject {
     }
 
     func stopForTermination() {
+        if let mappingRequest { finishMapping(slotID: mappingRequest.slotID) }
         stop()
         editors.removeAll()
     }
 
     func openEditor(slot: AudioPluginSlot, profile: DeviceProfile, controlsOnly: Bool = false) async throws {
-        guard openingEditors.insert(slot.id).inserted else { return }
-        defer { openingEditors.remove(slot.id) }
-        func present(_ session: PluginHostSession, owner: Prepared) {
+        try await withEditor(slot: slot, profile: profile) { owner, session in
             if controlsOnly {
                 inspecting.insert(slot.id)
                 session.control(["command": "parameters", "slotID": slot.id.uuidString])
             } else { presentEditor(slotID: slot.id, owner: owner, session: session) }
         }
+    }
+
+    /// Native editors and mapping share acquisition, but accept the result only
+    /// while their own request remains live. The last rejected consumer releases
+    /// an unpresented helper; one consumer cannot retire another's editor.
+    private func withEditor(slot: AudioPluginSlot, profile: DeviceProfile,
+                            accept: (Prepared, PluginHostSession) throws -> Void) async throws {
+        try Task.checkCancellation()
         let format = try ActiveAudioRoute(profile: profile).dspInputFormat.signalSignature
         if let active, active.profileID == profile.id, active.format == format,
            active.rack.activeSlots.contains(where: { $0.id == slot.id }), let session = active.session,
            session.errorMessage == nil {
-            present(session, owner: active); return
+            try accept(active, session); return
         }
-        if let editor = editors[slot.id], editor.format == format, let session = editor.session,
-           session.errorMessage == nil { present(session, owner: editor); return }
-        editors[slot.id]?.session?.closeEditors()
-        var enabled = slot; enabled.isEnabled = true
-        let editor = Prepared(profileID: profile.id, format: format, rack: PluginRack(isEnabled: true, slots: [enabled], midi: profile.pluginRack.midi))
-        editors[slot.id] = editor
-        do {
-            editor.session = try await makeSession(editor, editorOnly: true)
-            configureEditorMIDI(editor, enabled: active == nil || active?.profileID == profile.id)
-            if let session = editor.session { present(session, owner: editor) }
-        } catch { editors[slot.id] = nil; throw error }
+        let editor: Prepared
+        if let current = editors[slot.id], current.profileID == profile.id, current.format == format,
+           current.editorAcquisition != nil || (current.session != nil && current.session?.errorMessage == nil) {
+            editor = current
+        } else {
+            editors[slot.id]?.session?.closeEditors()
+            var enabled = slot; enabled.isEnabled = true
+            editor = Prepared(profileID: profile.id, format: format,
+                rack: PluginRack(isEnabled: true, slots: [enabled], midi: profile.pluginRack.midi))
+            editors[slot.id] = editor
+        }
+        editor.editorConsumers += 1
+        let admissionRevision = editor.editorAdmissionRevision
+        defer {
+            editor.editorConsumers -= 1
+            releaseUnpresentedEditor(slotID: slot.id, owner: editor)
+        }
+        if let session = editor.session {
+            try accept(editor, session); return
+        }
+        let acquisition: Task<PluginHostSession, Error>
+        if let pending = editor.editorAcquisition { acquisition = pending }
+        else {
+            acquisition = Task {
+                defer {
+                    editor.editorAcquisition = nil
+                    if editors[slot.id] === editor || editors[slot.id] == nil { openingEditors.remove(slot.id) }
+                }
+                let session = try await makeSession(editor, editorOnly: true)
+                guard editors[slot.id] === editor else { throw CancellationError() }
+                editor.session = session
+                configureEditorMIDI(editor, enabled: active == nil || active?.profileID == profile.id)
+                return session
+            }
+            editor.editorAcquisition = acquisition
+            openingEditors.insert(slot.id)
+        }
+        let session = try await acquisition.value
+        try Task.checkCancellation()
+        guard editors[slot.id] === editor, editor.editorAdmissionRevision == admissionRevision else { throw CancellationError() }
+        try accept(editor, session)
+    }
+
+    private func releaseUnpresentedEditor(slotID: UUID, owner: Prepared) {
+        if editors[slotID] === owner, owner.editorConsumers == 0,
+           nativeEditors[slotID] != owner.id, !inspecting.contains(slotID) {
+            editors[slotID] = nil
+        }
     }
 
     private func presentEditor(slotID: UUID, owner: Prepared, session: PluginHostSession) {
@@ -257,18 +306,34 @@ final class PluginRackManager: ObservableObject {
         var message = values; message["command"] = command; message["slotID"] = slotID.uuidString
         controlSession(slotID)?.control(message)
     }
-    func startMapping(slot: AudioPluginSlot, profile: DeviceProfile) async throws {
-        for id in Array(controlModels.keys) where controlModels[id]?.mappingActive == true { finishMapping(slotID: id) }
-        let model = controls(for: slot.id)
+    func startMapping(slotID: UUID, profileID: UUID, prepareProfile: () async throws -> DeviceProfile) async throws {
+        try Task.checkCancellation()
+        if let mappingRequest { finishMapping(slotID: mappingRequest.slotID) }
+        let request = UUID()
+        mappingRequest = (request, profileID, slotID)
+        let model = controls(for: slotID)
         model.loading = true; model.error = nil
         do {
-            try await openEditor(slot: slot, profile: profile)
-            try await openEditor(slot: slot, profile: profile, controlsOnly: true)
-            model.mappingActive = true
-            model.choosingInEditor = true
-            control("watchParameter", slotID: slot.id)
+            let profile = try await prepareProfile()
+            try Task.checkCancellation()
+            guard mappingRequest?.id == request else { throw CancellationError() }
+            guard profile.id == profileID,
+                  let slot = profile.pluginRack.slots.first(where: { $0.id == slotID }) else {
+                throw PluginHostError(message: "The plug-in was removed before MIDI mapping could begin.")
+            }
+            try await withEditor(slot: slot, profile: profile) { owner, session in
+                guard mappingRequest?.id == request else { throw CancellationError() }
+                presentEditor(slotID: slotID, owner: owner, session: session)
+                inspecting.insert(slotID)
+                session.control(["command": "parameters", "slotID": slotID.uuidString])
+                model.mappingActive = true
+                model.choosingInEditor = true
+                session.control(["command": "watchParameter", "slotID": slotID.uuidString])
+            }
         } catch {
-            model.loading = false; model.error = error.localizedDescription
+            guard mappingRequest?.id == request else { throw CancellationError() }
+            mappingRequest = nil
+            model.loading = false
             throw error
         }
     }
@@ -277,26 +342,40 @@ final class PluginRackManager: ObservableObject {
         control("learnMIDI", slotID: slotID, values: ["parameterID": parameterID])
     }
     func cancelLearn(slotID: UUID) {
+        if mappingRequest?.slotID == slotID { mappingRequest = nil }
         let model = controls(for: slotID); model.learningParameterID = nil; model.choosingInEditor = false; model.mappingActive = false
+        model.loading = false
         control("cancelMIDILearn", slotID: slotID)
     }
     func finishMapping(slotID: UUID) {
-        guard controlModels[slotID]?.mappingActive == true else { return }
+        guard mappingRequest?.slotID == slotID || controlModels[slotID]?.mappingActive == true else { return }
         cancelLearn(slotID: slotID)
         control("endParameters", slotID: slotID)
         inspecting.remove(slotID)
-        if nativeEditors[slotID] == nil { editors[slotID] = nil }
+        if let owner = editors[slotID] { releaseUnpresentedEditor(slotID: slotID, owner: owner) }
     }
     func closeControls(slotID: UUID) async -> Bool {
         if let owner = editors[slotID] ?? active { await flushEditors(profileID: owner.profileID, close: false) }
         cancelLearn(slotID: slotID); control("endParameters", slotID: slotID)
         inspecting.remove(slotID)
-        if nativeEditors[slotID] == nil { editors[slotID] = nil; return true }
+        if nativeEditors[slotID] == nil {
+            if let owner = editors[slotID] { releaseUnpresentedEditor(slotID: slotID, owner: owner) }
+            return true
+        }
         return false
     }
 
     func flushEditors(profileID: UUID, close: Bool) async {
         let owners = ([active] + editors.values.map(Optional.some)).compactMap { $0 }.filter { $0.profileID == profileID }
+        if close {
+            if let request = mappingRequest, request.profileID == profileID { finishMapping(slotID: request.slotID) }
+            for owner in owners { owner.editorAdmissionRevision &+= 1 }
+            // A helper still being acquired has no snapshot or native window.
+            // Retire its owner now so its late result cannot reopen a removed slot.
+            for (id, editor) in editors where editor.profileID == profileID && editor.session == nil {
+                editors[id] = nil
+            }
+        }
         for owner in owners {
             guard let session = owner.session else { continue }
             for (id, data) in await session.snapshot(close: close) {
@@ -378,6 +457,7 @@ final class PluginRackManager: ObservableObject {
             for slot in owner.rack.slots where inspecting.contains(slot.id) {
                 let model = controls(for: slot.id)
                 model.error = event["message"] as? String ?? "The plug-in stopped responding."
+                if mappingRequest?.slotID == slot.id { mappingRequest = nil }
                 model.loading = false; model.learningParameterID = nil; model.choosingInEditor = false; model.mappingActive = false
             }
         case "latency":
@@ -406,7 +486,7 @@ final class PluginRackManager: ObservableObject {
                 owner.needsReload = true
                 reloadLinked = owner === active
             }
-            if controls(for: id).mappingActive {
+            if mappingRequest?.slotID == id || controls(for: id).mappingActive {
                 cancelLearn(slotID: id)
                 control("endParameters", slotID: id)
                 inspecting.remove(id)

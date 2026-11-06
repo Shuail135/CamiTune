@@ -67,6 +67,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     let pluginSidechains = PluginSidechainHub()
     @Published private(set) var settingsChangeRevision: UInt64 = 0
     @Published private(set) var applications: [PerAppAudioApplication] = []
+    let presentationChanges = PassthroughSubject<Void, Never>()
     private var playbackContext: PerAppPlaybackContext?
 
     private let timelineMixer: PerAppTimelineMixer
@@ -117,10 +118,28 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
     // DSP state stays under audioLock; lightweight snapshots use stateLock.
     private let dspRuntime = PerAppDSPRuntime()
-    private var publishedSourceDiagnostics: [PerAppTransportClientKey: SpatialInputDiagnostics] = [:]
+    private struct SourceDiagnosticsSnapshot {
+        let processID: Int32
+        let generation: UInt64
+        let diagnostics: SpatialInputDiagnostics
+    }
+    private var publishedSourceDiagnostics: [PerAppTransportClientKey: SourceDiagnosticsSnapshot] = [:]
     var spatialInputDiagnostics: [PerAppTransportClientKey: SpatialInputDiagnostics] {
-        stateLock.lock(); defer { stateLock.unlock() }
-        return publishedSourceDiagnostics
+        stateLock.lock()
+        let snapshots = publishedSourceDiagnostics
+        let clients = clientRegistry.clientsByKey
+        stateLock.unlock()
+        var result: [PerAppTransportClientKey: SpatialInputDiagnostics] = [:]
+        for (key, snapshot) in snapshots {
+            // Roster updates can precede completion of an older PCM packet.
+            // Only the current registered stream owns its channel evidence.
+            guard let client = clients[key],
+                  client.processID == snapshot.processID, client.generation == snapshot.generation else { continue }
+            var diagnostics = snapshot.diagnostics
+            if !client.isActive { diagnostics.activeChannels.removeAll() }
+            result[key] = diagnostics
+        }
+        return result
     }
 
     private var knownAudioApplicationIDs: Set<String>
@@ -134,8 +153,6 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     // SwiftUI publishing never needs to acquire `audioLock`.
     private var presentationLevelsByApplication: [String: Double] = [:]
     private var levelsByApplication: [String: Double] = [:]
-    private var lastAudibleDateByApplication: [String: Date] = [:]
-    private var lastPacketDateByApplication: [String: Date] = [:]
     private var lastMeterUpdateByApplication: [String: Date] = [:]
     // Protected only by `headroomLock`. A cache miss is seeded with a cheap,
     // conservative scalar while the exact 600-point response is calculated on
@@ -179,6 +196,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                 if self.applications != snapshot.applications {
                     self.applications = snapshot.applications
                 }
+                self.presentationChanges.send()
             })
         clientRegistry.start(onResolved: { [weak self] resolved, clients, unresolved, revision, attempt in
             self?.applyResolvedIdentities(resolved, clients: clients, unresolvedActiveKeys: unresolved,
@@ -321,16 +339,6 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                             temporaryLevel
                         )
                     }
-                    Self.moveLatestDate(
-                        from: migration.from,
-                        to: migration.to,
-                        in: &self.lastAudibleDateByApplication
-                    )
-                    Self.moveLatestDate(
-                        from: migration.from,
-                        to: migration.to,
-                        in: &self.lastPacketDateByApplication
-                    )
                     Self.moveLatestDate(
                         from: migration.from,
                         to: migration.to,
@@ -514,6 +522,12 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }
     }
     
+    func setAlreadyBinaural(_ value: Bool, for applicationID: String, scope: PerAppSettingsScope = .active) {
+        recordAudioEdit(applicationID, scope: scope, name: "Change Headphone Source", finished: true) {
+            updateSettings(for: applicationID, scope: scope) { $0.alreadyBinaural = value }
+        }
+    }
+
     func setPlaybackModeForAllApplications(_ mode: PlaybackMode) {
         let scope = resolvedSettingsScope(.active)
         let applicationIDs = applications.map(\.id)
@@ -553,7 +567,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }
     }
 
-    func setMeterPresentationActive(_ active: Bool, source: String) {
+    func setMeterPresentationActive(_ active: Bool, source: ApplicationPresentationSource) {
         stateLock.lock(); presentationRevision &+= 1; stateLock.unlock()
         if presentationPublisher.setActive(active, source: source) {
             clientRegistry.scheduleRunningApplicationRefresh(immediate: true)
@@ -561,9 +575,9 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         }
     }
 
-    func setMeterPresentationSuspended(_ suspended: Bool, source: String) {
+    func setMainWindowPresentationActive(_ active: Bool) {
         stateLock.lock(); presentationRevision &+= 1; stateLock.unlock()
-        if presentationPublisher.setSuspended(suspended, source: source) {
+        if presentationPublisher.setMainWindowActive(active) {
             clientRegistry.scheduleRunningApplicationRefresh(immediate: true)
             presentationPublisher.request(.immediate)
         }
@@ -631,7 +645,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     func processApplicationPacket(_ packet: PerAppAudioPacket, streamEpoch: UInt64,
                                   now suppliedNow: Date? = nil,
                                   performance incomingPerformance: PacketPerformanceContext? = nil,
-                                  intervalPolicy: (context: PerAppPlaybackContext?, overrides: [String: PlaybackMode])? = nil,
+                                  intervalPolicy: (context: PerAppPlaybackContext?, settings: [String: PerAppAudioSettings])? = nil,
                                   mix: (ProcessedApplicationPacket) throws -> TimelineWorkSample?) rethrows -> Bool {
         var processed = packet.interleaved
         guard (1...32).contains(packet.channelCount),
@@ -662,9 +676,17 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         let identity = streamIdentity.application ?? observedSource?.identity
         let applicationID = identity?.id ?? observedSource?.applicationID ?? streamIdentity.fallbackApplicationID
         let settings = settingsStore.settings(for: applicationID)
-        let policy = intervalPolicy != nil ? intervalPolicy!.context : playbackContext
-        let override = intervalPolicy.map { $0.overrides[applicationID] } ?? settings.playbackModeOverride
-        let playbackMode = policy?.cohort(for: override, applicationID: applicationID) ?? .direct
+        let policy: PerAppPlaybackContext?
+        let routingSettings: PerAppAudioSettings
+        if let intervalPolicy {
+            policy = intervalPolicy.context
+            routingSettings = intervalPolicy.settings[applicationID] ?? .init()
+        } else {
+            policy = playbackContext
+            routingSettings = settings
+        }
+        let playbackMode = policy?.cohort(for: routingSettings.playbackModeOverride, applicationID: applicationID,
+            alreadyBinaural: routingSettings.alreadyBinaural) ?? .direct
         let settingsRevision = settingsStore.revision(for: applicationID)
         stateLock.unlock()
 
@@ -705,11 +727,6 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             targetGain: settings.isMuted ? 0 : Float(settings.volume) * eqHeadroom
         )
         descriptor.movieMix = dspRuntime.movieRouting(for: dspClientKey, packet: descriptor)
-        lastPacketDateByApplication[applicationID] = now
-        if rawPeak >= Self.applicationActivityFloor {
-            lastAudibleDateByApplication[applicationID] = now
-        }
-
         let processingCompleted = performance.map { _ in PerformanceClock.now() }
         let outputPeak = Self.peakMagnitude(processed)
         let elapsed = now.timeIntervalSince(
@@ -737,10 +754,13 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
 
         var presentationObservation: AppPresentationObservation?
         stateLock.lock()
-        if publishedSourceDiagnostics.count >= 256, let oldest = publishedSourceDiagnostics.keys.first {
+        if publishedSourceDiagnostics[dspClientKey] == nil, publishedSourceDiagnostics.count >= 256,
+           let oldest = publishedSourceDiagnostics.keys.first {
             publishedSourceDiagnostics.removeValue(forKey: oldest)
         }
-        publishedSourceDiagnostics[dspClientKey] = sourceDiagnostics
+        publishedSourceDiagnostics[dspClientKey] = sourceDiagnostics.map {
+            SourceDiagnosticsSnapshot(processID: currentProcessID, generation: streamIdentity.generation, diagnostics: $0)
+        }
         presentationRevision &+= 1
         presentationLevelsByApplication[applicationID] = presentationLevel
         if rawPeak >= Self.applicationActivityFloor {
@@ -775,7 +795,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     func ingestCompletedInterval(_ interval: ProducerCompletedInterval) throws -> PCMFrame {
         // A scope/mode edit becomes effective at one completed interval boundary.
         stateLock.lock()
-        let policy = (context: playbackContext, overrides: settingsStore.snapshot.settings.compactMapValues(\.playbackModeOverride))
+        let policy = (context: playbackContext, settings: settingsStore.snapshot.settings)
         stateLock.unlock()
         audioLock.lock()
         do {
@@ -828,8 +848,6 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         timelineMixer.reset()
         dspRuntime.reset()
         levelsByApplication.removeAll()
-        lastAudibleDateByApplication.removeAll()
-        lastPacketDateByApplication.removeAll()
         lastMeterUpdateByApplication.removeAll()
         audioLock.unlock()
         headroomLock.lock()
@@ -903,17 +921,6 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         return Int64(rounded)
     }
 
-    private func decayLevelsLocked(now: Date) {
-        for key in levelsByApplication.keys {
-            let elapsed = now.timeIntervalSince(lastMeterUpdateByApplication[key] ?? now)
-            levelsByApplication[key, default: 0] *= Self.meterDecayFactor(elapsed: elapsed)
-            lastMeterUpdateByApplication[key] = now
-            if levelsByApplication[key, default: 0] < 0.001 {
-                levelsByApplication[key] = 0
-            }
-        }
-    }
-
     private func capturePresentationInput() -> PerAppPresentationInput {
         stateLock.lock(); defer { stateLock.unlock() }
         // Detach storage under the existing state lock, then release it before
@@ -955,20 +962,6 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         guard let source = dates.removeValue(forKey: sourceID) else { return }
         dates[destinationID] = max(dates[destinationID] ?? .distantPast, source)
     }
-
-    /// Resolve the process that actually produced a PCM packet to its owning
-    /// application. Background/helper processes (Chrome, Electron, WebKit) may
-    /// have a prohibited activation policy even though their outer .app owns
-    /// the user-facing volume row, so packet attribution must not use the
-    /// visible-app filter.
-
-    /// Core Audio hosts third-party AudioServerPlugIns in its own service
-    /// process. That process is transport plumbing, not an application the
-    /// user can control, so it must never become a per-app volume row.
-
-    /// Browser and Electron audio normally originates in a nested helper
-    /// process. Collapse its bundle identifier to the owning application even
-    /// when Launch Services does not provide a bundle URL for that PID.
 
     private func headroomScalarForIngest(
         _ settings: PerAppAudioSettings,

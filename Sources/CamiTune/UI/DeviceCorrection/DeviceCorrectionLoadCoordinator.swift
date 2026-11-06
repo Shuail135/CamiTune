@@ -64,7 +64,7 @@ final class EditorSnapshotHistory<Snapshot: Equatable>: ObservableObject {
     @Published private(set) var replayRevision = 0
     @Published private(set) var isEditing = false
     var current: Snapshot?
-    var restore: ((Snapshot) -> Void)?
+    var restore: (@MainActor (Snapshot) -> Void)?
     private var lastEdit = Date.distantPast
     private var gestureStart: Snapshot?
     private let actionName: String

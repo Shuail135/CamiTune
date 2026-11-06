@@ -22,7 +22,6 @@ package enum MovieDetector: String, Codable, Hashable, CaseIterable, Sendable {
 }
 
 package struct MovieSettings: Codable, Hashable, Sendable {
-    package var enabled = false
     package var scope: MovieApplicationScope = .allApplications
     package var dialogueClarity: Float = 0.5
     package var dynamics: MovieDynamics = .balanced
@@ -34,7 +33,7 @@ package struct MovieSettings: Codable, Hashable, Sendable {
     package var additionalReductionLimitDB: Float = 3
     package init() {}
 
-    package var analyzesContent: Bool { enabled && adaptation > 0 }
+    package var analyzesContent: Bool { adaptation > 0 }
     package var attackSeconds: Double { 0.5 - 0.3 * Double(responseSpeed) }
     package var releaseSeconds: Double { 2 - Double(responseSpeed) }
 
@@ -45,11 +44,10 @@ package struct MovieSettings: Codable, Hashable, Sendable {
         }
     }
     private enum CodingKeys: String, CodingKey {
-        case enabled, scope, dialogueClarity, dynamics, detector, musicPreservation, roomReduction, adaptation, responseSpeed, additionalReductionLimitDB
+        case scope, dialogueClarity, dynamics, detector, musicPreservation, roomReduction, adaptation, responseSpeed, additionalReductionLimitDB
     }
     package init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        enabled = try values.decode(Bool.self, forKey: .enabled)
         scope = try values.decode(MovieApplicationScope.self, forKey: .scope)
         dialogueClarity = SpatialRenderIntent.unit(try values.decode(Float.self, forKey: .dialogueClarity))
         dynamics = try values.decode(MovieDynamics.self, forKey: .dynamics)

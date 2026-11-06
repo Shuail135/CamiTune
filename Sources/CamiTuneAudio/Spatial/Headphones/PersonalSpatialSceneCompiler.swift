@@ -20,7 +20,7 @@ package enum PersonalSpatialSceneCompiler {
         try tuning.validate()
         guard database.supportedSampleRates.contains(rate) else { throw BinauralConvolutionError.invalidConfiguration }
         switch scene {
-        case .spatialListening(let listening, let layout):
+        case .movie(let listening, let layout), .gaming(let listening, let layout):
             try listening.validate()
             let sources = try listening.sources(for: layout).compactMap(\.position)
             return try generic(scene: scene, sources: sources, active: Set(sources.indices),
@@ -71,7 +71,7 @@ package enum PersonalSpatialSceneCompiler {
             directionalSource: true, tuning: tuning, rate: rate, database: database)
     }
 
-    /// Both experiences share the same propagation, image paths, measured ear
+    /// All experiences share the same propagation, image paths, measured ear
     /// responses and common time origin. A cabinet adds its emission directivity;
     /// Spatial listening uses an omnidirectional point source without cabinet EQ.
     private static func generic(scene: PersonalSpatialSceneIntent, sources: [SpatialVector3], active: Set<Int>,
@@ -337,7 +337,7 @@ package final class PersonalVirtualSpeakerRenderer {
         let bands: [[EQBand]]
         let crossoverHz: Float
         switch coefficients.scene {
-        case .spatialListening:
+        case .movie, .gaming:
             bands = Array(repeating: [], count: coefficients.direct.count)
             subwooferIndex = nil
             crossoverHz = 80
@@ -391,7 +391,7 @@ package final class PersonalVirtualSpeakerRenderer {
 
     private func routing(for input: LPCMChannelLayout) -> [[(Int, Float)]]? {
         switch coefficients.scene {
-        case .spatialListening(_, let prepared):
+        case .movie(_, let prepared), .gaming(_, let prepared):
             let destinations = prepared.roles.indices.filter { prepared.roles[$0] != .lowFrequencyEffects }
             var result = Array(repeating: [(Int, Float)](), count: destinations.count)
             if input.signalSignature == prepared.signalSignature {

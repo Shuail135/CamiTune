@@ -177,20 +177,6 @@ final class PCMRouter: @unchecked Sendable {
         branch?.enqueueProducerEnd()
     }
 
-    func setSpatialRenderingMode(_ mode: SpatialRenderingMode) {
-        state.lock()
-        let deliveryBranch = self.deliveryBranch
-        state.unlock()
-        deliveryBranch?.setSpatialRenderingMode(mode)
-    }
-
-    func setSpatialSettings(_ settings: SpatialRenderSettings, output: SpatialOutputKind) {
-        state.lock()
-        let branch = deliveryBranch
-        state.unlock()
-        branch?.setSpatialSettings(settings, output: output)
-    }
-
     var referenceSpeakerDiagnostics: ReferenceSpeakerDiagnostics? {
         state.lock(); let branch = deliveryBranch; state.unlock()
         return branch?.referenceDiagnostics

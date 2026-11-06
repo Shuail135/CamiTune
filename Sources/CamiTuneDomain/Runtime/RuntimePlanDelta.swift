@@ -205,9 +205,7 @@ package struct RenderConfigurationDelta: Hashable, Sendable {
         spatialModeChanged: Bool,
         spatialSettingsChanged: Bool,
         spatialOutputChanged: Bool,
-        listenerTuningChanged: Bool,
         contentModeChanged: Bool,
-        virtualLayoutChanged: Bool,
         referenceCorrectionChanged: Bool,
         playbackContextChanged: Bool,
         referenceTopologyChanged: Bool,
@@ -218,9 +216,7 @@ package struct RenderConfigurationDelta: Hashable, Sendable {
         self.spatialModeChanged = spatialModeChanged
         self.spatialSettingsChanged = spatialSettingsChanged
         self.spatialOutputChanged = spatialOutputChanged
-        self.listenerTuningChanged = listenerTuningChanged
         self.contentModeChanged = contentModeChanged
-        self.virtualLayoutChanged = virtualLayoutChanged
         self.referenceCorrectionChanged = referenceCorrectionChanged
         self.playbackContextChanged = playbackContextChanged
         self.referenceTopologyChanged = referenceTopologyChanged
@@ -232,9 +228,7 @@ package struct RenderConfigurationDelta: Hashable, Sendable {
     package let spatialModeChanged: Bool
     package let spatialSettingsChanged: Bool
     package let spatialOutputChanged: Bool
-    package let listenerTuningChanged: Bool
     package let contentModeChanged: Bool
-    package let virtualLayoutChanged: Bool
     package let referenceCorrectionChanged: Bool
     package let playbackContextChanged: Bool
     /// Physical renderer geometry is fixed when a PCM branch is constructed.
@@ -243,7 +237,7 @@ package struct RenderConfigurationDelta: Hashable, Sendable {
     package let crossfeedChanged: Bool
     package var changed: Bool {
         playbackModeChanged || spatialModeChanged || spatialSettingsChanged || spatialOutputChanged
-            || listenerTuningChanged || contentModeChanged || virtualLayoutChanged || referenceCorrectionChanged
+            || contentModeChanged || referenceCorrectionChanged
             || playbackContextChanged || referenceTopologyChanged || pluginRackChanged || crossfeedChanged
     }
 }
@@ -282,9 +276,7 @@ extension RuntimePlanDelta {
             changed("Spatial mode", renderer.spatialModeChanged),
             changed("Spatial settings", renderer.spatialSettingsChanged),
             changed("Spatial output", renderer.spatialOutputChanged),
-            changed("Listener tuning", renderer.listenerTuningChanged),
             changed("Content mode", renderer.contentModeChanged),
-            changed("Virtual layout", renderer.virtualLayoutChanged),
             changed("Reference correction", renderer.referenceCorrectionChanged),
             changed("Per-app playback context", renderer.playbackContextChanged),
             changed("Physical renderer geometry", renderer.referenceTopologyChanged),

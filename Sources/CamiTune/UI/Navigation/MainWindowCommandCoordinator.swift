@@ -65,6 +65,19 @@ final class MainWindowCommandCoordinator: ObservableObject {
         if next != context { context = next }
     }
 
+    func appAudioDestination(in store: ProfileStore, activeProfileID: UUID?) -> SidebarDestination {
+        let profile = [store.selectedProfileID, activeProfileID].compactMap { id in
+            store.profiles.first { $0.id == id }
+        }.first ?? store.profiles.first
+        if let profile, store.effectiveLayout(for: profile).editorSections(for: profile).contains(.appAudio) {
+            appAudioRevealProfileID = profile.id
+            return .profile(profile.id)
+        }
+        appAudioRevealProfileID = nil
+        settingsCategory = "App Audio"
+        return .settings
+    }
+
     @discardableResult
     func send(_ intent: Intent) -> Bool {
         refresh()

@@ -88,7 +88,7 @@ package struct SpatialDeviceTypeEvidence: Codable, Hashable, Sendable {
     }
 }
 
-/// One physical-device description shared by both personal Spatial experiences.
+/// One physical-device description shared by all personal Spatial experiences.
 /// User confirmation never rewrites the original measurement form or fixture.
 package struct SpatialPlaybackDevice: Codable, Hashable, Sendable {
     /// Nil identifies generic playback with optional user-confirmed wearing type.

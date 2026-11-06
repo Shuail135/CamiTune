@@ -1,25 +1,42 @@
 import Foundation
 
 package enum PersonalSpatialExperience: String, Codable, Hashable, CaseIterable, Sendable {
-    case spatialListening, speakerMimic
-    package var title: String { self == .spatialListening ? "Spatial listening" : "Speaker mimic" }
+    case movie, gaming, speakerMimic
+    package var title: String {
+        switch self {
+        case .movie: return "Movie"
+        case .gaming: return "Gaming"
+        case .speakerMimic: return "Speaker mimic"
+        }
+    }
+}
+
+/// PCM capture supplies channels, not synchronized game-object trajectories.
+/// Preserve an explicitly binaural mix without applying another HRTF.
+package enum GamingRendering: String, Codable, Hashable, CaseIterable, Sendable {
+    case headphones, channels
+    package var title: String {
+        self == .headphones ? "Already processed for headphones" : "Render speaker channels"
+    }
 }
 
 /// Only the selected scene is prepared. Source coordinates are part of the
 /// identity so a format change cannot reuse filters for different directions.
 package enum PersonalSpatialSceneIntent: Hashable, Sendable {
-    case spatialListening(SpatialListeningScene, LPCMChannelLayout)
+    case movie(SpatialListeningScene, LPCMChannelLayout)
+    case gaming(SpatialListeningScene, LPCMChannelLayout)
     case speakerMimic(VirtualSpeakerScene)
 
     package var experience: PersonalSpatialExperience {
         switch self {
-        case .spatialListening: return .spatialListening
+        case .movie: return .movie
+        case .gaming: return .gaming
         case .speakerMimic: return .speakerMimic
         }
     }
     package var acoustics: PersonalSpatialRoom {
         switch self {
-        case .spatialListening(let scene, _): return scene.acoustics
+        case .movie(let scene, _), .gaming(let scene, _): return scene.acoustics
         case .speakerMimic(let scene): return scene.acoustics
         }
     }
@@ -107,9 +124,15 @@ package struct SpatialListeningScene: Codable, Hashable, Sendable {
                 edit.positions[.source(index)] = nearest
             }
         }
-        if let index = placements.firstIndex(where: { $0.layout == edit.layout }) {
-            placements[index] = edit
-        } else { placements.append(edit) }
+        // The automatic input layout replaces the selected manual layout.
+        // Transfer its slot as well as its state so a full scene stays bounded.
+        placements.removeAll { $0.layout.signalSignature == previous.signalSignature }
+        // An unchanged implicit placement needs no saved entry.
+        if edit != placement(for: layout) {
+            if let index = placements.firstIndex(where: { $0.layout.signalSignature == edit.layout.signalSignature }) {
+                placements[index] = edit
+            } else { placements.append(edit) }
+        }
         try validate()
     }
 
@@ -154,7 +177,8 @@ package struct SpatialListeningScene: Codable, Hashable, Sendable {
 
     package func validate() throws {
         try acoustics.validate()
-        guard placements.count <= 16,
+        // Retain 16 legacy entries plus a required automatic-layout placement.
+        guard placements.count <= 17,
               Set(placements.map { $0.layout.signalSignature }).count == placements.count else {
             throw PersonalSpatialError.invalidSourcePlacement
         }

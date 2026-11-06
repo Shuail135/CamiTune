@@ -1,12 +1,13 @@
 import Foundation
 
 package struct PerAppAudioSettings: Codable, Hashable, Sendable {
-    package init(volume: Double = 1, isMuted: Bool = false, eqBypassed: Bool = true, equalizerBands: [EQBand] = [], playbackModeOverride: PlaybackMode? = nil, simpleTone: SimpleToneSettings = SimpleToneSettings()) {
+    package init(volume: Double = 1, isMuted: Bool = false, eqBypassed: Bool = true, equalizerBands: [EQBand] = [], playbackModeOverride: PlaybackMode? = nil, alreadyBinaural: Bool = false, simpleTone: SimpleToneSettings = SimpleToneSettings()) {
         self.volume = volume
         self.isMuted = isMuted
         self.eqBypassed = eqBypassed
         self.equalizerBands = equalizerBands
         self.playbackModeOverride = playbackModeOverride
+        self.alreadyBinaural = alreadyBinaural
         self.simpleTone = simpleTone
     }
 
@@ -15,6 +16,7 @@ package struct PerAppAudioSettings: Codable, Hashable, Sendable {
     package var eqBypassed = true
     package var equalizerBands: [EQBand] = []
     package var playbackModeOverride: PlaybackMode?
+    package var alreadyBinaural = false
     package var simpleTone = SimpleToneSettings()
     /// Flat gain bands and disabled filters do not light the per-app EQ indicator.
     package var isEqualizerActive: Bool {
@@ -25,7 +27,7 @@ package struct PerAppAudioSettings: Codable, Hashable, Sendable {
     package func processingBands(sampleRate: Double) -> [EQBand] {
         equalizerBands + (simpleTone.isNeutral ? [] : ((try? SimpleToneFilterFactory.filters(for: simpleTone, sampleRate: sampleRate)) ?? []))
     }
-    package enum CodingKeys: String, CodingKey { case volume, isMuted, eqBypassed, equalizerBands, playbackModeOverride, simpleTone }
+    package enum CodingKeys: String, CodingKey { case volume, isMuted, eqBypassed, equalizerBands, playbackModeOverride, alreadyBinaural, simpleTone }
 }
 
 extension PerAppAudioSettings {
@@ -36,6 +38,7 @@ extension PerAppAudioSettings {
         eqBypassed = try c.decodeIfPresent(Bool.self, forKey: .eqBypassed) ?? true
         equalizerBands = try c.decodeIfPresent([EQBand].self, forKey: .equalizerBands) ?? []
         playbackModeOverride = try c.decodeIfPresent(PlaybackMode.self, forKey: .playbackModeOverride)
+        alreadyBinaural = try c.decodeIfPresent(Bool.self, forKey: .alreadyBinaural) ?? false
         simpleTone = try c.decodeIfPresent(SimpleToneSettings.self, forKey: .simpleTone) ?? SimpleToneSettings()
         try simpleTone.validate()
     }
