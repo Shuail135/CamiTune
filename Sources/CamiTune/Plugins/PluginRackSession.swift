@@ -91,13 +91,15 @@ final class PluginHostSession: PluginAudioProcessor, @unchecked Sendable {
     func process(_ samples: inout [Float], sampleRate: Double, reset: Bool) -> Bool {
         guard errorMessage == nil, sampleRate == self.sampleRate, samples.count.isMultiple(of: channelCount) else { return false }
         return samples.withUnsafeMutableBufferPointer { all in
+            let renderStart = DispatchTime.now().uptimeNanoseconds
             var offset = 0
             while offset < all.count {
                 let count = min(blockFrames * channelCount, all.count - offset)
                 let block = UnsafeMutableBufferPointer(rebasing: all[offset..<(offset + count)])
                 let deadline = DispatchTime.now().uptimeNanoseconds + Self.processingTimeoutNanoseconds
+                let hostTime = renderStart + UInt64(Double(offset / channelCount) * 1_000_000_000 / sampleRate)
                 for connection in connections {
-                    guard connection.processChunk(block, reset: reset && offset == 0, deadline: deadline) else {
+                    guard connection.processChunk(block, reset: reset && offset == 0, hostTimeNanoseconds: hostTime, deadline: deadline) else {
                         connections.forEach { $0.stop() }; return false
                     }
                 }

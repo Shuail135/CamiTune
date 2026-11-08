@@ -25,10 +25,6 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         let sourceDeviceObjectID: UInt32
         private let controlBindingLock = NSLock()
         private var storedControlDeviceObjectID: AudioObjectID
-        var controlDeviceObjectID: AudioObjectID {
-            controlBindingLock.lock(); defer { controlBindingLock.unlock() }
-            return storedControlDeviceObjectID
-        }
         func updateControlBinding(_ id: AudioObjectID, consumer: @escaping @Sendable (Float, Bool) -> Void) {
             controlBindingLock.lock(); storedControlDeviceObjectID = id; storedMasterControlConsumer = consumer; controlBindingLock.unlock()
         }
@@ -59,7 +55,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         var didFail: Bool { condition.lock(); defer { condition.unlock() }; return failed }
         func markFailed() { condition.lock(); failed = true; condition.unlock() }
         let completion: ProducerCompletionAssembler
-        private var wakeDeadline: Date?
+        private var wakeDeadline: PerformanceTick?
         private var wakeTimer: DispatchSourceTimer?
         private var wakeTimerFinished = false
         private var disconnectStatus: OSStatus = noErr
@@ -89,11 +85,13 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
 
         func requestStop() {
             condition.lock()
+            defer { condition.unlock() }
+            guard !stopRequested else { return }
             stopRequested = true
             wakeTimer?.cancel()
-            condition.broadcast()
-            condition.unlock()
-            // Wake the packet reader if it is sleeping in sem_wait().
+            // Signal once, while retirement is excluded by this lock. The
+            // worker also requests stop before destroying the transport, so a
+            // later stop/deinit must never touch that retired C pointer.
             sabr_client_transport_signal(transport)
         }
 
@@ -132,14 +130,14 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             condition.unlock()
         }
 
-        func scheduleWake(at deadline: Date) {
+        func scheduleWake(at deadline: PerformanceTick) {
             condition.lock()
             defer { condition.unlock() }
             guard !stopRequested, wakeDeadline != deadline else { return }
             wakeDeadline = deadline
-            // Re-arm a system timer without waking a dedicated thread for
-            // every PCM/fence record. The reader still owns the exact deadline.
-            wakeTimer?.schedule(deadline: .now() + max(0, deadline.timeIntervalSinceNow))
+            // Use the same monotonic clock as producer completion. Only an
+            // empty read arms the timer; queued records need no deadline wake.
+            wakeTimer?.schedule(deadline: DispatchTime(uptimeNanoseconds: deadline.rawValue))
         }
 
         private func fireWakeTimer() {
@@ -150,8 +148,8 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             }
             // A previously fired event may already be queued when the reader
             // postpones its deadline. It must not wake the reader prematurely.
-            if deadline > Date() {
-                wakeTimer?.schedule(deadline: .now() + max(0, deadline.timeIntervalSinceNow))
+            if deadline > PerformanceClock.now() {
+                wakeTimer?.schedule(deadline: DispatchTime(uptimeNanoseconds: deadline.rawValue))
                 condition.unlock()
                 return
             }
@@ -166,12 +164,16 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             condition.unlock()
         }
 
-        func waitUntilFinished(timeout: TimeInterval) -> Bool {
-            let deadline = Date(timeIntervalSinceNow: timeout)
+        func waitUntilFinished(timeout: TimeInterval? = nil) -> Bool {
+            let deadline = timeout.map { Date(timeIntervalSinceNow: $0) }
             condition.lock()
             defer { condition.unlock() }
             while !finished {
-                guard condition.wait(until: deadline) else { return finished }
+                if let deadline {
+                    guard condition.wait(until: deadline) else { return finished }
+                } else {
+                    condition.wait()
+                }
             }
             return true
         }
@@ -312,7 +314,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
     }
 
     @discardableResult
-    private func stopSynchronously(updatePublishedState: Bool) -> StopOutcome {
+    private func stopSynchronously(updatePublishedState: Bool, waitForDelivery: Bool = false) -> StopOutcome {
         state.lock()
         generation &+= 1
         let stoppedGeneration = generation
@@ -330,13 +332,18 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         // lifecycle API. Waiting on itself would otherwise be an instant
         // deadlock if a future callback introduced that path.
         guard worker !== Thread.current else { return .requestedOnWorker }
-        guard context.waitUntilFinished(timeout: Self.shutdownTimeout),
-              let disconnectStatus = context.completedDisconnectStatus else {
+        if !context.waitUntilFinished(timeout: Self.shutdownTimeout) {
             if updatePublishedState {
-                publishShutdownTimeout(generation: stoppedGeneration)
+                publishShutdownTimeout(generation: stoppedGeneration, context: context)
             }
-            return .timedOut
+            guard waitForDelivery else { return .timedOut }
+            // Async runtime retirement cannot release/reuse the downstream
+            // owners while this reader still calls them. Report the delay, but
+            // retain ownership until the admitted delivery actually returns.
+            // Synchronous process shutdown keeps its bounded join above.
+            _ = context.waitUntilFinished()
         }
+        let disconnectStatus = context.completedDisconnectStatus!
 
         state.lock()
         if self.context === context {
@@ -362,7 +369,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
     /// make that join on MainActor, where it would freeze every SwiftUI window.
     func stopWithoutBlockingUI() async {
         await Task.detached(priority: .userInitiated) { [self] in
-            stop()
+            _ = stopSynchronously(updatePublishedState: true, waitForDelivery: true)
         }.value
     }
 
@@ -396,8 +403,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             repeating: 0,
             count: Int(maximumFrames * channelCapacity)
         )
-        var nextStatisticsUpdate = Date(timeIntervalSinceNow: 0.5)
-        var mixFlushDeadline: Date?
+        var nextStatisticsUpdate = PerformanceClock.now().advanced(seconds: 0.5)
         var reportedSourceFormat: SpatialSourceFormat?
         var lastClientGeneration: UInt64 = .max
         var lastMasterControlGeneration: UInt64 = .max
@@ -405,16 +411,7 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         var loggedPacketIdentities = Set<String>()
 #endif
 
-        context.scheduleWake(at: nextStatisticsUpdate)
         while !context.shouldStop() {
-            guard sabr_client_transport_wait_for_notification(context.transport) else {
-                if context.shouldStop() { break }
-                // A broken semaphore should not spin at audio priority. This
-                // fallback is used only after the kernel wait itself fails.
-                usleep(5_000)
-                continue
-            }
-            if context.shouldStop() { break }
             let transport = context.transport
 
             // Volume changes do not wake this thread by themselves. During
@@ -520,9 +517,22 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                         }
                     }
                 }
-                let scheduledAt = PerformanceClock.now()
-                mixFlushDeadline = context.completion.nextDeadline.map { deadline in
-                    Date(timeIntervalSinceNow: max(0, PerformanceClock.milliseconds(scheduledAt, deadline) / 1000))
+                let now = PerformanceClock.now()
+                if now >= nextStatisticsUpdate {
+                    publishStatistics(context: context, owner: owner)
+                    nextStatisticsUpdate = now.advanced(seconds: 0.5)
+                }
+                if !receivedRecord {
+                    // A notification means the ring may have changed, not that
+                    // exactly one record can be read. A later PCM reservation
+                    // can signal before the frame ahead of it is committed.
+                    // Drain every ready record before waiting again, including
+                    // records whose earlier notification found that gap.
+                    context.scheduleWake(at: min(context.completion.nextDeadline ?? nextStatisticsUpdate,
+                                                 nextStatisticsUpdate))
+                    if !sabr_client_transport_wait_for_notification(transport) {
+                        try context.completion.fail("the transport notification wait failed")
+                    }
                 }
             } catch {
                 context.markFailed()
@@ -547,13 +557,6 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                 context.delivery.stop()
                 return
             }
-
-            let now = Date()
-            if now >= nextStatisticsUpdate {
-                publishStatistics(context: context, owner: owner)
-                nextStatisticsUpdate = Date(timeIntervalSinceNow: 0.5)
-            }
-            context.scheduleWake(at: min(mixFlushDeadline ?? .distantFuture, nextStatisticsUpdate))
         }
     }
 
@@ -666,9 +669,10 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func publishShutdownTimeout(generation stoppedGeneration: UInt64) {
+    private func publishShutdownTimeout(generation stoppedGeneration: UInt64, context: RunContext) {
         Task { @MainActor [weak self] in
-            guard self?.isCurrentGeneration(stoppedGeneration) == true else { return }
+            guard self?.isCurrentGeneration(stoppedGeneration) == true,
+                  context.completedDisconnectStatus == nil else { return }
             self?.status = "System Audio Bridge shutdown is still pending"
             self?.runtimeError = TransportError.shutdownTimedOut.localizedDescription
         }
@@ -683,10 +687,6 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
             self?.status = "System Audio Bridge disconnect failed"
             self?.runtimeError = TransportError.disconnect(status).localizedDescription
         }
-    }
-
-    private static func rateDescription(_ rate: Double) -> String {
-        String(format: "%.1f kHz", rate / 1_000)
     }
 
     enum TransportError: LocalizedError {

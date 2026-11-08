@@ -9,8 +9,7 @@ struct VerticalEQSlider: View {
     let gainEnabled: Bool
     var accessibilityTitle = "EQ band gain"
     var onEditingChanged: @MainActor (Bool) -> Void = { _ in }
-    var spectrum: SpectrumAnalyzer? = nil
-    var profileID: UUID? = nil
+    var spectrum: SpectrumDisplay? = nil
     var frequency: Double = 1_000
     @State private var isDragging = false
     private let gainRange = -12.0...12.0
@@ -24,8 +23,8 @@ struct VerticalEQSlider: View {
                     .frame(width: track.width, height: track.height)
                     .position(x: track.midX, y: track.midY)
                 Group {
-                    if let spectrum, let profileID {
-                        SpectrumBandLevelObserver(spectrum: spectrum, profileID: profileID, frequency: frequency) { level in
+                    if let spectrum {
+                        SpectrumBandLevelObserver(spectrum: spectrum, frequency: frequency) { level in
                             EQSliderMeterArtwork(track: track, audioDB: level, responseDB: responseDB)
                         }
                     } else {
@@ -62,7 +61,7 @@ struct VerticalEQSlider: View {
         }
         .accessibilityElement()
         .accessibilityLabel(accessibilityTitle)
-        .accessibilityValue("\(gain, format: .number.precision(.fractionLength(1))) decibels")
+        .accessibilityValue("\(gain.decimalText(DecimalFormat(1))) decibels")
         .accessibilityAdjustableAction { direction in
             guard gainEnabled else { return }
             switch direction {
@@ -84,7 +83,7 @@ struct EQGainGuideGrid: View {
     var metrics = EQControlMetrics()
     var body: some View {
         GeometryReader { geometry in
-            Canvas { context, size in
+            PlotCanvas { context, size in
                 // Content begins after the 8 pt outer padding and 24 pt
                 // frequency row. The slider itself has an 8 pt inset.
                 let sliderTop = 47.0 * metrics.scale
@@ -98,7 +97,7 @@ struct EQGainGuideGrid: View {
                     path.addLine(to: CGPoint(x: size.width, y: yy))
                     context.stroke(
                         path,
-                        with: .color(Color.secondary.opacity(db == 0 ? 0.24 : 0.11)),
+                        color: Color.secondary.opacity(db == 0 ? 0.24 : 0.11),
                         lineWidth: db == 0 ? 1 : 0.6
                     )
                 }
@@ -122,7 +121,7 @@ struct GainScaleLabels: View {
                 .position(x: geometry.size.width / 2, y: bottom)
         }
         .font(.caption2.monospacedDigit())
-        .foregroundStyle(.secondary)
+        .foregroundColor(.secondary)
     }
 }
 

@@ -34,14 +34,14 @@ struct PluginRackView: View {
                     Text("Plug-ins(Beta)").font(.title3.bold())
                     DeviceCorrectionHelpIcon(title: "Plug-ins", message: "Support AU and VST3 plugins.")
                         .uiInteractionAnchor("plugin-rack-help")
-                    Spacer().overlay(alignment: .leading) {
+                    Spacer().overlay(Group {
                         if busy || status.loading || reorderApplies.applying.contains(profile.id) {
                             ProgressView().controlSize(.small).frame(width: 14, height: 14)
                                 .accessibilityLabel("Applying plug-ins")
                                 .uiInteractionAnchor("plugin-rack-progress")
                                 .allowsHitTesting(false)
                         }
-                    }
+                    }, alignment: .leading)
                     Button { showingPicker = true } label: { Image(systemName: "plus").frame(width: 22, height: 22) }
                         .buttonStyle(.borderless)
                         .disabled(busy || profile.pluginRack.slots.count >= PluginRack.maximumSlots)
@@ -58,12 +58,12 @@ struct PluginRackView: View {
                 Label(profile.pluginRack.slots.isEmpty
                     ? "Press + to add AU or VST3 Plugin"
                     : "Press ⌘ and drag a plug-in to reorder.", systemImage: "info.circle")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
                 if status.active, status.latencyMilliseconds > 0 {
                     HStack {
                         Spacer()
                         Text(String(format: "Plug-in delay: %.1f ms", status.latencyMilliseconds))
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundColor(.secondary)
                     }
                 }
                 if !profile.pluginRack.slots.isEmpty {
@@ -73,20 +73,20 @@ struct PluginRackView: View {
                                 if index > 0 {
                                     Divider()
                                         .uiInteractionAnchor("plugin-divider-\(index)")
-                                        .overlay { if insertionIndex == index { insertionMarker } }
+                                        .overlay(Group { if insertionIndex == index { insertionMarker } })
                                         .padding(.vertical, 8)
                                 }
                                 rackRow(slot, index: index)
                             }
                             // Include the divider in the native destination so dropping
                             // directly on the insertion line also works.
-                            .overlay { dragSource(slot) }
+                            .overlay(Group { dragSource(slot) })
                         }
                     }
-                    .overlay(alignment: .top) { if insertionIndex == 0 { insertionMarker } }
-                    .overlay(alignment: .bottom) { if insertionIndex == profile.pluginRack.slots.count { insertionMarker } }
+                    .overlay(Group { if insertionIndex == 0 { insertionMarker } }, alignment: .top)
+                    .overlay(Group { if insertionIndex == profile.pluginRack.slots.count { insertionMarker } }, alignment: .bottom)
                     .padding(10)
-                        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.035)))
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Picker("Output mode", selection: Binding(get: { profile.pluginRack.outputMode }, set: { mode in
@@ -119,7 +119,7 @@ struct PluginRackView: View {
                     }
                 }
                 if !profile.pluginRack.slots.isEmpty {
-                    DisclosureGroup("MIDI", isExpanded: $showingMIDI) {
+                    SectionDisclosure("MIDI", isExpanded: $showingMIDI) {
                         PluginMIDIInputView(state: state, profile: $profile, status: manager.midiStatus(for: profile.id))
                             .padding(.top, 6)
                         Button { showingMappings = true } label: {
@@ -127,12 +127,12 @@ struct PluginRackView: View {
                         }
                         .padding(.top, 6)
                         .uiInteractionAnchor("plugin-midi-mappings")
-                    }.disclosureGroupStyle(SectionDisclosureStyle())
+                    }
                 }
                 if let message = errorMessage ?? (status.loading ? nil : status.message) {
                     VStack(alignment: .leading, spacing: 6) {
                         Label(message, systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                            .font(.caption).foregroundColor(.orange).fixedSize(horizontal: false, vertical: true)
                         if profile.pluginRack.isProcessing {
                             Button("Bypass Rack") { edit("Bypass Plug-in Rack") { $0.isEnabled = false } }
                                 .disabled(busy)
@@ -141,8 +141,8 @@ struct PluginRackView: View {
                 }
             }.padding(6).uiInteractionAnchor("plugin-rack-content")
         }
-        .focusSection()
-        .task { await catalog.load() }
+        .editorFocusSection()
+        .viewTask { await catalog.load() }
         .onAppear { configureReordering() }
         .onChange(of: profile.pluginRack.slots.map(\.id)) { _ in configureReordering() }
         .onChange(of: busy) { _ in configureReordering() }
@@ -158,13 +158,13 @@ struct PluginRackView: View {
         .sheet(isPresented: $showingMappings) {
             PluginMIDIMappingsView(state: state, profile: $profile)
         }
-        .alert("Switch to Exclusive Mode?", isPresented: $confirmingExclusiveOutput) {
-            Button("Switch to Exclusive") {
+        .appAlert("Switch to Exclusive Mode?", isPresented: $confirmingExclusiveOutput) {
+            AppAlertAction("Switch to Exclusive") {
                 edit("Change Plug-in Output Mode") { $0.outputMode = .exclusive }
             }
-            Button("Cancel", role: .cancel) {}
+            AppAlertAction("Cancel", role: .cancel) {}
         } message: {
-            Text("Exclusive mode disables native audio processing, including your enabled processing sections. Their controls will be hidden and your saved settings will be kept. Switch back to Through CamillaDSP to restore them.")
+            "Exclusive mode disables native audio processing, including your enabled processing sections. Their controls will be hidden and your saved settings will be kept. Switch back to Through CamillaDSP to restore them."
         }
     }
 
@@ -182,7 +182,7 @@ struct PluginRackView: View {
     private func rackRow(_ slot: AudioPluginSlot, index: Int) -> some View {
         HStack(alignment: .center, spacing: 12) {
             HStack(spacing: 10) {
-                Text("\(index + 1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 18)
+                Text("\(index + 1)").font(.caption.monospacedDigit()).foregroundColor(.secondary).frame(width: 18)
                 HStack(spacing: 6) {
                     Text(slot.plugin.name).font(.headline).lineLimit(2)
                         .uiInteractionAnchor("plugin-title-\(slot.id)")

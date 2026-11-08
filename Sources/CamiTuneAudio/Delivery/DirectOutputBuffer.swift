@@ -1,4 +1,5 @@
 import CamiTuneAtomics
+import CamiTuneDomain
 import Foundation
 
 /// Hardware-independent storage shared by the delivery writer and one output
@@ -18,7 +19,7 @@ package final class DirectOutputBuffer: @unchecked Sendable {
     private let ring: CMTOutputRingRef
     package var context: UnsafeMutableRawPointer { UnsafeMutableRawPointer(ring) }
     package init?(channels: Int, capacityFrames: Int, prerollFrames: Int) {
-        guard (1...32).contains(channels), (1...1048576).contains(capacityFrames),
+        guard (1...SpeakerTopology.maximumHardwareChannels).contains(channels), (1...1048576).contains(capacityFrames),
               (1...capacityFrames).contains(prerollFrames),
               let ring = cmt_output_ring_create(UInt32(channels), UInt32(capacityFrames), UInt32(prerollFrames)) else { return nil }
         self.ring = ring

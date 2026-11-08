@@ -34,7 +34,7 @@ final class DiagnosticsController: ObservableObject {
                 result.status = .running
                 result.startedAt = Date()
                 results[index] = result
-                let start = ContinuousClock.now
+                let start = RuntimeClock.now
                 await Task.yield()
                 do {
                     try Task.checkCancellation()
@@ -51,7 +51,7 @@ final class DiagnosticsController: ObservableObject {
                     result.status = Task.isCancelled ? .skipped : .failed
                     result.summary = Task.isCancelled ? "Cancelled" : error.localizedDescription
                 }
-                result.duration = start.duration(to: .now)
+                result.duration = RuntimeClock.now - start
                 // Publish a complete row once, rather than invalidating SwiftUI
                 // separately for every field of the same result.
                 results[index] = result
@@ -85,13 +85,13 @@ final class DiagnosticsController: ObservableObject {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"
         var lines = ["CamiTune Diagnostic Report", "CamiTune: \(version)",
                      "macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)",
-                     "Architecture: \(architecture)", "Generated: \(Date().ISO8601Format())",
+                     "Architecture: \(architecture)", "Generated: \(DatePresentation.iso8601(Date()))",
                      "Run: \(isRunning ? "In progress (partial results)" : runMessage)", ""]
         for suite in Array(Set(results.map(\.suite))).sorted() {
             lines.append(suite)
             for result in results.filter({ $0.suite == suite }) {
                 lines.append("[\(result.safety.rawValue)] \(result.id) \(result.name): \(result.status.rawValue.uppercased()) — \(result.summary)")
-                lines.append("  Started: \(result.startedAt.ISO8601Format()); duration: \(result.duration)")
+                lines.append("  Started: \(DatePresentation.iso8601(result.startedAt)); duration: \(result.duration)")
                 lines += result.evidence.map { "  \($0.name): \($0.value)" }
                 if let details = result.details { lines.append("  \(details)") }
             }

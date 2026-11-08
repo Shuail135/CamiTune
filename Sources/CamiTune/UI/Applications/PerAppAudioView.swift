@@ -67,8 +67,8 @@ private struct ScopedPerAppAudioView: View {
                     Button { showingOrder = true } label: {
                         Image(systemName: "gearshape")
                             .font(.system(size: 20, weight: .regular))
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.secondary)
+
+                            .foregroundColor(.secondary)
                             .frame(width: 32, height: 32)
                             .contentShape(Rectangle())
                     }
@@ -84,9 +84,9 @@ private struct ScopedPerAppAudioView: View {
                     }
                 }
                 Label("Press ⌘ and drag an app to reorder.", systemImage: "info.circle")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
                 if let error = audioPresentation.persistenceError ?? presentation.persistenceError {
-                    Text(error).font(.caption).foregroundStyle(.orange)
+                    Text(error).font(.caption).foregroundColor(.orange)
                 }
                 if applications.isEmpty {
                     VStack(spacing: 10) {
@@ -94,7 +94,7 @@ private struct ScopedPerAppAudioView: View {
                         Text("No application audio detected").font(.headline)
                         Text("Play audio in an application to add it here.").font(.callout)
                     }
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, 24)
                 } else {
                     PerAppAudioList(applications: applications, controller: controller,
@@ -159,24 +159,24 @@ struct PerAppAudioList: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(height: 32)
-            .overlay {
+            .overlay(Group {
                 MenuAppDropIndicator(feedback: reorder.feedback, section: section, sectionAppend: false)
-            }
+            })
         } footer: {
             MenuAppDropBridge(section: section, coordinator: reorder) {
                 Text(ordered.isEmpty
                     ? (section == .shown ? "Drag apps here to show them in the menu bar." : "Drag apps here to hide them from the menu bar. Audio settings still apply.")
                     : "")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                     .padding(.horizontal, 10)
             }
             // Keep a compact append target after the last row, with full room
             // for the drop guidance when the section has no applications.
             .frame(height: ordered.isEmpty ? 52 : 8)
-            .overlay {
+            .overlay(Group {
                 MenuAppDropIndicator(feedback: reorder.feedback, section: section, highlightsArea: true)
-            }
+            })
         }
     }
 
@@ -204,17 +204,17 @@ struct PerAppAudioList: View {
                             .frame(minWidth: 100, maxWidth: .infinity).frame(height: 24)
                             .accessibilityLabel("\(name) volume")
                             Text("\(Int((application.settings.volume * 100).rounded()))%")
-                                .monospacedDigit().font(.caption).frame(width: 36, alignment: .trailing)
+                                .font(.caption.monospacedDigit()).frame(width: 36, alignment: .trailing)
                             Button {
                                 expanded.wrappedValue.toggle()
                             } label: {
                                 HStack(spacing: 3) {
                                     Image(systemName: "slider.horizontal.3")
-                                        .fontWeight(application.settings.isEqualizerActive ? .semibold : .regular)
-                                        .foregroundStyle(application.settings.isEqualizerActive ? Color.accentColor : Color.secondary.opacity(0.5))
+                                        .modifier(InheritedFontWeight(weight: application.settings.isEqualizerActive ? .semibold : .regular))
+                                        .foregroundColor(application.settings.isEqualizerActive ? Color.accentColor : Color.secondary.opacity(0.5))
                                     Image(systemName: "chevron.down")
                                         .font(.system(size: 8, weight: .semibold))
-                                        .foregroundStyle(.secondary)
+                                        .foregroundColor(.secondary)
                                 }
                                 .frame(width: 34, height: 24)
                             }
@@ -239,14 +239,14 @@ struct PerAppAudioList: View {
                         .equatable()
                         .disabled(!controlsEnabled)
                         .padding(12)
-                        .background(Color.secondary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(alignment: .leading) {
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.035)))
+                        .overlay(Group {
                             RoundedRectangle(cornerRadius: 1)
                                 .fill(Color.secondary.opacity(0.18))
                                 .frame(width: 2)
                                 .padding(.vertical, 10)
                                 .allowsHitTesting(false)
-                        }
+                        }, alignment: .leading)
                         .padding(.leading, 42)
                         .padding(.bottom, 14)
                 }
@@ -260,9 +260,9 @@ struct PerAppAudioList: View {
                 }
             }
             .opacity(reorder.draggedApplicationID == application.id ? 0.6 : 1)
-            .overlay {
+            .overlay(Group {
                 MenuAppDropIndicator(feedback: reorder.feedback, applicationID: application.id)
-            }
+            })
         }
     }
 }
@@ -283,8 +283,8 @@ private struct PerApplicationIdentityHeader: View {
     @State private var editing = false
     @State private var draft = ""
     @State private var hovering = false
-    @FocusState private var fieldFocused: Bool
-    @FocusState private var nameFocused: Bool
+    @State private var fieldFocused = false
+    @State private var nameFocused = false
 
     private var canRename: Bool { PerAppApplicationIdentityPolicy.isPersistentApplicationID(application.id) }
 
@@ -292,26 +292,26 @@ private struct PerApplicationIdentityHeader: View {
         HStack(spacing: 10) {
             Image(nsImage: PerAppIconCache.icon(for: application))
                 .resizable().frame(width: 32, height: 32)
-                .overlay {
+                .overlay(Group {
                     if canRename && !editing {
                         MenuAppDragSource(application: application, displayedName: name, coordinator: reorder,
                             drawsIdentity: false, modifierOnlyHitTesting: true)
                             .accessibilityHidden(true)
                     }
-                }
+                })
             VStack(alignment: .leading, spacing: 2) {
                 if editing {
-                    TextField("Application name", text: $draft)
+                    EditableTextField("Application name", text: $draft, isFocused: $fieldFocused, style: .plain, font: .systemFont(ofSize: NSFont.systemFontSize, weight: .medium), onCommit: { finish(save: true) }, onCancel: { finish(save: false) })
                         .font(.body.weight(.medium))
                         .textFieldStyle(.plain)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .focused($fieldFocused)
+
                         .background(OutsideClickObserver { finish(save: true) })
-                        .onSubmit { finish(save: true) }
-                        .onExitCommand { finish(save: false) }
+
+
                         .onChange(of: fieldFocused) { if !$0 { finish(save: true) } }
                 } else if canRename {
-                    Button {
+                    FocusButton(isFocused: $nameFocused) {
                         draft = name
                         editing = true
                         DispatchQueue.main.async { fieldFocused = true }
@@ -319,30 +319,30 @@ private struct PerApplicationIdentityHeader: View {
                         HStack(spacing: 5) {
                             Text(name).font(.body.weight(.medium)).lineLimit(1)
                             Image(systemName: "pencil")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.caption).foregroundColor(.secondary)
                                 .opacity(hovering || nameFocused ? 1 : 0)
                         }
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain).focused($nameFocused)
+
                     .accessibilityLabel("Rename \(name)")
                 } else {
                     Text(name).font(.body.weight(.medium)).lineLimit(1)
                 }
                 if let bundleID = application.bundleID {
-                    Text(bundleID).font(.caption).foregroundStyle(.secondary)
+                    Text(bundleID).font(.caption).foregroundColor(.secondary)
                         .lineLimit(1).truncationMode(.middle)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .overlay {
+        .overlay(Group {
             if canRename && !editing {
                 MenuAppDragSource(application: application, displayedName: name, coordinator: reorder,
                     drawsIdentity: false, modifierOnlyHitTesting: true)
                     .accessibilityHidden(true)
             }
-        }
+        })
         .onHover { hovering = $0 }
         .onDisappear { finish(save: true) }
     }
@@ -425,10 +425,10 @@ private struct PerApplicationEQControls: View, Equatable {
             }
             Group {
                 if let headroom = automaticSystemHeadroomDB {
-                    Text("Automatic Headroom: \(headroom, format: .number.precision(.fractionLength(2))) dB")
+                    Text("Automatic Headroom: \(headroom.decimalText(DecimalFormat(2))) dB")
                         .font(.caption.monospacedDigit().weight(.medium))
                 } else {
-                    Text("Calculating headroom…").font(.caption).foregroundStyle(.secondary)
+                    Text("Calculating headroom…").font(.caption).foregroundColor(.secondary)
                 }
             }
             if presentation != .bands {
@@ -462,11 +462,12 @@ private struct PerApplicationEQControls: View, Equatable {
                 }
                 if bands.isEmpty {
                     Text("0 PEQ bands.")
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
                 } else {
                     EqualizerBandScrollView(bandCount: bands.count) { columnWidth in
                         GraphicEqualizerBands(bands: Binding(get: { bands }, set: { setBands($0) }),
+                            sampleRate: sampleRate,
                             profileID: editorProfileID, responsePoints: [], setKind: EQEditorSupport.setKind,
                             columnWidth: columnWidth, showsSpectrumLevels: false, onGainEditingChanged: { editing in
                                 bandGainIsEditing = editing
@@ -488,9 +489,9 @@ private struct PerApplicationEQControls: View, Equatable {
             simpleTone = settings.simpleTone
             bands = settings.equalizerBands
         }
-        .task(id: HeadroomInput(tone: simpleTone, bands: bands, sampleRate: sampleRate)) {
+        .viewTask(id: HeadroomInput(tone: simpleTone, bands: bands, sampleRate: sampleRate)) {
             let input = HeadroomInput(tone: simpleTone, bands: bands, sampleRate: sampleRate)
-            do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
+            do { try await RuntimeClock.sleep(seconds: 0.12) } catch { return }
             let headroom = await Task.detached(priority: .utility) {
                 PerAppAudioSettings(eqBypassed: false, equalizerBands: input.bands, simpleTone: input.tone)
                     .automaticHeadroomDB(sampleRate: input.sampleRate)

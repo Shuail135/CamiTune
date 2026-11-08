@@ -23,7 +23,7 @@ struct SpatialDeviceTypeControls: View {
 struct SpatialSpeakerPicker: View {
     let group: VirtualSpeakerGroup
     let choose: (VirtualSpeakerSound?) -> Void
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.presentationMode) private var dismiss
     @State private var query = ""
     @State private var index = AutoEQCatalogSearchIndex<SpeakerCatalogEntry>(entries: [], name: { $0.name })
     @State private var error: String?
@@ -39,35 +39,35 @@ struct SpatialSpeakerPicker: View {
             if loading { ProgressView().controlSize(.small) }
             if !loading, error == nil, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, results.isEmpty {
                 Text("No matching speakers. Try a brand or a shorter model name.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
             }
             if let selection {
                 Text(selection.name).fontWeight(.medium)
                 Text(selection.specifications?.summary.isEmpty == false ? selection.specifications!.summary : "Specifications unavailable for this measurement.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
                 Text(group == .front
                     ? "Builds a matching speaker set. Start with stereo, or add surround speakers and a subwoofer using Setup."
                     : "\(group.roles.count) \(group.roles.count == 1 ? "speaker" : "matching speakers") · \(group.roles.map(\.displayName).joined(separator: ", "))")
                     .font(.caption)
                 Text("Measurement: \(selection.sourceName ?? "Spinorama")")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
             }
             Text("Uses the measured listening-window response and, when available, bass extension with an approximate 12 dB/octave roll-off. Cabinet dimensions are for reference. Directivity, distortion and maximum output are not reproduced.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             if let pending { Text("Preparing \(pending)…").font(.caption) }
             if let error {
-                Text(error).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Text(error).font(.caption).foregroundColor(.orange).fixedSize(horizontal: false, vertical: true)
                 if index.isEmpty { Button("Retry catalog") { Task { await load() } } }
             }
             HStack {
                 Button("Use Neutral Monitor") { selectionTask?.cancel(); choose(nil) }
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button("Cancel") { dismiss.wrappedValue.dismiss() }
                 Button("Apply model") { if let selection { choose(selection) } }
                     .disabled(selection == nil || pending != nil)
                     .uiInteractionAnchor("spatial-speaker-apply")
             }
-        }.padding(20).frame(width: 480).task { await load() }.onDisappear { selectionTask?.cancel() }
+        }.padding(20).frame(width: 480).viewTask { await load() }.onDisappear { selectionTask?.cancel() }
     }
     private func load() async {
         loading = true
@@ -114,7 +114,7 @@ struct SpatialSpeakerPicker: View {
 struct MovieApplicationPicker: View {
     @ObservedObject var controller: PerAppAudioController
     let apply: (MovieApplicationScope) -> Void
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.presentationMode) private var dismiss
     @State private var all: Bool
     @State private var selected: Set<String>
 
@@ -139,7 +139,7 @@ struct MovieApplicationPicker: View {
             Text("Movie apps").font(.title3.bold())
             Picker("Apply to", selection: $all) { Text("All apps").tag(true); Text("Selected apps").tag(false) }.pickerStyle(.segmented)
             if !all {
-                if ids.isEmpty { Text("Play audio in an app to select it.").foregroundStyle(.secondary) }
+                if ids.isEmpty { Text("Play audio in an app to select it.").foregroundColor(.secondary) }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(ids, id: \.self) { id in
@@ -151,17 +151,17 @@ struct MovieApplicationPicker: View {
                                 }))
                                 Spacer()
                                 if let mode = app?.settings.playbackModeOverride, mode != .spatialRender {
-                                    Text("Uses \(mode.compactDisplayName)").font(.caption).foregroundStyle(.secondary)
-                                } else if app?.isActive != true { Text("Not playing").font(.caption).foregroundStyle(.secondary) }
+                                    Text("Uses \(mode.compactDisplayName)").font(.caption).foregroundColor(.secondary)
+                                } else if app?.isActive != true { Text("Not playing").font(.caption).foregroundColor(.secondary) }
                             }
                         }
                     }
                 }.frame(maxHeight: 260)
                 if controller.applications.contains(where: { PerAppApplicationIdentityPolicy.isEphemeralApplicationID($0.id) }) {
-                    Text("Sources without a stable application identity are available only in All apps.").font(.caption).foregroundStyle(.secondary)
+                    Text("Sources without a stable application identity are available only in All apps.").font(.caption).foregroundColor(.secondary)
                 }
             }
-            HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Apply") { apply(all ? .allApplications : .selectedApplications(selected)) }.disabled(!all && selected.isEmpty) }
+            HStack { Spacer(); Button("Cancel") { dismiss.wrappedValue.dismiss() }; Button("Apply") { apply(all ? .allApplications : .selectedApplications(selected)) }.disabled(!all && selected.isEmpty) }
         }.padding(20).frame(width: 450)
     }
 }

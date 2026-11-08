@@ -1,8 +1,10 @@
 #import "PluginHost.h"
+#include "ParameterChangeFlags.h"
 #include <array>
 #include <atomic>
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 
 namespace CamiTunePlugins {
 namespace {
@@ -57,7 +59,7 @@ public:
     NSData* saveState() override { return inner->saveState(); }
     NSArray<NSDictionary*>* parameters() override { return inner->parameters(); }
     void setParameter(uint64_t id, double value) override { inner->setParameter(id, value); }
-    void scheduleParameter(uint64_t id, double value) override { inner->scheduleParameter(id, value); }
+    void scheduleParameter(uint64_t id, double value, uint64_t gestureTime) override { inner->scheduleParameter(id, value, gestureTime); }
     void observeParameters(ParameterObserver observer) override { inner->observeParameters(std::move(observer)); }
     bool acceptsMIDI() override { return inner->acceptsMIDI(); }
     void midi(const MIDIMessage& message) override { inner->midi(message); }
@@ -74,17 +76,28 @@ public:
 // single set of changes for all copies; no preset serialization or UI calls
 // are allowed on the render worker.
 struct ParameterMailbox {
-    static constexpr size_t capacity = 4096;
-    size_t count = 0;
-    std::array<uint64_t, capacity> ids{};
-    std::array<std::atomic<double>, capacity> values{};
-    std::array<std::atomic<bool>, capacity> dirty{};
-    void put(uint64_t id, double value) {
-        if (!std::isfinite(value)) return;
-        for (size_t i = 0; i < count; ++i) if (ids[i] == id) {
-            values[i].store(value, std::memory_order_relaxed);
-            dirty[i].store(true, std::memory_order_release); return;
+    std::vector<uint64_t> ids;
+    std::unordered_map<uint64_t, size_t> indices;
+    std::unique_ptr<std::atomic<double>[]> values;
+    std::unique_ptr<std::atomic<uint64_t>[]> gestureTimes;
+    ParameterChangeFlags dirty;
+    explicit ParameterMailbox(NSArray<NSDictionary*>* parameters) : dirty(parameters.count) {
+        ids.reserve(parameters.count); indices.reserve(parameters.count);
+        values = std::make_unique<std::atomic<double>[]>(parameters.count);
+        gestureTimes = std::make_unique<std::atomic<uint64_t>[]>(parameters.count);
+        for (NSDictionary* parameter in parameters) {
+            uint64_t id = [parameter[@"id"] unsignedLongLongValue]; size_t index = ids.size();
+            if (!indices.emplace(id, index).second) throw std::runtime_error("The plug-in reported duplicate parameter identifiers.");
+            ids.push_back(id); values[index] = 0; gestureTimes[index] = 0;
         }
+    }
+    void put(uint64_t id, double value, uint64_t gestureTime = 0) {
+        if (!std::isfinite(value)) return;
+        auto found = indices.find(id); if (found == indices.end()) return;
+        size_t i = found->second;
+        values[i].store(value, std::memory_order_relaxed);
+        if (gestureTime) recordParameterGesture(gestureTimes[i], gestureTime);
+        dirty.publish(i);
     }
 };
 
@@ -92,16 +105,18 @@ class LinkedEffect final : public Effect {
     struct Copy { std::unique_ptr<Effect> effect; std::vector<uint32_t> channels; };
     std::vector<Copy> copies;
     uint32_t width;
-    std::shared_ptr<ParameterMailbox> edits = std::make_shared<ParameterMailbox>();
+    std::shared_ptr<ParameterMailbox> edits;
     std::array<std::array<float, maximumFrames>, 2> monoInput{}, monoOutput{};
     std::string error;
     std::shared_ptr<ParameterObserver> observer = std::make_shared<ParameterObserver>();
+    HostClock clock;
 
     void applyEdits() {
-        for (size_t i = 0; i < edits->count; ++i) if (edits->dirty[i].exchange(false, std::memory_order_acquire)) {
+        edits->dirty.consume([&](size_t i) {
             double value = edits->values[i].load(std::memory_order_relaxed);
-            for (auto& copy : copies) copy.effect->scheduleParameter(edits->ids[i], value);
-        }
+            uint64_t gestureTime = edits->gestureTimes[i].load(std::memory_order_acquire);
+            for (auto& copy : copies) copy.effect->scheduleParameter(edits->ids[i], value, gestureTime);
+        });
     }
 public:
     LinkedEffect(NSDictionary* slot, double rate, NSArray<NSString*>* roles) {
@@ -131,12 +146,12 @@ public:
         for (uint32_t c = 0; c < roles.count; ++c) if (!used[c]) groups.push_back({c});
         for (auto& group : groups) copies.push_back({copies.empty() ? std::move(first) : instance(slot, rate, format), group});
         NSArray<NSDictionary*>* parameters = copies[0].effect->parameters();
-        if (parameters.count > ParameterMailbox::capacity) throw std::runtime_error("This effect has too many parameters to link across channels.");
-        for (NSDictionary* parameter in parameters) edits->ids[edits->count++] = [parameter[@"id"] unsignedLongLongValue];
+        if (parameters.count > maximumParameters) throw std::runtime_error("This effect exceeds the 65536-parameter limit for linked channels.");
+        edits = std::make_shared<ParameterMailbox>(parameters);
         auto mailbox = edits;
         auto external = observer;
-        copies[0].effect->observeParameters([mailbox, external](uint64_t id, double value, bool touch) {
-            if (touch) mailbox->put(id, value);
+        copies[0].effect->observeParameters([mailbox, external, clock = clock](uint64_t id, double value, bool touch) {
+            if (touch) mailbox->put(id, value, clock.nowNanoseconds());
             if (*external) (*external)(id, value, touch);
         });
         // Start every instance with exactly the editor's current values, even
@@ -176,8 +191,8 @@ public:
     double tailSeconds() override { double tail = 0; for (auto& copy : copies) tail = std::max(tail, copy.effect->tailSeconds()); return tail; }
     NSData* saveState() override { return copies[0].effect->saveState(); }
     NSArray<NSDictionary*>* parameters() override { return copies[0].effect->parameters(); }
-    void setParameter(uint64_t id, double value) override { copies[0].effect->setParameter(id, value); edits->put(id, value); if (*observer) (*observer)(id, value, true); }
-    void scheduleParameter(uint64_t id, double value) override { edits->put(id, value); }
+    void setParameter(uint64_t id, double value) override { copies[0].effect->setParameter(id, value); edits->put(id, value, clock.nowNanoseconds()); if (*observer) (*observer)(id, value, true); }
+    void scheduleParameter(uint64_t id, double value, uint64_t gestureTime) override { edits->put(id, value, gestureTime); }
     void observeParameters(ParameterObserver value) override { *observer = std::move(value); }
     bool acceptsMIDI() override { return copies[0].effect->acceptsMIDI(); }
     NSArray<NSDictionary*>* sidechainBuses() override { return copies[0].effect->sidechainBuses(); }

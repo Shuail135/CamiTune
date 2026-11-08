@@ -153,6 +153,9 @@ uint32_t sabr_client_transport_channel_count(AudioObjectID deviceObjectID);
 uint32_t sabr_client_transport_default_frame_capacity(void);
 uint32_t sabr_client_transport_max_clients(void);
 Boolean sabr_client_transport_is_supported(AudioObjectID deviceObjectID);
+/* Notifications are coalesced wake hints, not record counts. After waking,
+ * drain read_event until false before waiting again. Only producer completion
+ * records establish complete audio; an empty ring or notification never does. */
 Boolean sabr_client_transport_wait_for_notification(SABRClientTransportRef transport);
 void sabr_client_transport_signal(SABRClientTransportRef transport);
 

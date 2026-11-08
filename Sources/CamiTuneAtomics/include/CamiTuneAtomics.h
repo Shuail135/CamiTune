@@ -30,6 +30,7 @@ typedef struct {
     double sample_time;
     uint32_t timestamp_flags, callback_frames;
 } CMTOutputSnapshot;
+#define CMT_OUTPUT_MAX_CHANNELS 256
 CMTOutputRingRef cmt_output_ring_create(uint32_t channels, uint32_t capacity_frames, uint32_t preroll_frames);
 void cmt_output_ring_destroy(CMTOutputRingRef ring);
 void cmt_output_ring_cancel(CMTOutputRingRef ring);

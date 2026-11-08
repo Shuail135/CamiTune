@@ -62,7 +62,7 @@ package struct CamillaDSPCompiler: Sendable {
     package init() {}
 
     package func compile(_ graph: ProcessingGraph) -> CamillaDSPConfiguration {
-        let filters = graph.processors.map(yamlFilter)
+        let filters = graph.processors.map { yamlFilter($0, sampleRate: Double(graph.sampleRate)) }
         let filterSection = filters.isEmpty
             ? "filters: {}"
             : "filters:\n" + filters.joined(separator: "\n")
@@ -122,16 +122,16 @@ devices:
     }
 
     package func compileRuntimePatch(
-        processors: [ProcessingGraph.Processor]
+        processors: [ProcessingGraph.Processor], sampleRate: Double
     ) -> CamillaDSPRuntimePatch {
         CamillaDSPRuntimePatch(filters: Dictionary(
-            processors.map { ($0.id, runtimeFilter($0)) },
+            processors.map { ($0.id, runtimeFilter($0, sampleRate: sampleRate)) },
             uniquingKeysWith: { _, latest in latest }
         ))
     }
 
     private func runtimeFilter(
-        _ processor: ProcessingGraph.Processor
+        _ processor: ProcessingGraph.Processor, sampleRate: Double
     ) -> CamillaDSPRuntimePatch.Filter {
         switch processor.implementation {
         case .gain(let db):
@@ -152,11 +152,8 @@ devices:
             if band.kind.usesGain, let gain = band.gain {
                 parameters["gain"] = .number(gain)
             }
-            if let q = band.q { parameters["q"] = .number(q) }
-            else if let bandwidth = band.bandwidth {
-                parameters["bandwidth"] = .number(bandwidth)
-            } else if needsDefaultQ(band.kind) {
-                parameters["q"] = .number(0.70710678)
+            if band.q != nil || band.bandwidth != nil || needsDefaultQ(band.kind) {
+                parameters["q"] = .number(band.resolvedQ(sampleRate: sampleRate))
             }
             return .init(type: "Biquad", parameters: parameters)
         case .convolution(let convolution):
@@ -205,7 +202,7 @@ devices:
         }
     }
 
-    private func yamlFilter(_ processor: ProcessingGraph.Processor) -> String {
+    private func yamlFilter(_ processor: ProcessingGraph.Processor, sampleRate: Double) -> String {
         switch processor.implementation {
         case .gain(let db):
             return """
@@ -226,11 +223,8 @@ devices:
             if band.kind.usesGain, let gain = band.gain {
                 lines.append("      gain: \(format(gain))")
             }
-            if let q = band.q { lines.append("      q: \(format(q))") }
-            else if let bandwidth = band.bandwidth {
-                lines.append("      bandwidth: \(format(bandwidth))")
-            } else if needsDefaultQ(band.kind) {
-                lines.append("      q: 0.70710678")
+            if band.q != nil || band.bandwidth != nil || needsDefaultQ(band.kind) {
+                lines.append("      q: \(format(band.resolvedQ(sampleRate: sampleRate)))")
             }
             return lines.joined(separator: "\n") + "\n"
         case .convolution(let convolution):
@@ -329,7 +323,9 @@ devices:
     }
 
     private func format(_ value: Double) -> String {
-        String(format: "%.8g", locale: Locale(identifier: "en_US_POSIX"), value)
+        // Full configs and runtime patches must describe the same coefficients
+        // and delay rounding boundaries.
+        String(format: "%.17g", locale: Locale(identifier: "en_US_POSIX"), value)
     }
 
     private func yamlEscape(_ value: String) -> String {

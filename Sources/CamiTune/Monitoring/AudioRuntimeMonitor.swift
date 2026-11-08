@@ -552,7 +552,7 @@ final class AudioRuntimeMonitor: ObservableObject {
                         clippedSamples: snapshot.clippedSamples, sampleRate: output.sampleRate,
                         blockFrames: snapshot.callbackFrames, processingBufferFrames: 0,
                         underrunFrames: snapshot.underrunFrames), now: Date())
-                    do { try await Task.sleep(for: .milliseconds(UIRenderPerformance.meterPollMilliseconds)) } catch { return }
+                    do { try await RuntimeClock.sleep(seconds: Double(UIRenderPerformance.meterPollMilliseconds) / 1000) } catch { return }
                 }
             }
             return
@@ -570,9 +570,7 @@ final class AudioRuntimeMonitor: ObservableObject {
                     // A transient WebSocket miss should not tear down audio.
                 }
                 self?.decayIdleInputLevels()
-                try? await Task.sleep(
-                    for: .milliseconds(UIRenderPerformance.meterPollMilliseconds)
-                )
+                try? await RuntimeClock.sleep(seconds: Double(UIRenderPerformance.meterPollMilliseconds) / 1000)
             }
         }
 
@@ -590,7 +588,7 @@ final class AudioRuntimeMonitor: ObservableObject {
                     self.status.recordTelemetryFailure(error.localizedDescription, at: now)
                     self.publishRouteDiagnostics(now: now)
                 }
-                try? await Task.sleep(for: .seconds(1))
+                try? await RuntimeClock.sleep(seconds: 1)
             }
         }
     }

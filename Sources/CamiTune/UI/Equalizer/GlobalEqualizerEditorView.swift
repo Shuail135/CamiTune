@@ -99,25 +99,25 @@ struct GlobalEqualizerEditorView: View {
                 state.errorMessage = "Could not import Equalizer APO text: \(error.localizedDescription)"
             }
         }
-        .alert("Recalculate Equalizer Bands?", isPresented: $showBandReductionConfirmation) {
-            Button("Cancel", role: .cancel) { pendingBandCount = nil }
-            Button("Recalculate", role: .destructive) { applyPendingBandReduction() }
+        .appAlert("Recalculate Equalizer Bands?", isPresented: $showBandReductionConfirmation) {
+            AppAlertAction("Cancel", role: .cancel) { pendingBandCount = nil }
+            AppAlertAction("Recalculate", role: .destructive) { applyPendingBandReduction() }
         } message: {
-            Text(bandReductionConfirmationMessage)
+            bandReductionConfirmationMessage
         }
-        .alert("Reset Equalizer?", isPresented: Binding(
+        .appAlert("Reset Equalizer?", isPresented: Binding(
             get: { pendingReset != nil },
             set: { if !$0 { pendingReset = nil } }
         ), presenting: pendingReset) { request in
-            Button(request.presentation == .simpleTone ? "Reset Simple Only" : "Reset Bands Only", role: .destructive) {
+            AppAlertAction(request.presentation == .simpleTone ? "Reset Simple Only" : "Reset Bands Only", role: .destructive) {
                 resetEqualizer(request, presentation: request.presentation)
             }
-            Button("Reset Both", role: .destructive) {
+            AppAlertAction("Reset Both", role: .destructive) {
                 resetEqualizer(request, presentation: .both)
             }
-            Button("Cancel", role: .cancel) { pendingReset = nil }
+            AppAlertAction("Cancel", role: .cancel) { pendingReset = nil }
         } message: { request in
-            Text("Simple and Bands both have changes. Reset only \(request.presentation.title), or both? User Preamp will reset to 0 dB either way.")
+            "Simple and Bands both have changes. Reset only \(request.presentation.title), or both? User Preamp will reset to 0 dB either way."
         }
     }
 
@@ -173,6 +173,7 @@ struct GlobalEqualizerEditorView: View {
                 EqualizerBandScrollView(bandCount: graphicBands.count) { columnWidth in
                     GlobalEqualizerBandStrip(
                         bands: $graphicBands,
+                        sampleRate: Double(profile.sampleRate),
                         spectrum: state.spectrum,
                         profileID: profile.id,
                         graphModel: graphModel,
@@ -190,7 +191,7 @@ struct GlobalEqualizerEditorView: View {
             }
         } else {
             Label("Choose a band count above.", systemImage: "info.circle")
-                .foregroundStyle(.secondary)
+                .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, minHeight: 90)
         }
     }
@@ -212,14 +213,14 @@ struct AutomaticGlobalHeadroomView: View {
     }
 
     var body: some View {
-        Text("Automatic Global Headroom: \(headroomDB, format: .number.precision(.fractionLength(2))) dB")
+        Text("Automatic Global Headroom: \(headroomDB.decimalText(DecimalFormat(2))) dB")
             .font(.caption.monospacedDigit().weight(.medium))
             .onReceive(state.eqDraftChanges.filter { $0 == profile.id }) { _ in
                 draftRevision &+= 1
             }
-            .task(id: Request(profile: profile, draftRevision: draftRevision)) {
+            .viewTask(id: Request(profile: profile, draftRevision: draftRevision)) {
                 do {
-                    try await Task.sleep(for: .milliseconds(120))
+                    try await RuntimeClock.sleep(seconds: 0.12)
                     let candidate = try state.applyingSessionEQDrafts(to: profile)
                     let headroom = await Task.detached(priority: .utility) {
                         do {

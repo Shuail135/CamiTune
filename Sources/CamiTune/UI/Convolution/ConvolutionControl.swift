@@ -72,11 +72,11 @@ struct ConvolutionControl: View {
                 }
                 if value.asset.sampleRate != context.sampleRate {
                     Label("This WAV does not match the profile's \(context.sampleRate) Hz rate. Replace it before activation.", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption).foregroundStyle(.orange)
+                        .font(.caption).foregroundColor(.orange)
                 }
                 if !(0..<value.asset.channelCount).contains(value.impulseChannel) {
                     Label("Select a valid impulse channel before activation.", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption).foregroundStyle(.orange)
+                        .font(.caption).foregroundColor(.orange)
                 }
             }
             if isImporting { ProgressView("Analyzing impulse response…").controlSize(.small) }
@@ -95,7 +95,7 @@ struct ConvolutionControl: View {
                 Text("Output").frame(maxWidth: .infinity, alignment: .leading)
                 Text("WAV source").frame(width: 170, alignment: .leading)
                 Spacer().frame(width: 44)
-            }.font(.caption).foregroundStyle(.secondary)
+            }.font(.caption).foregroundColor(.secondary)
             if context.channels.count > 6 {
                 ScrollView {
                     mappingRows(value)
@@ -145,15 +145,15 @@ struct ConvolutionControl: View {
         output: Int = -1, @ViewBuilder controls: @escaping () -> Trailing) -> some View {
         // Keep expansion attached to the output when lazy rows leave the viewport
         // or a different WAV source is selected for the same speaker.
-        DisclosureGroup(isExpanded: Binding(get: { expandedChannels.contains(output) }, set: { expanded in
+        SectionDisclosure(isExpanded: Binding(get: { expandedChannels.contains(output) }, set: { expanded in
             if expanded { expandedChannels.insert(output) } else { expandedChannels.remove(output) }
         })) {
             if !(0..<asset.channelCount).contains(channel) {
-                Label("Select a valid WAV source to see its response.", systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
+                Label("Select a valid WAV source to see its response.", systemImage: "info.circle").font(.caption).foregroundColor(.secondary)
             } else if analyzedAssetID == asset.id, channelResponses.indices.contains(channel) {
                 ConvolutionChannelResponse(analysis: channelResponses[channel], name: name)
             } else if let responseError {
-                Text(responseError).font(.caption).foregroundStyle(.secondary)
+                Text(responseError).font(.caption).foregroundColor(.secondary)
             } else {
                 ProgressView("Analyzing impulse response…").controlSize(.small)
             }
@@ -162,7 +162,7 @@ struct ConvolutionControl: View {
                 .font(.subheadline.weight(.semibold))
                 .frame(minHeight: 32, alignment: .leading)
         }
-        .disclosureGroupStyle(SectionDisclosureStyle(trailing: controls))
+        .trailingControls(controls)
     }
 
     private func analyzeResponse() {
@@ -187,11 +187,11 @@ struct ConvolutionControl: View {
 
     private func assetDetails(_ value: ConvolutionProcessor) -> some View {
         HStack(spacing: 14) {
-            Image(systemName: "waveform").font(.title2).foregroundStyle(.blue)
+            Image(systemName: "waveform").font(.title2).foregroundColor(.blue)
             HStack(spacing: 6) {
                 Text(value.asset.displayName).font(.headline)
                 Image(systemName: "info.circle")
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
                     .help("\(value.asset.sampleRate) Hz · \(value.asset.frameCount) taps · \(value.asset.channelCount) source channels")
                     .accessibilityLabel("WAV file information")
                     .accessibilityValue("\(value.asset.sampleRate) Hz · \(value.asset.frameCount) taps · \(value.asset.channelCount) source channels")
@@ -230,13 +230,13 @@ private struct ConvolutionChannelResponse: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             WrappingControlLayout {
-                Text("Peak gain: \(analysis.peakGainDB, format: .number.precision(.fractionLength(2))) dB")
+                Text("Peak gain: \(analysis.peakGainDB.decimalText(DecimalFormat(2))) dB")
                 if let latency = analysis.latencyMilliseconds {
-                    Text("Latency: \(latency, format: .number.precision(.fractionLength(2))) ms")
+                    Text("Latency: \(latency.decimalText(DecimalFormat(2))) ms")
                 }
             }
             .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
+            .foregroundColor(.secondary)
 
             Text("FIR frequency response").font(.caption.weight(.medium))
             LineGraph(points: analysis.response.map { ($0.frequency, $0.gainDB) },

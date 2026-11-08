@@ -1,0 +1,2 @@
+// Default for Xcode and local packaging. A release tag overrides this value.
+MARKETING_VERSION = 0.3.3

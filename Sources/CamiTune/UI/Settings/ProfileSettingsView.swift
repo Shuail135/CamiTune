@@ -23,7 +23,7 @@ struct ProfileSettingsView: View {
     @State private var showingRepair = false
     @State private var confirmClose = false
     @State private var showingDeviceConfiguration = false
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.presentationMode) private var dismiss
 
     init(state: AppState, profile: DeviceProfile, destination: Destination = .general) {
         self.state = state
@@ -41,7 +41,7 @@ struct ProfileSettingsView: View {
     private func save() {
         saving = true; failure = nil; recovery = nil
         Task {
-            do { try await state.saveProfileSettings(draft); dismiss() }
+            do { try await state.saveProfileSettings(draft); dismiss.wrappedValue.dismiss() }
             catch { failure = error.localizedDescription; recovery = (error as? AppState.AppError)?.recovery }
             saving = false
         }
@@ -124,7 +124,7 @@ struct ProfileSettingsView: View {
                 if needsSpeakerConfiguration {
                     Button("Configure Speaker and Listening Position…") { showingDeviceConfiguration = true }
                     Text("Configure speaker placement before saving this device type.")
-                        .font(.callout).foregroundStyle(.secondary)
+                        .font(.callout).foregroundColor(.secondary)
                 }
                 ResponsiveStackLayout(minimumHorizontalWidth: 420, horizontalSpacing: 12, verticalSpacing: 6) {
                     HStack(spacing: 6) {
@@ -157,7 +157,7 @@ struct ProfileSettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                List(categories, id: \.self, selection: $category) { Text($0).tag($0) }
+                List(categories, id: \.self, selection: Binding<String?>(get: { category }, set: { if let value = $0 { category = value } })) { Text($0).tag($0) }
                     .listStyle(.sidebar).frame(width: 200)
                 Divider()
                 VStack(alignment: .leading, spacing: 16) {
@@ -192,13 +192,13 @@ struct ProfileSettingsView: View {
             }
             Divider()
             VStack(alignment: .leading, spacing: 8) {
-                if let failure { Text(failure).foregroundStyle(.red).textSelection(.enabled) }
+                if let failure { SelectableText(failure, color: .systemRed) }
                 if recovery == .openSetup {
                     Button("Open Setup…") { showingRepair = true }
                 }
                 HStack {
                     Spacer()
-                    Button("Cancel") { if hasChanges { confirmClose = true } else { dismiss() } }.keyboardShortcut(.cancelAction)
+                    Button("Cancel") { if hasChanges { confirmClose = true } else { dismiss.wrappedValue.dismiss() } }.keyboardShortcut(.cancelAction)
                     Button("Save") { save()                    }.keyboardShortcut(.defaultAction).disabled(!hasChanges || (try? draft.candidate()) == nil)
                 }
             }.padding(16)
@@ -213,12 +213,12 @@ struct ProfileSettingsView: View {
         .onChange(of: draft) { draftHistory.record($0) }
         .onDisappear { draftHistory.restore = nil }
         .disabled(saving)
-        .interactiveDismissDisabled(hasChanges || saving)
-        .alert("Save changes to this profile?", isPresented: $confirmClose) {
-            Button("Save Changes") { save() }
-            Button("Discard Changes", role: .destructive) { dismiss() }
-            Button("Cancel", role: .cancel) { }
-        } message: { Text("Your changes have not been saved.") }
+        .sheetDismissalBlocked(hasChanges || saving)
+        .appAlert("Save changes to this profile?", isPresented: $confirmClose) {
+            AppAlertAction("Save Changes") { save() }
+            AppAlertAction("Discard Changes", role: .destructive) { dismiss.wrappedValue.dismiss() }
+            AppAlertAction("Cancel", role: .cancel) { }
+        } message: { "Your changes have not been saved." }
         .sheet(isPresented: $showingRepair) { SetupPanel(state: state) }
         .sheet(isPresented: $showingDeviceConfiguration) {
             VStack(alignment: .leading, spacing: 16) {
@@ -236,6 +236,6 @@ struct ProfileSettingsView: View {
         .onChange(of: draft.selectedType) { _ in
             if !categories.contains(category) { category = "General" }
         }
-        .task { await state.coreAudioService.refreshWithoutBlockingUI() }
+        .viewTask { await state.coreAudioService.refreshWithoutBlockingUI() }
     }
 }

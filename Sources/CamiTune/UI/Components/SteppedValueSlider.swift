@@ -34,12 +34,12 @@ struct SliderThumb: View {
         let enabled = isEnabled && environmentEnabled
         let emphasis = enabled ? 1.0 : 0.45
         RoundedRectangle(cornerRadius: SliderThumbArtwork.cornerRadius * scale, style: .continuous)
-            .fill(LinearGradient(colors: [Color(nsColor: SliderThumbArtwork.topColor(enabled: enabled)),
-                Color(nsColor: SliderThumbArtwork.bottomColor(enabled: enabled))], startPoint: .top, endPoint: .bottom))
-            .overlay {
+            .fill(LinearGradient(colors: [Color( SliderThumbArtwork.topColor(enabled: enabled)),
+                Color( SliderThumbArtwork.bottomColor(enabled: enabled))], startPoint: .top, endPoint: .bottom))
+            .overlay(Group {
                 RoundedRectangle(cornerRadius: SliderThumbArtwork.cornerRadius * scale, style: .continuous)
                     .strokeBorder(Color.black.opacity((contrast == .increased ? 0.55 : 0.18) * emphasis), lineWidth: 0.5 * scale)
-            }
+            })
             .frame(width: SliderThumbMetrics.size(vertical: axis == .vertical).width * scale,
                    height: SliderThumbMetrics.size(vertical: axis == .vertical).height * scale)
             .shadow(color: .black.opacity((isPressed ? 0.24 : 0.16) * emphasis), radius: scale, y: scale)
@@ -168,6 +168,8 @@ struct SteppedValueSlider: NSViewRepresentable {
     func makeNSView(context: Context) -> Control {
         let slider = Control()
         slider.cell = SettingsSliderCell()
+        slider.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        slider.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         slider.isContinuous = true
         slider.numberOfTickMarks = 0
         slider.target = context.coordinator
@@ -193,11 +195,6 @@ struct SteppedValueSlider: NSViewRepresentable {
         default: slider.controlSize = .regular
         }
     }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: Control, context: Context) -> CGSize? {
-        CGSize(width: proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? 100,
-            height: style == .preamp ? PreampSliderLayout.totalHeight : nsView.intrinsicContentSize.height)
-    }
-
     final class Coordinator: NSObject {
         var parent: SteppedValueSlider
         init(_ parent: SteppedValueSlider) { self.parent = parent }
@@ -216,7 +213,10 @@ struct SteppedValueSlider: NSViewRepresentable {
         var editingChanged: (Bool) -> Void = { _ in }
         override var intrinsicContentSize: NSSize {
             var size = super.intrinsicContentSize
-            size.height = max(size.height, SliderThumbMetrics.length + 2)
+            // AppKit owns both the ideal width and artwork height on every OS.
+            size.width = 100
+            size.height = (cell as? SettingsSliderCell)?.usesPreampStyle == true
+                ? PreampSliderLayout.totalHeight : max(size.height, SliderThumbMetrics.length + 2)
             return size
         }
         // The custom artwork is centered in its full 32-point frame. Native

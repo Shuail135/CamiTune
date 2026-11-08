@@ -1,6 +1,7 @@
 import CamiTuneAudio
 import CamiTuneDomain
 import SwiftUI
+import AppKit
 
 private struct RoomPlotSeries: Sendable {
     var channel: Int
@@ -10,8 +11,13 @@ private struct RoomPlotSeries: Sendable {
     var hidden = false
     var points: [SIMD2<Double>]
 }
+private let roomPlotCyan = Color(NSColor(name: nil) { appearance in
+        let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return NSColor(srgbRed: (dark ? 90 : 85) / 255.0, green: (dark ? 200 : 190) / 255.0,
+                       blue: (dark ? 245 : 240) / 255.0, alpha: 1)
+    })
 private func roomChannelColor(_ channel: Int) -> Color {
-    let colors: [Color] = [.accentColor, .orange, .green, .purple, .pink, .cyan]
+    let colors: [Color] = [.accentColor, .orange, .green, .purple, .pink, roomPlotCyan]
     return colors[max(0, channel) % colors.count]
 }
 @MainActor
@@ -43,7 +49,7 @@ struct RoomCorrectionAnalysisView: View {
                 .uiInteractionAnchor("room-analysis-modes-\(modes.count)")
             if view == "Positions", let session = editor.session {
                 WrappingControlLayout {
-                    ForEach(Array(session.positions.enumerated()), id: \.element.id) { i, position in
+                    controlLayoutItems(Array(session.positions.enumerated()), id: \.element.id) { i, position in
                         Toggle("Position \(i + 1)", isOn: Binding(get: { !hidden.contains(position.id) }, set: { if $0 { hidden.remove(position.id) } else { hidden.insert(position.id) } }))
                     }
                 }
@@ -54,7 +60,7 @@ struct RoomCorrectionAnalysisView: View {
                 .uiInteractionAnchor("room-analysis-plot")
                 .uiInteractionAnchor("room-analysis-view-\(view)")
             WrappingControlLayout {
-                ForEach(editor.session?.context.topology.endpoints ?? [], id: \.id) { endpoint in
+                controlLayoutItems(editor.session?.context.topology.endpoints ?? [], id: \.id) { endpoint in
                     channelToggle(endpoint.id.channelIndex, title: endpoint.displayName)
                 }
                 if supportsSmoothing {
@@ -179,7 +185,7 @@ private struct RoomAnalysisPlot: View {
     var label: String
     var body: some View {
         VStack(spacing: 4) {
-            Canvas { context, size in
+            PlotCanvas { context, size in
                 let points = series.flatMap(\.points).filter { $0.x.isFinite && $0.y.isFinite && (!logarithmic || $0.x > 0) }
                 guard !points.isEmpty else { return }
                 func x(_ value: Double) -> Double { logarithmic ? log10(max(1, value)) : value }
@@ -191,8 +197,9 @@ private struct RoomAnalysisPlot: View {
                 for i in 0...4 {
                     let y = plot.minY + plot.height * Double(i) / 4
                     var line = Path(); line.move(to: .init(x: plot.minX, y: y)); line.addLine(to: .init(x: plot.maxX, y: y))
-                    context.stroke(line, with: .color(.secondary.opacity(0.2)))
-                    context.draw(Text((maxY - (maxY - minY) * Double(i) / 4).formatted(.number.precision(.fractionLength(1)))).font(.system(size: 9)), at: .init(x: 15, y: y))
+                    context.stroke(line, color: .secondary.opacity(0.2))
+                    context.label((maxY - (maxY - minY) * Double(i) / 4).decimalText(DecimalFormat(1)),
+                        font: .systemFont(ofSize: 9), at: .init(x: 15, y: y))
                 }
                 let ticks = logarithmic ? [20.0, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
                     : (0...4).map { minX + (maxX - minX) * Double($0) / 4 }
@@ -201,8 +208,8 @@ private struct RoomAnalysisPlot: View {
                     let location = plot.minX + (x(tick) - minX) / max(0.001, maxX - minX) * plot.width
                     guard location - lastLabelX >= 28 else { continue }
                     lastLabelX = location
-                    let label = logarithmic && tick >= 1000 ? "\((tick / 1000).formatted())k" : tick.formatted(.number.precision(.fractionLength(0)))
-                    context.draw(Text(label).font(.system(size: 9)), at: .init(x: location, y: plot.maxY + 12))
+                    let label = logarithmic && tick >= 1000 ? "\((tick / 1000).decimalText())k" : tick.decimalText(DecimalFormat(0))
+                    context.label(label, font: .systemFont(ofSize: 9), at: .init(x: location, y: plot.maxY + 12))
                 }
                 for line in series where !line.hidden {
                     var path = Path()
@@ -213,10 +220,10 @@ private struct RoomAnalysisPlot: View {
                         if continuing { path.addLine(to: point) } else { path.move(to: point) }
                         continuing = true
                     }
-                    context.stroke(path, with: .color(line.curve?.color ?? (line.target ? .secondary : roomChannelColor(line.channel))), style: StrokeStyle(lineWidth: 1.3, dash: line.target ? [1, 3] : (line.dashed ? [4, 3] : [])))
+                    context.stroke(path, color: line.curve?.color ?? (line.target ? .secondary : roomChannelColor(line.channel)), style: StrokeStyle(lineWidth: 1.3, dash: line.target ? [1, 3] : (line.dashed ? [4, 3] : [])))
                 }
             }
-            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(label).font(.caption).foregroundColor(.secondary)
         }.accessibilityLabel("Room measurement \(label) chart")
     }
 }
@@ -276,7 +283,7 @@ private struct RoomChannelPredictionView: View {
                     .map { $0.title(calibrated: calibrated) }.joined(separator: ", "))
                 .uiInteractionAnchor("room-prediction-\(channel)")
             WrappingControlLayout {
-                ForEach(RoomPredictionCurve.allCases, id: \.self) { curve in
+                controlLayoutItems(RoomPredictionCurve.allCases, id: \.self) { curve in
                     ResponseCurveToggle(title: curve.title(calibrated: calibrated), color: curve.color,
                         isVisible: Binding(get: { visible.contains(curve) },
                             set: { if $0 { visible.insert(curve) } else { visible.remove(curve) } }))

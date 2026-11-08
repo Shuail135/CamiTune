@@ -83,7 +83,7 @@ final class RuntimePerformanceRecorder: ObservableObject {
                 let now = PerformanceClock.now()
                 recordObservation(at: now)
                 if now >= capture.deadline { await stop(reason: "Duration complete"); return }
-                try? await Task.sleep(for: .seconds(options.observationInterval))
+                try? await RuntimeClock.sleep(seconds: options.observationInterval)
             }
         }
     }

@@ -57,7 +57,7 @@ struct CorrectionResponseGraph: View {
             let levelTicks = ticks(for: levelRange)
             let frequencyLabels = CorrectionGraphFrequencyAxis.labels(plotWidth: plot.width)
             ZStack {
-                Canvas { context, _ in
+                PlotCanvas { context, _ in
                     let minorGrid = Path { path in
                         for frequency in CorrectionGraphFrequencyAxis.gridFrequencies {
                             let lineX = x(Double(frequency), plot: plot)
@@ -65,7 +65,7 @@ struct CorrectionResponseGraph: View {
                             path.addLine(to: CGPoint(x: lineX, y: plot.maxY))
                         }
                     }
-                    context.stroke(minorGrid, with: .color(.secondary.opacity(0.09)), lineWidth: 0.5)
+                    context.stroke(minorGrid, color: .secondary.opacity(0.09), lineWidth: 0.5)
                     let grid = Path { path in
                         for gain in levelTicks {
                             let lineY = y(gain, plot: plot, range: levelRange)
@@ -78,7 +78,7 @@ struct CorrectionResponseGraph: View {
                             path.addLine(to: CGPoint(x: lineX, y: plot.maxY))
                         }
                     }
-                    context.stroke(grid, with: .color(.secondary.opacity(0.18)), lineWidth: 1)
+                    context.stroke(grid, color: .secondary.opacity(0.18), lineWidth: 1)
                     context.clip(to: Path(plot))
                     let curves: [(CorrectionGraphCurve, [(Double, Double)], Color, StrokeStyle)] = [
                         (.target, target, .blue.opacity(0.35), responseStroke(lineWidth: 7.5)),
@@ -89,14 +89,14 @@ struct CorrectionResponseGraph: View {
                         (.desired, desired, .purple, responseStroke(lineWidth: 1.3, dash: [4, 3]))
                     ]
                     for (curve, points, color, stroke) in curves where presentation.curves.contains(curve) && visibility.wrappedValue.contains(curve) {
-                        context.stroke(responsePath(points, plot: plot, range: levelRange), with: .color(color), style: stroke)
+                        context.stroke(responsePath(points, plot: plot, range: levelRange), color: color, style: stroke)
                     }
                 }
                 .allowsHitTesting(false)
                 ForEach(levelTicks, id: \.self) { gain in
                     Text(levelLabel(gain))
                         .font(.system(size: 8).monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                         .position(
                             x: plot.minX - 15,
                             y: y(gain, plot: plot, range: levelRange)
@@ -105,7 +105,7 @@ struct CorrectionResponseGraph: View {
                 ForEach(frequencyLabels, id: \.self) { frequency in
                     Text(CorrectionGraphFrequencyAxis.label(frequency))
                         .font(.system(size: 10).monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                         .position(x: x(Double(frequency), plot: plot), y: plot.maxY + 10)
                 }
                 if onEdit != nil && controlPointVisibility.wrappedValue {
@@ -126,7 +126,7 @@ struct CorrectionResponseGraph: View {
                                     })
                                 .accessibilityLabel("Band at \(Int(band.frequency)) Hz")
                             if selection == band.id {
-                                let width = 2 * asinh(1 / (2 * (band.q ?? 0.707))) / log(2)
+                                let width = CorrectionGraphDrag.bandwidthOctaves(of: band)
                                 ForEach([-1.0, 1.0], id: \.self) { side in
                                     let frequency = min(20_000, max(20, band.frequency * pow(2, side * width / 2)))
                                     Rectangle().fill(Color.accentColor).frame(width: 5, height: 20)
@@ -147,12 +147,12 @@ struct CorrectionResponseGraph: View {
                 }
                 Text("Relative level (dB)")
                     .font(.system(size: 9).weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
                     .rotationEffect(.degrees(-90))
                     .position(x: 8, y: plot.midY)
                 Text("Frequency (Hz)")
                     .font(.system(size: 9).weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
                     .position(x: plot.midX, y: geometry.size.height - 5)
             }
             .transaction { $0.animation = nil }
@@ -160,7 +160,7 @@ struct CorrectionResponseGraph: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         WrappingControlLayout {
-            ForEach(presentation.curves, id: \.self) { curve in
+            controlLayoutItems(presentation.curves, id: \.self) { curve in
                 overlayToggle(curve, color: presentation.color(for: curve))
             }
             if onEdit != nil {
@@ -168,7 +168,7 @@ struct CorrectionResponseGraph: View {
                     controlPointVisibility.wrappedValue.toggle()
                 } label: {
                     Label("Control Points", systemImage: "circle.fill")
-                        .foregroundStyle(controlPointVisibility.wrappedValue ? Color.accentColor : Color.secondary.opacity(0.4))
+                        .foregroundColor(controlPointVisibility.wrappedValue ? Color.accentColor : Color.secondary.opacity(0.4))
                 }
                 .buttonStyle(.plain)
                 .accessibilityValue(controlPointVisibility.wrappedValue ? "Shown" : "Hidden")
@@ -290,10 +290,10 @@ struct ResponseCurveToggle: View {
     var body: some View {
         Button { isVisible.toggle() } label: {
             Label(title, systemImage: "minus")
-                .foregroundStyle(isVisible ? color : Color.secondary.opacity(0.4))
+                .foregroundColor(isVisible ? color : Color.secondary.opacity(0.4))
         }
         .buttonStyle(.plain)
-        .textSelection(.disabled)
+
         .accessibilityValue(isVisible ? "Shown" : "Hidden")
     }
 }
@@ -486,20 +486,29 @@ final class CorrectionGraphResponseCache: ObservableObject {
 /// Use displacement from the original grab position: a mouse-down does not
 /// change the filter, and even a one-pixel movement updates the response.
 enum CorrectionGraphDrag {
+    static func bandwidthOctaves(of band: EQBand) -> Double {
+        if let q = band.q { return 2 * asinh(1 / (2 * q)) / log(2) }
+        if let bandwidth = band.bandwidth { return bandwidth }
+        return 2 * asinh(1 / (2 * 0.707)) / log(2)
+    }
+
     static func band(from origin: EQBand, translation: CGSize, plot: CGRect,
                      range: ClosedRange<Double>, sampleRate: Double, bandwidthSide: Double? = nil) -> EQBand {
         guard translation != .zero else { return origin }
         var edited = origin
         if let side = bandwidthSide {
             guard translation.width != 0 else { return origin }
-            let q = origin.q ?? 0.707
-            let width = 2 * asinh(1 / (2 * q)) / log(2)
+            let width = bandwidthOctaves(of: origin)
             let edge = min(20_000, max(20, origin.frequency * pow(2, side * width / 2)))
             let position = min(1, max(0, log(edge / 20) / log(1_000) + translation.width / plot.width))
             let movedEdge = 20 * pow(1_000, position)
             let octaves = max(0.02, 2 * abs(log2(movedEdge / origin.frequency)))
-            edited.q = 1 / (2 * sinh(log(2) * octaves / 2))
-            edited.bandwidth = nil
+            if origin.q == nil, origin.bandwidth != nil {
+                edited.bandwidth = octaves
+            } else {
+                edited.q = 1 / (2 * sinh(log(2) * octaves / 2))
+                edited.bandwidth = nil
+            }
         } else {
             let position = min(1, max(0, log(origin.frequency / 20) / log(1_000) + translation.width / plot.width))
             if translation.width != 0 {

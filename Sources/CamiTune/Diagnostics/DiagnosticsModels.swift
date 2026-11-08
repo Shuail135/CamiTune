@@ -22,7 +22,7 @@ struct DiagnosticResult: Identifiable, Sendable {
     var summary: String
     var details: String?
     var startedAt = Date()
-    var duration: Duration = .zero
+    var duration: TimeInterval = 0
     var evidence: [DiagnosticEvidence] = []
 }
 
@@ -96,7 +96,7 @@ extension DiagnosticCase {
         try await withThrowingTaskGroup(of: DiagnosticObservation.self) { group in
             group.addTask { @MainActor in try await run() }
             group.addTask {
-                try await Task.sleep(for: .seconds(15))
+                try await RuntimeClock.sleep(seconds: 15)
                 throw DiagnosticFailure(message: "Check exceeded its 15-second deadline")
             }
             defer { group.cancelAll() }

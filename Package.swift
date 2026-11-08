@@ -76,7 +76,7 @@ if ["1", "spatial"].contains(localTests),
 
 let package = Package(
     name: "CamiTune",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v11)],
     products: [
         .executable(name: "CamiTune", targets: ["CamiTune"])
     ],

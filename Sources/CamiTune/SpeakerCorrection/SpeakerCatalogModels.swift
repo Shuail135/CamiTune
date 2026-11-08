@@ -8,7 +8,7 @@ struct SpeakerCatalogEntry: Hashable, Sendable, Identifiable {
 }
 struct SpeakerMetadata: Hashable, Sendable {
     var preferredVersion: String?
-    var sources: [String: String]
+    var origins: [String: String]
     var specifications: [String: VirtualSpeakerSpecifications] = [:]
     static func decode(_ data: Data) throws -> Self {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], object["error"] == nil else {
@@ -20,7 +20,7 @@ struct SpeakerMetadata: Hashable, Sendable {
             return value
         }
         return .init(preferredVersion: object["default_measurement"] as? String,
-                     sources: measurements.mapValues { sourceName($0["origin"] as? String ?? "Measurement source") },
+                     origins: measurements.compactMapValues { $0["origin"] as? String },
                      specifications: measurements.mapValues { measurement in
                          let specs = measurement["specifications"] as? [String: Any] ?? [:]
                          let size = specs["size"] as? [String: Any] ?? [:]

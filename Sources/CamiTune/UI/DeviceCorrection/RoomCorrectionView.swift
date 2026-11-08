@@ -49,17 +49,17 @@ struct RoomCorrectionView: View {
                 step(.correction) { correction }
             }.clipped()
             if !editor.busy && showsStatus {
-                Text(editor.status).font(.caption).foregroundStyle(.secondary)
+                Text(editor.status).font(.caption).foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .uiInteractionAnchor("room-workflow-guidance")
             }
             if editor.isVerifying {
                 if editor.tab == .measure {
-                    Text(editor.verificationMessage).font(.caption).foregroundStyle(.secondary)
+                    Text(editor.verificationMessage).font(.caption).foregroundColor(.secondary)
                 }
                 Button("Back to correction") { editor.endVerification() }.disabled(editor.busy)
             }
-            if let error = editor.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
+            if let error = editor.error { SelectableText(error, font: .preferredFont(forTextStyle: .callout), color: .systemRed) }
             Divider()
             navigation
         }
@@ -78,24 +78,24 @@ struct RoomCorrectionView: View {
         .onChange(of: editor.calculationRevision) { _ in correctionDetailsExpanded = true }
         .onChange(of: editor.importRevision) { _ in correctionDetailsExpanded = false }
         .onChange(of: editor.session?.id) { _ in adjusting = false; mapZoom = 1; mapViewportRevision += 1 }
-        .alert("Reset Room Correction?", isPresented: $confirmReset) {
-            Button("Cancel", role: .cancel) { }
-            Button("Reset", role: .destructive) {
+        .appAlert("Reset Room Correction?", isPresented: $confirmReset) {
+            AppAlertAction("Cancel", role: .cancel) { }
+            AppAlertAction("Reset", role: .destructive) {
                 guard !editor.busy else { return }
                 NSApp.keyWindow?.makeFirstResponder(nil)
                 adjusting = false; mapZoom = 1; mapViewportRevision += 1
                 editor.reset(profile: profile)
             }
         } message: {
-            Text("This clears room correction and starts a new measurement setup for this listening position. Imported EQ and FIR filters remain in their channel editors.")
+            "This clears room correction and starts a new measurement setup for this listening position. Imported EQ and FIR filters remain in their channel editors."
         }
-        .alert("Replace Existing Filters?", isPresented: $confirmReplacement) {
-            Button("Cancel", role: .cancel) { replacementMessage = nil }
-            Button("Replace and Import", role: .destructive) {
+        .appAlert("Replace Existing Filters?", isPresented: $confirmReplacement) {
+            AppAlertAction("Cancel", role: .cancel) { replacementMessage = nil }
+            AppAlertAction("Replace and Import", role: .destructive) {
                 editor.importCorrection(profile: profile)
                 replacementMessage = nil
             }
-        } message: { Text(replacementMessage ?? "") }
+        } message: { replacementMessage ?? "" }
     }
 
     private var showsStatus: Bool {
@@ -173,21 +173,21 @@ struct RoomCorrectionView: View {
         let current = simpleGuideStep
         return GroupBox {
             WrappingControlLayout(horizontalSpacing: 14, verticalSpacing: 8) {
-                ForEach(SimpleGuideStep.allCases, id: \.self) { step in
+                controlLayoutItems(SimpleGuideStep.allCases, id: \.self) { step in
                     HStack(spacing: 4) {
                         Image(systemName: "\(step.rawValue).circle\(step == current ? ".fill" : "")")
                             .accessibilityHidden(true)
                         Text(step.title)
                     }
                     .font(.caption.weight(step == current ? .semibold : .regular))
-                    .foregroundStyle(step == current ? Color.blue : Color.secondary)
+                    .foregroundColor(step == current ? Color.blue : Color.secondary)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Step \(step.rawValue): \(step.title)")
                     .accessibilityValue(step == current ? "Current step" : "")
                 }
             }
             Text(simpleGuideInstruction)
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         } label: {
             Text("Simple mode guide")
@@ -253,7 +253,7 @@ struct RoomCorrectionView: View {
                 Button { select(tab) } label: {
                     Text(tab.rawValue.capitalized)
                         .font(.callout.weight(editor.tab == tab ? .semibold : .regular))
-                        .foregroundStyle(editor.tab == tab ? Color.blue : Color.secondary)
+                        .foregroundColor(editor.tab == tab ? Color.blue : Color.secondary)
                         .lineLimit(1)
                         .padding(.vertical, 10).frame(maxWidth: .infinity)
                         .contentShape(Rectangle())
@@ -267,10 +267,10 @@ struct RoomCorrectionView: View {
             }
         }
         .frame(maxWidth: 480)
-        .background(alignment: .bottom) {
-            Rectangle().fill(Color(nsColor: .separatorColor)).frame(height: 1)
-        }
-        .overlay(alignment: .bottomLeading) {
+        .background(Group {
+            Rectangle().fill(Color(.separatorColor)).frame(height: 1)
+        }, alignment: .bottom)
+        .overlay(Group {
             GeometryReader { geometry in
                 let width = geometry.size.width / CGFloat(RoomCorrectionEditorState.Tab.allCases.count)
                 Capsule().fill(Color.blue)
@@ -278,7 +278,7 @@ struct RoomCorrectionView: View {
                     .offset(x: CGFloat(stepIndex) * width)
                     .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: stepIndex)
             }.frame(height: 2).allowsHitTesting(false).accessibilityHidden(true)
-        }
+        }, alignment: .bottomLeading)
     }
     private func step<Content: View>(_ tab: RoomCorrectionEditorState.Tab, @ViewBuilder content: () -> Content) -> some View {
         content()
@@ -302,7 +302,7 @@ struct RoomCorrectionView: View {
             if editor.tab == .measure && !editor.measurementOpen && !editor.profileIsActive {
                 Label(editor.session == nil ? "Activate profile to start measurement" : "Activate profile to continue measurement",
                       systemImage: "info.circle")
-                    .font(.caption).foregroundStyle(.red)
+                    .font(.caption).foregroundColor(.red)
                     .fixedSize(horizontal: false, vertical: true)
                     .uiInteractionAnchor("room-measurement-activation-hint")
             }
@@ -310,7 +310,7 @@ struct RoomCorrectionView: View {
             if editor.busy || (editor.tab == .analysis && analysisLoading) {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text(editor.busy ? editor.status : "Updating analysis…").font(.caption).foregroundStyle(.secondary)
+                    Text(editor.busy ? editor.status : "Updating analysis…").font(.caption).foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .uiInteractionAnchor("room-measurement-status")
@@ -327,7 +327,7 @@ struct RoomCorrectionView: View {
             }
             if editor.tab == .measure && editor.measurementOpen && editor.recorderNeedsPreparation {
                 Button("Continue") { editor.confirmRecorderPreparation() }
-                .buttonStyle(.borderedProminent).disabled(editor.busy)
+                .buttonStyle(PrimaryActionButtonStyle()).disabled(editor.busy)
                 .uiInteractionAnchor("room-prepare-confirm")
                 .accessibilityIdentifier("room-prepare-confirm")
             } else if editor.importingRecording || ((editor.tab == .measure && editor.measurementOpen || editor.measuring)
@@ -345,7 +345,7 @@ struct RoomCorrectionView: View {
                     else if editor.recorderPlaybackComplete { chooseFile(.recording) }
                     else { editor.measure(profile: profile, selectedChannel: nil) }
                 }
-                .buttonStyle(.borderedProminent).disabled(editor.busy && !editor.measuring && !editor.importingRecording)
+                .buttonStyle(PrimaryActionButtonStyle()).disabled(editor.busy && !editor.measuring && !editor.importingRecording)
                 .uiInteractionAnchor("room-recorder-next").accessibilityIdentifier("room-recorder-next")
                 DeviceCorrectionHelpIcon(title: "Simple recording",
                     message: "1. Start your phone’s recorder and place the phone at the blue marker on the graph before pressing Play Sound. \n 2. Keep it still at ear level while sound plays. \n 3. Between positions, keep recording, move to the next marker, then press Next. \n 4. To repeat a finished position, select its number and press Play Again while the same phone recording is still running. \n 5. Stop only after all positions are finished, then import that single audio file.")
@@ -367,25 +367,25 @@ struct RoomCorrectionView: View {
                         } else { editor.importCorrection(profile: profile) }
                     } catch { editor.error = error.localizedDescription }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PrimaryActionButtonStyle())
                 .disabled(!editor.canImport)
                 .uiInteractionAnchor("room-correction-import")
                 .accessibilityIdentifier("room-correction-import")
             } else if editor.tab == .measure && !editor.measurementOpen {
                 Button(editor.measurementActionTitle) { editor.openMeasurement(profile: profile) }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PrimaryActionButtonStyle())
                     .disabled(editor.busy || !editor.profileIsActive)
                     .uiInteractionAnchor("room-correction-start").accessibilityIdentifier("room-correction-start")
             } else if (editor.tab == .measure || editor.measuring) && editor.source.kind == .microphone {
                 if editor.session?.microphoneMeasurementsComplete == true && !editor.measuring {
                     microphoneMeasureButton
                     Button("Next") { select(.analysis) }
-                        .buttonStyle(.borderedProminent).disabled(editor.busy)
+                        .buttonStyle(PrimaryActionButtonStyle()).disabled(editor.busy)
                         .uiInteractionAnchor("room-correction-next")
-                } else { microphoneMeasureButton.buttonStyle(.borderedProminent) }
+                } else { microphoneMeasureButton.buttonStyle(PrimaryActionButtonStyle()) }
             } else {
                 Button("Next") { select(editor.tab == .measure ? .analysis : .correction) }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PrimaryActionButtonStyle())
                     .disabled(!editor.hasMeasurements || editor.busy)
                     .uiInteractionAnchor("room-correction-next")
                     .accessibilityIdentifier("room-correction-next")
@@ -431,7 +431,7 @@ struct RoomCorrectionView: View {
                 HStack {
                     Text("Calibration")
                     Text(editor.source.calibration?.name ?? "Choose the calibration file")
-                        .lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle).foregroundColor(.secondary)
                         .uiInteractionAnchor("room-calibration-name")
                     Button(editor.source.calibration == nil ? "Choose…" : "Change…") { chooseFile(.calibration) }
                         .uiInteractionAnchor("room-calibration-import").disabled(editor.busy || editor.isVerifying)
@@ -455,7 +455,7 @@ struct RoomCorrectionView: View {
                     .frame(width: 160).accessibilityLabel("Test volume")
                     .uiInteractionAnchor("room-test-volume")
                     .disabled(editor.busy && !editor.testingSound)
-                Text(String(format: "%+.0f dB", editor.testVolumeDB)).monospacedDigit().frame(width: 55, alignment: .trailing)
+                Text(String(format: "%+.0f dB", editor.testVolumeDB)).monospacedDigits().frame(width: 55, alignment: .trailing)
                 Button {
                     if editor.testingSound { editor.cancel() }
                     else { editor.measure(profile: profile, selectedChannel: nil, preview: true) }
@@ -475,9 +475,9 @@ struct RoomCorrectionView: View {
             }
             if editor.source.kind == .microphone, let level = editor.microphoneLevel, editor.busy {
                 HStack {
-                    Text(String(format: "Microphone · peak %.1f dBFS · RMS %.1f dBFS", level.peakDBFS, level.rmsDBFS)).monospacedDigit()
+                    Text(String(format: "Microphone · peak %.1f dBFS · RMS %.1f dBFS", level.peakDBFS, level.rmsDBFS)).monospacedDigits()
                     Text(level.clipped ? "Clipping — lower the level" : level.peakDBFS > -6 ? "Leave more headroom" : "")
-                        .foregroundStyle(level.clipped ? Color.red : Color.orange)
+                        .foregroundColor(level.clipped ? Color.red : Color.orange)
                 }.font(.caption).uiInteractionAnchor("room-microphone-level")
             }
         }
@@ -499,14 +499,14 @@ struct RoomCorrectionView: View {
                 HStack(spacing: 8) {
                     Text(session.source.kind == .recorder ? "Microphone · at ear level"
                         : "Microphone · \(microphoneHeightDescription(position, in: session))")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                     Spacer(minLength: 0)
                     SpeakerMapZoomControls(zoom: $mapZoom, anchorPrefix: "room-map")
                 }.controlSize(.small)
                 if session.source.kind == .microphone {
                     if position.skipped {
                         Text("Skipped · measure again to include.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundColor(.secondary)
                     }
                     microphonePositionEditor(position).id(position.id)
                 }
@@ -528,7 +528,7 @@ struct RoomCorrectionView: View {
 
     @ViewBuilder private func microphonePositionEditor(_ position: RoomMeasurementPosition) -> some View {
         if !position.isMain {
-            DisclosureGroup(isExpanded: Binding(get: { adjusting }, set: { expanded in
+            SectionDisclosure(isExpanded: Binding(get: { adjusting }, set: { expanded in
                 TextFocusClearRequest.commitBeforeChangingSelection {
                     guard !editor.busy, editor.position?.id == position.id else { return }
                     adjusting = expanded
@@ -537,7 +537,7 @@ struct RoomCorrectionView: View {
             })) {
                 VStack(alignment: .leading, spacing: 8) {
                     if !position.observations.isEmpty || editor.session?.blocks.contains(where: { $0.positionID == position.id }) == true {
-                        Text("Moving this position requires a new measurement.").font(.caption).foregroundStyle(.secondary)
+                        Text("Moving this position requires a new measurement.").font(.caption).foregroundColor(.secondary)
                     }
                     HStack(alignment: .top, spacing: 10) {
                         VStack(alignment: .leading, spacing: 8) {
@@ -555,7 +555,7 @@ struct RoomCorrectionView: View {
                 Text("Adjust Position \(editor.positionIndex + 1)")
                     .uiInteractionAnchor("room-position-adjust")
             }
-            .disclosureGroupStyle(SectionDisclosureStyle())
+
             .disabled(editor.busy)
             .uiInteractionAnchor("room-position-editing")
         }
@@ -566,7 +566,7 @@ struct RoomCorrectionView: View {
             Text("Positions")
             if let session = editor.session, RoomRecorderPositionCount(rawValue: session.positions.count) == nil
                 || (microphone && editor.hasMicrophoneCaptures) || (!microphone && !session.recordings.isEmpty) {
-                Text("\(session.positions.count) positions").foregroundStyle(.secondary)
+                Text("\(session.positions.count) positions").foregroundColor(.secondary)
                     .uiInteractionAnchor("room-position-count-fixed")
             } else {
                 JoinedSegmentedControl(options: RoomRecorderPositionCount.allCases,
@@ -598,7 +598,7 @@ struct RoomCorrectionView: View {
 
     private func positionNavigation(_ session: RoomMeasurementSession) -> some View {
         HStack(spacing: 10) {
-            Text("Position").foregroundStyle(.secondary)
+            Text("Position").foregroundColor(.secondary)
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
@@ -606,7 +606,7 @@ struct RoomCorrectionView: View {
                             if index > 0 {
                                 Image(systemName: "chevron.right")
                                     .font(.system(size: 9, weight: .medium))
-                                    .foregroundStyle(.tertiary).accessibilityHidden(true)
+                                    .foregroundColor(Color(.tertiaryLabelColor)).accessibilityHidden(true)
                             }
                             positionButton(index, in: session).id(index)
                         }
@@ -622,7 +622,7 @@ struct RoomCorrectionView: View {
                position.skipped || ((!position.observations.isEmpty || !session.recordings.isEmpty)
                    && positionStatus(position, in: session) != "Ready") {
                 Text(positionStatus(position, in: session))
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .uiInteractionAnchor("room-position-readiness")
             }
@@ -674,10 +674,10 @@ struct RoomCorrectionView: View {
             }
         } label: {
             Text("\(index + 1)").font(.callout.monospacedDigit())
-                .foregroundStyle(selected ? Color.white : Color.primary)
+                .foregroundColor(selected ? Color.white : Color.primary)
                 .frame(width: 25, height: 25)
-                .background(selected ? Color.blue : Color(nsColor: .controlBackgroundColor), in: Circle())
-                .overlay(Circle().strokeBorder(selected ? Color.clear : Color(nsColor: .separatorColor), lineWidth: 0.5))
+                .background(Circle().fill(selected ? Color.blue : Color(.controlBackgroundColor)))
+                .overlay(Circle().strokeBorder(selected ? Color.clear : Color(.separatorColor), lineWidth: 0.5))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain).opacity(editor.busy ? 0.5 : 1)
@@ -700,7 +700,7 @@ struct RoomCorrectionView: View {
                       var coordinate = editor.position?.coordinate else { return }
                 coordinate[keyPath: axis] = metres + (editor.session?.context.listener[keyPath: axis] ?? 0)
                 editor.movePosition(coordinate, profile: profile)
-            }), format: .number.precision(.fractionLength(0))).frame(width: 100).onSubmit { editor.persistSession() }.disabled(editor.busy)
+            }), formatter: DecimalFormat(0).formatter, onCommit: { editor.persistSession() }).frame(width: 100).disabled(editor.busy)
                 .accessibilityLabel(title)
         }
     }
@@ -713,39 +713,39 @@ struct RoomCorrectionView: View {
                 .frame(width: 260).disabled(editor.busy || editor.isVerifying)
                 .accessibilityLabel("Correction Method")
                 .uiInteractionAnchor("room-correction-method")
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+            AlignedTable(horizontalSpacing: 12, verticalSpacing: 8) {
                 if calibratedCorrection {
-                    GridRow {
+                    AlignedTableRow {
                         Text("Target")
                         RoomCorrectionMenu(label: "Target", selection: Binding(get: { editor.settings.effectiveTarget }, set: { editor.settings.target = $0 }),
                             options: RoomCorrectionTarget.allCases, title: { $0 == .flat ? "Flat" : "Gentle · −0.5 dB/octave" }, showsLabel: false)
                     }
                 }
-                GridRow { Text("Correction Range · Low"); limit("Low frequency", $editor.settings.lowHz, values: calibratedCorrection ? [20, 25, 40, 60, 80] : [45, 60, 80], unit: "Hz") }
-                GridRow { Text("High"); limit("High frequency", $editor.settings.highHz, values: calibratedCorrection ? [300, 500, 800, 1500, 3000, 8000] : [150, 200, 300], unit: "Hz") }
-                GridRow { Text("Maximum Boost"); limit("Maximum Boost", $editor.settings.maximumBoostDB, values: calibratedCorrection ? [0, 0.5, 1] : [0], unit: "dB") }
-                GridRow { Text("Maximum Cut"); limit("Maximum Cut", $editor.settings.maximumCutDB, values: calibratedCorrection ? [1, 3, 6, 8] : [0.5, 1, 1.5], unit: "dB") }
-                GridRow { Text("Maximum Q"); limit("Maximum Q", $editor.settings.maximumQ, values: [1, 2, 4], unit: "") }
-                GridRow { Text("Filter Count"); integerLimit("Filter Count", $editor.settings.filterCount, values: calibratedCorrection ? [3, 5, 8] : [3, 5]) }
+                AlignedTableRow { Text("Correction Range · Low"); limit("Low frequency", $editor.settings.lowHz, values: calibratedCorrection ? [20, 25, 40, 60, 80] : [45, 60, 80], unit: "Hz") }
+                AlignedTableRow { Text("High"); limit("High frequency", $editor.settings.highHz, values: calibratedCorrection ? [300, 500, 800, 1500, 3000, 8000] : [150, 200, 300], unit: "Hz") }
+                AlignedTableRow { Text("Maximum Boost"); limit("Maximum Boost", $editor.settings.maximumBoostDB, values: calibratedCorrection ? [0, 0.5, 1] : [0], unit: "dB") }
+                AlignedTableRow { Text("Maximum Cut"); limit("Maximum Cut", $editor.settings.maximumCutDB, values: calibratedCorrection ? [1, 3, 6, 8] : [0.5, 1, 1.5], unit: "dB") }
+                AlignedTableRow { Text("Maximum Q"); limit("Maximum Q", $editor.settings.maximumQ, values: [1, 2, 4], unit: "") }
+                AlignedTableRow { Text("Filter Count"); integerLimit("Filter Count", $editor.settings.filterCount, values: calibratedCorrection ? [3, 5, 8] : [3, 5]) }
                 if editor.settings.method == .fir {
-                    GridRow { Text("Phase"); RoomCorrectionMenu(label: "Phase", selection: $editor.settings.phase, options: RoomFIRPhase.allCases, title: { $0.rawValue.capitalized }, showsLabel: false).frame(width: 120).uiInteractionAnchor("room-correction-phase") }
-                    GridRow { Text("Filter Length"); integerLimit("Filter Length", $editor.settings.filterLength, values: [256, 512, 1024, 2048, 4096, 8192, 16384, 32768]) }
-                    GridRow { Text("Added Delay Limit"); limit("Latency Limit", $editor.settings.latencyLimitMS, values: [5, 10, 20, 50, 100, 200], unit: "ms") }
+                    AlignedTableRow { Text("Phase"); RoomCorrectionMenu(label: "Phase", selection: $editor.settings.phase, options: RoomFIRPhase.allCases, title: { $0.rawValue.capitalized }, showsLabel: false).frame(width: 120).uiInteractionAnchor("room-correction-phase") }
+                    AlignedTableRow { Text("Filter Length"); integerLimit("Filter Length", $editor.settings.filterLength, values: [256, 512, 1024, 2048, 4096, 8192, 16384, 32768]) }
+                    AlignedTableRow { Text("Added Delay Limit"); limit("Latency Limit", $editor.settings.latencyLimitMS, values: [5, 10, 20, 50, 100, 200], unit: "ms") }
                 }
             }.disabled(editor.busy || editor.isVerifying)
-            DisclosureGroup(isExpanded: $correctionDetailsExpanded) {
+            SectionDisclosure(isExpanded: $correctionDetailsExpanded) {
                 RoomCorrectionResultDetails(result: editor.calculatedResult,
                     legacyBands: saved?.roomCorrectionBands ?? [], verificationCurrent: editor.verificationIsCurrent(profile: profile))
                     .uiInteractionAnchor("room-correction-details")
             } label: {
                 Text("Calculation").uiInteractionAnchor("room-correction-calculation")
             }
-            .disclosureGroupStyle(SectionDisclosureStyle())
+
         }
     }
     private func limit(_ label: String, _ value: Binding<Double?>, values: [Double], unit: String) -> some View {
         RoomCorrectionMenu(label: label, selection: value, options: [nil] + values.map { Optional($0) },
-            title: { $0.map { "\($0.formatted())\(unit.isEmpty ? "" : " " + unit)" } ?? "Auto" }, showsLabel: false).frame(width: 120)
+            title: { $0.map { "\($0.decimalText())\(unit.isEmpty ? "" : " " + unit)" } ?? "Auto" }, showsLabel: false).frame(width: 120)
     }
     private func integerLimit(_ label: String, _ value: Binding<Int?>, values: [Int]) -> some View {
         RoomCorrectionMenu(label: label, selection: value, options: [nil] + values.map { Optional($0) },
@@ -762,23 +762,23 @@ private struct RoomCorrectionResultDetails: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Calculated filters").font(.headline)
+            SelectableText("Calculated filters").selectableTextFont(.preferredFont(forTextStyle: .headline))
             if let result {
-                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-                    GridRow { Text("Method"); Text(methodTitle(result.method)) }
+                AlignedTable(horizontalSpacing: 16, verticalSpacing: 6) {
+                    AlignedTableRow { SelectableText("Method"); SelectableText(methodTitle(result.method)) }
                     if let delay = result.addedDelayMS {
-                        GridRow { Text("Added filter delay"); Text("\(delay.formatted(.number.precision(.fractionLength(2)))) ms on all channels") }
+                        AlignedTableRow { SelectableText("Added filter delay"); SelectableText("\(delay.decimalText(DecimalFormat(2))) ms on all channels") }
                     }
-                    GridRow { Text("Frequency range"); Text("\(result.lowHz.formatted(.number.precision(.fractionLength(0))))–\(result.highHz.formatted(.number.precision(.fractionLength(0)))) Hz") }
-                }.font(.callout)
+                    AlignedTableRow { SelectableText("Frequency range"); SelectableText("\(result.lowHz.decimalText(DecimalFormat(0)))–\(result.highHz.decimalText(DecimalFormat(0))) Hz") }
+                }.selectableTextFont(.preferredFont(forTextStyle: .callout))
                 if let verification = result.verification, verificationCurrent {
-                    Text(verification.passed ? "Verification passed" : "Verification failed").font(.callout)
-                    Text("Worst prediction error: \(verification.comparedResponses > 0 ? verification.worstPredictionErrorDB.formatted(.number.precision(.fractionLength(2))) + " dB RMS" : "unavailable") · \(verification.comparedResponses) responses · \(verification.measuredAt.formatted())")
-                        .font(.caption).foregroundStyle(.secondary)
+                    SelectableText(verification.passed ? "Verification passed" : "Verification failed").selectableTextFont(.preferredFont(forTextStyle: .callout))
+                    SelectableText("Worst prediction error: \(verification.comparedResponses > 0 ? verification.worstPredictionErrorDB.decimalText(DecimalFormat(2)) + " dB RMS" : "unavailable") · \(verification.comparedResponses) responses · \(DatePresentation.string(verification.measuredAt))")
+                        .selectableTextFont(.preferredFont(forTextStyle: .caption1)).selectableTextColor(.secondaryLabelColor)
                 }
                 RoomCorrectionPredictionView(result: result)
                 if !result.hasCorrection {
-                    Text("No filters were generated.").foregroundStyle(.secondary)
+                    SelectableText("No filters were generated.").selectableTextColor(.secondaryLabelColor)
                 }
                 if !result.sharedBands.isEmpty {
                     bands(result.sharedBands, title: "All speakers")
@@ -787,14 +787,14 @@ private struct RoomCorrectionResultDetails: View {
                     let filters = result.channelBands[channel] ?? []
                     if !filters.isEmpty || result.channelFIR[channel] != nil {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(channelTitle(channel, in: result)).font(.callout.weight(.semibold))
+                            SelectableText(channelTitle(channel, in: result)).selectableTextFont(.systemFont(ofSize: NSFont.preferredFont(forTextStyle: .callout).pointSize, weight: .semibold))
                             if !filters.isEmpty { filterTable(filters) }
                             if let fir = result.channelFIR[channel] {
-                                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-                                    GridRow { Text("FIR filter"); Text("\(fir.asset.frameCount) taps") }
-                                    GridRow { Text("Sample rate"); Text("\(fir.asset.sampleRate) Hz") }
-                                    GridRow { Text("Phase"); Text(result.settings.phase.rawValue.capitalized) }
-                                }.font(.caption)
+                                AlignedTable(horizontalSpacing: 16, verticalSpacing: 6) {
+                                    AlignedTableRow { SelectableText("FIR filter"); SelectableText("\(fir.asset.frameCount) taps") }
+                                    AlignedTableRow { SelectableText("Sample rate"); SelectableText("\(fir.asset.sampleRate) Hz") }
+                                    AlignedTableRow { SelectableText("Phase"); SelectableText(result.settings.phase.rawValue.capitalized) }
+                                }.selectableTextFont(.preferredFont(forTextStyle: .caption1))
                             }
                         }
                     }
@@ -802,11 +802,11 @@ private struct RoomCorrectionResultDetails: View {
             } else if !legacyBands.isEmpty {
                 bands(legacyBands, title: "All speakers · IIR equalizer")
             } else {
-                Text("No calculated filters.")
-                    .foregroundStyle(.secondary)
+                SelectableText("No calculated filters.")
+                    .selectableTextColor(.secondaryLabelColor)
             }
         }
-        .textSelection(.enabled)
+
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -826,27 +826,27 @@ private struct RoomCorrectionResultDetails: View {
 
     private func bands(_ filters: [EQBand], title: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.callout.weight(.semibold))
+            SelectableText(title).selectableTextFont(.systemFont(ofSize: NSFont.preferredFont(forTextStyle: .callout).pointSize, weight: .semibold))
             filterTable(filters)
         }
     }
 
     private func filterTable(_ filters: [EQBand]) -> some View {
         OverflowAwareHorizontalScrollView {
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-                GridRow {
-                    Text("Filter"); Text("Frequency"); Text("Gain"); Text("Q / Width")
-                }.foregroundStyle(.secondary)
-                ForEach(filters) { band in
-                    GridRow {
-                        Text(filterTitle(band.kind) + (band.enabled ? "" : " · Bypassed"))
-                        Text("\(band.frequency.formatted(.number.precision(.fractionLength(0)))) Hz")
-                        Text(band.gain.map { String(format: "%+.1f dB", $0) } ?? "—")
-                        Text(band.q.map { $0.formatted(.number.precision(.fractionLength(0...2))) }
-                            ?? band.bandwidth.map { "\($0.formatted(.number.precision(.fractionLength(0...2)))) oct" } ?? "—")
+            AlignedTable(horizontalSpacing: 16, verticalSpacing: 6) {
+                AlignedTableRow {
+                    SelectableText("Filter"); SelectableText("Frequency"); SelectableText("Gain"); SelectableText("Q / Width")
+                }.foregroundColor(.secondary)
+                alignedTableRows(filters, id: \.id) { band in
+                    AlignedTableRow {
+                        SelectableText(filterTitle(band.kind) + (band.enabled ? "" : " · Bypassed"))
+                        SelectableText("\(band.frequency.decimalText(DecimalFormat(0))) Hz")
+                        SelectableText(band.gain.map { String(format: "%+.1f dB", $0) } ?? "—")
+                        SelectableText(band.q.map { $0.decimalText(DecimalFormat(0...2)) }
+                            ?? band.bandwidth.map { "\($0.decimalText(DecimalFormat(0...2))) oct" } ?? "—")
                     }
                 }
-            }.font(.caption.monospacedDigit()).fixedSize(horizontal: true, vertical: false)
+            }.selectableTextFont(.monospacedDigitSystemFont(ofSize: NSFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular)).fixedSize(horizontal: true, vertical: false)
         }
     }
 
@@ -876,18 +876,18 @@ struct RoomCorrectionMenu<Value: Hashable>: View {
 
     var body: some View {
         HStack(spacing: compact ? 4 : 8) {
-            if showsLabel { Text(label).fixedSize() }
+            if showsLabel { SelectableText(label).fixedSize() }
             HStack(spacing: 6) {
-                Text(title(selection)).lineLimit(1).truncationMode(.tail)
+                SelectableText(title(selection)).lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .selectableTextColor(.secondaryLabelColor)
             }
             .padding(.horizontal, compact ? 6 : 8).frame(height: compact ? 20 : 24)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 5))
+            .background(RoundedRectangle(cornerRadius: 5).fill(Color(.controlBackgroundColor)))
             .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
             .opacity(isEnabled ? 1 : 0.5)
-            .overlay {
+            .overlay(Group {
                 Menu {
                     ForEach(options, id: \.self) { option in
                         Toggle(title(option), isOn: Binding(get: { selection == option }, set: { _ in selection = option }))
@@ -895,9 +895,9 @@ struct RoomCorrectionMenu<Value: Hashable>: View {
                 } label: {
                     Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
                 }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .menuStyle(BorderlessButtonMenuStyle(showsMenuIndicator: false))
                 .accessibilityLabel("\(label): \(title(selection))")
-            }
+            })
             .uiInteractionAnchor("room-menu-\(label)")
         }
     }

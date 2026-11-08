@@ -17,7 +17,7 @@ struct PerformanceDiagnosticsSection: View {
 
     var body: some View {
         GroupBox {
-            DisclosureGroup(isExpanded: $expanded) {
+            SectionDisclosure(isExpanded: $expanded) {
                 if expanded { PerformanceDiagnosticsView(state: state) }
             } label: {
                 VStack(alignment: .leading, spacing: 4) {
@@ -27,7 +27,7 @@ struct PerformanceDiagnosticsSection: View {
                          : recorder.isAggregating ? "Preparing performance report…"
                          : recorder.baseline != nil ? "Recording complete. Open to review or export the report."
                          : "Record timing while reproducing stutters, delays, or slow responses.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                 }
             }
             .padding(6)
@@ -65,12 +65,12 @@ struct PerformanceDiagnosticsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Measured latency ends at the Camilla input boundary, before physical playback.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundColor(.secondary)
             if !recorder.isCapturing && !recorder.isAggregating {
                 Picker("Duration", selection: $duration) {
                     Text("10 seconds").tag(10.0); Text("30 seconds").tag(30.0); Text("60 seconds").tag(60.0)
                 }
-                DisclosureGroup("Recording Options", isExpanded: $showOptions) {
+                SectionDisclosure("Recording Options", isExpanded: $showOptions) {
                     if showOptions {
                         VStack(alignment: .leading, spacing: 10) {
                             Picker("Scenario", selection: $scenario) { ForEach(scenarios, id: \.self) { Text($0) } }
@@ -78,13 +78,13 @@ struct PerformanceDiagnosticsView: View {
                             Toggle("Detailed audio tracing", isOn: $detailedTracing)
                             if !detailedTracing {
                                 Text("Records coarse counters and CPU for an OFF/ON comparison. Phase timing is unavailable.")
-                                    .font(.caption).foregroundStyle(.secondary)
+                                    .font(.caption).foregroundColor(.secondary)
                             }
                             Toggle("Immediate (include startup)", isOn: $immediate)
                         }
                     }
                 }
-                if !immediate { Text("5-second warm-up before measurement.").font(.caption).foregroundStyle(.secondary) }
+                if !immediate { Text("5-second warm-up before measurement.").font(.caption).foregroundColor(.secondary) }
                 Button("Start Capture") {
                     var intended = PerformanceScenario(label: label.isEmpty ? scenario : label)
                     if scenario.hasPrefix("B1") || scenario.hasPrefix("B2") {
@@ -104,7 +104,7 @@ struct PerformanceDiagnosticsView: View {
                         })
                 }
                 Text("Set up the workload yourself, then capture. Use Immediate for the first baseline when diagnosing startup queue recoveries.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
             }
             if recorder.isCapturing {
                 HStack {
@@ -115,20 +115,20 @@ struct PerformanceDiagnosticsView: View {
                     Button("Stop Capture") { Task { await recorder.stop() } }
                 }
                 Text("\(recorder.audioCount) PCM samples · \(recorder.packetCount) packet samples · \(recorder.telemetryDrops) telemetry drops")
-                    .font(.caption).monospacedDigit()
+                    .font(.caption.monospacedDigit())
             } else if recorder.isAggregating {
                 ProgressView("Preparing report…").controlSize(.small)
             }
             if let environment = (recorder.isCapturing ? recorder.currentEnvironment : idleEnvironment) ?? recorder.currentEnvironment {
-                DisclosureGroup("Audio & Queue Details") {
+                SectionDisclosure("Audio & Queue Details") {
                     Text("\(environment.sampleRate ?? 0) Hz · \(environment.channelCount ?? 0) channels · \(environment.playbackMode ?? "Inactive") · \(environment.activeApplications) active applications")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                     queueView(environment.queue)
-                    Text("Session recoveries: \(environment.recoveries) · Dropped PCM frames: \(environment.droppedFrames)").font(.caption).foregroundStyle(.secondary)
+                    Text("Session recoveries: \(environment.recoveries) · Dropped PCM frames: \(environment.droppedFrames)").font(.caption).foregroundColor(.secondary)
                     if !recorder.isCapturing {
                         Button("Refresh Audio Details") { idleEnvironment = state.performanceEnvironment() }
                         Text("Snapshot taken when this section opened or was refreshed.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundColor(.secondary)
                     }
                 }
             }
@@ -136,25 +136,25 @@ struct PerformanceDiagnosticsView: View {
             if let baseline = recorder.baseline, !recorder.isCapturing, !recorder.isAggregating {
                 if baseline.telemetryDrops > 0 {
                     Label("Measurement incomplete: \(baseline.telemetryDrops) telemetry samples dropped", systemImage: "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(.orange)
+                        .font(.caption).foregroundColor(.orange)
                 }
-                ForEach(baseline.scenarioMismatches, id: \.self) { Text($0).font(.caption).foregroundStyle(.orange) }
+                ForEach(baseline.scenarioMismatches, id: \.self) { Text($0).font(.caption).foregroundColor(.orange) }
                 Text("\(baseline.recoveriesDuringCapture) recoveries · \(baseline.droppedFramesDuringCapture) frames dropped during capture")
                 metricTable("Audio path (ms)", metrics: baseline.audio)
                 if let presentation = baseline.presentation {
-                    DisclosureGroup("Presentation timing") {
+                    SectionDisclosure("Presentation timing") {
                         if let stats = presentation.statistics {
                             Text("\(stats.requests) requests · \(stats.coalescedRequests) coalesced · \(stats.snapshotsBuilt) builds · \(stats.mainDeliveries) deliveries").font(.caption)
-                            Text("Maximum pending drains: \(stats.maximumPendingDrains) · Trailing builds: \(stats.trailingBuilds)").font(.caption).foregroundStyle(.secondary)
+                            Text("Maximum pending drains: \(stats.maximumPendingDrains) · Trailing builds: \(stats.trailingBuilds)").font(.caption).foregroundColor(.secondary)
                         }
                         metricTable("Presentation (ms)", metrics: presentation.durations)
                     }
                 }
                 if !baseline.interactions.isEmpty {
-                    DisclosureGroup("Interaction timing") { metricTable("Interactions (ms)", metrics: baseline.interactions) }
+                    SectionDisclosure("Interaction timing") { metricTable("Interactions (ms)", metrics: baseline.interactions) }
                 }
                 if !baseline.transitions.isEmpty {
-                    DisclosureGroup("Transition timing") { metricTable("Transitions (ms)", metrics: baseline.transitions) }
+                    SectionDisclosure("Transition timing") { metricTable("Transitions (ms)", metrics: baseline.transitions) }
                 }
                 WrappingControlLayout {
                     Button("Copy Performance Report") {
@@ -164,18 +164,17 @@ struct PerformanceDiagnosticsView: View {
                     Button(exportOperation.isRunning ? "Exporting…" : "Export JSON…") { export(baseline) }
                         .disabled(exportOperation.isRunning)
                 }
-                DisclosureGroup("Full report and recovery events", isExpanded: $showReport) {
+                SectionDisclosure("Full report and recovery events", isExpanded: $showReport) {
                     if showReport {
-                        Text(displayedReport.isEmpty ? "Preparing report…" : displayedReport).font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        SelectableText(displayedReport.isEmpty ? "Preparing report…" : displayedReport, font: .monospacedSystemFont(ofSize: NSFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular)).frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }
-            if let exportError { Text(exportError).font(.caption).foregroundStyle(.red) }
+            if let exportError { Text(exportError).font(.caption).foregroundColor(.red) }
         }.frame(maxWidth: .infinity, alignment: .leading)
-        .task { idleEnvironment = state.performanceEnvironment() }
+        .viewTask { idleEnvironment = state.performanceEnvironment() }
         .onChange(of: recorder.isCapturing) { if !$0 { idleEnvironment = state.performanceEnvironment() } }
-        .task(id: reportID) {
+        .viewTask(id: reportID) {
             report = ""
             preparedReportID = nil
             guard let baseline = recorder.baseline else { return }
@@ -189,18 +188,18 @@ struct PerformanceDiagnosticsView: View {
     }
     private func metricTable(_ title: String, metrics: [String: LatencyDistribution]) -> some View {
         OverflowAwareHorizontalScrollView {
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 5) {
-                GridRow { Text(title); Text("Count"); Text("Median"); Text("p95"); Text("p99"); Text("Max") }
+            AlignedTable(horizontalSpacing: 12, verticalSpacing: 5) {
+                AlignedTableRow { Text(title); Text("Count"); Text("Median"); Text("p95"); Text("p99"); Text("Max") }
                     .fontWeight(.medium)
-                ForEach(metrics.keys.sorted(), id: \.self) { name in
+                alignedTableRows(metrics.keys.sorted(), id: \.self) { name in
                     let distribution = metrics[name]!
-                    GridRow {
+                    AlignedTableRow {
                         Text(name); Text("\(distribution.sampleCount)")
                         value(distribution.medianMilliseconds); value(distribution.p95Milliseconds)
                         value(distribution.p99Milliseconds); value(distribution.maximumMilliseconds)
                     }
                 }
-            }.font(.caption).monospacedDigit()
+            }.font(.caption.monospacedDigit())
         }
     }
     private func value(_ value: Double) -> some View { Text(String(format: "%.2f", value)) }
@@ -216,7 +215,7 @@ struct PerformanceDiagnosticsView: View {
                     : mode == .clockTracked ? "Rate target: fixed, with measured clock drift"
                     : mode == .configuredWhenQueued ? "Rate target: fixed, with empty-queue guard" : "Rate target: fixed configuration")
             }
-        }.font(.caption).foregroundStyle(.secondary).monospacedDigit()
+        }.font(.caption.monospacedDigit()).foregroundColor(.secondary)
     }
     private func export(_ baseline: PerformanceBaseline) {
         let redact = redactNames

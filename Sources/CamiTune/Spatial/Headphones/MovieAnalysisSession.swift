@@ -8,6 +8,12 @@ import SoundAnalysis
 /// One serialized worker for this router, including retired model calls. A slow
 /// platform call cannot create another worker when the audio route is replaced.
 final class MovieAnalysisSession: @unchecked Sendable {
+    static func supports(_ detector: MovieDetector) -> Bool {
+        if detector == .basic { return true }
+        if #available(macOS 12, *) { return true }
+        return false
+    }
+
     let changes = PassthroughSubject<MovieAnalysisStatus, Never>()
     private let control = NSLock()
     private enum Selection {
@@ -78,10 +84,14 @@ final class MovieAnalysisSession: @unchecked Sendable {
             context = nil
             publishStatus()
             if request.phase == .preparing, let intent = request.intent {
-                do {
-                    let prepared = try MovieAnalysisContext(exchange: exchange, generation: request.generation, detector: intent.detector)
-                    if exchange.begin(generation: request.generation) { context = prepared }
-                } catch { exchange.fail(.modelFailure, generation: request.generation) }
+                if !Self.supports(intent.detector) {
+                    exchange.fail(.unsupportedDetector, generation: request.generation)
+                } else {
+                    do {
+                        let prepared = try MovieAnalysisContext(exchange: exchange, generation: request.generation, detector: intent.detector)
+                        if exchange.begin(generation: request.generation) { context = prepared }
+                    } catch { exchange.fail(.modelFailure, generation: request.generation) }
+                }
             }
         }
         while let context, context.exchange === exchange {
@@ -143,6 +153,7 @@ private final class MovieAnalysisContext {
         input = .init(repeating: 0, count: exchange.batchFrames * exchange.layout.channelCount)
         mixer = .init(layout: exchange.layout, rate: exchange.rate)
         if detector == .localAI {
+            guard #available(macOS 12, *) else { throw CocoaError(.featureUnsupported) }
             let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
             request.windowDuration = CMTime(seconds: 1, preferredTimescale: CMTimeScale(exchange.rate))
             request.overlapFactor = 0

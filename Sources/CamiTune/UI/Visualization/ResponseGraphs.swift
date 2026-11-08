@@ -1,5 +1,94 @@
 import Combine
 import SwiftUI
+import AppKit
+
+/// Shared vector artwork for plots and meters. AppKit invalidates the backing
+/// layer on demand; the audio and analysis owners retain their display cadence.
+struct PlotCanvas: NSViewRepresentable {
+    var rendersAsynchronously = false
+    let renderer: (inout PlotDrawingContext, CGSize) -> Void
+
+    func makeNSView(context: Context) -> PlotDrawingView {
+        let view = PlotDrawingView()
+        view.wantsLayer = true
+        return view
+    }
+
+    func updateNSView(_ view: PlotDrawingView, context: Context) {
+        view.renderer = renderer
+        view.layer?.drawsAsynchronously = rendersAsynchronously
+        view.needsDisplay = true
+    }
+}
+
+final class PlotDrawingView: NSView {
+    var renderer: ((inout PlotDrawingContext, CGSize) -> Void)?
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        var drawing = PlotDrawingContext(context: context)
+        renderer?(&drawing, bounds.size)
+    }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
+struct PlotDrawingContext {
+    let context: CGContext
+
+    func stroke(_ path: Path, color: Color, lineWidth: CGFloat = 1) {
+        stroke(path, color: color, style: StrokeStyle(lineWidth: lineWidth))
+    }
+
+    func stroke(_ path: Path, color: Color, style: StrokeStyle) {
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.setStrokeColor(NSColor(color).cgColor)
+        context.setLineWidth(style.lineWidth)
+        context.setLineCap(style.lineCap)
+        context.setLineJoin(style.lineJoin)
+        context.setMiterLimit(style.miterLimit)
+        context.setLineDash(phase: style.dashPhase, lengths: style.dash)
+        context.addPath(path.cgPath)
+        context.strokePath()
+    }
+
+    func fill(_ path: Path, color: Color) {
+        context.setFillColor(NSColor(color).cgColor)
+        context.addPath(path.cgPath)
+        context.fillPath()
+    }
+
+    func fillGradient(_ path: Path, top: Color, bottom: Color, height: CGFloat) {
+        let colors = [NSColor(top).cgColor, NSColor(bottom).cgColor] as CFArray
+        guard let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: colors, locations: [0, 1]) else { return }
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.addPath(path.cgPath)
+        context.clip()
+        context.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: 0, y: height), options: [])
+    }
+
+    func clip(to path: Path) {
+        context.addPath(path.cgPath)
+        context.clip()
+    }
+
+    @discardableResult
+    func label(_ text: String, font: NSFont, color: Color = .primary,
+               at point: CGPoint, anchor: UnitPoint = .center) -> CGSize {
+        let label = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: NSColor(color)])
+        let size = label.size()
+        label.draw(at: CGPoint(x: point.x - size.width * anchor.x, y: point.y - size.height * anchor.y))
+        return size
+    }
+}
 
 struct LineGraph: View {
     let points: [(Double, Double)]
@@ -25,17 +114,17 @@ struct LineGraph: View {
     }
 
     private var plot: some View {
-        Canvas(rendersAsynchronously: true) { context, size in
+        PlotCanvas(rendersAsynchronously: true) { context, size in
             let plot = ResponseGraphPlot(xRange: xRange, size: size, scale: axisScale)
             plot.drawGrid(context: &context, zeroRange: zeroLine ? yRange : nil)
             plot.drawLine(points, yRange: yRange, color: lineColor, width: 1.8,
                 fillOpacity: fillsArea ? 0.34 : nil, context: &context)
         }
-        .overlay(alignment: .bottom) {
+        .overlay(Group {
             SpectrumFrequencyAxis(xRange: xRange, scale: axisScale)
                 .frame(height: 16 * axisScale)
                 .offset(y: 16 * axisScale)
-        }
+        }, alignment: .bottom)
     }
 
 }
@@ -69,7 +158,7 @@ struct SpectrumWithResponseGraph: View {
     }
 
     private var plot: some View {
-        Canvas(rendersAsynchronously: true) { context, size in
+        PlotCanvas(rendersAsynchronously: true) { context, size in
             let plot = ResponseGraphPlot(xRange: xRange, size: size, scale: axisScale)
             plot.drawGrid(context: &context, zeroRange: responseRange,
                 zeroColor: CorrectionGraphPresentation.equalizerColor.opacity(0.3))
@@ -78,11 +167,11 @@ struct SpectrumWithResponseGraph: View {
             plot.drawLine(response, yRange: responseRange,
                 color: CorrectionGraphPresentation.equalizerColor, width: 1.4, context: &context)
         }
-        .overlay(alignment: .bottom) {
+        .overlay(Group {
             SpectrumFrequencyAxis(xRange: xRange, scale: axisScale)
                 .frame(height: 16 * axisScale)
                 .offset(y: 16 * axisScale)
-        }
+        }, alignment: .bottom)
     }
 
 }
@@ -116,26 +205,26 @@ struct ResponseGraphPlot {
         return path
     }
 
-    func drawGrid(context: inout GraphicsContext, zeroRange: ClosedRange<Double>? = nil,
+    func drawGrid(context: inout PlotDrawingContext, zeroRange: ClosedRange<Double>? = nil,
         zeroColor: Color = .primary.opacity(0.25)) {
         for frequency in SpectrumFrequencyTicks.values(in: xRange) {
             var path = Path()
             let xx = x(frequency)
             path.move(to: CGPoint(x: xx, y: 0))
             path.addLine(to: CGPoint(x: xx, y: size.height))
-            context.stroke(path, with: .color(Color.primary.opacity(0.12)), lineWidth: 1)
+            context.stroke(path, color: Color.primary.opacity(0.12), lineWidth: 1)
         }
         if let zeroRange, zeroRange.contains(0) {
             var path = Path()
             let yy = y(0, range: zeroRange)
             path.move(to: CGPoint(x: x(xRange.lowerBound), y: yy))
             path.addLine(to: CGPoint(x: x(xRange.upperBound), y: yy))
-            context.stroke(path, with: .color(zeroColor), lineWidth: 1)
+            context.stroke(path, color: zeroColor, lineWidth: 1)
         }
     }
 
     func drawLine(_ points: [(Double, Double)], yRange: ClosedRange<Double>, color: Color,
-        width: Double, fillOpacity: Double? = nil, context: inout GraphicsContext) {
+        width: Double, fillOpacity: Double? = nil, context: inout PlotDrawingContext) {
         guard points.count > 1, let first = points.first, let last = points.last else { return }
         let path = path(points, yRange: yRange)
         if let fillOpacity {
@@ -143,11 +232,9 @@ struct ResponseGraphPlot {
             fill.addLine(to: CGPoint(x: x(last.0), y: size.height))
             fill.addLine(to: CGPoint(x: x(first.0), y: size.height))
             fill.closeSubpath()
-            context.fill(fill, with: .linearGradient(
-                Gradient(colors: [color.opacity(fillOpacity), color.opacity(0.04)]),
-                startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height)))
+            context.fillGradient(fill, top: color.opacity(fillOpacity), bottom: color.opacity(0.04), height: size.height)
         }
-        context.stroke(path, with: .color(color), lineWidth: width)
+        context.stroke(path, color: color, lineWidth: width)
     }
 }
 
@@ -167,12 +254,12 @@ private struct SpectrumGraphLayout<Plot: View>: View {
                 .padding(.leading, -16 * scale)
                 .padding(.vertical, 16 * scale)
         }
-        .overlay(alignment: .trailing) {
+        .overlay(Group {
             if let responseRange {
                 GraphDecibelAxis(range: responseRange, scale: scale, signed: true, alignment: .leading,
                     color: CorrectionGraphPresentation.equalizerColor)
             }
-        }
+        }, alignment: .trailing)
     }
 }
 
@@ -198,12 +285,12 @@ private struct GraphDecibelAxis: View {
             .padding(.bottom, 16 * scale)
         }
         .font(.caption2.monospacedDigit())
-        .foregroundStyle(color)
+        .foregroundColor(color)
         .fixedSize(horizontal: true, vertical: false)
     }
 
     private func label(_ value: Double) -> String {
-        let number = value.formatted(.number.precision(.fractionLength(0...2)))
+        let number = value.decimalText(DecimalFormat(0...2))
         return signed && value > 0 ? "+\(number)" : number
     }
 }
@@ -249,21 +336,17 @@ private struct SpectrumFrequencyAxis: View {
     var body: some View {
         // Axis labels are artwork, not controls. Draw them with the graph so
         // each animated width does not rebuild eight Text/GeometryReader trees.
-        Canvas(rendersAsynchronously: true) { context, size in
+        PlotCanvas(rendersAsynchronously: true) { context, size in
             let frequencies = SpectrumFrequencyTicks.values(in: xRange)
             let fontSize = SpectrumFrequencyTicks.fontSize(in: xRange, width: size.width, scale: scale)
             for frequency in frequencies {
-                let label = context.resolve(Text(SpectrumFrequencyTicks.label(frequency))
-                    .font(.system(size: fontSize).monospacedDigit())
-                    .foregroundColor(.secondary))
                 let x = SpectrumFrequencyTicks.x(frequency, in: xRange, width: size.width, scale: scale)
-                context.draw(label, at: CGPoint(x: x, y: 8 * scale))
+                let font = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .regular)
+                let labelSize = context.label(SpectrumFrequencyTicks.label(frequency), font: font, color: .secondary,
+                    at: CGPoint(x: x, y: 8 * scale))
                 if frequency == frequencies.last {
-                    let labelSize = label.measure(in: CGSize(width: CGFloat.infinity, height: CGFloat.infinity))
-                    let unit = context.resolve(Text("Hz")
-                        .font(.system(size: fontSize).monospacedDigit())
-                        .foregroundColor(.secondary))
-                    context.draw(unit, at: CGPoint(x: x + labelSize.width / 2 + 3 * scale, y: 8 * scale), anchor: .leading)
+                    context.label("Hz", font: font, color: .secondary,
+                        at: CGPoint(x: x + labelSize.width / 2 + 3 * scale, y: 8 * scale), anchor: .leading)
                 }
             }
         }

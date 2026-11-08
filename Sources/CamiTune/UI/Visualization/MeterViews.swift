@@ -13,13 +13,13 @@ struct MeterBar: View {
             HStack {
                 Text(label).font(.caption)
                 Spacer()
-                Text(String(format: "%.1f dB", peak)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Text(String(format: "%.1f dB", peak)).font(.caption.monospacedDigit()).foregroundColor(.secondary)
             }
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(.quaternary)
+                    Capsule().fill(Color(.quaternaryLabelColor))
                     Capsule()
-                        .fill(.primary.opacity(0.45))
+                        .fill(Color.primary.opacity(0.45))
                         .frame(width: geo.size.width, height: geo.size.height)
                         .scaleEffect(x: normalized(rms), y: 1, anchor: .leading)
                         .animation(
@@ -27,7 +27,7 @@ struct MeterBar: View {
                             value: rms
                         )
                     Rectangle()
-                        .fill(.primary)
+                        .fill(Color.primary)
                         .frame(width: 2)
                         .offset(x: geo.size.width * normalized(peak) - 1)
                         .animation(
@@ -51,27 +51,30 @@ struct SignalMetersView: View {
 
     var body: some View {
         let layout = MultichannelMeterLayout(profile: profile)
-        VStack(alignment: .leading, spacing: 12) {
-            if layout.usesGroups {
-                Toggle("Show All Output Channels", isOn: $showAllChannels)
-                    .toggleStyle(.checkbox)
-                if !showAllChannels {
-                    Text("Output group peak shows the loudest speaker; RMS shows average power.")
-                        .font(.caption).foregroundStyle(.secondary)
+        VisibleRegion { isVisible in
+            VStack(alignment: .leading, spacing: 12) {
+                if layout.usesGroups {
+                    Toggle("Show All Output Channels", isOn: $showAllChannels)
+                        .toggleStyle(.checkbox)
+                    if !showAllChannels {
+                        Text("Output group peak shows the loudest speaker; RMS shows average power.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
                 }
-            }
-            ResponsiveStackLayout(minimumHorizontalWidth: 360, horizontalSpacing: 24) {
-                meterGroup("Audio In", capture: true, layout: layout)
-                meterGroup("Audio Out", capture: false, layout: layout)
-            }
-        }.onChange(of: profile.id) { _ in showAllChannels = false }
+                ResponsiveStackLayout(minimumHorizontalWidth: 360, horizontalSpacing: 24) {
+                    meterGroup("Audio In", capture: true, layout: layout, isVisible: isVisible)
+                    meterGroup("Audio Out", capture: false, layout: layout, isVisible: isVisible)
+                }
+            }.onChange(of: profile.id) { _ in showAllChannels = false }
+        }
     }
 
-    private func meterGroup(_ title: String, capture: Bool, layout: MultichannelMeterLayout) -> some View {
+    private func meterGroup(_ title: String, capture: Bool, layout: MultichannelMeterLayout, isVisible: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.headline)
             LiveChannelMeterBars(meters: meters, profileID: profile.id, capture: capture,
-                rows: capture ? layout.sourceChannels : (layout.usesGroups && !showAllChannels ? layout.groups : layout.channels))
+                rows: capture ? layout.sourceChannels : (layout.usesGroups && !showAllChannels ? layout.groups : layout.channels),
+                isVisible: isVisible)
         }.frame(maxWidth: .infinity)
     }
 }
@@ -86,7 +89,7 @@ struct LiveClippingWarning: View {
             Label("Output clipping",
                   systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
-                .foregroundStyle(.orange)
+                .foregroundColor(.orange)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityHint("Reduce processing gain or check output protection.")
         }
@@ -99,12 +102,12 @@ struct MeterStatusDisclosure: View {
     @State private var isExpanded = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
+        SectionDisclosure(isExpanded: $isExpanded) {
             AudioRuntimeStatusView(monitor: monitor, profileID: profileID)
         } label: {
             Text("Status").font(.subheadline.weight(.semibold))
         }
-        .disclosureGroupStyle(SectionDisclosureStyle())
+
         .onChange(of: profileID) { _ in isExpanded = false }
     }
 }
@@ -131,7 +134,7 @@ struct AudioRuntimeStatusContent: View {
         VStack(alignment: .leading, spacing: 12) {
             if activeStatus.isActive && !activeStatus.pipelineAssessment().reasons.isEmpty {
                 Text(activeStatus.pipelineAssessment().explanation)
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 12, alignment: .top)],
                       alignment: .leading, spacing: 12) {
@@ -240,9 +243,9 @@ private struct RuntimeStatusRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(title).foregroundStyle(.secondary)
+            Text(title).foregroundColor(.secondary)
             Spacer(minLength: 0)
-            Text(value).monospacedDigit().foregroundStyle(accent ?? .primary)
+            Text(value).monospacedDigits().foregroundColor(accent ?? .primary)
                 .multilineTextAlignment(.trailing)
         }
         .font(.caption)
@@ -251,11 +254,14 @@ private struct RuntimeStatusRow: View {
     }
 }
 
+@MainActor
 private struct LiveChannelMeterBars: View {
-    @ObservedObject var meters: AudioRuntimeMonitor
+    let meters: AudioRuntimeMonitor
     let profileID: UUID
     let capture: Bool
     let rows: [MultichannelMeterLayout.Row]
+    let isVisible: Bool
+    @State private var levels = SignalLevels.silent
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -264,18 +270,25 @@ private struct LiveChannelMeterBars: View {
                 MeterBar(label: row.label, rms: level.rms, peak: level.peak)
             }
         }
+        .onReceive(Publishers.CombineLatest(meters.$activeSession, meters.$levels)
+            .filter { _ in isVisible }
+            .map { $0?.profileID == profileID ? $1 : .silent }
+            .removeDuplicates()) { levels = $0 }
+        .onAppear { refresh() }
+        .onChange(of: isVisible) { _ in refresh() }
+        .onChange(of: profileID) { _ in refresh() }
     }
 
-    private var profileIsActive: Bool { meters.activeSession?.profileID == profileID }
-    private var levelsAvailable: Bool {
-        profileIsActive
+    private func refresh() {
+        guard isVisible else { return }
+        let current = meters.activeSession?.profileID == profileID ? meters.levels : .silent
+        if levels != current { levels = current }
     }
+
     private var rms: [Double] {
-        guard levelsAvailable else { return [] }
-        return capture ? meters.captureRMS : meters.playbackRMS
+        capture ? levels.captureRMS : levels.playbackRMS
     }
     private var peak: [Double] {
-        guard levelsAvailable else { return [] }
-        return capture ? meters.capturePeak : meters.playbackPeak
+        capture ? levels.capturePeak : levels.playbackPeak
     }
 }

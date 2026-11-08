@@ -138,7 +138,10 @@ package struct ProfileSectionLayout: Codable, Hashable, Sendable {
         return normalized
     }
     package func visibleSections(for type: ProfileEndpointKind) -> [ProfileSection] {
-        normalizedOrder.filter { $0.applies(to: type) && ($0 == .deviceSetup || !hidden.contains($0)) }
+        normalizedOrder.filter { isVisible($0, for: type) }
+    }
+    private func isVisible(_ section: ProfileSection, for type: ProfileEndpointKind) -> Bool {
+        section.applies(to: type) && (section == .deviceSetup || !hidden.contains(section))
     }
     package var subwooferVisibility: SectionVisibility {
         get { hidden.contains(.subwooferControl) ? .hidden : explicitlyShown.contains(.subwooferControl) ? .shown : .automatic }
@@ -149,9 +152,12 @@ package struct ProfileSectionLayout: Codable, Hashable, Sendable {
         }
     }
     package func visibleSections(for profile: DeviceProfile) -> [ProfileSection] {
-        visibleSections(for: profile.effectiveEndpointKind).filter {
-            $0 != .subwooferControl || subwooferVisibility == .shown || profile.hasSpeakersAndSubwoofer
-        }
+        normalizedOrder.filter { isVisible($0, for: profile) }
+    }
+    fileprivate func isVisible(_ section: ProfileSection, for profile: DeviceProfile) -> Bool {
+        let section = section.consolidated
+        return isVisible(section, for: profile.effectiveEndpointKind)
+            && (section != .subwooferControl || subwooferVisibility == .shown || profile.hasSpeakersAndSubwoofer)
     }
 
     /// Exclusive output changes presentation without changing the saved layout
@@ -185,7 +191,9 @@ extension DeviceProfile {
     }
 
     package func isSectionEnabled(_ section: ProfileSection) -> Bool {
-        effectiveSectionLayout.visibleSections(for: self).contains(section.consolidated)
+        // Enablement does not depend on order. Reuse the visibility predicate
+        // without normalizing and allocating the complete presentation list.
+        effectiveSectionLayout.isVisible(section, for: self)
     }
 
     package var effectivePlaybackMode: PlaybackMode { isSectionEnabled(.mode) ? playbackMode : .direct }

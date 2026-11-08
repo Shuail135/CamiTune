@@ -1,10 +1,12 @@
 #import "PluginHost.h"
+#include "ParameterChangeFlags.h"
 #include <atomic>
 #include <array>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <unordered_map>
 #include <stdexcept>
 
 #define INIT_CLASS_IID
@@ -150,9 +152,22 @@ public:
     IAttributeList* PLUGIN_API getAttributes() override { return attributes; }
 };
 
+struct ParameterPoints {
+    struct Point { int32 offset; ParamValue value; int32 next = -1; };
+    // Prepared for all editor parameters plus a bounded MIDI block. Output
+    // automation uses a shared pool with at least 8192 points.
+    std::vector<Point> values;
+    int32 count = 0;
+};
 class ParameterQueue final : public IParamValueQueue {
+    ParameterPoints* points = nullptr;
+    int32 first = -1, last = -1, cursor = -1, cursorIndex = 0;
 public:
-    ParamID id = 0; ParamValue value = 0; int32 offset = 0; bool present = false;
+    ParamID id = 0; ParamValue value = 0; int32 offset = 0, count = 0, activeIndex = -1;
+    void reset(ParamID identifier, ParameterPoints& storage) {
+        id = identifier; points = &storage;
+        first = last = cursor = -1; count = cursorIndex = 0;
+    }
     tresult PLUGIN_API queryInterface(const TUID iid, void** object) override {
         if (equalID(iid, IParamValueQueue::iid) || equalID(iid, FUnknown::iid)) { *object = this; return kResultOk; }
         *object = nullptr; return kNoInterface;
@@ -160,19 +175,46 @@ public:
     uint32 PLUGIN_API addRef() override { return 1; }
     uint32 PLUGIN_API release() override { return 1; }
     ParamID PLUGIN_API getParameterId() override { return id; }
-    int32 PLUGIN_API getPointCount() override { return present ? 1 : 0; }
+    int32 PLUGIN_API getPointCount() override { return count; }
     tresult PLUGIN_API getPoint(int32 index, int32& sample, ParamValue& v) override {
-        if (index || !present) return kInvalidArgument; sample = offset; v = value; return kResultOk;
+        if (index < 0 || index >= count) return kInvalidArgument;
+        // Plug-ins normally iterate in order; retain that linear cost while
+        // allowing random access required by IParamValueQueue.
+        if (cursor < 0 || index < cursorIndex) { cursor = first; cursorIndex = 0; }
+        while (cursorIndex < index) { cursor = points->values[cursor].next; ++cursorIndex; }
+        const auto& point = points->values[cursor]; sample = point.offset; v = point.value;
+        return kResultOk;
     }
     tresult PLUGIN_API addPoint(int32 sample, ParamValue v, int32& index) override {
-        offset = sample; value = v; present = true; index = 0; return kResultOk;
+        if (sample < 0 || !std::isfinite(v) || (count && sample < offset)) return kInvalidArgument;
+        if (count && sample == offset) {
+            points->values[last].value = value = v; index = count - 1; return kResultOk;
+        }
+        if (points->count == points->values.size()) return kOutOfMemory;
+        int32 next = points->count++;
+        points->values[next] = {sample, v, -1};
+        if (count) points->values[last].next = next; else first = next;
+        last = next; offset = sample; value = v; index = count++;
+        return kResultOk;
     }
 };
 class ParameterChanges final : public IParameterChanges {
+    const std::unordered_map<ParamID, int>* indices = nullptr;
 public:
-    static constexpr int capacity = 4096;
-    std::array<ParameterQueue, capacity> queues;
+    std::vector<ParameterQueue> queues;
+    std::vector<int> active;
+    ParameterPoints points;
     int32 count = 0;
+    void prepare(const std::vector<ParamID>& ids, const std::unordered_map<ParamID, int>& schema) {
+        indices = &schema;
+        queues.resize(ids.size()); active.resize(ids.size());
+        points.values.resize(std::max<size_t>(8192, ids.size() + 1024));
+        for (size_t i = 0; i < ids.size(); ++i) queues[i].id = ids[i];
+    }
+    void clear() {
+        for (int i = 0; i < count; ++i) queues[active[i]].activeIndex = -1;
+        count = points.count = 0;
+    }
     tresult PLUGIN_API queryInterface(const TUID iid, void** object) override {
         if (equalID(iid, IParameterChanges::iid) || equalID(iid, FUnknown::iid)) { *object = this; return kResultOk; }
         *object = nullptr; return kNoInterface;
@@ -180,11 +222,16 @@ public:
     uint32 PLUGIN_API addRef() override { return 1; }
     uint32 PLUGIN_API release() override { return 1; }
     int32 PLUGIN_API getParameterCount() override { return count; }
-    IParamValueQueue* PLUGIN_API getParameterData(int32 index) override { return index >= 0 && index < count ? &queues[index] : nullptr; }
+    IParamValueQueue* PLUGIN_API getParameterData(int32 index) override { return index >= 0 && index < count ? &queues[active[index]] : nullptr; }
     IParamValueQueue* PLUGIN_API addParameterData(const ParamID& id, int32& index) override {
-        for (int i = 0; i < count; ++i) if (queues[i].id == id) { index = i; return &queues[i]; }
-        if (count == capacity) return nullptr;
-        index = count++; queues[index].id = id; queues[index].present = false; return &queues[index];
+        if (!indices) return nullptr;
+        auto found = indices->find(id); if (found == indices->end()) return nullptr;
+        auto& queue = queues[found->second];
+        if (queue.activeIndex < 0) {
+            queue.reset(id, points); queue.activeIndex = count;
+            active[count++] = found->second;
+        }
+        index = queue.activeIndex; return &queue;
     }
 };
 class EmptyEvents final : public IEventList {
@@ -319,12 +366,17 @@ class VSTEffect final : public Effect, public IHostApplication, public IComponen
     ParameterObserver parameterObserver;
     SpeakerArrangement arrangement = 0;
     std::vector<uint32_t> busToHost;
-    std::array<ParamID, ParameterChanges::capacity> parameterIDs{};
-    std::array<std::atomic<double>, ParameterChanges::capacity> pending{}, returned{};
-    std::array<std::atomic<bool>, ParameterChanges::capacity> dirty{}, outputDirty{};
-    int parameterCount = 0;
+    std::vector<ParamID> parameterIDs;
+    std::unordered_map<ParamID, int> parameterIndices;
+    std::unique_ptr<std::atomic<double>[]> pending, returned;
+    std::unique_ptr<std::atomic<uint64_t>[]> gestureTimes;
+    HostClock clock;
+    ParameterChangeFlags dirty{0}, outputDirty{0};
     ParameterChanges inputChanges, outputChanges; EmptyEvents events;
     MIDIEvents midiEvents;
+    struct MIDIParameter { int index; uint32_t offset; double value; uint64_t timestamp; };
+    std::array<MIDIParameter, 1024> midiParameters;
+    size_t midiParameterCount = 0;
     std::array<std::array<ParamID, 130>, 16> midiAssignments{};
     // Parameter ID and step count travel together when the controller updates
     // channel/unit assignments. The audio worker never calls IUnitInfo.
@@ -347,11 +399,11 @@ class VSTEffect final : public Effect, public IHostApplication, public IComponen
     NSMutableArray<NSDictionary*>* auxiliaryInputs = [NSMutableArray array];
     uint32_t latencyFrames = 0; double tail = 0; bool invalidIO = false;
 
-    int parameterIndex(ParamID id) const { for (int i = 0; i < parameterCount; ++i) if (parameterIDs[i] == id) return i; return -1; }
+    int parameterIndex(ParamID id) const { auto found = parameterIndices.find(id); return found == parameterIndices.end() ? -1 : found->second; }
     void refreshProgramAssignments() {
         auto units = query<IUnitInfo>(controller);
         std::vector<ParameterInfo> programs;
-        if (controller) for (int i = 0; i < parameterCount; ++i) {
+        if (controller) for (int i = 0; i < parameterIDs.size(); ++i) {
             ParameterInfo info{};
             if (controller->getParameterInfo(i, info) == kResultOk && (info.flags & ParameterInfo::kIsProgramChange)
                 && !(info.flags & ParameterInfo::kIsReadOnly) && info.stepCount >= 0) programs.push_back(info);
@@ -368,17 +420,28 @@ class VSTEffect final : public Effect, public IHostApplication, public IComponen
         }
         if (units) units->release();
     }
-    void takeParameterChanges() {
-        inputChanges.count = outputChanges.count = 0;
-        for (int i = 0; i < parameterCount; ++i) if (dirty[i].exchange(false, std::memory_order_acquire)) {
+    void takeParameterChanges(bool includeMIDI) {
+        inputChanges.clear(); outputChanges.clear();
+        dirty.consume([&](size_t i) {
             int32 index = 0, point = 0; auto q = inputChanges.addParameterData(parameterIDs[i], index);
             if (q) q->addPoint(0, pending[i].load(std::memory_order_relaxed), point);
+        });
+        if (includeMIDI) {
+            for (size_t i = 0; i < midiParameterCount; ++i) {
+                auto& parameter = midiParameters[i];
+                if (parameter.timestamp < gestureTimes[parameter.index].load(std::memory_order_acquire)) continue;
+                int32 index = 0, point = 0;
+                auto queue = inputChanges.addParameterData(parameterIDs[parameter.index], index);
+                if (queue) queue->addPoint(parameter.offset, parameter.value, point);
+                returned[parameter.index].store(parameter.value); outputDirty.publish(parameter.index);
+            }
+            midiParameterCount = 0;
         }
     }
     void publishParameterChanges() {
         for (int i = 0; i < outputChanges.count; ++i) {
-            auto& queue = outputChanges.queues[i]; int index = parameterIndex(queue.id);
-            if (index >= 0 && queue.present && std::isfinite(queue.value)) { returned[index].store(queue.value); outputDirty[index].store(true); }
+            auto& queue = outputChanges.queues[outputChanges.active[i]]; int index = parameterIndex(queue.id);
+            if (index >= 0 && queue.count && std::isfinite(queue.value)) { returned[index].store(queue.value); outputDirty.publish(index); }
         }
     }
     void chooseArrangement(NSArray<NSString*>* roles) {
@@ -506,6 +569,13 @@ public:
             if (componentConnection && controllerConnection && separateController) {
                 componentConnection->connect(controllerConnection); controllerConnection->connect(componentConnection);
             }
+            // Complete controller initialization before restoring a preset.
+            // setState can notify the connected controller synchronously (D-50
+            // does this), so its initial component state must already exist.
+            StateStream stream(new MemoryStream);
+            if (component->getState(stream.get()) == kResultOk && stream->data()) {
+                stream->seek(0, IBStream::kIBSeekSet); controller->setComponentState(stream.get());
+            }
         }
         NSData* encoded = [[NSData alloc] initWithBase64EncodedString:slot[@"state"] ?: @"" options:0];
         if (encoded.length) {
@@ -516,16 +586,28 @@ public:
             if (restored == kResultOk && controller) controller->setComponentState(stream.get());
             if (restored != kResultOk) throw std::runtime_error("The VST3 rejected its saved preset.");
             if (controller && [saved[@"controller"] isKindOfClass:NSData.class]) { StateStream s(new MemoryStream(saved[@"controller"])); controller->setState(s.get()); }
-        } else if (controller) {
-            StateStream stream(new MemoryStream);
-            if (component->getState(stream.get()) == kResultOk && stream->data()) {
-                stream->seek(0, IBStream::kIBSeekSet); controller->setComponentState(stream.get());
-            }
         }
         if (controller) {
-            parameterCount = std::min<int>(ParameterChanges::capacity, std::max(0, controller->getParameterCount()));
-            for (int i = 0; i < parameterCount; ++i) { ParameterInfo info{}; controller->getParameterInfo(i, info); parameterIDs[i] = info.id; dirty[i] = false; outputDirty[i] = false; }
+            int parameterCount = controller->getParameterCount();
+            if (parameterCount < 0 || parameterCount > maximumParameters)
+                throw std::runtime_error("The VST3 parameter list is invalid or exceeds the 65536-parameter limit.");
+            parameterIDs.resize(parameterCount); parameterIndices.reserve(parameterCount);
+            pending = std::make_unique<std::atomic<double>[]>(parameterCount);
+            returned = std::make_unique<std::atomic<double>[]>(parameterCount);
+            gestureTimes = std::make_unique<std::atomic<uint64_t>[]>(parameterCount);
+            dirty = ParameterChangeFlags(parameterCount);
+            outputDirty = ParameterChangeFlags(parameterCount);
+            for (int i = 0; i < parameterCount; ++i) {
+                ParameterInfo info{};
+                if (controller->getParameterInfo(i, info) != kResultOk || info.id == kNoParamId
+                    || !parameterIndices.emplace(info.id, i).second)
+                    throw std::runtime_error("The VST3 reported an invalid or duplicate parameter identifier.");
+                parameterIDs[i] = info.id;
+                pending[i] = returned[i] = 0; gestureTimes[i] = 0;
+            }
         }
+        inputChanges.prepare(parameterIDs, parameterIndices);
+        outputChanges.prepare(parameterIDs, parameterIndices);
         instrument = instrument || component->getBusCount(kAudio, kInput) == 0;
         chooseArrangement(roles);
         if (processor->canProcessSampleSize(kSample32) == kResultOk) sampleSize = kSample32;
@@ -593,7 +675,7 @@ public:
     tresult PLUGIN_API endEdit(ParamID) override { return kResultOk; }
     tresult PLUGIN_API performEdit(ParamID id, ParamValue value) override {
         int index = parameterIndex(id); if (index < 0 || !std::isfinite(value)) return kInvalidArgument;
-        scheduleParameter(id, value);
+        scheduleParameter(id, value, clock.nowNanoseconds());
         if (parameterObserver) parameterObserver(id, value, true);
         return kResultOk;
     }
@@ -610,7 +692,7 @@ public:
         view->onSize(rect); resizingView = false; return kResultOk;
     }
     bool render(float* const* input, float** output, uint32_t frames) override {
-        takeParameterChanges();
+        takeParameterChanges(true);
         float* orderedInput[maximumChannels], *orderedOutput[maximumChannels];
         for (size_t c = 0; c < busToHost.size(); ++c) { orderedInput[c] = input[busToHost[c]]; orderedOutput[c] = output[busToHost[c]]; }
         const bool downmixInput = mainInput >= 0 && inputs[mainInput].numChannels == 1 && busToHost.size() == 2;
@@ -669,7 +751,7 @@ public:
         return ok;
     }
     bool flushParameters() override {
-        takeParameterChanges();
+        takeParameterChanges(false);
         if (!inputChanges.count) return true;
         // VST3 explicitly supports a parameter-only process call: no buses,
         // no samples, and no advancement of the audible sample clock.
@@ -691,7 +773,7 @@ public:
         if (flags & kLatencyChanged) latencyFrames = processor->getLatencySamples();
         uint32 samples = processor->getTailSamples();
         tail = samples == kInfiniteTail ? 10 : std::min(10.0, samples / rate);
-        if (controller) for (int i = 0; i < parameterCount; ++i) {
+        if (controller) for (int i = 0; i < parameterIDs.size(); ++i) {
             if (flags & kParamValuesChanged) performEdit(parameterIDs[i], controller->getParamNormalized(parameterIDs[i]));
         }
         syncParameters();
@@ -720,24 +802,24 @@ public:
     }
     NSArray<NSDictionary*>* parameters() override {
         NSMutableArray* result = [NSMutableArray array]; if (!controller) return result;
-        for (int i = 0; i < parameterCount; ++i) {
+        for (int i = 0; i < parameterIDs.size(); ++i) {
             ParameterInfo info{}; if (controller->getParameterInfo(i, info) != kResultOk || (info.flags & ParameterInfo::kIsReadOnly)) continue;
             [result addObject:@{@"id": @(info.id), @"name": string16(info.title), @"value": @(controller->getParamNormalized(info.id)), @"min": @0, @"max": @1}];
         }
         return result;
     }
     void observeParameters(ParameterObserver observer) override { parameterObserver = std::move(observer); }
-    void scheduleParameter(uint64_t id, double value) override {
+    void scheduleParameter(uint64_t id, double value, uint64_t gestureTime = 0) override {
         int index = parameterIndex((ParamID)id); if (index < 0 || !std::isfinite(value)) return;
-        pending[index].store(std::clamp(value, 0.0, 1.0), std::memory_order_relaxed); dirty[index].store(true, std::memory_order_release);
-        returned[index].store(std::clamp(value, 0.0, 1.0)); outputDirty[index].store(true);
+        if (gestureTime) recordParameterGesture(gestureTimes[index], gestureTime);
+        pending[index].store(std::clamp(value, 0.0, 1.0), std::memory_order_relaxed); dirty.publish(index);
+        returned[index].store(std::clamp(value, 0.0, 1.0)); outputDirty.publish(index);
     }
     void syncParameters() override {
-        if (controller) for (int i = 0; i < parameterCount; ++i)
-            if (outputDirty[i].exchange(false)) {
-                double value = returned[i].load(); controller->setParamNormalized(parameterIDs[i], value);
-                if (parameterObserver) parameterObserver(parameterIDs[i], value, false);
-            }
+        if (controller) outputDirty.consume([&](size_t i) {
+            double value = returned[i].load(); controller->setParamNormalized(parameterIDs[i], value);
+            if (parameterObserver) parameterObserver(parameterIDs[i], value, false);
+        });
     }
     bool acceptsMIDI() override { return hasMIDI; }
     void midi(const MIDIMessage& message) override {
@@ -755,14 +837,19 @@ public:
         int control = kind == 0xb0 ? message.data1 : kind == 0xd0 ? 128 : kind == 0xe0 ? 129 : -1;
         if (control >= 0) {
             ParamID id = midiAssignments[channel][control];
-            if (id != kNoParamId) scheduleParameter(id, kind == 0xe0 ? (message.data1 + 128 * message.data2) / 16383.0
-                : (kind == 0xd0 ? message.data1 : message.data2) / 127.0);
-            if (kind == 0xb0 && (control == 120 || control == 123)) releaseNotes(channel);
+            int index = parameterIndex(id);
+            if (index >= 0) {
+                if (midiParameterCount == midiParameters.size()) { clearMIDI(); midiOverflow = true; return; }
+                double value = kind == 0xe0 ? (message.data1 + 128 * message.data2) / 16383.0
+                    : (kind == 0xd0 ? message.data1 : message.data2) / 127.0;
+                midiParameters[midiParameterCount++] = {index, message.sampleOffset, value, message.timestamp};
+            }
+            if (kind == 0xb0 && (control == 120 || control == 123)) releaseNotes(channel, message.sampleOffset);
             return;
         }
         if (kind != 0x80 && kind != 0x90 && kind != 0xa0) return;
         if (midiEvents.count >= 256) { clearMIDI(); midiOverflow = true; return; }
-        Event event{}; event.flags = Event::kIsLive; event.sampleOffset = 0; event.busIndex = 0;
+        Event event{}; event.flags = Event::kIsLive; event.sampleOffset = message.sampleOffset; event.busIndex = 0;
         if (kind == 0x90 && message.data2) {
             event.type = Event::kNoteOnEvent; event.noteOn = {(int16)channel, message.data1, 0, message.data2 / 127.f, 0, -1};
             heldNotes[channel][message.data1] = true;
@@ -773,14 +860,16 @@ public:
         }
         midiEvents.addEvent(event);
     }
-    void releaseNotes(int channel) {
+    void releaseNotes(int channel, uint32_t offset = 0) {
         for (int note = 0; note < 128; ++note) if (heldNotes[channel][note]) {
             Event event{}; event.flags = Event::kIsLive; event.type = Event::kNoteOffEvent;
+            event.sampleOffset = offset;
             event.noteOff = {(int16)channel, (int16)note, 0, -1, 0}; midiEvents.addEvent(event);
         }
     }
     void clearMIDI() override {
         midiEvents.count = 0;
+        midiParameterCount = 0;
         for (int channel = 0; channel < 16; ++channel) {
             releaseNotes(channel);
             for (int control : {64, 120, 123}) if (midiAssignments[channel][control] != kNoParamId)

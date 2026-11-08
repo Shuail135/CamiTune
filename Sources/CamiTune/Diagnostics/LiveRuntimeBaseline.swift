@@ -37,7 +37,7 @@ enum LiveRuntimeBaseline {
         box.profiles.profiles = original.profiles
         let state = AppState(profiles: box.profiles, perAppAudio: box.perApp)
         state.runtimeServices.notifyActivation = { _ in }; state.runtimeServices.notifyDeactivation = { _ in }
-        for _ in 0..<100 where !state.coreAudio.hasCompletedInitialRefresh { try await Task.sleep(for: .milliseconds(100)) }
+        for _ in 0..<100 where !state.coreAudio.hasCompletedInitialRefresh { try await RuntimeClock.sleep(seconds: 0.1) }
         guard let uid = state.coreAudio.defaultOutputUID,
               let profile = original.profiles.first(where: { $0.isEnabled && $0.outputDeviceUID == uid }) else {
             throw DiagnosticFailure(message: "No enabled profile matches the current physical output")
@@ -68,12 +68,12 @@ enum LiveRuntimeBaseline {
                     options.scenario.label = "Stage 10 \(captureTails ? "short-sound tail capture near 52s" : "steady capture near 30s"), \(duration)s target speaker soak; producer completion; controlled afplay clients; CPU stress \(stress)"
                     state.performanceRecorder.start(options: options, environment: { state.performanceEnvironment() })
                 }
-                try await Task.sleep(for: .seconds(1))
+                try await RuntimeClock.sleep(seconds: 1)
                 if second % 30 == 29 { print("Completion soak: \(second + 1)/\(duration) seconds") }
             }
             await state.performanceRecorder.stop()
             terminateAll()
-            try await Task.sleep(for: .milliseconds(100)) // Let the last real idle tail reach the writer.
+            try await RuntimeClock.sleep(seconds: 0.1) // Let the last real idle tail reach the writer.
             let final = state.perAppAudio.timelineStatisticsSnapshot()
             await state.deactivate()
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -99,7 +99,7 @@ enum LiveRuntimeBaseline {
         state.runtimeServices.notifyActivation = { _ in }
         state.runtimeServices.notifyDeactivation = { _ in }
         for _ in 0..<100 where !state.coreAudio.hasCompletedInitialRefresh {
-            try await Task.sleep(for: .milliseconds(100))
+            try await RuntimeClock.sleep(seconds: 0.1)
         }
         guard let uid = state.coreAudio.defaultOutputUID,
               var profile = original.profiles.first(where: { $0.isEnabled && $0.outputDeviceUID == uid }) else {
@@ -276,7 +276,7 @@ enum LiveRuntimeBaseline {
             player.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
             player.arguments = [silence]
             try player.run()
-            try await Task.sleep(for: .seconds(2))
+            try await RuntimeClock.sleep(seconds: 2)
             var edited = profile
             edited.processing.global.stages.append(.init(processor: .gain(.init(gainDB: -1))))
             await state.apply(profile: edited)
@@ -315,7 +315,7 @@ enum LiveRuntimeBaseline {
                     if elapsed == 40 { for p in extraPlayers where p.isRunning { p.terminate() } }
                     if elapsed == 50 { for p in cpuWorkers where p.isRunning { p.terminate() } }
                 }
-                try await Task.sleep(for: .seconds(1))
+                try await RuntimeClock.sleep(seconds: 1)
                 let deliveryFailure = (state.captureBackend.runtimeError ?? state.runtimeServices.deliveryError())
                 // This isolated AppState disables background services. Exercise
                 // the same coordinator health path explicitly, even with the
@@ -341,7 +341,7 @@ enum LiveRuntimeBaseline {
                       PerformanceClock.now() < deadline {
                     if let error = (state.captureBackend.runtimeError ?? state.runtimeServices.deliveryError()) { throw DiagnosticFailure(message: error) }
                     try diagnosticRequire(state.pcmRouter.statistics.camillaWriteFailures == 0, "Terminal pipe write failed")
-                    try await Task.sleep(for: .milliseconds(10))
+                    try await RuntimeClock.sleep(seconds: 0.01)
                 }
                 try diagnosticRequire(state.pcmRouter.statistics.producerDrains.completedDrains > priorDrains,
                     "No writer completion followed the stopped source; another producer may still be active")
@@ -427,7 +427,7 @@ extension LiveRuntimeBaseline {
             // synthetic event while a newer HAL observation is still pending.
             let deadline = PerformanceClock.now().advanced(seconds: 1)
             while audio.defaultOutputUID != target, PerformanceClock.now() < deadline {
-                try await Task.sleep(for: .milliseconds(10))
+                try await RuntimeClock.sleep(seconds: 0.01)
             }
             try diagnosticRequire(audio.defaultOutputUID == target,
                 "Default-output observation did not publish the acknowledged route")
@@ -499,7 +499,7 @@ extension LiveRuntimeBaseline {
                 report.append("Conservative profile switch and return: passed; fresh session identities; reuse disabled")
                 box.profiles.profiles = original.profiles
             }
-            try await Task.sleep(for: .seconds(2))
+            try await RuntimeClock.sleep(seconds: 2)
             await state.deactivate(); await state.runtimeCoordinator.waitUntilSettled()
             await audio.refreshDefaultOutput()
             try diagnosticRequire(state.coreAudio.defaultOutputUID == uid, "Stop failed to restore physical output")

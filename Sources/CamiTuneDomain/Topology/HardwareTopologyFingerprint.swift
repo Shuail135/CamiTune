@@ -7,10 +7,11 @@ package struct HardwareTopologyFingerprint: Codable, Hashable, Sendable {
     package let channelCount: Int
     package let reportedRoles: [ChannelRole]?
     package let reportedPositions: [SpatialPosition?]?
+    package let reportedOutputIDs: [PhysicalOutputID]?
 
     package init(deviceUID: String, channelCount: Int) {
         self.deviceUID = deviceUID; self.channelCount = channelCount
-        reportedRoles = nil; reportedPositions = nil
+        reportedRoles = nil; reportedPositions = nil; reportedOutputIDs = nil
     }
 
     package init(topology: SpeakerTopology) throws {
@@ -19,5 +20,6 @@ package struct HardwareTopologyFingerprint: Codable, Hashable, Sendable {
         channelCount = topology.declaredChannelCount
         reportedRoles = topology.hardwareRoles
         reportedPositions = topology.hardwarePositions
+        reportedOutputIDs = topology.hardwareOutputIDs
     }
 }

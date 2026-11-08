@@ -207,7 +207,7 @@ final class DependencyManager: ObservableObject {
             await coreAudio.refreshWithoutBlockingUI()
             await refreshStatuses()
             if case .installed = audioDriverStatus { break }
-            if attempt < 7 { try? await Task.sleep(for: .milliseconds(500)) }
+            if attempt < 7 { try? await RuntimeClock.sleep(seconds: 0.5) }
         }
 
         var missing: [String] = []
@@ -444,7 +444,7 @@ final class DependencyManager: ObservableObject {
                 }.value
                 return inspection.isInstalled && inspection.problem == nil
             }
-            if attempt < 29 { try? await Task.sleep(for: .milliseconds(500)) }
+            if attempt < 29 { try? await RuntimeClock.sleep(seconds: 0.5) }
         }
         return false
     }

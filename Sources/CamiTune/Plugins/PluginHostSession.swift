@@ -8,7 +8,7 @@ import Darwin
 /// its memory is never reused while a late plug-in might still be writing.
 final class PluginHostConnection: @unchecked Sendable {
     static let maximumFrames = 2048
-    static let protocolVersion: UInt32 = 3
+    static let protocolVersion: UInt32 = 4
     let sampleRate: Double
     let channelRoles: [ChannelRole]
     var channelCount: Int { channelRoles.count }
@@ -49,7 +49,7 @@ final class PluginHostConnection: @unchecked Sendable {
         directory = URL(fileURLWithPath: "/tmp/ctplug-\(UUID().uuidString)", isDirectory: true)
         do {
             try rack.validate()
-            guard (1...SpeakerTopology.maximumOutputChannels).contains(channelCount) else {
+            guard (1...AudioFormatDescriptor.maximumProcessingChannels).contains(channelCount) else {
                 throw PluginHostError(message: "The plug-in audio layout is invalid.")
             }
             // The helper only emits changed states. An unchanged restored
@@ -103,7 +103,7 @@ final class PluginHostConnection: @unchecked Sendable {
             _ = setsockopt(socketFD, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
             // Force lazy plug-in setup before publishing this processor to audio.
             var silence = [Float](repeating: 0, count: 128 * channelCount)
-            guard silence.withUnsafeMutableBufferPointer({ processChunk($0, reset: true, deadline: DispatchTime.now().uptimeNanoseconds + 1_000_000_000) }) else {
+            guard silence.withUnsafeMutableBufferPointer({ processChunk($0, reset: true, hostTimeNanoseconds: DispatchTime.now().uptimeNanoseconds, deadline: DispatchTime.now().uptimeNanoseconds + 1_000_000_000) }) else {
                 throw PluginHostError(message: errorMessage ?? "The plug-in could not process audio.")
             }
             host?.send(["command": "snapshot"])
@@ -160,7 +160,7 @@ final class PluginHostConnection: @unchecked Sendable {
     }
     private func currentStates() -> [UUID: Data] { state.lock(); defer { state.unlock() }; return savedStates }
 
-    func processChunk(_ buffer: UnsafeMutableBufferPointer<Float>, reset: Bool, deadline: UInt64) -> Bool {
+    func processChunk(_ buffer: UnsafeMutableBufferPointer<Float>, reset: Bool, hostTimeNanoseconds: UInt64, deadline: UInt64) -> Bool {
         guard errorMessage == nil, let memory, socketFD >= 0, !buffer.isEmpty,
               buffer.count <= Self.maximumFrames * channelCount, buffer.count.isMultiple(of: channelCount) else { return false }
         let count = buffer.count, frames = count / channelCount
@@ -172,7 +172,7 @@ final class PluginHostConnection: @unchecked Sendable {
             else { target.update(repeating: 0, count: frames * 2) }
         }
         sequence &+= 1
-        var request = (Self.protocolVersion, UInt32(frames), sequence, UInt32(reset ? 1 : 0))
+        var request = (Self.protocolVersion, UInt32(frames), sequence, UInt32(reset ? 1 : 0), hostTimeNanoseconds)
         let sent = withUnsafeBytes(of: &request) { transfer(UnsafeMutableRawBufferPointer(mutating: $0), writing: true, deadline: deadline) }
         guard sent == .complete else { fail(sent.message); return false }
         var reply = (UInt32(0), UInt32(0), UInt32(0), UInt32(0))

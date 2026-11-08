@@ -11,10 +11,10 @@ final class PluginRackReorderApply: ObservableObject {
     private var pending: [UUID: UUID] = [:]
     private var timers: [UUID: Task<Void, Never>] = [:]
     private var dragging: Set<UUID> = []
-    private let delay: Duration
+    private let delay: TimeInterval
     private let apply: (UUID, @escaping @MainActor () -> Bool) async -> Bool
 
-    init(delay: Duration = .seconds(1), apply: @escaping (UUID, @escaping @MainActor () -> Bool) async -> Bool) {
+    init(delay: TimeInterval = 1, apply: @escaping (UUID, @escaping @MainActor () -> Bool) async -> Bool) {
         self.delay = delay; self.apply = apply
     }
     func schedule(_ profileID: UUID) {
@@ -40,7 +40,7 @@ final class PluginRackReorderApply: ObservableObject {
         guard let revision = pending[id], !dragging.contains(id), !applying.contains(id) else { return }
         let delay = delay
         timers[id] = Task { [weak self] in
-            do { try await Task.sleep(for: delay) } catch { return }
+            do { try await RuntimeClock.sleep(seconds: delay) } catch { return }
             guard let self, self.pending[id] == revision, !self.dragging.contains(id) else { return }
             self.timers[id] = nil
             self.applying.insert(id)

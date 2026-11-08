@@ -1,42 +1,66 @@
 import SwiftUI
 
-/// Full-width, top-aligned disclosure content keeps adjacent controls anchored.
-/// Native AppKit controls cannot follow SwiftUI's interpolated layout frames.
-/// Commit layout together and animate only the chevron, keeping text, fields,
-/// and buttons aligned throughout expansion and collapse.
-struct SectionDisclosureStyle<Trailing: View>: DisclosureGroupStyle {
+/// A single disclosure presentation owns expansion, trailing controls and the
+/// chevron animation. Content commits its layout without animating native fields.
+struct SectionDisclosure<Label: View, Content: View, Trailing: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ViewBuilder var trailing: () -> Trailing
+    @State private var localExpansion = false
+    private let expansion: Binding<Bool>?
+    private let label: Label
+    private let content: Content
+    private let trailing: Trailing
 
-    func makeBody(configuration: Configuration) -> some View {
+    private var isExpanded: Bool { expansion?.wrappedValue ?? localExpansion }
+
+    init(isExpanded: Binding<Bool>? = nil, @ViewBuilder content: () -> Content,
+         @ViewBuilder label: () -> Label) where Trailing == EmptyView {
+        expansion = isExpanded
+        self.content = content()
+        self.label = label()
+        trailing = EmptyView()
+    }
+
+    init(_ title: String, isExpanded: Binding<Bool>? = nil,
+         @ViewBuilder content: () -> Content) where Label == Text, Trailing == EmptyView {
+        self.init(isExpanded: isExpanded, content: content, label: { Text(title) })
+    }
+
+    private init(expansion: Binding<Bool>?, label: Label, content: Content, trailing: Trailing) {
+        self.expansion = expansion
+        self.label = label
+        self.content = content
+        self.trailing = trailing
+    }
+
+    func trailingControls<T: View>(@ViewBuilder _ controls: () -> T) -> SectionDisclosure<Label, Content, T> {
+        SectionDisclosure<Label, Content, T>(expansion: expansion, label: label, content: content, trailing: controls())
+    }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
                 Button {
-                    configuration.isExpanded.toggle()
+                    if let expansion { expansion.wrappedValue.toggle() }
+                    else { localExpansion.toggle() }
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "chevron.right")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
-                            .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: configuration.isExpanded)
+                            .foregroundColor(.secondary)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                            .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: isExpanded)
                             .frame(width: 10)
-                        configuration.label
-                            .uiInteractionAnchor("disclosure-label")
+                        label.uiInteractionAnchor("disclosure-label")
                         Spacer(minLength: 0)
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
-
-                // Native pickers and switches have their own hit regions;
-                // overlaying them on the disclosure can swallow expansion clicks.
-                trailing()
+                .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+                trailing
             }
-
-            if configuration.isExpanded {
-                configuration.content
+            if isExpanded {
+                content
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .padding(.top, 8)
                     .transaction { $0.animation = nil }
@@ -44,10 +68,6 @@ struct SectionDisclosureStyle<Trailing: View>: DisclosureGroupStyle {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
-}
-
-extension SectionDisclosureStyle where Trailing == EmptyView {
-    init() { self.init { EmptyView() } }
 }
 
 extension View {

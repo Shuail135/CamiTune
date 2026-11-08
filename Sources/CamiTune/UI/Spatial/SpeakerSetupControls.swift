@@ -23,7 +23,7 @@ struct SpeakerLayoutSelector: View {
                 Spacer()
                 /*
                 if topology.layoutTemplateID == nil, selected != nil {
-                    Text("Estimated").font(.caption).foregroundStyle(.secondary)
+                    Text("Estimated").font(.caption).foregroundColor(.secondary)
                 }
                  */
                 Menu {
@@ -48,7 +48,7 @@ struct SpeakerLayoutSelector: View {
                 }
                 .fixedSize().accessibilityLabel("Speaker setup")
             }
-            if let message { Text(message).font(.caption).foregroundStyle(.orange) }
+            if let message { Text(message).font(.caption).foregroundColor(.orange) }
         }
     }
 }
@@ -64,7 +64,7 @@ struct SpeakerPlacementNotice: View {
             if !kept && !warnings.isEmpty {
                 ForEach(warnings) { warning in
                     Label(warning.message, systemImage: "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                 }
                 HStack {
                     Button("Keep Position") { kept = true }

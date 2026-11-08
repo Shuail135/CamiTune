@@ -25,7 +25,15 @@ struct SpeakerTopologyProbe {
         let uidStatus = AudioObjectGetPropertyData(device.objectID, &uidAddress, 0, nil, &uidSize, &uid)
         guard uidStatus == noErr else { throw ProbeError.property(uidStatus) }
         guard let uid, uid.takeUnretainedValue() as String == device.id else { throw SpeakerTopologyError.invalidDeviceUID }
-        let data = try property(device.objectID, selector: kAudioDevicePropertyStreamConfiguration, scope: kAudioDevicePropertyScopeOutput)
+        let count = try Self.outputChannelCount(objectID: device.objectID)
+        guard count > 0 else { throw ProbeError.malformedProperty }
+        return count
+    }
+
+    /// Includes input-only aggregate members (zero outputs); read failures are
+    /// errors, never an empty member that shifts every subsequent output slot.
+    static func outputChannelCount(objectID: AudioObjectID) throws -> Int {
+        let data = try property(objectID, selector: kAudioDevicePropertyStreamConfiguration, scope: kAudioDevicePropertyScopeOutput)
         let count: Int = try data.withUnsafeBytes { bytes in
             let offset = MemoryLayout<AudioBufferList>.offset(of: \.mBuffers)!
             guard bytes.count >= offset else { throw ProbeError.malformedProperty }
@@ -37,24 +45,27 @@ struct SpeakerTopologyProbe {
             }
             return count
         }
-        guard (1...32).contains(count) else { throw ProbeError.malformedProperty }
+        guard count <= SpeakerTopology.maximumHardwareChannels else { throw SpeakerTopologyError.unsupportedChannelCount(count) }
         return count
     }
 
     func probe(_ device: AudioDeviceInfo) throws -> SpeakerTopology {
         let count = try outputChannelCount(device)
-        let rateData = try property(device.objectID, selector: kAudioDevicePropertyNominalSampleRate, scope: kAudioObjectPropertyScopeGlobal)
+        let rateData = try Self.property(device.objectID, selector: kAudioDevicePropertyNominalSampleRate, scope: kAudioObjectPropertyScopeGlobal)
         guard rateData.count == MemoryLayout<Double>.size else { throw ProbeError.malformedProperty }
         let rate = rateData.withUnsafeBytes { $0.loadUnaligned(as: Double.self) }
-        let layout = try? property(device.objectID, selector: kAudioDevicePropertyPreferredChannelLayout, scope: kAudioDevicePropertyScopeOutput)
+        let layout = try? Self.property(device.objectID, selector: kAudioDevicePropertyPreferredChannelLayout, scope: kAudioDevicePropertyScopeOutput)
         let channels = layout.flatMap { try? Self.descriptions(data: $0, channelCount: count) } ?? []
-        return try SpeakerTopologyResolver().resolve(deviceUID: device.id, sampleRate: rate,
-                                                     channelCount: count, channels: channels)
+        var topology = try SpeakerTopologyResolver().resolve(deviceUID: device.id, sampleRate: rate,
+                                                             channelCount: count, channels: channels)
+        topology.hardwareOutputIDs = device.hardwareOutputIDs
+        try topology.validate()
+        return topology
     }
 
     /// Bounded parsing also used by deterministic HAL-description tests.
     static func descriptions(data: Data, channelCount: Int) throws -> [SpeakerChannelDescription] {
-        guard (1...32).contains(channelCount) else { throw ProbeError.malformedProperty }
+        guard (1...SpeakerTopology.maximumHardwareChannels).contains(channelCount) else { throw ProbeError.malformedProperty }
         let offset = MemoryLayout<AudioChannelLayout>.offset(of: \.mChannelDescriptions)!
         guard data.count >= offset else { throw ProbeError.malformedProperty }
         let tag = data.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
@@ -82,7 +93,7 @@ struct SpeakerTopologyProbe {
         }
     }
 
-    private func property(_ device: AudioObjectID, selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope) throws -> Data {
+    private static func property(_ device: AudioObjectID, selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope) throws -> Data {
         var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
         var size: UInt32 = 0
         var status = AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size)

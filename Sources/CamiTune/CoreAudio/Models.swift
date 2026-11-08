@@ -2,27 +2,48 @@ import CamiTuneDomain
 import Foundation
 import CoreAudio
 
+struct AggregateOutputMember: Hashable, Sendable {
+    let uid: String
+    let outputChannelCount: Int
+}
+
 struct AudioDeviceInfo: Identifiable, Hashable, Sendable {
     let id: String          // CoreAudio UID
     let objectID: UInt32
     let name: String
     let transportType: UInt32
+    let aggregateMembers: [AggregateOutputMember]
 
     static let systemAudioBridgeName = "System Audio Bridge"
     static let systemAudioBridgeUID = "local.systemaudiobridge.device"
 
-    init(id: String, objectID: UInt32, name: String, transportType: UInt32 = 0) {
+    init(id: String, objectID: UInt32, name: String, transportType: UInt32 = 0,
+         aggregateMembers: [AggregateOutputMember] = []) {
         self.id = id
         self.objectID = objectID
         self.name = name
         self.transportType = transportType
+        self.aggregateMembers = aggregateMembers
     }
 
     var isRoutingDevice: Bool {
-        id == Self.systemAudioBridgeUID ||
-            ProfileRoutingDescriptor.isProfileRoutingUID(id) ||
-            transportType == kAudioDeviceTransportTypeAggregate ||
-            transportType == kAudioDeviceTransportTypeVirtual
+        Self.isCaptureUID(id) || aggregateMembers.contains { Self.isCaptureUID($0.uid) }
+    }
+
+    /// Creating a software endpoint is not a request to change the user's route.
+    var selectsOnConnection: Bool {
+        !isRoutingDevice && transportType != kAudioDeviceTransportTypeAggregate && transportType != kAudioDeviceTransportTypeVirtual
+    }
+
+    private static func isCaptureUID(_ uid: String) -> Bool {
+        uid == systemAudioBridgeUID || ProfileRoutingDescriptor.isProfileRoutingUID(uid)
+    }
+
+    var hardwareOutputIDs: [PhysicalOutputID]? {
+        guard transportType == kAudioDeviceTransportTypeAggregate else { return nil }
+        return aggregateMembers.flatMap { member in
+            (0..<member.outputChannelCount).map { PhysicalOutputID(deviceUID: member.uid, channelIndex: $0) }
+        }
     }
 }
 

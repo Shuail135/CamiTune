@@ -4,6 +4,12 @@ import Foundation
 /// External effects only. Transition state and lifecycle ordering belong to the coordinator.
 @MainActor
 struct AudioRuntimeServices {
+    /// Persist control-plane progress before a potentially blocking operation.
+    /// No audio samples, profile names or device identifiers enter this log.
+    var recordLifecyclePhase: (RuntimeTransitionSnapshot) -> Void = { transition in
+        NSLog("[AudioLifecycle] generation=%llu transition=%llu phase=%@",
+              transition.generation.rawValue, transition.id.rawValue, transition.phase)
+    }
     var startDirectOutput: (AudioRuntimePlan) async throws -> Void = { _ in
         throw ProfileSettingsError.runtime("Direct plug-in output is unavailable in this runtime.")
     }
@@ -42,7 +48,7 @@ struct AudioRuntimeServices {
     var deliveryError: () -> String?
     var notifyActivation: (_ profileName: String) -> Void
     var notifyDeactivation: (_ profileName: String) -> Void
-    var sleep: (Duration) async throws -> Void
+    var sleep: (TimeInterval) async throws -> Void
     var transitionFinished: (Bool) -> Void
 }
 

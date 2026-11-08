@@ -1,60 +1,64 @@
 import SwiftUI
 
-/// Selects a layout using the offered width without constructing and measuring
-/// duplicate control trees. Children keep their identity across the breakpoint.
-struct ResponsiveStackLayout: Layout {
+/// Repositions the same children at the breakpoint. Fixed controls retain their
+/// natural width; flexible editors share the space that remains, as in HStack.
+struct ResponsiveStackLayout {
     var minimumHorizontalWidth: CGFloat
     var horizontalSpacing: CGFloat = 16
     var verticalSpacing: CGFloat = 16
     var centered = false
     var equalHeight = false
 
-    struct Cache {
-        var horizontal: AnyLayout.Cache
-        var vertical: AnyLayout.Cache
-    }
-    private var horizontal: AnyLayout { AnyLayout(HStackLayout(alignment: .top, spacing: horizontalSpacing)) }
-    private var vertical: AnyLayout { AnyLayout(VStackLayout(alignment: centered ? .center : .leading, spacing: verticalSpacing)) }
-    func makeCache(subviews: Subviews) -> Cache {
-        Cache(horizontal: horizontal.makeCache(subviews: subviews), vertical: vertical.makeCache(subviews: subviews))
-    }
-    func updateCache(_ cache: inout Cache, subviews: Subviews) {
-        horizontal.updateCache(&cache.horizontal, subviews: subviews)
-        vertical.updateCache(&cache.vertical, subviews: subviews)
-    }
-    // This container exports no custom alignment guides. The default Layout
-    // implementation places its children again to derive them, which repeats
-    // expensive graph/editor layout on every animated width change.
-    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect,
-        proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGFloat? { nil }
-    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect,
-        proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGFloat? { nil }
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
-        let proposal = ProposedViewSize(width: proposal.width.flatMap { $0.isFinite ? $0 : nil },
-            height: proposal.height.flatMap { $0.isFinite ? $0 : nil })
-        if (proposal.width ?? .infinity) >= minimumHorizontalWidth {
-            if equalHeight, let width = proposal.width, !subviews.isEmpty {
-                let childWidth = max(0, (width - horizontalSpacing * CGFloat(subviews.count - 1)) / CGFloat(subviews.count))
-                let height = subviews.map { $0.sizeThatFits(ProposedViewSize(width: childWidth, height: nil)).height }.max() ?? 0
-                return CGSize(width: width, height: height)
-            }
-            return horizontal.sizeThatFits(proposal: proposal, subviews: subviews, cache: &cache.horizontal)
-        }
-        return vertical.sizeThatFits(proposal: proposal, subviews: subviews, cache: &cache.vertical)
-    }
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
-        if bounds.width >= minimumHorizontalWidth {
-            if equalHeight, !subviews.isEmpty {
-                let width = max(0, (bounds.width - horizontalSpacing * CGFloat(subviews.count - 1)) / CGFloat(subviews.count))
-                for (index, subview) in subviews.enumerated() {
-                    subview.place(at: CGPoint(x: bounds.minX + CGFloat(index) * (width + horizontalSpacing), y: bounds.minY),
-                        anchor: .topLeading, proposal: ProposedViewSize(width: width, height: bounds.height))
+    func callAsFunction(@ControlLayoutItems content: () -> [ControlLayoutItem]) -> ArrangedControls {
+        ArrangedControls(items: content(), fillsItemHeight: equalHeight) { offered, count, measure in
+            guard count > 0 else { return (.zero, []) }
+            // Equal-width rows already know each child's width. Measuring an
+            // unconstrained host first would rebuild its layout only to discard
+            // that measurement and constrain it again in the same pass.
+            let naturalWidths = offered == nil || centered
+                ? (0..<count).map { measure($0, nil, nil).width } : []
+            let width = offered ?? naturalWidths.reduce(0, +) + horizontalSpacing * CGFloat(count - 1)
+            if width < minimumHorizontalWidth {
+                var y: CGFloat = 0
+                let frames = (0..<count).map { index -> CGRect in
+                    let size = measure(index, centered ? min(width, naturalWidths[index]) : width, nil)
+                    defer { y += size.height + verticalSpacing }
+                    return CGRect(x: centered ? (width - size.width) / 2 : 0, y: y, width: size.width, height: size.height)
                 }
-            } else {
-                horizontal.placeSubviews(in: bounds, proposal: proposal, subviews: subviews, cache: &cache.horizontal)
+                return (CGSize(width: width, height: max(0, y - verticalSpacing)), frames)
             }
-        } else {
-            vertical.placeSubviews(in: bounds, proposal: proposal, subviews: subviews, cache: &cache.vertical)
+            let gaps = horizontalSpacing * CGFloat(count - 1)
+            let available = max(0, width - gaps)
+            let sizes: [CGSize]
+            if centered {
+                sizes = (0..<count).map { measure($0, naturalWidths[$0], nil) }
+            } else if equalHeight {
+                sizes = (0..<count).map { measure($0, available / CGFloat(count), nil) }
+            } else {
+                let flexibility = (0..<count).map { index in
+                    max(0, measure(index, available, nil).width - measure(index, 0, nil).width)
+                }
+                let order = (0..<count).sorted {
+                    flexibility[$0] == flexibility[$1] ? $0 < $1 : flexibility[$0] < flexibility[$1]
+                }
+                var remaining = available
+                var measured = [CGSize](repeating: .zero, count: count)
+                for (position, index) in order.enumerated() {
+                    let size = measure(index, max(0, remaining) / CGFloat(count - position), nil)
+                    measured[index] = size
+                    remaining -= size.width
+                }
+                sizes = measured
+            }
+            let height = sizes.map(\.height).max() ?? 0
+            let widths = equalHeight ? [CGFloat](repeating: available / CGFloat(count), count: count) : sizes.map(\.width)
+            let occupied = widths.reduce(0, +) + gaps
+            var x = centered ? max(0, (width - occupied) / 2) : 0
+            let frames = (0..<count).map { index -> CGRect in
+                defer { x += widths[index] + horizontalSpacing }
+                return CGRect(x: x, y: 0, width: widths[index], height: equalHeight ? height : sizes[index].height)
+            }
+            return (CGSize(width: centered || equalHeight ? width : occupied, height: height), frames)
         }
     }
 }

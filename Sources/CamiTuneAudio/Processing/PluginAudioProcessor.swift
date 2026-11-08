@@ -17,7 +17,7 @@ package extension PluginAudioProcessor {
 /// Writer-owned output protection, independent of a third-party effect's bypass.
 package struct PluginOutputProtection {
     private var gain: Float = 1
-    private var last = [Float](repeating: 0, count: SpeakerTopology.maximumOutputChannels)
+    private var last = [Float](repeating: 0, count: SpeakerTopology.maximumHardwareChannels)
     private var transition: Int = 0
     package init() {}
     package var isTransitioning: Bool { transition > 0 }
@@ -60,8 +60,8 @@ package struct FinalOutputProcessor {
     private var limiter = PluginOutputProtection()
 
     package init?(inputChannels: Int, outputChannels: Int, channelMap: [Int], sampleRate: Double) {
-        guard (1...SpeakerTopology.maximumOutputChannels).contains(inputChannels),
-              (1...SpeakerTopology.maximumOutputChannels).contains(outputChannels),
+        guard (1...AudioFormatDescriptor.maximumProcessingChannels).contains(inputChannels),
+              (1...SpeakerTopology.maximumHardwareChannels).contains(outputChannels),
               channelMap.count == inputChannels, Set(channelMap).count == inputChannels,
               channelMap.allSatisfy({ (0..<outputChannels).contains($0) }),
               sampleRate.isFinite, (8000...384000).contains(sampleRate) else { return nil }

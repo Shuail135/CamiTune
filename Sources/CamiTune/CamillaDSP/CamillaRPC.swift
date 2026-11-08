@@ -24,7 +24,7 @@ actor CamillaRPC {
     private let url: URL
     private var requestInProgress = false
     private var requestWaiters: [CheckedContinuation<Void, Never>] = []
-    private let requestTimeout: Duration = .seconds(2.5)
+    private let requestTimeout: TimeInterval = 2.5
 
     init(port: UInt16) {
         self.url = URL(string: "ws://127.0.0.1:\(port)")!
@@ -79,7 +79,7 @@ actor CamillaRPC {
         let timeout = requestTimeout
         let watchdogTask = Task.detached(priority: .utility) {
             do {
-                try await Task.sleep(for: timeout)
+                try await RuntimeClock.sleep(seconds: timeout)
             } catch {
                 return
             }

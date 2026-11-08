@@ -48,16 +48,16 @@ struct PluginMIDIInputView: View {
             if profile.pluginRack.midi.isEnabled {
                 if status.sources.isEmpty {
                     Label("Connect a MIDI device to begin.", systemImage: "info.circle")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                 }
                 else if let id = profile.pluginRack.midi.sourceID, !status.sources.contains(where: { $0.id == id }) {
-                    Text("Waiting for the selected MIDI input to reconnect.").font(.caption).foregroundStyle(.secondary)
+                    Text("Waiting for the selected MIDI input to reconnect.").font(.caption).foregroundColor(.secondary)
                 }
             }
             if let message = error ?? (status.message.isEmpty ? nil : status.message) {
-                Text(message).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Text(message).font(.caption).foregroundColor(.orange).fixedSize(horizontal: false, vertical: true)
             }
-        }.task { await status.refresh() }
+        }.viewTask { await status.refresh() }
     }
 }
 
@@ -88,9 +88,9 @@ struct PluginMIDIInputButton: View {
             }
         } label: {
             Image(systemName: "pianokeys")
-                .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                .foregroundColor(selected ? Color.accentColor : Color.secondary)
                 .frame(width: 28, height: 24)
-                .background(selected ? Color.accentColor.opacity(0.15) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+                .background(RoundedRectangle(cornerRadius: 4).fill(selected ? Color.accentColor.opacity(0.15) : Color.clear))
         }
         .buttonStyle(.borderless)
         .disabled(saving || !profile.pluginRack.midi.isEnabled || !profile.pluginRack.isEnabled || !slot.isEnabled)
@@ -115,23 +115,23 @@ struct PluginMapButton: View {
                 if model.mappingActive { state.pluginRackManager.finishMapping(slotID: slot.id) }
                 else { starting = true }
             }
-            .foregroundStyle(model.mappingActive ? Color.accentColor : Color.primary)
+            .foregroundColor(model.mappingActive ? Color.accentColor : Color.primary)
             .disabled(starting)
             .accessibilityLabel(model.mappingActive ? "Finish mapping \(slot.plugin.name)" : "Map \(slot.plugin.name)")
             .uiInteractionAnchor("plugin-midi-map-\(slot.id)")
             if model.mappingActive {
                 Text(model.choosingInEditor ? "Select a plug-in control…" : "Move or press a MIDI control…")
-                    .font(.caption).foregroundStyle(Color.accentColor)
+                    .font(.caption).foregroundColor(Color.accentColor)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 180, alignment: .trailing)
                     .uiInteractionAnchor("plugin-midi-learning")
             }
             if let error = model.error {
-                Text(error).font(.caption).foregroundStyle(.orange)
+                Text(error).font(.caption).foregroundColor(.orange)
                     .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 220)
             }
         }
-        .task(id: starting) {
+        .viewTask(id: starting) {
             guard starting else { return }
             defer { starting = false }
             do {
@@ -158,7 +158,7 @@ struct PluginMapButton: View {
 struct PluginMIDIMappingsView: View {
     let state: AppState
     @Binding var profile: DeviceProfile
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.presentationMode) private var dismiss
     @State private var search = ""
     @State private var selectedSlotID: UUID?
     @State private var error: String?
@@ -178,10 +178,10 @@ struct PluginMIDIMappingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("MIDI Mappings").font(.title2.bold())
                     Text("All Audio Unit and VST3 assignments for this output.")
-                        .font(.callout).foregroundStyle(.secondary)
+                        .font(.callout).foregroundColor(.secondary)
                 }
                 Spacer()
-                Text("\(profile.pluginRack.midi.mappings.count) mapped").font(.caption).foregroundStyle(.secondary)
+                Text("\(profile.pluginRack.midi.mappings.count) mapped").font(.caption).foregroundColor(.secondary)
             }
             HStack(alignment: .top, spacing: 12) {
                 Picker("Plug-in", selection: Binding(get: { selectedSlot?.id }, set: { selectedSlotID = $0 })) {
@@ -213,20 +213,20 @@ struct PluginMIDIMappingsView: View {
                             Text(search.isEmpty ? "No MIDI mappings yet" : "No matching mappings").font(.headline)
                             Text(search.isEmpty ? "Choose a plug-in above to map your first control." : "Try another plug-in, parameter or input name.")
                                 .font(.callout)
-                        }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 50)
+                        }.foregroundColor(.secondary).frame(maxWidth: .infinity).padding(.vertical, 50)
                     }
                 }.padding(2)
             }.frame(minHeight: 200, maxHeight: .infinity)
-            if let error { Text(error).font(.caption).foregroundStyle(.orange) }
+            if let error { Text(error).font(.caption).foregroundColor(.orange) }
             Divider()
             HStack {
                 Button("Release Notes") {
                     for slot in profile.pluginRack.slots { state.pluginRackManager.control("midiPanic", slotID: slot.id) }
                 }
                 Spacer()
-                Button("Done") { NSApp.keyWindow?.makeFirstResponder(nil); dismiss() }.keyboardShortcut(.defaultAction).uiInteractionAnchor("plugin-midi-done")
+                Button("Done") { NSApp.keyWindow?.makeFirstResponder(nil); dismiss.wrappedValue.dismiss() }.keyboardShortcut(.defaultAction).uiInteractionAnchor("plugin-midi-done")
             }
-        }.padding(24).frame(minWidth: 640, idealWidth: 740, minHeight: 560, idealHeight: 700).focusSection()
+        }.padding(24).frame(minWidth: 640, idealWidth: 740, minHeight: 560, idealHeight: 700).editorFocusSection()
     }
 
     private func editMapping(_ id: UUID, replacement: PluginMIDIMapping?) {
@@ -264,9 +264,9 @@ private struct PluginMIDIMappingRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(mapping.parameterName).font(.headline)
                     Text("\(plugin?.name ?? "Unavailable plug-in") · \(plugin?.format.rawValue ?? "")")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                     Text("\(mapping.sourceName) · Ch \(mapping.channel) · \(mapping.input == .note ? "Note" : "CC") \(mapping.controller)")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                 }
                 Spacer()
                 Button(action: remove) { Image(systemName: "trash").frame(width: 24, height: 24) }
@@ -294,7 +294,7 @@ private struct PluginMIDIMappingRow: View {
                             var value = mapping; value.upper = upper / 100; update(value)
                         }
                             .accessibilityLabel("Maximum percent for \(mapping.parameterName)")
-                        Text("%").font(.caption).foregroundStyle(.secondary)
+                        Text("%").font(.caption).foregroundColor(.secondary)
                     }.textFieldStyle(.roundedBorder)
                     if continuous {
                         Picker("Curve", selection: Binding(get: { mapping.curve }, set: { curve in
@@ -310,13 +310,13 @@ private struct PluginMIDIMappingRow: View {
                     } else {
                         Text(mapping.mode == .toggle ? "Each press alternates between Min and Max." : mapping.mode == .button
                             ? "Hold for Max; release for Min." : "Note velocity sets the value; release holds it.")
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 PluginMIDIResponseGraph(mapping: mapping).frame(width: 190)
             }
-        }.padding(14).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
-            .focusSection()
+        }.padding(14).background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.035)))
+            .editorFocusSection()
     }
 }
 
@@ -326,28 +326,28 @@ private struct PluginMIDIRangeField: View {
     let value: Double
     let commit: (Double) -> Void
     @State private var draft: String
-    @FocusState private var focused: Bool
-    private static let format = FloatingPointFormatStyle<Double>.number.grouping(.never).precision(.fractionLength(0...2))
+    @State private var focused = false
+    private static let format = DecimalFormat(0...2, grouping: false)
 
     init(title: String, value: Double, commit: @escaping (Double) -> Void) {
         self.title = title; self.value = value; self.commit = commit
-        _draft = State(initialValue: value.formatted(Self.format))
+        _draft = State(initialValue: value.decimalText(Self.format))
     }
     var body: some View {
-        TextField(title, text: $draft)
-            .monospacedDigit().focused($focused)
-            .onSubmit { commitDraft() }
+        EditableTextField(title, text: $draft, isFocused: $focused, font: .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular), onCommit: commitDraft, onCancel: { draft = value.decimalText(Self.format); focused = false })
+            .monospacedDigits()
+
             .onChange(of: focused) { if !$0 { commitDraft() } }
-            .onChange(of: value) { if !focused { draft = $0.formatted(Self.format) } }
-            .onExitCommand { draft = value.formatted(Self.format); focused = false }
+            .onChange(of: value) { if !focused { draft = $0.decimalText(Self.format) } }
+
     }
     private func commitDraft() {
-        guard let number = try? Double(draft, format: Self.format, lenient: false), number.isFinite else {
-            draft = value.formatted(Self.format); return
+        guard let number = try? Self.format.parse(draft), number.isFinite else {
+            draft = value.decimalText(Self.format); return
         }
         let clamped = min(100, max(0, number))
         if clamped != value { commit(clamped) }
-        draft = clamped.formatted(Self.format)
+        draft = clamped.decimalText(Self.format)
     }
 }
 
@@ -355,31 +355,31 @@ private struct PluginMIDIResponseGraph: View {
     let mapping: PluginMIDIMapping
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("Output %").font(.caption2).foregroundStyle(.secondary)
-            Canvas { context, size in
+            Text("Output %").font(.caption2).foregroundColor(.secondary)
+            PlotCanvas { context, size in
                 var grid = Path()
                 for step in 0...4 {
                     let x = size.width * Double(step) / 4, y = size.height * Double(step) / 4
                     grid.move(to: CGPoint(x: x, y: 0)); grid.addLine(to: CGPoint(x: x, y: size.height))
                     grid.move(to: CGPoint(x: 0, y: y)); grid.addLine(to: CGPoint(x: size.width, y: y))
                 }
-                context.stroke(grid, with: .color(.secondary.opacity(0.16)), lineWidth: 0.5)
+                context.stroke(grid, color: .secondary.opacity(0.16), lineWidth: 0.5)
                 var response = Path()
                 for step in 0...128 {
                     let input = Double(step) / 128
                     let point = CGPoint(x: input * size.width, y: (1 - mapping.output(at: input)) * size.height)
                     if step == 0 { response.move(to: point) } else { response.addLine(to: point) }
                 }
-                context.stroke(response, with: .color(.accentColor), style: StrokeStyle(lineWidth: 2, lineJoin: .round))
+                context.stroke(response, color: .accentColor, style: StrokeStyle(lineWidth: 2, lineJoin: .round))
             }.frame(height: 96).padding(4)
-                .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 4))
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.025)))
             HStack {
                 Text(mapping.mode == .button || mapping.mode == .toggle ? "Off" : "0")
                 Spacer()
                 Text(mapping.mode == .velocity ? "Velocity" : mapping.mode == .toggle ? "Toggle state" : mapping.mode == .button ? "Button" : "MIDI input")
                 Spacer()
                 Text(mapping.mode == .button || mapping.mode == .toggle ? "On" : "127")
-            }.font(.caption2).foregroundStyle(.secondary)
+            }.font(.caption2).foregroundColor(.secondary)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(mapping.mode.title) response, \(mapping.curve.title), from \(Int(mapping.lower * 100)) to \(Int(mapping.upper * 100)) percent")

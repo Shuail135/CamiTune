@@ -23,13 +23,14 @@ package struct MovieAnalysisResult: Sendable {
 
 package enum MovieAnalysisPhase: UInt64, Sendable {
     case off, preparing, running, suspended, quiet, retired
-    case overflow, unsupportedFormat, stale, modelFailure
+    case overflow, unsupportedFormat, stale, modelFailure, unsupportedDetector
     package var failureMessage: String? {
         switch self {
         case .overflow: return "Analysis could not keep up. Playback and manual enhancement continue. Switch modes and return to Movie to retry."
         case .unsupportedFormat: return "Analysis does not match the current input format. Playback and manual enhancement continue."
         case .stale: return "Analysis fell behind the playing audio. Playback and manual enhancement continue. Switch modes and return to Movie to retry."
         case .modelFailure: return "The local sound detector is unavailable. Playback and manual enhancement continue. Switch modes and return to Movie to retry."
+        case .unsupportedDetector: return "The selected detector is not supported on this system. Select Basic to enable content analysis. Playback and manual enhancement continue."
         default: return nil
         }
     }

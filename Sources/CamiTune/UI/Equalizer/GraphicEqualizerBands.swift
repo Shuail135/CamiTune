@@ -6,6 +6,7 @@ import SwiftUI
 /// Share the spectrum's cached response so the animation includes user gain too.
 struct GlobalEqualizerBandStrip: View {
     @Binding var bands: [EQBand]
+    let sampleRate: Double
     let spectrum: SpectrumAnalyzer
     let profileID: UUID
     @ObservedObject var graphModel: ProfileEditorGraphModel
@@ -13,21 +14,26 @@ struct GlobalEqualizerBandStrip: View {
     var onGainEditingChanged: @MainActor (Bool) -> Void
 
     var body: some View {
-        GraphicEqualizerBands(bands: $bands, spectrum: spectrum, profileID: profileID,
-            responsePoints: graphModel.responsePoints, setKind: EQEditorSupport.setKind,
-            columnWidth: columnWidth, onGainEditingChanged: onGainEditingChanged)
+        VisibleRegion { isVisible in
+            GraphicEqualizerBands(bands: $bands, sampleRate: sampleRate, spectrum: spectrum, profileID: profileID,
+                responsePoints: graphModel.responsePoints, setKind: EQEditorSupport.setKind,
+                columnWidth: columnWidth, visualUpdatesEnabled: isVisible, onGainEditingChanged: onGainEditingChanged)
+        }
     }
 }
 
+@MainActor
 struct GraphicEqualizerBands: View {
-    var metrics = EQControlMetrics()
+    @State private var display = SpectrumDisplay()
     @Binding var bands: [EQBand]
+    let sampleRate: Double
     var spectrum: SpectrumAnalyzer? = nil
     let profileID: UUID
     let responsePoints: [EQResponsePoint]
     let setKind: (EQBand.Kind, inout EQBand) -> Void
     let columnWidth: CGFloat
     var showsSpectrumLevels = true
+    var visualUpdatesEnabled = true
     var onGainEditingChanged: @MainActor (Bool) -> Void = { _ in }
 
     static func requiredContentWidth(
@@ -41,20 +47,11 @@ struct GraphicEqualizerBands: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 5 * metrics.scale) {
-            VStack(spacing: 7 * metrics.scale) {
-                Text("dB")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .frame(height: 24 * metrics.scale)
-                GainScaleLabels()
-                    .frame(width: 32 * metrics.scale, height: metrics.sliderHeight)
-            }
-            .frame(width: 32 * metrics.scale)
-
+        EqualizerBandStrip {
             ForEach(bands) { band in
                 EQBandColumn(
                     band: binding(for: band),
+                    sampleRate: sampleRate,
                     audioDB: -100,
                     responseDB: responseGain(at: band.frequency),
                     setKind: setKind,
@@ -62,16 +59,28 @@ struct GraphicEqualizerBands: View {
                         commitFrequency(frequency, for: band.id)
                     },
                     onGainEditingChanged: onGainEditingChanged,
-                    spectrum: showsSpectrumLevels ? spectrum : nil,
-                    profileID: profileID
+                    spectrum: showsSpectrumLevels && spectrum != nil ? display : nil
                 )
                 .frame(width: columnWidth)
             }
         }
-        .padding(.vertical, 8 * metrics.scale)
-        .background(alignment: .topLeading) {
-            EQGainGuideGrid()
+        .onReceive(spectrumPoints.filter { _ in visualUpdatesEnabled && showsSpectrumLevels }
+            .throttle(for: .milliseconds(80), scheduler: DispatchQueue.main, latest: true)) { points in
+                if visualUpdatesEnabled { display.update(spectrum?.activeProfileID == profileID ? points : []) }
+            }
+        .onReceive(activeProfile) { id in
+            if visualUpdatesEnabled { display.update(id == profileID ? spectrum?.points ?? [] : []) }
         }
+        .onChange(of: visualUpdatesEnabled) { visible in
+            if visible { display.update(spectrum?.activeProfileID == profileID ? spectrum?.points ?? [] : []) }
+        }
+    }
+
+    private var spectrumPoints: AnyPublisher<[SpectrumPoint], Never> {
+        spectrum?.$points.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()
+    }
+    private var activeProfile: AnyPublisher<UUID?, Never> {
+        spectrum?.$activeSession.map { $0?.profileID }.eraseToAnyPublisher() ?? Just(nil).eraseToAnyPublisher()
     }
 
     private func responseGain(at frequency: Double) -> Double {
@@ -124,25 +133,23 @@ struct GraphicEqualizerBands: View {
 }
 
 /// Telemetry invalidates only a band's artwork, never its native fields or menus.
+@MainActor
 struct SpectrumBandLevelObserver<Content: View>: View {
-    let spectrum: SpectrumAnalyzer
-    let profileID: UUID
+    let spectrum: SpectrumDisplay
     let frequency: Double
     @ViewBuilder var content: (Double) -> Content
     @State private var level: Double = -100
 
     var body: some View {
         content(level)
-            .onReceive(spectrum.$points.throttle(for: .milliseconds(80), scheduler: DispatchQueue.main, latest: true)) {
-                update($0, activeProfileID: spectrum.activeProfileID)
-            }
-            .onReceive(spectrum.$activeSession) { update(spectrum.points, activeProfileID: $0?.profileID) }
-            .onChange(of: frequency) { _ in update(spectrum.points, activeProfileID: spectrum.activeProfileID) }
+            .onReceive(spectrum.$points, perform: update)
+            .onChange(of: frequency) { _ in update(spectrum.points) }
     }
 
-    private func update(_ points: [SpectrumPoint], activeProfileID: UUID?) {
-        guard activeProfileID == profileID, !points.isEmpty else {
-            if level != -100 { level = -100 }; return
+    private func update(_ points: [SpectrumPoint]) {
+        guard !points.isEmpty else {
+            if level != -100 { level = -100 }
+            return
         }
         var lower = 0
         var upper = points.count
@@ -168,8 +175,8 @@ struct SpectrumBandLevelObserver<Content: View>: View {
 /// gain drag publishes only the one PerChannelBandState being edited instead of
 /// replacing the parent [EQBand] value and invalidating the entire editor.
 struct PerChannelGraphicEqualizerBands: View {
-    var metrics = EQControlMetrics()
     @ObservedObject var bands: PerChannelBandsState
+    let sampleRate: Double
     let responses: PerChannelResponseState
     let setKind: (EQBand.Kind, inout EQBand) -> Void
     let columnWidth: CGFloat
@@ -177,21 +184,12 @@ struct PerChannelGraphicEqualizerBands: View {
     let onGainEditingChanged: @MainActor (Bool) -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 5 * metrics.scale) {
-            VStack(spacing: 7 * metrics.scale) {
-                Text("dB")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .frame(height: 24 * metrics.scale)
-                GainScaleLabels()
-                    .frame(width: 32 * metrics.scale, height: metrics.sliderHeight)
-            }
-            .frame(width: 32 * metrics.scale)
-
+        EqualizerBandStrip {
             ForEach(bands.items) { bandState in
                 PerChannelBandColumnHost(
                     bandState: bandState,
                     responses: responses,
+                    sampleRate: sampleRate,
                     setKind: setKind,
                     commitFrequency: { frequency in
                         bands.commitFrequency(frequency, for: bandState.id)
@@ -203,16 +201,14 @@ struct PerChannelGraphicEqualizerBands: View {
                 .frame(width: columnWidth)
             }
         }
-        .padding(.vertical, 8 * metrics.scale)
-        .background(alignment: .topLeading) {
-            EQGainGuideGrid()
-        }
+
     }
 }
 
 private struct PerChannelBandColumnHost: View {
     @ObservedObject var bandState: PerChannelBandState
     @ObservedObject var responses: PerChannelResponseState
+    let sampleRate: Double
     let setKind: (EQBand.Kind, inout EQBand) -> Void
     let commitFrequency: @MainActor (Double) -> Void
     let onBandChanged: @MainActor () -> Void
@@ -228,6 +224,7 @@ private struct PerChannelBandColumnHost: View {
                     onBandChanged()
                 }
             ),
+            sampleRate: sampleRate,
             audioDB: -100,
             responseDB: responseGain(at: bandState.band.frequency),
             setKind: setKind,
@@ -258,6 +255,33 @@ private struct PerChannelBandColumnHost: View {
 
     private func logDistance(_ lhs: Double, _ rhs: Double) -> Double {
         abs(log(max(lhs, 1) / max(rhs, 1)))
+    }
+}
+
+/// The gain ruler, spacing and guide grid are identical for global, app and
+/// channel EQ. Callers supply their columns and retain their own edit policies.
+private struct EqualizerBandStrip<Columns: View>: View {
+    var metrics = EQControlMetrics()
+    @ViewBuilder let columns: () -> Columns
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 5 * metrics.scale) {
+            VStack(spacing: 7 * metrics.scale) {
+                Text("dB")
+                    .font(.caption2.weight(.medium))
+                    .foregroundColor(.secondary)
+                    .frame(height: 24 * metrics.scale)
+                GainScaleLabels()
+                    .frame(width: 32 * metrics.scale, height: metrics.sliderHeight)
+            }
+            .frame(width: 32 * metrics.scale)
+
+            columns()
+        }
+        .padding(.vertical, 8 * metrics.scale)
+        .background(Group {
+            EQGainGuideGrid()
+        }, alignment: .topLeading)
     }
 }
 

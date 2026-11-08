@@ -59,7 +59,7 @@ final class SpeakerOutputAudition: ObservableObject {
                 // actor; the audio callback itself does no allocation or UI work.
                 let deadline = Date().addingTimeInterval(4)
                 var observedRunning = false
-                try await Task.sleep(for: .milliseconds(50))
+                try await RuntimeClock.sleep(seconds: 0.05)
                 while request == token && !Task.isCancelled {
                     guard let queue else { return }
                     var running: UInt32 = 0
@@ -73,7 +73,7 @@ final class SpeakerOutputAudition: ObservableObject {
                         if failedToStart { message = "The selected output did not start the test. Check its connection and volume." }
                         return
                     }
-                    try await Task.sleep(for: .milliseconds(50))
+                    try await RuntimeClock.sleep(seconds: 0.05)
                 }
             } catch is CancellationError { }
             catch {
@@ -133,7 +133,7 @@ final class SpeakerOutputAudition: ObservableObject {
     /// Preserve the already protected mono signal and explicitly silence every
     /// other hardware output. This is the buffer passed directly to AudioQueue.
     nonisolated static func interleavedSamples(_ mono: [Float], output: Int, channelCount: Int) throws -> [Float] {
-        guard (1...SpeakerTopology.maximumOutputChannels).contains(channelCount),
+        guard (1...SpeakerTopology.maximumHardwareChannels).contains(channelCount),
               (0..<channelCount).contains(output), !mono.isEmpty else {
             throw SpeakerTopologyError.invalidChannelIndex(output)
         }

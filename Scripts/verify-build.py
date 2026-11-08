@@ -46,6 +46,11 @@ def source_directory(root, without_tests):
         schemes = root / "CamiTune.xcodeproj/xcshareddata"
         if schemes.exists():
             shutil.copytree(schemes, project / "xcshareddata")
+        resolution = root / "CamiTune.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+        if resolution.exists():
+            destination = project / "project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(resolution, destination)
         for name in ("Sources", "Resources", "Config", "Scripts", "Tools", "Drivers", "Contributions"):
             if (root / name).exists():
                 shutil.copytree(root / name, source / name,
@@ -57,6 +62,9 @@ def source_directory(root, without_tests):
 
 
 def commands(root, source, tool, configuration, without_tests):
+    if tool == "release":
+        yield [str(root / "build-app.sh"), "--build-lock-held"]
+        return
     # Isolated source paths need their own caches, deleted with the checkout.
     swift_cache = source / ".build" if without_tests else root / ".build"
     xcode_cache = source / "DerivedData" if without_tests else root / "dist/DerivedData"
@@ -97,13 +105,15 @@ def interrupted(signum, frame):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("tool", choices=("swift", "xcode", "both"), nargs="?", default="both")
+    parser.add_argument("tool", choices=("swift", "xcode", "both", "release"), nargs="?", default="both")
     parser.add_argument("--configuration", choices=("debug", "release"), default="debug")
     parser.add_argument("--without-tests", action="store_true",
                         help="Verify without a Tests folder; delete the temporary checkout and caches afterward.")
     parser.add_argument("--disable-swift-sandbox", action="store_true",
                         help="Disable SwiftPM's nested manifest sandbox when the host already sandboxes the build.")
     args = parser.parse_args()
+    if args.tool == "release" and args.without_tests:
+        parser.error("Release packaging uses the workspace; verify --without-tests with swift, xcode, or both.")
     root = Path(__file__).resolve().parents[1]
     signal.signal(signal.SIGTERM, interrupted)
     environment = os.environ.copy()

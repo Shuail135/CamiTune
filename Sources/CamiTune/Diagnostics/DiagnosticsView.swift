@@ -33,21 +33,21 @@ struct DiagnosticsView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("\(controller.completedCount) of \(controller.totalCount) checks complete")
-                            .font(.callout).monospacedDigit()
+                            .font(.callout.monospacedDigit())
                         ProgressView(value: Double(controller.completedCount), total: Double(max(1, controller.totalCount)))
                     }
                     Button("Cancel") { controller.cancel() }
                 }
             } else if let date = controller.lastCompletedRun {
-                Text("\(controller.runMessage) · Last run: \(date.formatted(date: .abbreviated, time: .shortened))")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("\(controller.runMessage) · Last run: \(DatePresentation.string(date, template: "yMMMdjmm"))")
+                    .font(.caption).foregroundColor(.secondary)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     DiagnosticsComponentsSection(dependencies: state.dependencies, onOpenSettings: onOpenComponents)
                     PerformanceDiagnosticsSection(state: state)
                     GroupBox {
-                        DisclosureGroup(isExpanded: $showRuntime) {
+                        SectionDisclosure(isExpanded: $showRuntime) {
                             if showRuntime { DiagnosticsRuntimeView(state: state) }
                         } label: {
                             sectionLabel("Runtime Details", subtitle: "Inspect audio routing and engine snapshots for troubleshooting.",
@@ -56,7 +56,7 @@ struct DiagnosticsView: View {
                         .padding(6)
                     }
                     GroupBox {
-                        DisclosureGroup(isExpanded: $showTests) {
+                        SectionDisclosure(isExpanded: $showTests) {
                             if showTests { DiagnosticsSelfTestsView(controller: controller) }
                         } label: {
                             let summary = DiagnosticResultsSummary(results: controller.results.filter { $0.safety == .simulated })
@@ -72,13 +72,13 @@ struct DiagnosticsView: View {
             }
             .scrollBounceWhenNeeded()
         }
-        .disclosureGroupStyle(SectionDisclosureStyle())
-        .alert("Couldn’t Download Diagnostic Report", isPresented: Binding(
+
+        .appAlert("Couldn’t Download Diagnostic Report", isPresented: Binding(
             get: { exportError != nil },
             set: { if !$0 { exportError = nil } })) {
-                Button("OK", role: .cancel) { }
+                AppAlertAction("OK", role: .cancel) { }
             } message: {
-                Text(exportError ?? "")
+                exportError ?? ""
             }
     }
 
@@ -116,7 +116,7 @@ struct DiagnosticsView: View {
     private func sectionLabel(_ title: String, subtitle: String, anchor: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.headline).uiInteractionAnchor(anchor)
-            Text(subtitle).font(.caption).foregroundStyle(.secondary)
+            Text(subtitle).font(.caption).foregroundColor(.secondary)
         }
     }
 }
@@ -129,7 +129,7 @@ private struct DiagnosticsComponentsSection: View {
 
     var body: some View {
         GroupBox {
-            DisclosureGroup(isExpanded: $expanded) {
+            SectionDisclosure(isExpanded: $expanded) {
                 if expanded {
                     VStack(alignment: .leading, spacing: 12) {
                         componentRow("CamillaDSP", status: dependencies.camillaDSPStatus)
@@ -139,14 +139,14 @@ private struct DiagnosticsComponentsSection: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .task { await dependencies.refreshWithoutBlockingUI() }
+                    .viewTask { await dependencies.refreshWithoutBlockingUI() }
                 }
             } label: {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Drivers & Components").font(.headline)
                         .uiInteractionAnchor("diagnostics-components")
                     Text("Installation status for the audio engine and system audio driver.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                 }
             }
             .padding(6)
@@ -165,9 +165,9 @@ private struct DiagnosticsComponentsSection: View {
             Group {
                 switch status {
                 case .checking, .working: ProgressView().controlSize(.small)
-                case .installed: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                case .missing: Image(systemName: "xmark.circle.fill").foregroundStyle(.orange)
-                case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                case .installed: Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+                case .missing: Image(systemName: "xmark.circle.fill").foregroundColor(.orange)
+                case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
                 }
             }
             .frame(width: 16)
@@ -194,28 +194,28 @@ private struct DiagnosticResultRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: symbol).foregroundStyle(color).frame(width: 16)
+            Image(systemName: symbol).foregroundColor(color).frame(width: 16)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 5) {
                 Text(result.name).fontWeight(.medium)
-                Text(result.summary).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                SelectableText(result.summary, font: .preferredFont(forTextStyle: .callout), color: .secondaryLabelColor)
                 if !result.evidence.isEmpty || result.details != nil {
-                    DisclosureGroup("Details", isExpanded: $expanded) {
+                    SectionDisclosure("Details", isExpanded: $expanded) {
                         if expanded {
                             VStack(alignment: .leading, spacing: 4) {
                                 ForEach(Array(result.evidence.enumerated()), id: \.offset) { _, item in
-                                    Text("\(item.name): \(item.value)")
+                                    SelectableText("\(item.name): \(item.value)", font: .preferredFont(forTextStyle: .caption1), color: .secondaryLabelColor)
                                 }
-                                if let details = result.details { Text(details) }
-                                Text("Duration: \(String(describing: result.duration))")
-                            }.foregroundStyle(.secondary).textSelection(.enabled)
+                                if let details = result.details { SelectableText(details, font: .preferredFont(forTextStyle: .caption1), color: .secondaryLabelColor) }
+                                SelectableText("Duration: \(String(describing: result.duration) + " seconds")", font: .preferredFont(forTextStyle: .caption1), color: .secondaryLabelColor)
+                            }
                         }
                     }.font(.caption)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Text(result.status == .skipped ? "Not checked" : result.status.rawValue.capitalized)
-                .font(.caption).foregroundStyle(color)
+                .font(.caption).foregroundColor(color)
         }
         .padding(.vertical, 4)
     }
@@ -261,7 +261,7 @@ private struct DiagnosticsSelfTestsView: View {
                 DiagnosticsTestSuiteView(suite: suite, controller: controller, results: results)
             }
         }
-        .task {
+        .viewTask {
             guard suites.isEmpty else { return }
             let tests = DeveloperSelfTests.cases()
             let grouped = Dictionary(grouping: tests, by: \.suite)
@@ -285,7 +285,7 @@ private struct DiagnosticsTestSuiteView: View {
 
     var body: some View {
         let summary = DiagnosticResultsSummary(results: suite.tests.compactMap { results[$0.id] })
-        DisclosureGroup(isExpanded: $expanded) {
+        SectionDisclosure(isExpanded: $expanded) {
             if expanded {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     ForEach(suite.tests, id: \.id) { test in
@@ -305,7 +305,7 @@ private struct DiagnosticsTestSuiteView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(suite.name).fontWeight(.medium)
                 Text("\(summary.total) of \(suite.tests.count) tests have results · \(summary.total == 0 ? "Not run" : summary.detail)")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
             }
         }
     }
@@ -344,13 +344,12 @@ private struct DiagnosticsRuntimeView: View {
                 }
             }
             if let updatedAt {
-                Text("Snapshot: \(updatedAt.formatted(date: .omitted, time: .standard))")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("Snapshot: \(DatePresentation.string(updatedAt, template: "jmmss"))")
+                    .font(.caption).foregroundColor(.secondary)
             }
-            Text(snapshot).font(.system(.caption, design: .monospaced))
-                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            SelectableText(snapshot, font: .monospacedSystemFont(ofSize: NSFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular)).frame(maxWidth: .infinity, alignment: .leading)
         }
-        .task(id: section) { refresh() }
+        .viewTask(id: section) { refresh() }
     }
 
     private func refresh() {

@@ -119,7 +119,7 @@ extension GlobalEqualizerEditorView {
         let parsed = ParsedEQ(preampDB: preampDB, bands: graphicBands, warnings: [])
         runtime.liveApplyTask = Task {
             do {
-                try await Task.sleep(for: .milliseconds(milliseconds))
+                try await RuntimeClock.sleep(seconds: Double(milliseconds) / 1000)
             } catch {
                 return
             }

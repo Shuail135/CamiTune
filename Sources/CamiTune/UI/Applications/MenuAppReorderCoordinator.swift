@@ -88,7 +88,7 @@ final class MenuAppReorderCoordinator: ObservableObject {
         if !hoveringBridge && draggedApplicationID != nil { return }
         let opening = hoveringBridge
         hoverTask = Task { @MainActor [weak self] in
-            do { try await Task.sleep(for: .milliseconds(opening ? 180 : 300)) } catch { return }
+            do { try await RuntimeClock.sleep(seconds: Double(opening ? 180 : 300) / 1000) } catch { return }
             guard let self else { return }
             if opening { self.showingMoreApps = true }
             else if self.draggedApplicationID == nil {

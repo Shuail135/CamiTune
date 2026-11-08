@@ -11,31 +11,38 @@ struct AdaptiveEditorLayout<Sidebar: View, CompactSelector: View, Content: View>
 
     var body: some View {
         let compact = isCompact
-        let layout = compact
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
-            : AnyLayout(HStackLayout(alignment: .top, spacing: 33))
-        layout {
-            Group {
-                if compact {
-                    compactSelector()
-                } else {
-                    sidebar().frame(width: sidebarWidth)
-                }
+        ArrangedControls(items: ControlLayoutItems.buildBlock(
+            ControlLayoutItems.buildExpression(navigation(compact: compact)),
+            ControlLayoutItems.buildExpression(content().frame(maxWidth: .infinity, alignment: .topLeading))
+        )) { proposedWidth, _, measure in
+            let width = proposedWidth ?? sidebarWidth + minimumEditorWidth + 33
+            if compact {
+                let selector = measure(0, width, nil)
+                let editor = measure(1, width, nil)
+                return (CGSize(width: width, height: selector.height + 12 + editor.height), [
+                    CGRect(origin: .zero, size: selector),
+                    CGRect(x: 0, y: selector.height + 12, width: width, height: editor.height)
+                ])
             }
-            content()
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+            let sidebar = measure(0, sidebarWidth, nil)
+            let editorWidth = max(0, width - sidebarWidth - 33)
+            let editor = measure(1, editorWidth, nil)
+            return (CGSize(width: width, height: max(sidebar.height, editor.height)), [
+                CGRect(origin: .zero, size: sidebar),
+                CGRect(x: sidebarWidth + 33, y: 0, width: editorWidth, height: editor.height)
+            ])
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(alignment: .leading) {
+        .overlay(Group {
             if !compact {
                 // Span both columns, even when the editor is shorter than the sidebar.
-                Rectangle().fill(Color(nsColor: .separatorColor))
+                Rectangle().fill(Color(.separatorColor))
                     .frame(width: 1)
                     .offset(x: sidebarWidth + 16)
                     .allowsHitTesting(false)
             }
-        }
-        .background {
+        }, alignment: .leading)
+        .background(Group {
             GeometryReader { geometry in
                 let needsCompactLayout = geometry.size.width < sidebarWidth + minimumEditorWidth + 33
                 Color.clear
@@ -44,48 +51,29 @@ struct AdaptiveEditorLayout<Sidebar: View, CompactSelector: View, Content: View>
                     // the sidebar animation or a live window resize.
                     .onChange(of: needsCompactLayout) { isCompact = $0 }
             }
-        }
+        })
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder private func navigation(compact: Bool) -> some View {
+        if compact { compactSelector() }
+        else { sidebar().frame(width: sidebarWidth) }
     }
 }
 
-/// Retain an editor's native controls and local drafts without measuring hidden
-/// pages on every selection/disclosure change. Hidden pages keep their last
-/// geometry; only the selected page determines the surrounding card's size.
-struct SelectedEditorPageLayout: Layout {
+/// Hidden pages retain their native controls and last geometry. Only the selected
+/// page is measured, so a live meter cannot lay out every retained editor.
+struct SelectedEditorPageLayout {
     var selection: Int
-    struct Cache { var sizes: [Int: CGSize] = [:] }
-    func makeCache(subviews: Subviews) -> Cache { Cache() }
-    func updateCache(_ cache: inout Cache, subviews: Subviews) {}
-    // This container uses top-leading placement, not child baseline guides.
-    // The default implementations place every retained page again to derive
-    // those guides, multiplying layout work whenever live meters update.
-    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect,
-        proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGFloat? { nil }
-    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect,
-        proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGFloat? { nil }
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
-        guard subviews.indices.contains(selection) else { return .zero }
-        // SwiftUI probes zero and infinite widths before its actual proposal.
-        // Never store those probes as geometry for a retained native editor.
-        if proposal.width == 0 { return .zero }
-        let width = proposal.width.flatMap { $0.isFinite ? $0 : nil }
-            ?? cache.sizes[selection]?.width ?? 600
-        let measured = subviews[selection].sizeThatFits(ProposedViewSize(width: width, height: nil))
-        let size = CGSize(width: width, height: measured.height.isFinite ? max(0, measured.height) : 0)
-        if proposal.width?.isFinite == true { cache.sizes[selection] = size }
-        return size
-    }
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
-        guard bounds.width.isFinite, bounds.height.isFinite else { return }
-        for index in subviews.indices {
-            let size = index == selection ? bounds.size : cache.sizes[index] ?? CGSize(width: bounds.width, height: 0)
-            // Also retain the initial geometry of pages that have never been
-            // selected. Otherwise every sidebar animation frame proposes a new
-            // width to all hidden editors and measures their native controls.
-            cache.sizes[index] = size
-            subviews[index].place(at: bounds.origin, anchor: .topLeading,
-                proposal: ProposedViewSize(width: size.width, height: size.height))
+    func callAsFunction(@ControlLayoutItems content: () -> [ControlLayoutItem]) -> ArrangedControls {
+        ArrangedControls(items: content(), retainedSelection: selection) { width, count, measure in
+            guard (0..<count).contains(selection) else { return (.zero, []) }
+            let width = width ?? 600
+            let size = measure(selection, width, nil)
+            let frames = (0..<count).map { index in
+                CGRect(x: 0, y: 0, width: width, height: index == selection ? size.height : 0)
+            }
+            return (CGSize(width: width, height: size.height), frames)
         }
     }
 }

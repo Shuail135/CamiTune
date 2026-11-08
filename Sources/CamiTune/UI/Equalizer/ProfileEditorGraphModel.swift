@@ -51,7 +51,7 @@ final class ProfileEditorGraphModel: ObservableObject {
         calculationTask?.cancel()
         calculationTask = Task {
             do {
-                try await Task.sleep(for: .milliseconds(25))
+                try await RuntimeClock.sleep(seconds: 0.025)
             } catch {
                 return
             }
@@ -62,7 +62,7 @@ final class ProfileEditorGraphModel: ObservableObject {
                 )
             }.value
             guard !Task.isCancelled else { return }
-            responsePoints = points
+            if responsePoints != points { responsePoints = points }
         }
     }
 

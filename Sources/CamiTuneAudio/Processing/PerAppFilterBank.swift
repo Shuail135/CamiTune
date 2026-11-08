@@ -111,7 +111,7 @@ package struct PerAppFilterBank {
             q = value
         } else if let bandwidth = band.bandwidth,
                   bandwidth.isFinite, bandwidth > 0 {
-            q = BiquadCoefficients.q(fromBandwidth: bandwidth)
+            q = BiquadCoefficients.q(fromBandwidth: bandwidth, frequency: band.frequency, sampleRate: sampleRate)
         } else {
             q = 0.70710678
         }

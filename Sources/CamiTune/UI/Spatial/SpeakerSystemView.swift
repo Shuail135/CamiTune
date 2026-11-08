@@ -1,5 +1,6 @@
 import CamiTuneDomain
 import SwiftUI
+import AppKit
 
 @MainActor
 struct SpeakerSystemView: View {
@@ -16,7 +17,7 @@ struct SpeakerSystemView: View {
     var onClose: (() -> Void)?
     /// Preview/test seam: exercising the real editor need not open an audio device.
     var auditionOverride: ((PhysicalOutputID) -> Void)? = nil
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.presentationMode) private var dismiss
     @StateObject private var audition = SpeakerOutputAudition()
     @State private var historyBaseline: SpeakerSystemHistoryState?
     @State private var historyGestureActive = false
@@ -36,7 +37,7 @@ struct SpeakerSystemView: View {
     @State private var renamingID: PhysicalOutputID?
     @State private var canvasID = UUID()
     @State private var graphZoom: CGFloat = 1.25
-    @FocusState private var titleFocused: Bool
+    @State private var titleFocused = false
     @State private var boardExtent: Float = 1
 
     private var saved: Bool { draft == profile.speakerTopology && seat == originalSeat && bass == profile.multichannel.bass }
@@ -57,7 +58,7 @@ struct SpeakerSystemView: View {
                 }
             }
             Text("Drag and Configure speaker position and user position for best performance.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.callout).foregroundColor(.secondary)
             if let draft {
                 if !listeningOnly {
                     SpeakerLayoutSelector(topology: topologyBinding(draft),
@@ -87,11 +88,11 @@ struct SpeakerSystemView: View {
                     }
                 }
             } else {
-                Text("Discover the physical channels to configure this room.").foregroundStyle(.secondary)
+                Text("Discover the physical channels to configure this room.").foregroundColor(.secondary)
             }
             if audition.preparing { ProgressView("Preparing test…").controlSize(.small) }
             if busy { ProgressView().controlSize(.small) }
-            if let detail = message ?? audition.message { Text(detail).font(.callout).foregroundStyle(.orange) }
+            if let detail = message ?? audition.message { Text(detail).font(.callout).foregroundColor(.orange) }
             if !draftOnly {
                 HStack {
                     Spacer()
@@ -143,10 +144,10 @@ struct SpeakerSystemView: View {
         .onChange(of: bass) { _ in speakerEditChanged(); publishDraft() }
         .onDisappear { finishHistoryGesture(); audition.stop() }
         .onChange(of: state.isSavingProfileSettings) { saving in if saving { audition.stop() } }
-        .confirmationDialog("Save changes before closing?", isPresented: $confirmClose, titleVisibility: .visible) {
-            Button("Save Changes") { save(close: true) }
-            Button("Discard Changes", role: .destructive) { draft = profile.speakerTopology; seat = originalSeat; bass = profile.multichannel.bass; speakerEditChanged(); finishClose() }
-            Button("Cancel", role: .cancel) {}
+        .appAlert("Save changes before closing?", isPresented: $confirmClose) {
+            AppAlertAction("Save Changes") { save(close: true) }
+            AppAlertAction("Discard Changes", role: .destructive) { draft = profile.speakerTopology; seat = originalSeat; bass = profile.multichannel.bass; speakerEditChanged(); finishClose() }
+            AppAlertAction("Cancel", role: .cancel) {}
         }
     }
 
@@ -200,7 +201,7 @@ struct SpeakerSystemView: View {
 
     private func speakerDetails(_ endpoint: SpeakerEndpoint) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            DisclosureGroup("Advanced") {
+            SectionDisclosure("Advanced") {
                 VStack(alignment: .leading, spacing: 6) {
                     Picker("Function", selection: Binding(get: { endpoint.function }, set: { value in
                         guard let index = draft?.endpoints.firstIndex(where: { $0.id == endpoint.id }) else { return }
@@ -242,18 +243,18 @@ struct SpeakerSystemView: View {
     private func speakerTitle(_ endpoint: SpeakerEndpoint) -> some View {
         HStack {
             if renamingTitle {
-                TextField("Speaker title", text: $titleDraft)
+                EditableTextField("Speaker title", text: $titleDraft, isFocused: $titleFocused, style: .plain, font: .systemFont(ofSize: NSFont.preferredFont(forTextStyle: .title2).pointSize, weight: .bold), onCommit: commitTitle, onCancel: cancelTitle)
                     .font(.title2.bold()).textFieldStyle(.plain)
-                    .focused($titleFocused)
-                    .onSubmit { commitTitle() }
-                    .onExitCommand { cancelTitle() }
+
+
+
             } else {
                 Button {
                     renamingID = endpoint.id; titleDraft = endpoint.displayName; renamingTitle = true; titleFocused = true
                 } label: {
                     HStack(spacing: 8) {
                         Text(endpoint.displayName).font(.title2.bold())
-                        Image(systemName: "pencil").foregroundStyle(.secondary)
+                        Image(systemName: "pencil").foregroundColor(.secondary)
                             .opacity(titleHovered ? 1 : 0)
                     }.contentShape(Rectangle())
                 }.buttonStyle(.plain).onHover { titleHovered = $0 }
@@ -370,7 +371,7 @@ struct SpeakerSystemView: View {
         profile.multichannel.bass = bass
         if let seat { profile.spatialSettings.seating = seat }
     }
-    private func finishClose() { if let onClose { onClose() } else { dismiss() } }
+    private func finishClose() { if let onClose { onClose() } else { dismiss.wrappedValue.dismiss() } }
     private func close() { if renamingTitle { commitTitle() }; audition.stop(); if saved { finishClose() } else { confirmClose = true } }
 
     private func save(close: Bool) {

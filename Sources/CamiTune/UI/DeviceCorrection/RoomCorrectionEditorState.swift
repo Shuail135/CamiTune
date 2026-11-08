@@ -556,7 +556,7 @@ final class RoomCorrectionEditorState: ObservableObject {
         try await recorder.start(id: id, retainAudio: retainAudio)
         // Starting an AVCaptureSession does not guarantee that input frames
         // have arrived. Wait for the selected microphone before emitting codes.
-        for _ in 0..<20 where recorder.inputLevel == nil { try await Task.sleep(for: .milliseconds(50)) }
+        for _ in 0..<20 where recorder.inputLevel == nil { try await RuntimeClock.sleep(seconds: 0.05) }
         guard recorder.inputLevel != nil, !recorder.hasDiscontinuity else { throw AcousticMeasurementError.captureFailed }
         return recorder
     }
@@ -713,7 +713,7 @@ final class RoomCorrectionEditorState: ObservableObject {
                                 throw RoomCorrectionError.routeUnavailable
                             }
                             while !playback.isFinished {
-                                try await Task.sleep(for: .milliseconds(100))
+                                try await RuntimeClock.sleep(seconds: 0.1)
                                 let output = playback.startedAt != nil && !playback.isFinished ? clip.physicalOutput : nil
                                 if playingOutput != output { playingOutput = output }
                                 microphoneLevel = capture?.inputLevel
@@ -743,7 +743,7 @@ final class RoomCorrectionEditorState: ObservableObject {
                     if !preview && initial.source.kind == .microphone {
                         guard let microphone = initial.source.deviceID else { throw AcousticMeasurementError.noMicrophone }
                         recorder = try await startMicrophoneCapture(id: microphone)
-                        try await Task.sleep(for: .milliseconds(250))
+                        try await RuntimeClock.sleep(seconds: 0.25)
                     } else { recorder = nil }
                     status = "Playing sound · \(positionLabel)"
                     let playback = RoomMeasurementPlaybackCompletion()
@@ -752,7 +752,7 @@ final class RoomCorrectionEditorState: ObservableObject {
                         started: { playback.start(at: $0) }, completion: { playback.finish() }) else { throw RoomCorrectionError.routeUnavailable }
                     var tail = 0
                     for _ in 0..<140 {
-                        try await Task.sleep(for: .milliseconds(100))
+                        try await RuntimeClock.sleep(seconds: 0.1)
                         let output = playback.startedAt != nil && !playback.isFinished ? clip.physicalOutput : nil
                         if playingOutput != output { playingOutput = output }
                         if let recorder {

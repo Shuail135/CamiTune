@@ -16,6 +16,7 @@ final class MenuBarViewModel: ObservableObject {
     private var subscriptions: Set<AnyCancellable> = []
     private var isOpen = false
     private weak var menuWindow: NSWindow?
+    private weak var anchorWindow: NSWindow?
     private let menuWindows = NSHashTable<NSWindow>.weakObjects()
     private var localClickMonitor: Any?
     private var globalClickMonitor: Any?
@@ -38,6 +39,7 @@ final class MenuBarViewModel: ObservableObject {
 
     private func containsMenuWindow(_ window: NSWindow?) -> Bool {
         guard let window else { return false }
+        if window === anchorWindow { return true }
         if menuWindows.contains(window) { return true }
         if let parent = window.parent ?? window.sheetParent {
             return containsMenuWindow(parent)
@@ -81,8 +83,9 @@ final class MenuBarViewModel: ObservableObject {
         if let deactivateObserver { NotificationCenter.default.removeObserver(deactivateObserver) }
     }
 
-    init(state: AppState) {
+    init(state: AppState, anchorWindow: NSWindow? = nil) {
         self.state = state
+        self.anchorWindow = anchorWindow
         reorder = MenuAppReorderCoordinator(store: state.perAppAudio.activePresentationStore)
         state.perAppAudio.$activePresentationStore.dropFirst().sink { [weak self] store in
             guard let self else { return }
@@ -223,9 +226,9 @@ struct MenuBarRootView: View {
     private let history: UndoCoordinator
     @StateObject private var model: MenuBarViewModel
 
-    init(state: AppState) {
+    init(state: AppState, anchorWindow: NSWindow? = nil) {
         self.history = state.history
-        _model = StateObject(wrappedValue: MenuBarViewModel(state: state))
+        _model = StateObject(wrappedValue: MenuBarViewModel(state: state, anchorWindow: anchorWindow))
     }
 
     var body: some View {
@@ -249,7 +252,7 @@ struct MenuBarRootView: View {
         }
         .modifier(HistoryReplayInteractionGate(history: history))
         .frame(width: 370)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color(.windowBackgroundColor))
         .background(MenuBarPresentationObserver(windowChanged: { model.registerMenuWindow($0, root: true) }) { visible in
             if visible { model.open() } else { model.close() }
         })
@@ -257,12 +260,12 @@ struct MenuBarRootView: View {
         .environmentObject(model)
         .onAppear { model.open() }
         .onDisappear { model.close() }
-        .alert("CamiTune", isPresented: Binding(
+        .appAlert("CamiTune", isPresented: Binding(
             get: { model.state.errorMessage != nil },
             set: { if !$0 { model.state.errorMessage = nil } }
         )) {
-            Button("OK") { model.state.errorMessage = nil }
-        } message: { Text(model.state.errorMessage ?? "") }
+            AppAlertAction("OK") { model.state.errorMessage = nil }
+        } message: { model.state.errorMessage ?? "" }
     }
 
     private var offConfirmation: some View {
@@ -273,11 +276,11 @@ struct MenuBarRootView: View {
                         .font(.system(size: 13, weight: .semibold))
                     Text("Automatic activation will change from Physical output to Profile audio device. Audio will return to the original physical output.")
                         .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 8) {
                         Spacer()
-                        Button("Cancel", role: .cancel) { model.pendingOffProfileID = nil }
+                        Button("Cancel") { model.pendingOffProfileID = nil }
                             .keyboardShortcut(.cancelAction)
                         Button("Turn Off") { model.confirmOff(profileID: id) }
                             .keyboardShortcut(.defaultAction)
@@ -286,7 +289,7 @@ struct MenuBarRootView: View {
                 }
                 .padding(14)
                 .frame(width: 340)
-                .background(Color(nsColor: .windowBackgroundColor))
+                .background(Color(.windowBackgroundColor))
                 .background(MenuBarPresentationObserver(windowChanged: { model.registerMenuWindow($0) }) { _ in })
             }
         }
@@ -295,7 +298,7 @@ struct MenuBarRootView: View {
     private var outputSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("OUTPUT").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("OUTPUT").font(.caption.weight(.semibold)).foregroundColor(.secondary)
                 Spacer()
                 HStack(spacing: 3) {
                         Image(systemName: model.isActive ? "circle.fill" : "circle.fill")
@@ -306,7 +309,7 @@ struct MenuBarRootView: View {
                         Text(model.isActive ? "Active" : "Inactive")
                             .font(.caption)
                     }
-                    .foregroundStyle(model.isActive ? Color.green : Color.secondary)
+                    .foregroundColor(model.isActive ? Color.green : Color.secondary)
             }
             if let profile = model.profile {
                 HStack(spacing: 8) {
@@ -358,7 +361,7 @@ struct MenuBarRootView: View {
             $0.isEnabled && model.state.coreAudio.cachedDevice(uid: $0.outputDeviceUID) != nil
         }
         return outputProfileLabel(title: title)
-            .overlay {
+            .overlay(Group {
                 Menu {
                     ForEach(model.state.profiles.effectiveRootOrder, id: \.self) { item in
                         switch item {
@@ -387,10 +390,9 @@ struct MenuBarRootView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .contentShape(Rectangle())
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
+                .menuStyle(BorderlessButtonMenuStyle(showsMenuIndicator: false))
                 .accessibilityLabel("Output profile: \(title)")
-            }
+            })
         // Keep the row's spare width outside the menu's hit area.
         .frame(maxWidth: 238, alignment: .leading)
         .disabled(model.actionInFlight || model.state.transitionInProgress
@@ -403,7 +405,7 @@ struct MenuBarRootView: View {
                 .truncationMode(.tail)
             Image(systemName: "chevron.down")
                 .font(.system(size: 8, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundColor(.secondary)
                 .frame(width: 10)
                 .fixedSize()
                 .layoutPriority(1)
@@ -556,9 +558,8 @@ private struct MenuBarCommandStyle: ButtonStyle {
             configuration.label
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 8).padding(.vertical, 5)
-                .foregroundStyle(hovering || configuration.isPressed ? Color.white : Color.primary)
-                .background(hovering || configuration.isPressed ? Color.accentColor : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 4))
+                .foregroundColor(hovering || configuration.isPressed ? Color.white : Color.primary)
+                .background(RoundedRectangle(cornerRadius: 4).fill(hovering || configuration.isPressed ? Color.accentColor : Color.clear))
                 .contentShape(Rectangle())
                 .onHover { hovering = $0 }
         }
@@ -586,14 +587,14 @@ private struct MenuBarApplicationsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 4) {
-                Text("APPLICATIONS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("APPLICATIONS").font(.caption.weight(.semibold)).foregroundColor(.secondary)
                 DeviceCorrectionHelpIcon(title: "Applications",
                     message: "Press ⌘ and drag an app to reorder.")
             }
             .padding(.bottom, 5)
             if applications.isEmpty {
                 Text("No shown apps are playing audio.")
-                    .font(.caption).foregroundStyle(.secondary).padding(.vertical, 8)
+                    .font(.caption).foregroundColor(.secondary).padding(.vertical, 8)
             }
             ForEach(Array(applications.prefix(primaryCount))) { app in row(app) }
             if applications.count > primaryCount, let boundary = applications.prefix(primaryCount).last {
@@ -618,7 +619,7 @@ private struct MenuBarApplicationsSection: View {
                         }.padding(8)
                     }
                     .frame(width: 360, height: min(330, CGFloat(applications.count - primaryCount) * 30 + 16))
-                    .background(Color(nsColor: .windowBackgroundColor))
+                    .background(Color(.windowBackgroundColor))
                     .background(MenuBarPresentationObserver(windowChanged: { model.registerMenuWindow($0) }) { _ in })
                     .onHover { reorder.popoverHover($0) }
                 }
@@ -638,9 +639,9 @@ private struct MenuBarApplicationsSection: View {
         }
         .frame(height: 30)
         .opacity(reorder.draggedApplicationID == app.id ? 0.6 : 1)
-        .overlay {
+        .overlay(Group {
             MenuAppDropIndicator(feedback: reorder.feedback, applicationID: app.id)
-        }
+        })
     }
 }
 

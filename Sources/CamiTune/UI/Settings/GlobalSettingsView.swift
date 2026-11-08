@@ -53,7 +53,7 @@ struct SettingsView: View {
     }
     var body: some View {
         HStack(spacing: 0) {
-            List(categories, id: \.self, selection: $commands.settingsCategory) { Text($0).tag($0) }
+            List(categories, id: \.self, selection: Binding<String?>(get: { commands.settingsCategory }, set: { if let value = $0 { commands.settingsCategory = value } })) { Text($0).tag($0) }
                 .listStyle(.sidebar).frame(width: 185)
             Divider()
             VStack(alignment: .leading, spacing: 16) {
@@ -72,7 +72,7 @@ struct SettingsView: View {
                         ForEach(ProfileEndpointKind.allCases, id: \.self) { Text($0.displayName).tag($0) }
                     }
                     Text("New profiles and profiles using global defaults will use this layout.")
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                     SectionLayoutEditor(type: type, layout: Binding(
                         get: { store.defaultLayout(for: type) },
                         set: {
@@ -132,15 +132,16 @@ struct SettingsView: View {
             Toggle("Start CamiTune at login", isOn: Binding(
                 get: { loginItem.isEnabled }, set: { loginItemNotice = loginItem.setEnabled($0) }))
                 .disabled(loginItem.isUpdating)
-                .alert(loginItemNotice?.title ?? "Login Startup", isPresented: Binding(
+                .help(loginItem.statusMessage)
+                .appAlert(loginItemNotice?.title ?? "Login Startup", isPresented: Binding(
                     get: { loginItemNotice != nil },
                     set: { if !$0 { loginItemNotice = nil } }), presenting: loginItemNotice) { notice in
                         if notice.requiresApproval {
-                            Button("Open System Settings") { loginItem.openSystemSettings() }
+                            AppAlertAction("Open System Settings") { loginItem.openSystemSettings() }
                         }
-                        Button("OK", role: .cancel) { }
+                        AppAlertAction("OK", role: .cancel) { }
                     } message: { notice in
-                        Text(notice.message)
+                        notice.message
                     }
             Toggle("Automatically check for updates", isOn: $updateChecker.automaticallyChecksForUpdates)
             Toggle("Show profile activation and deactivation notifications", isOn: $notifications.isEnabled)

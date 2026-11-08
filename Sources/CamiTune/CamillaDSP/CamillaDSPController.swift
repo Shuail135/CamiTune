@@ -96,7 +96,7 @@ final class CamillaDSPController: AudioProcessingBackend {
         case .patch(let processors):
             let compiler = self.compiler
             let patch = await Task.detached(priority: .userInitiated) {
-                compiler.compileRuntimePatch(processors: processors)
+                compiler.compileRuntimePatch(processors: processors, sampleRate: Double(graph.sampleRate))
             }.value
             // Once submitted, a lost reply cannot establish which graph is live.
             // Keep the cache unknown until a complete operation is acknowledged.

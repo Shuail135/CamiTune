@@ -5,21 +5,21 @@ struct AppErrorPresentationModifier: ViewModifier {
     @ObservedObject var state: AppState
 
     func body(content: Content) -> some View {
-        content.alert("CamiTune", isPresented: Binding(
+        content.appAlert("CamiTune", isPresented: Binding(
             get: { state.errorMessage != nil },
             set: { if !$0 { state.errorMessage = nil } }
         )) {
             if state.errorRecovery == .openSetup {
-                Button("Open Setup") {
+                AppAlertAction("Open Setup") {
                     state.errorMessage = nil
                     // Present after the alert's dismissal has been processed.
                     DispatchQueue.main.async { state.setupPresentation.isPresented = true }
                 }
-                .keyboardShortcut(.defaultAction)
+                .defaultAction()
             }
-            Button("Close", role: .cancel) { state.errorMessage = nil }
+            AppAlertAction("Close", role: .cancel) { state.errorMessage = nil }
         } message: {
-            Text(state.errorMessage ?? "")
+            state.errorMessage ?? ""
         }
     }
 }
@@ -32,7 +32,7 @@ struct AppUpdatePresentationModifier: ViewModifier {
         content.sheet(isPresented: Binding(get: { updateChecker.isPresentingUpdate }, set: { _ in }),
                       onDismiss: { updateChecker.updatePresentationDidDismiss() }) {
             AppUpdateProgressView(checker: updateChecker)
-                .interactiveDismissDisabled(true)
+                .sheetDismissalBlocked(true)
         }
     }
 }
@@ -105,7 +105,7 @@ struct SetupPresentationModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .task {
+            .viewTask {
                 if presentation.begin(hasExistingProfiles: !state.profiles.profiles.isEmpty) {
                     await state.dependencies.refreshWithoutBlockingUI()
                 }
@@ -117,18 +117,18 @@ struct SetupPresentationModifier: ViewModifier {
             .sheet(isPresented: $presentation.isPresented) {
                 SetupPanel(state: state)
             }
-            .alert("Audio Components Need Attention", isPresented: Binding(
+            .appAlert("Audio Components Need Attention", isPresented: Binding(
                 get: { presentation.componentNotice != nil },
                 set: { if !$0 { presentation.componentNotice = nil } }
             )) {
-                Button("Open Setup") {
+                AppAlertAction("Open Setup") {
                     presentation.componentNotice = nil
                     DispatchQueue.main.async { presentation.isPresented = true }
                 }
-                .keyboardShortcut(.defaultAction)
-                Button("Later", role: .cancel) { presentation.componentNotice = nil }
+                .defaultAction()
+                AppAlertAction("Later", role: .cancel) { presentation.componentNotice = nil }
             } message: {
-                Text(presentation.componentNotice ?? "")
+                presentation.componentNotice ?? ""
             }
     }
 }
@@ -137,7 +137,7 @@ struct SetupPresentationModifier: ViewModifier {
 struct SetupPanel: View {
     let state: AppState
     @ObservedObject private var dependencies: DependencyManager
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.presentationMode) private var dismiss
 
     init(state: AppState) {
         self.state = state
@@ -150,14 +150,14 @@ struct SetupPanel: View {
             Divider()
             HStack {
                 Spacer()
-                Button("Close") { dismiss() }
+                Button("Close") { dismiss.wrappedValue.dismiss() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(dependencies.setupInProgress)
             }
             .padding(16)
         }
         .frame(width: 700, height: 600)
-        .interactiveDismissDisabled(dependencies.setupInProgress)
+        .sheetDismissalBlocked(dependencies.setupInProgress)
     }
 }
 

@@ -60,6 +60,8 @@ package enum AudioFormatError: Error, Equatable {
 /// An ordered bus format, independent of transport capacity and hardware width.
 /// Like SpeakerTopology, values must be validated after decoding and before use.
 package struct AudioFormatDescriptor: Codable, Hashable, Sendable {
+    /// Source transport and native plug-in buses retain their 32-channel contract.
+    package static let maximumProcessingChannels = 32
     package init(sampleRate: Int, channels: [AudioChannelDescriptor]) { self.sampleRate = sampleRate; self.channels = channels }
 
     package let sampleRate: Int
@@ -78,8 +80,9 @@ package struct AudioFormatDescriptor: Codable, Hashable, Sendable {
         guard sampleRate > 0 else { throw AudioFormatError.invalidSampleRate(sampleRate) }
         guard !channels.isEmpty else { throw AudioFormatError.invalidChannelCount(0) }
         // Internal expansion (e.g. split filter paths) may exceed hardware capacity.
-        if channels.contains(where: { $0.kind != .internalBus }),
-           channelCount > SpeakerTopology.maximumOutputChannels {
+        let limit = channels.contains { $0.kind == .source || $0.kind == .physicalEndpoint }
+            ? Self.maximumProcessingChannels : SpeakerTopology.maximumHardwareChannels
+        if channels.contains(where: { $0.kind != .internalBus }), channelCount > limit {
             throw AudioFormatError.invalidChannelCount(channelCount)
         }
         var ids = Set<AudioChannelID>()
@@ -134,7 +137,7 @@ package struct AudioFormatDescriptor: Codable, Hashable, Sendable {
     /// Full hardware width, including unused slots. Speaker semantics belong to
     /// the endpoint bus and are deliberately not inferred from a channel index.
     package static func hardwareOutputs(sampleRate: Int, deviceUID: String, channelCount: Int) throws -> Self {
-        guard (1...SpeakerTopology.maximumOutputChannels).contains(channelCount) else {
+        guard (1...SpeakerTopology.maximumHardwareChannels).contains(channelCount) else {
             throw AudioFormatError.invalidChannelCount(channelCount)
         }
         let format = Self(sampleRate: sampleRate, channels: (0..<channelCount).map { index in

@@ -26,7 +26,7 @@ struct ReferenceCorrectionView: View {
     private var dirty: Bool { draft != snapshot?.personalReferenceCorrection }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if profile.processing.deviceCorrection != nil { Text("Your device correction applies globally. Manage it in Device Correction.").font(.caption).foregroundStyle(.secondary) }
+            if profile.processing.deviceCorrection != nil { Text("Your device correction applies globally. Manage it in Device Correction.").font(.caption).foregroundColor(.secondary) }
             HStack {
                 Button("Device Correction…") { showingCorrection = true }
                 Button("Import .txt") { importing = true }
@@ -35,7 +35,7 @@ struct ReferenceCorrectionView: View {
                 HStack {
                     Text(correction.deviceName).font(.headline)
                     Text("\(correction.filters.count) filters · \(dirty ? "Unsaved" : correction.isEnabled ? "Enabled" : "Disabled")")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                     Spacer()
                     Button("Clear") { draft = nil }
                 }
@@ -47,13 +47,13 @@ struct ReferenceCorrectionView: View {
                             draft?.filters[index] = band
                         }, selectedBandID: $selectedBandID).frame(height: 230)
                     } else {
-                        Text("Enter a valid frequency below Nyquist, finite gain, and positive Q.").foregroundStyle(.orange)
+                        Text("Enter a valid frequency below Nyquist, finite gain, and positive Q.").foregroundColor(.orange)
                     }
                     if let headroom {
-                        Text("Automatic headroom: \(headroom, format: .number.precision(.fractionLength(2))) dB")
+                        Text("Automatic headroom: \(headroom.decimalText(DecimalFormat(2))) dB")
                             .font(.caption.monospacedDigit())
                     }
-                    CorrectionFilterTable(filters: Binding(get: { draft?.filters ?? [] }, set: { draft?.filters = $0 }), selectedBandID: $selectedBandID)
+                    CorrectionFilterTable(filters: Binding(get: { draft?.filters ?? [] }, set: { draft?.filters = $0 }), sampleRate: Double(profile.sampleRate), selectedBandID: $selectedBandID)
                 }
                 HStack {
                     if dirty {
@@ -63,7 +63,7 @@ struct ReferenceCorrectionView: View {
                     }
                     Button("Import to Equalizer") { requestTransfer() }.disabled(dirty)
                 }.buttonStyle(.bordered)
-                if dirty { Label("Save your correction edits before transferring to Equalizer.", systemImage: "info.circle").font(.caption).foregroundStyle(.secondary) }
+                if dirty { Label("Save your correction edits before transferring to Equalizer.", systemImage: "info.circle").font(.caption).foregroundColor(.secondary) }
             }
             if draft == nil, dirty {
                 HStack {
@@ -74,7 +74,7 @@ struct ReferenceCorrectionView: View {
             }
             if busy { ProgressView().controlSize(.small) }
             if importOperation.isRunning { ProgressView("Importing correction…").controlSize(.small) }
-            if let message { Text(message).font(.caption).foregroundStyle(.orange) }
+            if let message { Text(message).font(.caption).foregroundColor(.orange) }
         }
         .disabled(busy || importOperation.isRunning || state.isSavingProfileSettings || state.transitionInProgress)
         .onAppear { reload() }
@@ -82,9 +82,9 @@ struct ReferenceCorrectionView: View {
         .onChange(of: state.historyReplayRevision) { _ in snapshot = profile }
         .onChange(of: profile.id) { _ in reload() }
         .onChange(of: profile) { _ in if !dirty { reload() } }
-        .task(id: draft) {
+        .viewTask(id: draft) {
             let captured = draft
-            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            do { try await RuntimeClock.sleep(seconds: 0.1) } catch { return }
             if var candidate = try? state.applyingSessionEQDrafts(to: profile),
                captured == nil || ReferenceCorrection.validFilters(captured!.filters, sampleRate: Double(profile.sampleRate)) {
                 candidate.setPersonalReferenceCorrection(captured)
@@ -123,11 +123,11 @@ struct ReferenceCorrectionView: View {
                 beginImport { try ReferenceCorrection.importFile(url) }
             } catch { message = error.localizedDescription }
         }
-        .alert("Replace User Equalizer bands?", isPresented: $confirmTransfer) {
-            Button("Cancel", role: .cancel) { pendingProfile = nil }
-            Button("Replace Bands", role: .destructive) { transfer() }
+        .appAlert("Replace User Equalizer bands?", isPresented: $confirmTransfer) {
+            AppAlertAction("Cancel", role: .cancel) { pendingProfile = nil }
+            AppAlertAction("Replace Bands", role: .destructive) { transfer() }
         } message: {
-            Text("This replaces the saved and unsaved User Equalizer bands. User Preamp is retained. The Reference correction is removed only after the transfer succeeds.")
+            "This replaces the saved and unsaved User Equalizer bands. User Preamp is retained. The Reference correction is removed only after the transfer succeeds."
         }
     }
 

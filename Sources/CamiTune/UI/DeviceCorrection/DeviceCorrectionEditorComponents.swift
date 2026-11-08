@@ -21,7 +21,7 @@ extension DeviceCorrectionEditorView {
     private func modifierRow(_ title: String, value: Binding<Double>) -> some View {
         HStack {
             Text(title).frame(width: 120, alignment: .leading)
-            TextField(title, value: value, format: .number.precision(.fractionLength(0...2))).frame(width: 95)
+            TextField(title, value: value, formatter: DecimalFormat(0...2).formatter).frame(width: 95)
             Spacer()
         }
         .textFieldStyle(.roundedBorder)
@@ -35,7 +35,7 @@ extension DeviceCorrectionEditorView {
             if measurement == nil {
                 Label("Choose the source device first. CamiTune will only offer target devices with compatible structured measurement rigs.", systemImage: "info.circle")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
             } else {
                 AutoEQSearchField(placeholder: "Search target earphones", query: $deviceMatchSearchText,
                     results: selectedDeviceMatchCatalogID == nil ? matchSearchResults : [],
@@ -46,7 +46,7 @@ extension DeviceCorrectionEditorView {
                         ProgressView().controlSize(.small)
                         Text("Combining target-device measurements…")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundColor(.secondary)
                     }
                 } else if let metadata = targetSelection.deviceMatchTarget,
                           let consensus = deviceMatchConsensus {
@@ -59,7 +59,7 @@ extension DeviceCorrectionEditorView {
                                 .font(.headline)
                             Text("\(consensus.response.points.count) points · \(evidenceCount) independent lab group\(evidenceCount == 1 ? "" : "s")")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundColor(.secondary)
                         }
                         Spacer()
                         Button { refreshDeviceMatch() } label: {
@@ -73,7 +73,7 @@ extension DeviceCorrectionEditorView {
                           matchSearchResults.isEmpty {
                     Label("No compatible target measurements were found for this source fixture and configuration type.", systemImage: "info.circle")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                 }
             }
         }
@@ -102,11 +102,11 @@ extension DeviceCorrectionEditorView {
             if let response {
                 Text("\(response.name) · \(response.points.count) points")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
             } else {
                 Label(emptyText, systemImage: "info.circle")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
             }
         }
     }
@@ -122,7 +122,7 @@ extension DeviceCorrectionEditorView {
                     Image(systemName: "plus")
                 }.disabled((generated?.filters.count ?? 0) >= 20).accessibilityLabel("Add band")
             }
-            Text("Automatic headroom \(generatedAutomaticHeadroomDB, format: .number.precision(.fractionLength(2))) dB")
+            Text("Automatic headroom \(generatedAutomaticHeadroomDB.decimalText(DecimalFormat(2))) dB")
                 .font(.caption.monospacedDigit().weight(.medium))
 
             if embedded {
@@ -131,25 +131,25 @@ extension DeviceCorrectionEditorView {
                 correctionFilterTable
             }
 
-            DisclosureGroup("Details", isExpanded: $presentation.detailsExpanded) {
-                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-                    GridRow {
+            SectionDisclosure("Details", isExpanded: $presentation.detailsExpanded) {
+                AlignedTable(horizontalSpacing: 16, verticalSpacing: 6) {
+                    AlignedTableRow {
                         Text("Target")
                         Text(profile.targetSelection.preset == .neutral
                             ? DeviceCorrectionTargetCatalog().displayName(for: .neutral, sources: profile.sources)
                             : profile.target.name)
                     }
-                    GridRow { Text("Domain"); Text(profile.sources.first?.resolvedRigIdentity.stableKey ?? "Unknown") }
-                    GridRow { Text("Sources"); Text(profile.sources.map(\.sourceName).joined(separator: ", ")) }
-                    GridRow { Text("Engine / registry"); Text("\(profile.correctionEngineVersion) / \(profile.targetRegistryVersion)") }
-                    GridRow { Text("Frequency"); Text("\(Int(profile.autoEQSettings.minimumFrequency))–\(Int(profile.autoEQSettings.maximumFrequency)) Hz") }
-                    GridRow { Text("Gain"); Text("\(profile.autoEQSettings.minimumGain.formatted())–\(profile.autoEQSettings.maximumGain.formatted()) dB") }
-                    GridRow { Text("Q"); Text("\(profile.autoEQSettings.minimumQ.formatted())–\(profile.autoEQSettings.maximumQ.formatted())") }
+                    AlignedTableRow { Text("Domain"); Text(profile.sources.first?.resolvedRigIdentity.stableKey ?? "Unknown") }
+                    AlignedTableRow { Text("Sources"); Text(profile.sources.map(\.sourceName).joined(separator: ", ")) }
+                    AlignedTableRow { Text("Engine / registry"); Text("\(profile.correctionEngineVersion) / \(profile.targetRegistryVersion)") }
+                    AlignedTableRow { Text("Frequency"); Text("\(Int(profile.autoEQSettings.minimumFrequency))–\(Int(profile.autoEQSettings.maximumFrequency)) Hz") }
+                    AlignedTableRow { Text("Gain"); Text("\(profile.autoEQSettings.minimumGain.decimalText())–\(profile.autoEQSettings.maximumGain.decimalText()) dB") }
+                    AlignedTableRow { Text("Q"); Text("\(profile.autoEQSettings.minimumQ.decimalText())–\(profile.autoEQSettings.maximumQ.decimalText())") }
                     if profile.policy == .recommended {
-                        GridRow { Text("Treble Q"); Text("≤ \(max(profile.autoEQSettings.minimumQ, min(2, profile.autoEQSettings.maximumQ)).formatted()) above 6 kHz") }
+                        AlignedTableRow { Text("Treble Q"); Text("≤ \(max(profile.autoEQSettings.minimumQ, min(2, profile.autoEQSettings.maximumQ)).decimalText()) above 6 kHz") }
                     }
-                    GridRow { Text("Combined boost ceiling"); Text("6 dB; locked filters preserved") }
-                }.font(.caption).foregroundStyle(.secondary).padding(.top, 6)
+                    AlignedTableRow { Text("Combined boost ceiling"); Text("6 dB; locked filters preserved") }
+                }.font(.caption).foregroundColor(.secondary).padding(.top, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -159,7 +159,7 @@ extension DeviceCorrectionEditorView {
     private var correctionFilterTable: some View {
         CorrectionFilterTable(filters: Binding(get: { generated?.filters ?? [] }, set: { filters in
             replaceFilters(filters)
-        }), selectedBandID: $selectedBandID)
+        }), sampleRate: sampleRate, selectedBandID: $selectedBandID)
     }
 
     func boundsRow(_ title: String, lower: Binding<Double>, upper: Binding<Double>, digits: Int = 2) -> some View {
@@ -198,15 +198,15 @@ struct AutoEQSearchField<Entry: Identifiable>: View {
     let results: [Entry]
     let title: (Entry) -> String
     let onSelect: @MainActor (Entry) -> Void
-    @FocusState private var isFocused: Bool
+    @State private var isFocused = false
     @State private var showsResults = false
     @ScaledMetric(relativeTo: .body) private var resultRowHeight: CGFloat = 30
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TextField(placeholder, text: $query)
+            EditableTextField(placeholder, text: $query, isFocused: $isFocused)
                 .textFieldStyle(.roundedBorder)
-                .focused($isFocused)
+
                 .onExitCommand { dismissResults() }
             // A result click can clear text focus on mouse-down. Keep the rows
             // alive until the button's mouse-up action selects and dismisses them.
@@ -231,7 +231,7 @@ struct AutoEQSearchField<Entry: Identifiable>: View {
                 // A ScrollView has no intrinsic content height. A sheet sizes
                 // to its minimum, collapsing a maxHeight-only results list.
                 }.frame(height: min(170, resultRowHeight * CGFloat(results.count)))
-                    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+                    .background(RoundedRectangle(cornerRadius: 7).fill(Color.secondary.opacity(0.06)))
             }
         }
         .onChange(of: isFocused) { focused in
@@ -254,9 +254,9 @@ struct AutoEQBoundsRow: View {
     var digits = 2
     private var fields: some View {
         HStack {
-            TextField("Minimum", value: $lower, format: .number.precision(.fractionLength(0...digits))).frame(width: 95 * scale)
-            Text("–").foregroundStyle(.secondary)
-            TextField("Maximum", value: $upper, format: .number.precision(.fractionLength(0...digits))).frame(width: 95 * scale)
+            TextField("Minimum", value: $lower, formatter: DecimalFormat(0...digits).formatter).frame(width: 95 * scale)
+            Text("–").foregroundColor(.secondary)
+            TextField("Maximum", value: $upper, formatter: DecimalFormat(0...digits).formatter).frame(width: 95 * scale)
             Spacer()
         }
     }
@@ -278,10 +278,10 @@ struct AutoEQGenerateButton: View {
         Button { action() } label: {
             Text(title)
                 .opacity(isGenerating ? 0 : 1)
-                .overlay {
+                .overlay(Group {
                     if isGenerating { ProgressView().controlSize(.small) }
-                }
-        }.buttonStyle(.borderedProminent)
+                })
+        }.buttonStyle(PrimaryActionButtonStyle())
     }
 }
 
@@ -293,12 +293,12 @@ struct EditorHistoryCommands<Snapshot: Equatable>: ViewModifier {
     @Environment(\.undoCommandRouter) private var router
 
     func body(content: Content) -> some View {
-        content.background {
+        content.background(Group {
             if isExclusive {
                 EditorHistoryRegistration(manager: history.manager, revision: history.revision,
                     isEnabled: isEnabled && !history.isEditing, router: router)
             }
-        }
+        })
     }
 }
 
@@ -360,12 +360,13 @@ final class EditorHistoryCommandView: NSView {
 @MainActor
 struct AutoEQSaveTXTButton: View {
     let correction: DeviceCorrectionProfile?
+    let sampleRate: Double
     let onError: (String) -> Void
     @State private var isSaving = false
     var body: some View {
         Button("Save Equalizer APO…") {
             guard let correction else { return }
-            let text = EqualizerAPOSerializer().serialize(.init(preampDB: 0, bands: correction.filters))
+            let text = EqualizerAPOSerializer().serializeForExport(.init(preampDB: 0, bands: correction.filters), sampleRate: sampleRate)
             isSaving = true
             Task { @MainActor in
                 defer { isSaving = false }
@@ -392,10 +393,10 @@ struct AutoEQLoadButton: View {
     let action: @MainActor () -> Void
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
-            Button("Load into Equalizer") { action() }.buttonStyle(.borderedProminent).tint(.blue)
+            Button("Load into Equalizer") { action() }.buttonStyle(PrimaryActionButtonStyle(tint: .systemBlue))
             if showsStatus {
                 Text(isLoaded ? "Loaded" : draftLabel).font(.caption2)
-                    .foregroundStyle(isLoaded ? Color.green : Color.secondary)
+                    .foregroundColor(isLoaded ? Color.green : Color.secondary)
                     .fixedSize().frame(height: 12)
             }
         }
@@ -407,11 +408,11 @@ struct AutoEQResultCard<Content: View>: View {
     @ViewBuilder let content: () -> Content
     var body: some View {
         GroupBox {
-            DisclosureGroup(isExpanded: $isExpanded) {
+            SectionDisclosure(isExpanded: $isExpanded) {
                 content().padding(.top, 8)
             } label: { Text("Graph & Equalizer Values").font(.headline) }
             .padding(6)
         }
-        .disclosureGroupStyle(SectionDisclosureStyle())
+
     }
 }

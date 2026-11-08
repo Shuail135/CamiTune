@@ -45,8 +45,8 @@ package struct ProcessingGraphDiffer: Sendable {
         // backend filter implementation kind requires a full configuration;
         // parameter changes retain the compiler's supported patch semantics.
         let compiler = CamillaDSPCompiler()
-        let previous = compiler.compileRuntimePatch(processors: current.processors).filters
-        let upcoming = compiler.compileRuntimePatch(processors: next.processors).filters
+        let previous = compiler.compileRuntimePatch(processors: current.processors, sampleRate: Double(current.sampleRate)).filters
+        let upcoming = compiler.compileRuntimePatch(processors: next.processors, sampleRate: Double(next.sampleRate)).filters
         guard zip(current.processors, next.processors).allSatisfy({
             sameImplementationKind($0.implementation, $1.implementation)
         }) else {

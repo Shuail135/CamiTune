@@ -22,7 +22,7 @@ struct DeviceCorrectionHelpIcon: View {
     var body: some View {
         Image(systemName: "questionmark.circle")
             .font(.system(size: 14))
-            .foregroundStyle(.secondary)
+            .foregroundColor(.secondary)
             .frame(width: 22, height: 22)
             .contentShape(Rectangle())
             .help(message)
@@ -37,7 +37,7 @@ struct AutoEQDeviceInfoIcon: View {
     var body: some View {
         Image(systemName: "info.circle")
             .font(.system(size: 14))
-            .foregroundStyle(.secondary)
+            .foregroundColor(.secondary)
             .frame(width: 22, height: 22)
             .contentShape(Rectangle())
             .help(message)
@@ -56,10 +56,10 @@ struct DeviceCorrectionCardStyle: GroupBoxStyle {
             configuration.content.frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(8)
-        .background(background, in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
+        .background(RoundedRectangle(cornerRadius: 8).fill(background))
+        .overlay(Group {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 0.5)
-        }
+        })
     }
 }

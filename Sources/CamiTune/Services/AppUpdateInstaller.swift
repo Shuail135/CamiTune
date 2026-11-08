@@ -110,7 +110,7 @@ enum AppUpdateInstaller {
             guard Date() < deadline else {
                 throw Failure(message: "CamiTune could not restart to install the update. Finish any open dialogs, then try again.")
             }
-            try await Task.sleep(for: .milliseconds(100))
+            try await RuntimeClock.sleep(seconds: 0.1)
         }
     }
 
@@ -257,7 +257,7 @@ private final class AppUpdateInstallerWindow: NSObject, NSApplicationDelegate, O
                 guard Date() < deadline else {
                     throw AppUpdateInstaller.Failure(message: "CamiTune could not close for the update. Finish any open dialogs in CamiTune, then try Install & Restart again.")
                 }
-                try await Task.sleep(for: .milliseconds(100))
+                try await RuntimeClock.sleep(seconds: 0.1)
             }
             guard FileManager.default.fileExists(atPath: request.marker("authorized").path) else {
                 throw AppUpdateInstaller.Failure(message: "The update was interrupted before installation. Open CamiTune and try again.")
@@ -313,7 +313,7 @@ private final class AppUpdateInstallerWindow: NSObject, NSApplicationDelegate, O
                 guard Darwin.kill(pid, 0) == 0, Date() < deadline else {
                     throw AppUpdateInstaller.Failure(message: "CamiTune did not finish reopening.")
                 }
-                try await Task.sleep(for: .milliseconds(100))
+                try await RuntimeClock.sleep(seconds: 0.1)
             }
             // The reopened app owns successful completion at its visible-window
             // acknowledgement. Writing it here would arrive after startup and
@@ -355,7 +355,7 @@ private final class AppUpdateInstallerWindow: NSObject, NSApplicationDelegate, O
                 guard Date() < deadline else {
                     throw AppUpdateInstaller.Failure(message: "Close the new CamiTune application, then choose Restore Previous Version. Your previous app is saved at \(request.backup.path).")
                 }
-                try await Task.sleep(for: .milliseconds(100))
+                try await RuntimeClock.sleep(seconds: 0.1)
             }
             try await Task.detached { try AppUpdateInstaller.restorePreviousApplication(request) }.value
             installed = false
@@ -399,7 +399,7 @@ private struct AppUpdateInstallerContent: View {
             GroupBox {
                 HStack(alignment: .top, spacing: 10) {
                     if !controller.finished { ProgressView().controlSize(.small) }
-                    Text(controller.detail).font(.callout).foregroundStyle(.secondary)
+                    Text(controller.detail).font(.callout).foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }.padding(6).frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -412,10 +412,10 @@ private struct AppUpdateInstallerContent: View {
                 }
                 if controller.canOpen {
                     Button("Open CamiTune") { controller.openApplication() }
-                        .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                        .buttonStyle(PrimaryActionButtonStyle()).keyboardShortcut(.defaultAction)
                 }
             } else {
-                Text("CamiTune will reopen automatically.").font(.caption).foregroundStyle(.secondary)
+                Text("CamiTune will reopen automatically.").font(.caption).foregroundColor(.secondary)
                 Spacer()
             }
         }

@@ -1,10 +1,12 @@
 #import "MIDIHost.h"
+#include "ParameterChangeFlags.h"
 #import <CoreMIDI/CoreMIDI.h>
 #include <array>
 #include <atomic>
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
+#include <limits>
 
 namespace CamiTunePlugins {
 namespace {
@@ -40,7 +42,6 @@ public:
 struct Parameter {
     uint64_t id; double minimum, maximum;
     std::atomic<double> value;
-    std::atomic<bool> changed{false};
     double mappedValue = 0; bool mappedDirty = false; // audio worker only
     Parameter(NSDictionary* p) : id([p[@"id"] unsignedLongLongValue]), minimum([p[@"min"] doubleValue]),
         maximum([p[@"max"] doubleValue]), value([p[@"value"] doubleValue]) {}
@@ -49,8 +50,9 @@ struct ParameterCache {
     NSArray<NSDictionary*>* metadata;
     std::vector<std::unique_ptr<Parameter>> parameters;
     std::unordered_map<uint64_t, int> indices;
+    ParameterChangeFlags changed;
     std::atomic<int> touched{-1};
-    explicit ParameterCache(NSArray<NSDictionary*>* metadata) : metadata(metadata) {
+    explicit ParameterCache(NSArray<NSDictionary*>* metadata) : metadata(metadata), changed(metadata.count) {
         for (NSDictionary* p in metadata) {
             indices.emplace([p[@"id"] unsignedLongLongValue], (int)parameters.size());
             parameters.push_back(std::make_unique<Parameter>(p));
@@ -59,7 +61,7 @@ struct ParameterCache {
     int index(uint64_t id) const { auto found = indices.find(id); return found == indices.end() ? -1 : found->second; }
     void put(uint64_t id, double value, bool touch) {
         int i = index(id); if (i < 0 || !std::isfinite(value)) return;
-        auto& p = *parameters[i]; p.value = std::clamp(value, p.minimum, p.maximum); p.changed = true;
+        auto& p = *parameters[i]; p.value = std::clamp(value, p.minimum, p.maximum); changed.publish(i);
         if (touch) touched = i;
     }
 };
@@ -74,6 +76,17 @@ struct Routing {
     size_t count = 0; std::array<Mapping, 256> mappings{};
 };
 struct Incoming { MIDIMessage message; uint32_t generation; };
+struct ScheduledIncoming {
+    Incoming event;
+    uint64_t order;
+    uint16_t destinations = 0;
+    bool operator<(const ScheduledIncoming& other) const {
+        // A minimum heap, stable for equal CoreMIDI packet timestamps.
+        if (event.message.timestamp != other.event.message.timestamp)
+            return event.message.timestamp > other.event.message.timestamp;
+        return order > other.order;
+    }
+};
 struct Learned { MIDIMessage message; int slot, parameter; };
 }
 
@@ -97,6 +110,15 @@ struct MIDIHost::Impl {
     Queue<Incoming, 1024> incoming;
     Queue<Routing, 8> configurations;
     Queue<Learned, 16> learned;
+    std::array<ScheduledIncoming, 1024> scheduled;
+    size_t scheduledCount = 0;
+    // Mappings can update at rest. Raw MIDI remains owned here until an audio
+    // request supplies the render interval; an idle wake must not quantize it.
+    std::array<ScheduledIncoming, 1024> renderMIDI;
+    size_t renderMIDICount = 0;
+    uint64_t nextOrder = 0;
+    HostClock clock;
+    double samplesPerNanosecond;
     Routing routing{}, pending{}, incomingRouting{}; bool hasPending = false;
     std::atomic<uint32_t> generation{0};
     std::atomic<bool> accepting{false}, panic{false}, overflow{false}, discardInput{false}, dirtyState{false};
@@ -110,8 +132,9 @@ struct MIDIHost::Impl {
     std::string error;
     std::function<void()> wakeWorker;
 
-    Impl(std::vector<std::unique_ptr<Effect>>& effects, NSArray<NSDictionary*>* slots,
+    Impl(std::vector<std::unique_ptr<Effect>>& effects, NSArray<NSDictionary*>* slots, double sampleRate,
          std::function<void()> wakeWorker) : effects(effects), slots(slots), wakeWorker(std::move(wakeWorker)) {
+        samplesPerNanosecond = sampleRate / 1e9;
         for (auto& effect : effects) {
             auto cache = std::make_shared<ParameterCache>(effect->parameters()); caches.push_back(cache);
             effect->observeParameters([cache, notify = this->wakeWorker](uint64_t id, double value, bool touch) {
@@ -135,7 +158,9 @@ struct MIDIHost::Impl {
         if (!accepting.load(std::memory_order_acquire)) return;
         uint8_t kind = message.status & 0xf0;
         if (kind < 0x80 || kind > 0xe0 || message.data1 > 127 || message.data2 > 127) return;
-        if (!incoming.push({message, generation.load(std::memory_order_acquire)})) { panic = true; overflow = true; discardInput = true; }
+        auto received = message;
+        received.timestamp = received.timestamp ? clock.nanoseconds(received.timestamp) : clock.nowNanoseconds();
+        if (!incoming.push({received, generation.load(std::memory_order_acquire)})) { panic = true; overflow = true; discardInput = true; }
         wakeWorker();
     }
     void connect() {
@@ -230,11 +255,31 @@ struct MIDIHost::Impl {
         if (reconnect) connect(); else publishSources();
         wakeWorker();
     }
-    void process() {
+    void releaseNotes() {
+        scheduledCount = 0;
+        renderMIDICount = 0;
+        for (auto& effect : effects) effect->clearMIDI();
+        for (size_t i = 0; i < routing.count; ++i) {
+            auto& map = routing.mappings[i];
+            map.pressed = map.acquired = false;
+            map.previous = map.lastApplied = -1;
+        }
+    }
+    void process(uint64_t hostTime, uint32_t frames) {
         while (configurations.pop(incomingRouting)) {
             auto& next = incomingRouting;
-            for (int i = 0; i < effects.size(); ++i)
-                if (routing.keyboardEnabled[i] && !next.keyboardEnabled[i]) effects[i]->clearMIDI();
+            uint16_t disabled = 0;
+            for (int i = 0; i < effects.size(); ++i) {
+                if (routing.keyboardEnabled[i] && !next.keyboardEnabled[i]) {
+                    effects[i]->clearMIDI(); disabled |= uint16_t(1) << i;
+                }
+            }
+            // A later re-enable must not revive events retired by this edit.
+            // Other slots retain their queued releases and sustained voices.
+            if (disabled) {
+                for (size_t i = 0; i < scheduledCount; ++i) scheduled[i].destinations &= ~disabled;
+                for (size_t i = 0; i < renderMIDICount; ++i) renderMIDI[i].destinations &= ~disabled;
+            }
             if (next.generation == routing.generation) {
                 // Keyboard-only edits preserve pickup and held mapping buttons.
                 next.mappings = routing.mappings;
@@ -243,10 +288,28 @@ struct MIDIHost::Impl {
             routing = next;
         }
         if (discardInput.exchange(false)) { Incoming discarded{}; for (int i = 0; i < 1024 && incoming.pop(discarded); ++i) {} }
-        if (panic.exchange(false)) for (auto& effect : effects) { effect->clearMIDI(); }
+        if (panic.exchange(false)) releaseNotes();
         Incoming item{};
         for (int n = 0; n < 1024 && incoming.pop(item); ++n) {
-            auto& message = item.message; int channel = (message.status & 15) + 1;
+            if (!routing.enabled || item.generation != routing.generation) continue;
+            if (scheduledCount == scheduled.size()) {
+                releaseNotes(); overflow = true; discardInput = true;
+                break;
+            }
+            scheduled[scheduledCount++] = {item, nextOrder++, UINT16_MAX};
+            std::push_heap(scheduled.begin(), scheduled.begin() + scheduledCount);
+        }
+        for (int n = 0; n < 1024 && scheduledCount; ++n) {
+            const auto& next = scheduled[0].event;
+            double offset = next.message.timestamp > hostTime ? (next.message.timestamp - hostTime) * samplesPerNanosecond : 0;
+            if (next.message.timestamp > hostTime && offset >= frames) break;
+            std::pop_heap(scheduled.begin(), scheduled.begin() + scheduledCount);
+            const auto& routed = scheduled[--scheduledCount];
+            item = routed.event;
+            uint16_t allowedDestinations = routed.destinations;
+            auto message = item.message;
+            message.sampleOffset = static_cast<uint32_t>(offset);
+            int channel = (message.status & 15) + 1;
             if (!routing.enabled || item.generation != routing.generation || (routing.source && routing.source != message.source)
                 || (routing.channel && routing.channel != channel)) continue;
             // Keyboard selection controls playing, never preset switching.
@@ -297,9 +360,31 @@ struct MIDIHost::Impl {
                 p.mappedValue = value; p.mappedDirty = true;
                 caches[map.slot]->put(p.id, value, false); dirtyState = true;
             }
+            uint16_t destinations = 0;
             for (int i = 0; i < effects.size(); ++i)
-                if (routing.keyboardEnabled[i] && !consumed[i]) effects[i]->midi(message);
+                if (routing.keyboardEnabled[i] && !consumed[i]) destinations |= uint16_t(1) << i;
+            destinations &= allowedDestinations;
+            if (destinations) {
+                if (renderMIDICount == renderMIDI.size()) {
+                    releaseNotes(); overflow = true; discardInput = true;
+                    break;
+                }
+                renderMIDI[renderMIDICount++] = {item, nextOrder++, destinations};
+                std::push_heap(renderMIDI.begin(), renderMIDI.begin() + renderMIDICount);
+            }
             if ((message.status & 0xf0) >= 0xb0) dirtyState = true;
+        }
+        if (frames) for (int n = 0; n < 1024 && renderMIDICount; ++n) {
+            auto& next = renderMIDI[0];
+            auto message = next.event.message;
+            double offset = message.timestamp > hostTime ? (message.timestamp - hostTime) * samplesPerNanosecond : 0;
+            if (offset >= frames) break;
+            message.sampleOffset = static_cast<uint32_t>(offset);
+            uint16_t destinations = next.destinations;
+            std::pop_heap(renderMIDI.begin(), renderMIDI.begin() + renderMIDICount);
+            --renderMIDICount;
+            for (size_t i = 0; i < effects.size(); ++i)
+                if (routing.keyboardEnabled[i] && (destinations & (uint16_t(1) << i))) effects[i]->midi(message);
         }
         // Absolute controllers can send many positions before the next block.
         // Deliver the final position once per parameter without adding a block
@@ -337,7 +422,7 @@ struct MIDIHost::Impl {
         if ([name isEqual:@"midiPanic"]) { panic = true; discardInput = true; emit(@{@"event": @"midiPanic"}); }
 #ifdef CAMITUNE_PLUGIN_TESTING
         if ([name isEqual:@"testMIDI"]) {
-            for (NSDictionary* event in command[@"messages"]) receive({0, [event[@"source"] intValue],
+            for (NSDictionary* event in command[@"messages"]) receive({[event[@"timestamp"] unsignedLongLongValue], [event[@"source"] intValue],
                 (uint8_t)[event[@"status"] intValue], (uint8_t)[event[@"data1"] intValue], (uint8_t)[event[@"data2"] intValue]});
             emit(@{@"event": @"testMIDI"});
         }
@@ -363,22 +448,36 @@ struct MIDIHost::Impl {
         }
         for (int slot = 0; slot < caches.size(); ++slot) {
             NSMutableArray* changed = slot == inspected ? [NSMutableArray array] : nil;
-            for (auto& p : caches[slot]->parameters) if (p->changed.exchange(false) && slot == inspected)
-                [changed addObject:@{@"id": @(p->id), @"value": @(p->value.load())}];
+            caches[slot]->changed.consume([&](size_t i) {
+                auto& p = caches[slot]->parameters[i];
+                if (slot == inspected) [changed addObject:@{@"id": @(p->id), @"value": @(p->value.load())}];
+            });
             effects[slot]->syncParameters();
             if (changed.count) emit(@{@"event": @"parameterValues", @"slotID": slots[slot][@"id"], @"values": changed});
         }
         if (overflow.exchange(false)) emit(@{@"event": @"midiWarning", @"message": @"MIDI input overflowed. Held notes were released."});
     }
 };
-MIDIHost::MIDIHost(std::vector<std::unique_ptr<Effect>>& effects, NSArray<NSDictionary*>* slots,
-                   std::function<void()> wakeWorker) : impl(std::make_unique<Impl>(effects, slots, std::move(wakeWorker))) {}
+MIDIHost::MIDIHost(std::vector<std::unique_ptr<Effect>>& effects, NSArray<NSDictionary*>* slots, double sampleRate,
+                   std::function<void()> wakeWorker) : impl(std::make_unique<Impl>(effects, slots, sampleRate, std::move(wakeWorker))) {}
 MIDIHost::~MIDIHost() = default;
 void MIDIHost::configure(NSDictionary* config) { impl->configure(config); }
 void MIDIHost::command(NSDictionary* command) { impl->command(command); }
-void MIDIHost::process() { impl->process(); }
+void MIDIHost::process(uint64_t hostTime, uint32_t frames) { impl->process(hostTime, frames); }
+int MIDIHost::inputWaitMilliseconds() {
+    if (!impl->scheduledCount) return -1;
+    uint64_t now = impl->clock.nowNanoseconds(), deadline = impl->scheduled[0].event.message.timestamp;
+    if (deadline <= now) return 0;
+    uint64_t remaining = deadline - now;
+    return static_cast<int>(std::min<uint64_t>(std::numeric_limits<int>::max(),
+        remaining / 1'000'000 + (remaining % 1'000'000 != 0)));
+}
 void MIDIHost::idle() { impl->idle(); }
-bool MIDIHost::needsIdle() { return impl->accepting.load() || impl->inspectorOpen.load(); }
+bool MIDIHost::needsIdle() {
+    // Connected hardware does not imply visible controls or incoming edits.
+    // State saves and warnings still use the maintenance pass when hidden.
+    return impl->inspectorOpen.load() || impl->watching >= 0 || impl->learnSlot.load() >= 0 || impl->hasPending;
+}
 double MIDIHost::parameterValue(size_t slot, uint64_t id, double fallback) {
     if (slot >= impl->caches.size()) return fallback;
     auto& cache = *impl->caches[slot]; int index = cache.index(id);

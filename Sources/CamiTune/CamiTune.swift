@@ -99,35 +99,15 @@ enum CamiTuneLauncher {
     }
 }
 
-struct CamiTuneMain: App {
-    @NSApplicationDelegateAdaptor(CamiTuneAppDelegate.self) private var appDelegate
-    @StateObject private var state: AppState
-
-    init() {
-        _state = StateObject(
-            wrappedValue: CamiTunePresentationCoordinator.shared.state
-        )
-    }
-
-    var body: some Scene {
-        MenuBarExtra {
-            MenuBarRootView(state: state)
-        } label: {
-            CamiTuneMenuBarLabel(
-                isActive: state.isActive
-            )
-        }
-        .menuBarExtraStyle(.window)
-        .commands {
-            CamiTuneCommands(coordinator: CamiTunePresentationCoordinator.shared.commands,
-                undo: state.undoCommands, showLicense: AppLicense.show,
-                checkForUpdates: {
-                    CamiTunePresentationCoordinator.shared.showMainWindow()
-                    Task { await state.updateChecker.checkForUpdates() }
-                }, showChangelog: {
-                    AppChangelogWindow.show(checker: state.updateChecker)
-                })
-        }
+@MainActor
+private enum CamiTuneMain {
+    private static var delegate: CamiTuneAppDelegate?
+    static func main() {
+        let application = NSApplication.shared
+        let delegate = CamiTuneAppDelegate()
+        self.delegate = delegate
+        application.delegate = delegate
+        application.run()
     }
 }
 
@@ -317,12 +297,12 @@ final class CamiTunePresentationCoordinator {
             window = mainWindow
         } else {
             let rootView = ContentView(state: state, commands: commands)
-                .task { self.state.startAfterPresentation() }
+                .viewTask { self.state.startAfterPresentation() }
             let controller = NSHostingController(rootView: rootView)
             // This window has an explicit minimum size. Asking SwiftUI to
             // derive it from every offscreen editor repeats the entire page's
             // intrinsic layout whenever a meter or field changes.
-            controller.sizingOptions = []
+            if #available(macOS 13, *) { controller.sizingOptions = [] }
             let created = CamiTuneMainWindow(contentViewController: controller)
             created.configureContentLayout()
             created.configureSidebarToolbar(commands: commands)
@@ -403,7 +383,7 @@ final class CamiTuneMainWindow: NSWindow, NSToolbarDelegate {
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
-        toolbar.centeredItemIdentifiers = [Self.titleItemIdentifier]
+        toolbar.centeredItemIdentifier = Self.titleItemIdentifier
         self.toolbar = toolbar
         toolbarStyle = .unifiedCompact
         sidebarSubscription = commands.$context.sink { [weak self] context in
@@ -554,16 +534,61 @@ final class TextEditingCompatibility: NSObject {
     }
 }
 
-private struct CamiTuneMenuBarLabel: View {
-    var isActive: Bool
+@MainActor
+final class CamiTuneStatusItem: NSObject {
+    private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    private let state: AppState
+    private var activeSubscription: AnyCancellable?
+    private var panel: MenuBarPanel?
 
-    var body: some View {
-        Image(nsImage: isActive ? AppIcon.activeMenuBarImage : AppIcon.inactiveMenuBarImage)
-            .renderingMode(.original)
-        .accessibilityLabel(isActive ? "CamiTune, processing active" : "CamiTune, processing inactive")
+    init(state: AppState) {
+        self.state = state
+        super.init()
+        item.button?.target = self
+        item.button?.action = #selector(toggle(_:))
+        activeSubscription = state.objectWillChange.receive(on: RunLoop.main).map { [weak state] _ in state?.isActive ?? false }.prepend(state.isActive).removeDuplicates().sink { [weak self] active in
+            self?.item.button?.image = active ? AppIcon.activeMenuBarImage : AppIcon.inactiveMenuBarImage
+            self?.item.button?.setAccessibilityLabel(active ? "CamiTune, processing active" : "CamiTune, processing inactive")
+        }
     }
+
+    @objc func toggle(_ sender: Any?) {
+        if let panel, panel.isVisible { panel.orderOut(nil); return }
+        guard let button = item.button, let menuBarWindow = button.window else { return }
+        let panel: MenuBarPanel
+        if let existing = self.panel { panel = existing }
+        else {
+            let controller = NSHostingController(rootView: MenuBarRootView(state: state, anchorWindow: menuBarWindow))
+            panel = MenuBarPanel(contentViewController: controller)
+            panel.styleMask = [.borderless, .nonactivatingPanel]
+            panel.level = .popUpMenu
+            panel.hasShadow = true
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.isReleasedWhenClosed = false
+            panel.hidesOnDeactivate = false
+            panel.contentView?.wantsLayer = true
+            panel.contentView?.layer?.cornerRadius = 10
+            panel.contentView?.layer?.masksToBounds = true
+            self.panel = panel
+        }
+        let size = panel.contentView?.fittingSize ?? NSSize(width: 370, height: 400)
+        panel.setContentSize(size)
+        let buttonFrame = menuBarWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let screen = menuBarWindow.screen?.visibleFrame ?? buttonFrame
+        let x = min(max(screen.minX + 4, buttonFrame.midX - panel.frame.width / 2), screen.maxX - panel.frame.width - 4)
+        panel.setFrameTopLeftPoint(NSPoint(x: x, y: buttonFrame.minY - 4))
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    deinit { NSStatusBar.system.removeStatusItem(item) }
 }
 
+private final class MenuBarPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+    override func cancelOperation(_ sender: Any?) { orderOut(sender) }
+}
 
 final class CamiTuneAppDelegate: NSObject, NSApplicationDelegate {
     private static let showMainWindowNotification = Notification.Name(
@@ -575,6 +600,8 @@ final class CamiTuneAppDelegate: NSObject, NSApplicationDelegate {
     private let closeHintKey = "hideCloseKeepsRunningHint"
     private var instanceLockFileDescriptor: Int32 = -1
     private var rejectedDuplicateInstance = false
+    @MainActor private var statusItem: CamiTuneStatusItem?
+    @MainActor private var menuCommands: CamiTuneCommands?
     @MainActor private lazy var textEditingCompatibility = TextEditingCompatibility()
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -607,6 +634,15 @@ final class CamiTuneAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !rejectedDuplicateInstance, !isCamiTuneTestHost else { return }
         NSApp.applicationIconImage = AppIcon.image
+        let presentation = CamiTunePresentationCoordinator.shared
+        statusItem = CamiTuneStatusItem(state: presentation.state)
+        let commands = CamiTuneCommands(coordinator: presentation.commands, undo: presentation.state.undoCommands,
+            showLicense: AppLicense.show, checkForUpdates: {
+                presentation.showMainWindow()
+                Task { await presentation.state.updateChecker.checkForUpdates() }
+            }, showChangelog: { AppChangelogWindow.show(checker: presentation.state.updateChecker) })
+        commands.install()
+        menuCommands = commands
         DistributedNotificationCenter.default().addObserver(
             self,
             selector: #selector(showMainWindowRequested(_:)),

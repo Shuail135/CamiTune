@@ -49,7 +49,7 @@ final class CoreAudioService {
     private(set) var lastPublicationReceipt: CoreAudioEndpointPublicationReceipt?
 
     func cancelReadiness() { readinessTasks.values.forEach { $0.cancel() }; publicationTasks.values.forEach { $0.cancel() } }
-    private func wait(event: CoreAudioEvent, timeout: Duration,
+    private func wait(event: CoreAudioEvent, timeout: TimeInterval,
                       condition: @escaping @Sendable () -> Bool,
                       mutation: (@Sendable () throws -> Void)? = nil) async throws -> CoreAudioWaitResult {
         let operation = performanceRecorder?.begin("CoreAudio readiness", reason: String(describing: event))
@@ -129,6 +129,7 @@ final class CoreAudioService {
     }
 
     private var observationTokens: [CoreAudioListenerToken] = []
+    private var aggregateObservationTokens: [UInt32: [CoreAudioListenerToken]] = [:]
     deinit { timer?.invalidate(); observationTokens.forEach { $0.cancel() } }
 
     private func installHardwareListeners() {
@@ -209,13 +210,37 @@ final class CoreAudioService {
         let operation = performanceRecorder?.begin("CoreAudio full snapshot")
         let start = Date()
         let defaultRevision = defaultObservationRevision
+        let existingAggregateTokens = aggregateObservationTokens
         Task {
-            let result = await Task.detached(priority: .utility) {
+            let result = await Task.detached(priority: .utility) { [weak self] in
                 let devices = backend.enumerateOutputs().sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                 var rates: [String: CoreAudioRateCapabilities] = [:]
                 for device in devices { rates[device.id] = backend.readRateCapabilities(device) }
-                return (devices, backend.readDefaultOutput(), rates)
+                var tokens: [UInt32: [CoreAudioListenerToken]] = [:]
+                for device in devices where device.transportType == kAudioDeviceTransportTypeAggregate {
+                    if let existing = existingAggregateTokens[device.objectID] {
+                        tokens[device.objectID] = existing
+                        continue
+                    }
+                    let events: [CoreAudioEvent] = [
+                        CoreAudioEvent.aggregateMembers(device.objectID), .activeAggregateMembers(device.objectID),
+                        .streamConfiguration(device.objectID)
+                    ]
+                    tokens[device.objectID] = events.compactMap { event in
+                        backend.subscribe(event) { [weak self] in
+                            Task { @MainActor [weak self] in self?.deviceGraphChanged() }
+                        }
+                    }
+                }
+                // Close the discovery/registration gap for newly observed devices.
+                let observedDevices = devices.compactMap { device -> AudioDeviceInfo? in
+                    if device.transportType == kAudioDeviceTransportTypeAggregate,
+                       existingAggregateTokens[device.objectID] == nil { return backend.resolve(device.id) }
+                    return device
+                }
+                return (observedDevices, backend.readDefaultOutput(), rates, tokens)
             }.value
+            aggregateObservationTokens = result.3
             apply(devices: result.0, defaultUID: defaultRevision == defaultObservationRevision ? result.1 : snapshots.defaultOutputUID)
             sampleRateCapabilitiesByUID = result.2
             snapshots.publishRates(result.2)
@@ -228,7 +253,10 @@ final class CoreAudioService {
     }
 
     private func apply(devices: [AudioDeviceInfo], defaultUID: String?) {
-        if outputDevices.map({ ($0.id, $0.objectID) }).elementsEqual(devices.map({ ($0.id, $0.objectID) }), by: { $0.0 == $1.0 && $0.1 == $1.1 }) == false {
+        let unchanged = outputDevices.elementsEqual(devices) { previous, current in
+            previous.id == current.id && previous.objectID == current.objectID && previous.aggregateMembers == current.aggregateMembers
+        }
+        if !unchanged {
             deviceGraphGeneration &+= 1
         }
         outputDevices = devices
@@ -376,7 +404,7 @@ final class CoreAudioService {
     func waitForDevice(uid: String) async -> AudioDeviceInfo? {
         let backend = backend
         do {
-            let result = try await wait(event: .devices, timeout: .seconds(2), condition: { backend.resolve(uid) != nil })
+            let result = try await wait(event: .devices, timeout: 2, condition: { backend.resolve(uid) != nil })
             guard result.source != .timedOut else { return nil }
             return await resolveDeviceWithoutBlockingUI(uid: uid)
         } catch { return nil }
@@ -580,7 +608,7 @@ final class CoreAudioService {
     func setSampleRate(uid: String, rate: Double) async throws {
         let backend = backend
         guard let device = await resolveDeviceWithoutBlockingUI(uid: uid) else { throw AudioError.deviceNotFound(uid) }
-        let result = try await wait(event: .nominalRate(device.objectID), timeout: .milliseconds(500), condition: {
+        let result = try await wait(event: .nominalRate(device.objectID), timeout: 0.5, condition: {
             guard let fresh = backend.resolve(uid), let value = backend.readNominalRate(fresh) else { return false }
             return abs(value - rate) < 0.5
         }, mutation: {
@@ -604,7 +632,7 @@ final class CoreAudioService {
         for attempt in 0..<3 {
             try Task.checkCancellation()
             do {
-                let result = try await wait(event: .defaultOutput, timeout: .seconds(1), condition: { backend.readDefaultOutput() == uid }, mutation: {
+                let result = try await wait(event: .defaultOutput, timeout: 1, condition: { backend.readDefaultOutput() == uid }, mutation: {
                     guard let fresh = backend.resolve(uid) else { throw AudioError.deviceNotFound(uid) }
                     try backend.setDefaultOutput(fresh)
                 })
@@ -962,26 +990,63 @@ final class CoreAudioService {
         guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &ids) == noErr else { return [] }
 
         return ids.compactMap { id in
-            guard hasOutputStreams(id), let uid = deviceUID(id), let name = deviceName(id) else { return nil }
-            return AudioDeviceInfo(
-                id: uid,
-                objectID: id,
-                name: name,
-                transportType: uint32Property(id, selector: kAudioDevicePropertyTransportType) ?? 0
-            )
+            guard hasOutputStreams(id), let uid = deviceUID(id) else { return nil }
+            return deviceInfo(objectID: id, uid: uid)
         }
     }
 
     nonisolated static func deviceInfo(forUID uid: String) -> AudioDeviceInfo? {
-        guard let objectID = deviceObjectID(forUID: uid),
-              Self.hasOutputStreams(objectID),
-              let name = Self.deviceName(objectID) else { return nil }
-        return AudioDeviceInfo(
-            id: uid,
-            objectID: objectID,
-            name: name,
-            transportType: Self.uint32Property(objectID, selector: kAudioDevicePropertyTransportType) ?? 0
-        )
+        guard let objectID = deviceObjectID(forUID: uid), hasOutputStreams(objectID) else { return nil }
+        return deviceInfo(objectID: objectID, uid: uid)
+    }
+
+    nonisolated private static func deviceInfo(objectID: AudioDeviceID, uid: String) -> AudioDeviceInfo? {
+        guard let name = deviceName(objectID) else { return nil }
+        let transport = uint32Property(objectID, selector: kAudioDevicePropertyTransportType) ?? 0
+        let members: [AggregateOutputMember]
+        if transport == kAudioDeviceTransportTypeAggregate {
+            guard let found = aggregateMembers(objectID: objectID, uid: uid, ancestors: []) else { return nil }
+            members = found
+        } else { members = [] }
+        return AudioDeviceInfo(id: uid, objectID: objectID, name: name, transportType: transport, aggregateMembers: members)
+    }
+
+    /// The full subdevice list defines stream order, including inactive members.
+    /// Do not publish a shortened map if a component is missing: its old slot
+    /// numbers could otherwise address a different interface after reconnection.
+    nonisolated private static func aggregateMembers(objectID: AudioDeviceID, uid: String,
+                                                     ancestors: Set<String>) -> [AggregateOutputMember]? {
+        guard !ancestors.contains(uid), ancestors.count < 16 else { return nil }
+        var address = AudioObjectPropertyAddress(mSelector: kAudioAggregateDevicePropertyFullSubDeviceList,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var value: Unmanaged<CFArray>?
+        var size = UInt32(MemoryLayout.size(ofValue: value))
+        guard AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &value) == noErr,
+              let value, let uids = value.takeRetainedValue() as? [String],
+              !uids.isEmpty, uids.count <= 256, Set(uids).count == uids.count else { return nil }
+        address.mSelector = kAudioAggregateDevicePropertyActiveSubDeviceList
+        guard AudioObjectGetPropertyDataSize(objectID, &address, 0, nil, &size) == noErr,
+              size > 0, size <= 256 * MemoryLayout<AudioObjectID>.size,
+              Int(size).isMultiple(of: MemoryLayout<AudioObjectID>.size) else { return nil }
+        var active = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &active) == noErr else { return nil }
+        let activeUIDs = Set(active.compactMap(deviceUID))
+        guard Set(uids).isSubset(of: activeUIDs) else { return nil }
+        var path = ancestors
+        path.insert(uid)
+        var result: [AggregateOutputMember] = []
+        for memberUID in uids {
+            guard !path.contains(memberUID), let memberID = deviceObjectID(forUID: memberUID) else { return nil }
+            if uint32Property(memberID, selector: kAudioDevicePropertyTransportType) == kAudioDeviceTransportTypeAggregate {
+                guard let nested = aggregateMembers(objectID: memberID, uid: memberUID, ancestors: path) else { return nil }
+                result.append(contentsOf: nested)
+            } else {
+                guard let channels = try? SpeakerTopologyProbe.outputChannelCount(objectID: memberID) else { return nil }
+                result.append(.init(uid: memberUID, outputChannelCount: channels))
+            }
+            guard result.count <= 256 else { return nil }
+        }
+        return result
     }
 
     nonisolated private static func deviceObjectID(forUID uid: String) -> AudioDeviceID? {

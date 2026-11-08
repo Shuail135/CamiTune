@@ -8,7 +8,7 @@ struct StableEditorSection<Revision: Equatable, Content: View>: View {
 
     var body: some View {
         RevisionedEditorContent(revision: revision, content: content()).equatable()
-            .focusSection()
+            .editorFocusSection()
     }
 }
 
@@ -17,4 +17,13 @@ private struct RevisionedEditorContent<Revision: Equatable, Content: View>: View
     let content: Content
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.revision == rhs.revision }
     var body: some View { content }
+}
+
+// A focus section is a routing hint for the newer focus engine. The controls
+// themselves always use AppKit's native key-view chain.
+extension View {
+    @ViewBuilder func editorFocusSection() -> some View {
+        if #available(macOS 13, *) { focusSection() }
+        else { self }
+    }
 }

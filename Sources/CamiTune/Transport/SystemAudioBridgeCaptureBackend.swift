@@ -33,7 +33,7 @@ struct SystemAudioBridgeCaptureEffects {
     var hideBridge: () async throws -> Void
     var setRate: (String, Double) async throws -> Void
     var setDefaultOutput: (String) async throws -> Void
-    var startVolume: (AudioDeviceInfo, AudioDeviceInfo, UUID, RuntimeOwnershipID) async throws -> MasterControl
+    var startVolume: (AudioDeviceInfo, AudioDeviceInfo, UUID, RuntimeOwnershipID, SystemVolumeScope) async throws -> MasterControl
     var volumeMode: () -> SystemVolumeMode?
     var startTransport: (AudioDeviceInfo, AudioDeviceInfo, Double, AudioCaptureDelivery, @escaping MasterControl) async throws -> Void
     var prepareIncoming: () async throws -> Void
@@ -44,7 +44,7 @@ struct SystemAudioBridgeCaptureEffects {
     var stopVolumeSynchronously: () -> Void
     var hideBridgeSynchronously: () throws -> Void
     var removeProfileDevices: () throws -> Void
-    var sleep: (Duration) async throws -> Void
+    var sleep: (TimeInterval) async throws -> Void
 }
 
 @MainActor
@@ -166,7 +166,9 @@ private final class SystemAudioBridgeCaptureSession: AudioCaptureSession {
             ownsControl = true
             if !isOwned() { stopControlSynchronously() }
         }
-        masterControl = try await effects.startVolume(binding.routing, binding.physical, plan.revision.profileID, ownershipID)
+        let scope = SystemVolumeScope(outputIndices: Set(plan.physicalEndpointFormat.channels.compactMap { $0.physicalOutputID?.channelIndex }),
+            hardwareChannelCount: plan.hardwareOutputFormat.channelCount)
+        masterControl = try await effects.startVolume(binding.routing, binding.physical, plan.revision.profileID, ownershipID, scope)
         volumeLease = effects.currentVolumeLease()
         volumeMode = effects.volumeMode()
     }
@@ -241,7 +243,7 @@ private final class SystemAudioBridgeCaptureSession: AudioCaptureSession {
                     transportFailures += 1
                     if transportFailures >= 3 { break }
                 }
-                try await effects.sleep(.milliseconds(100)); try checkCurrent()
+                try await effects.sleep(0.1); try checkCurrent()
             }
         }
         throw lastError ?? AppState.AppError.missingRoutingDriver
@@ -330,9 +332,9 @@ extension SystemAudioBridgeCaptureBackend {
             hideBridge: { try await coreAudio.setSystemAudioBridgePresentationWithoutBlockingUI(name: AudioDeviceInfo.systemAudioBridgeName, visible: false) },
             setRate: { try await coreAudio.setSampleRate(uid: $0, rate: $1) },
             setDefaultOutput: { try await coreAudio.setDefaultOutputAndWait(uid: $0) },
-            startVolume: { routing, output, profileID, ownershipID in
+            startVolume: { routing, output, profileID, ownershipID, scope in
                 let lease = try await volume.acquire(ownershipID: ownershipID, routingDevice: routing,
-                    physicalUID: output.id, coreAudio: coreAudio,
+                    physicalUID: output.id, scope: scope, coreAudio: coreAudio,
                     onVolume: { onVolume(profileID, ownershipID, $0) }, onMasterGain: onMasterGain,
                     onMirrorFailure: { onMirrorFailure(ownershipID) })
                 return lease.controlSession.driverConsumer()
@@ -350,6 +352,6 @@ extension SystemAudioBridgeCaptureBackend {
             stopVolumeSynchronously: { volume.stop() },
             hideBridgeSynchronously: { try coreAudio.setSystemAudioBridgePresentation(name: AudioDeviceInfo.systemAudioBridgeName, visible: false) },
             removeProfileDevices: { try coreAudio.destroyAllProfileRoutingDevices() },
-            sleep: { try await Task.sleep(for: $0) }))
+            sleep: { try await RuntimeClock.sleep(seconds: $0) }))
     }
 }

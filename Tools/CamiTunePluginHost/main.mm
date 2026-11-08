@@ -43,6 +43,7 @@ static void updateEditorTimer() {
         editorTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES block:^(NSTimer*) {
             midiHost->idle();
             refreshEditors();
+            updateEditorTimer();
         }];
         editorTimer.tolerance = 0.01;
     } else if (!needed && editorTimer) { [editorTimer invalidate]; editorTimer = nil; }
@@ -328,7 +329,7 @@ static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketP
         if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0 || fcntl(fd, F_SETFD, FD_CLOEXEC) < 0)
             throw std::runtime_error("Could not configure plug-in control notifications.");
     }
-    midiHost = std::make_unique<MIDIHost>(effects, slots, wakeWorker);
+    midiHost = std::make_unique<MIDIHost>(effects, slots, rate, wakeWorker);
     int file = open(memoryPath.fileSystemRepresentation, O_RDWR | O_NOFOLLOW);
     struct stat info{};
     if (file < 0 || fstat(file, &info) || info.st_size != sharedBytes || info.st_uid != getuid()) throw std::runtime_error("Invalid shared audio buffer.");
@@ -345,7 +346,8 @@ static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketP
         std::array<float, maximumFrames * maximumChannels> first{}, second{};
     };
     auto buffers = std::make_shared<AudioBuffers>();
-    std::thread worker([samples, channels, buffers] {
+    HostClock clock;
+    std::thread worker([samples, channels, buffers, clock] {
         pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
         auto& first = buffers->first; auto& second = buffers->second;
         AudioRequest request{};
@@ -353,7 +355,7 @@ static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketP
             pollfd descriptors[2]{{audioSocket, POLLIN, 0}, {workerWakePipe[0], POLLIN, 0}};
             // Audio, MIDI, commands and native parameter observers all notify
             // this worker. An unchanged editor needs no parameter-flush timer.
-            int available = poll(descriptors, 2, -1);
+            int available = poll(descriptors, 2, midiHost->inputWaitMilliseconds());
             if (available < 0 && errno == EINTR) continue;
             if (available < 0) break;
             if (descriptors[1].revents & POLLIN) {
@@ -375,7 +377,7 @@ static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketP
                 // real blocks. Only flush edits, with zero samples, at rest.
                 if (audioFailed.load()) continue;
                 @autoreleasepool {
-                    midiHost->process();
+                    midiHost->process(clock.nowNanoseconds(), 0);
                     for (auto& effect : effects) if (!effect->flushParameters()) { audioFailed = true; break; }
                 }
                 continue;
@@ -387,7 +389,7 @@ static int runRack(NSString* configPath, NSString* memoryPath, NSString* socketP
                 @autoreleasepool {
                     vDSP_mtrans(samples, 1, first.data(), 1, channels, request.frames);
                     if (request.reset) for (auto& effect : effects) effect->reset();
-                    midiHost->process();
+                    midiHost->process(request.hostTimeNanoseconds, request.frames);
                     float* input[maximumChannels], *output[maximumChannels];
                     for (uint32_t c = 0; c < channels; ++c) { input[c] = first.data() + c * request.frames; output[c] = second.data() + c * request.frames; }
                     for (size_t index = 0; index < effects.size(); ++index) {

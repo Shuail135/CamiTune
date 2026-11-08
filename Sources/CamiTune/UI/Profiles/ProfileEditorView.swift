@@ -17,12 +17,12 @@ struct ProfileEditorView: View {
     @State private var preparedSectionCount = 1
     @State private var isRenamingProfile = false
     @State private var titleHovered = false
-    @FocusState private var titleFocused: Bool
+    @State private var titleFocused = false
     @State private var renamingProfileID: UUID?
     @State private var profileNameDraft = ""
     @State private var focusClearingMonitor: Any?
     @State private var focusClearingID: UUID?
-    @FocusState private var profileNameFocused: Bool
+    @State private var profileNameFocused = false
 
 
     init(state: AppState, coreAudio: CoreAudioSnapshotStore, profile: Binding<DeviceProfile>) {
@@ -54,20 +54,19 @@ struct ProfileEditorView: View {
             VStack(alignment: .leading, spacing: 18) {
                 ProfileHeaderLayout {
                     HStack(alignment: .firstTextBaseline) {
-                        Button { beginProfileRename() } label: {
+                        FocusButton(isFocused: $titleFocused, action: beginProfileRename) {
                             HStack(spacing: 8) {
                                 Text(profile.name)
                                     .font(.largeTitle.bold())
                                     .lineLimit(1)
-                                    .alignmentGuide(.profileNameTrailing) { $0[.trailing] }
+                                    .anchorPreference(key: ProfileNameBounds.self, value: .bounds) { $0 }
                                 Image(systemName: "pencil")
-                                    .font(.body).foregroundStyle(.secondary)
+                                    .font(.body).foregroundColor(.secondary)
                                     .opacity(titleHovered || titleFocused ? 1 : 0)
                             }
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
-                        .focused($titleFocused)
+
                         .onHover { titleHovered = $0 }
                         .accessibilityLabel("Rename \(profile.name)")
                         .disabled(isRenamingProfile)
@@ -75,23 +74,23 @@ struct ProfileEditorView: View {
                         .opacity(isRenamingProfile ? 0 : 1)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         // Retain the title's size and baseline while editing.
-                        .overlay(alignment: .leadingFirstTextBaseline) {
+                        .overlay(Group {
                             if isRenamingProfile {
-                                TextField("Profile name", text: $profileNameDraft)
+                                EditableTextField("Profile name", text: $profileNameDraft, isFocused: $profileNameFocused, style: .plain, font: .systemFont(ofSize: NSFont.preferredFont(forTextStyle: .largeTitle).pointSize, weight: .bold), onCommit: commitProfileRename, onCancel: cancelProfileRename)
                                     .font(.largeTitle.bold())
                                     .textFieldStyle(.plain)
                                     .frame(maxWidth: 480)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .focused($profileNameFocused)
-                                    .onSubmit { commitProfileRename() }
-                                    .onExitCommand { cancelProfileRename() }
+
+
+
                             }
-                        }
+                        }, alignment: .leadingFirstTextBaseline)
                         Button { settingsDestination = .general } label: {
                             Image(systemName: "gearshape")
                                 .font(.system(size: 20, weight: .regular))
-                                .symbolRenderingMode(.hierarchical)
-                                .foregroundStyle(.secondary)
+
+                                .foregroundColor(.secondary)
                                 .frame(width: 32, height: 32)
                                 .contentShape(Rectangle())
                         }
@@ -107,6 +106,7 @@ struct ProfileEditorView: View {
                         .labelsHidden()
                         .accessibilityLabel("Enable Profile")
                     }
+                } status: {
                     ProfileConnectionStatusView(
                         coreAudio: coreAudio,
                         outputDeviceUID: profile.outputDeviceUID
@@ -125,7 +125,7 @@ struct ProfileEditorView: View {
             .padding(28)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .task(id: commands.appAudioRevealProfileID) {
+        .viewTask(id: commands.appAudioRevealProfileID) {
             guard commands.appAudioRevealProfileID == profile.id else { return }
             preparedSectionCount = sections.count
             await Task.yield()
@@ -133,13 +133,13 @@ struct ProfileEditorView: View {
             commands.appAudioRevealProfileID = nil
         }
         }
-        .disclosureGroupStyle(SectionDisclosureStyle())
-        .task(id: sections) {
+
+        .viewTask(id: sections) {
             // Let AppKit present the header and handle input between expensive
             // section creations. Once prepared, sections stay mounted so
             // scrolling never rebuilds their native controls.
             while preparedSectionCount < sections.count {
-                do { try await Task.sleep(for: .milliseconds(20)) }
+                do { try await RuntimeClock.sleep(seconds: 0.02) }
                 catch { return }
                 preparedSectionCount += 1
             }
@@ -322,41 +322,31 @@ struct ProfileEditorView: View {
 }
 
 
-/// Keep the status under the name's trailing edge, clamped to its leading edge
-/// for short names. The status uses the existing gap below the header.
-struct ProfileHeaderLayout: Layout {
-    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect,
-        proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
-    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect,
-        proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        subviews.first?.sizeThatFits(proposal) ?? .zero
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        guard let headerView = subviews.first else { return }
-        let headerProposal = ProposedViewSize(width: bounds.width, height: bounds.height)
-        headerView.place(at: bounds.origin, anchor: .topLeading, proposal: headerProposal)
-        // SwiftUI removes the conditional status child when the output connects.
-        // This can happen on the initial device refresh as well as a profile edit.
-        guard subviews.count > 1 else { return }
-        let header = headerView.dimensions(in: headerProposal)
-        let status = subviews[1].sizeThatFits(.unspecified)
-        let statusX = max(0, header[.profileNameTrailing] - status.width)
-        subviews[1].place(at: CGPoint(x: bounds.minX + statusX, y: bounds.maxY + 4),
-            anchor: .topLeading, proposal: .unspecified)
+/// The status occupies the existing gap below the header, without changing
+/// header size. Its trailing edge follows the name, clamped at the leading edge.
+struct ProfileHeaderLayout<Header: View, Status: View>: View {
+    @ViewBuilder var header: () -> Header
+    @ViewBuilder var status: () -> Status
+    var body: some View {
+        header().overlayPreferenceValue(ProfileNameBounds.self) { anchor in
+            GeometryReader { geometry in
+                let trailing = anchor.map { geometry[$0].maxX } ?? geometry.size.width
+                ZStack(alignment: .topLeading) {
+                    Color.clear
+                    status().fixedSize()
+                        .alignmentGuide(.leading) { -max(0, trailing - $0.width) }
+                        .alignmentGuide(.top) { _ in -(geometry.size.height + 4) }
+                }
+            }
+        }
     }
 }
 
-private extension HorizontalAlignment {
-    private enum ProfileNameTrailing: AlignmentID {
-        static func defaultValue(in context: ViewDimensions) -> CGFloat {
-            context[.trailing]
-        }
+private struct ProfileNameBounds: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>?
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
     }
-
-    static let profileNameTrailing = HorizontalAlignment(ProfileNameTrailing.self)
 }
 
 private struct ProfileSectionBoxStyle: GroupBoxStyle {
@@ -372,11 +362,11 @@ private struct ProfileSectionBoxStyle: GroupBoxStyle {
             configuration.content.frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(8)
-        .background(background, in: RoundedRectangle(cornerRadius: 6))
-        .overlay {
+        .background(RoundedRectangle(cornerRadius: 6).fill(background))
+        .overlay(Group {
             RoundedRectangle(cornerRadius: 6)
                 .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
-        }
+        })
     }
 }
 

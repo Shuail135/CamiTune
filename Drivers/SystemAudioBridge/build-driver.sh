@@ -5,7 +5,7 @@ SCRIPT_DIR="${0:A:h}"
 REPO_ROOT="${SCRIPT_DIR:h:h}"
 BUILD_ROOT="${SABR_BUILD_ROOT:-$REPO_ROOT/build/driver}"
 CHANNELS="${SABR_CHANNELS:-8}"
-MIN_MACOS="${SABR_MIN_MACOS:-13.0}"
+MIN_MACOS="${SABR_MIN_MACOS:-11.0}"
 DRIVER_VERSION="${SABR_DRIVER_VERSION:-0.9.7}"
 DRIVER="$BUILD_ROOT/CamillaAudio.driver"
 BINARY="$DRIVER/Contents/MacOS/CamillaAudio"
@@ -53,6 +53,7 @@ ICON_PARTIAL_INFO="$BUILD_ROOT/AppIcon-PartialInfo.plist"
 /bin/rm -rf "$DRIVER"
 /bin/mkdir -p "$DRIVER/Contents/MacOS" "$DRIVER/Contents/Resources"
 "$CLANG" \
+    -arch arm64 -arch x86_64 \
     -std=gnu11 \
     -O2 \
     -fblocks \

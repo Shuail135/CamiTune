@@ -105,7 +105,7 @@ struct AudioRuntimePlanPreparer {
         }
         try await services.captureBackend.validateSource(sampleRate: sampleRate)
         let topology: SpeakerTopology?
-        if needsTopology { topology = try await services.probeTopology(output) }
+        if needsTopology || output.hardwareOutputIDs != nil { topology = try await services.probeTopology(output) }
         else { topology = nil }
         let count: Int
         if let topology { count = topology.declaredChannelCount }
@@ -144,10 +144,10 @@ struct AudioRuntimePlanPreparer {
     /// not query absent hardware and cannot authorize execution of the result.
     static func prepareForStorage(profile: DeviceProfile, revision: RuntimeIntentRevision) throws -> AudioRuntimePlan {
         let profile = try normalize(profile)
-        guard (1...SpeakerTopology.maximumOutputChannels).contains(profile.configuredPhysicalChannelCount) else {
+        guard (1...SpeakerTopology.maximumHardwareChannels).contains(profile.configuredPhysicalChannelCount) else {
             throw SpeakerTopologyError.unsupportedChannelCount(profile.configuredPhysicalChannelCount)
         }
-        let topology = (profile.hasPhysicalSpeakerRoute ? profile.speakerTopology : nil) ?? SpeakerTopology(deviceUID: profile.outputDeviceUID,
+        let topology = (profile.hasPhysicalSpeakerRoute || profile.endpointKind == .audioInterface ? profile.speakerTopology : nil) ?? SpeakerTopology(deviceUID: profile.outputDeviceUID,
             sampleRate: Double(profile.sampleRate), declaredChannelCount: profile.configuredPhysicalChannelCount,
             endpoints: (0..<profile.configuredPhysicalChannelCount).map {
                 .init(id: .init(deviceUID: profile.outputDeviceUID, channelIndex: $0), displayName: "Output \($0 + 1)")

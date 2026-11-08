@@ -28,6 +28,14 @@ package struct EQBand: Identifiable, Codable, Hashable, Sendable {
     package var q: Double?
     package var bandwidth: Double?
 
+    /// Explicit Q takes precedence in retained profiles containing both forms.
+    /// Validation belongs to the importing/processing boundary, not this math.
+    package func resolvedQ(sampleRate: Double) -> Double {
+        q ?? bandwidth.map {
+            BiquadCoefficients.q(fromBandwidth: $0, frequency: frequency, sampleRate: sampleRate)
+        } ?? 0.70710678
+    }
+
     package var hasMeaningfulProcessing: Bool {
         enabled && (!kind.usesGain || abs(gain ?? 0) > 0.000_001)
     }

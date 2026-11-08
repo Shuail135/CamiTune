@@ -59,7 +59,13 @@ package struct ProcessingGraphBuilder {
             automaticHeadroomDB: 0,
             processors: [],
             mixers: [],
-            pipeline: []
+            pipeline: [],
+            // Speaker processing is initially aligned with physical slots.
+            // The route compiler supplies the compact input bus and ingress
+            // mixer; hardware width must not masquerade as source capacity.
+            inputFormat: profile.hasPhysicalSpeakerRoute
+                ? try .hardwareOutputs(sampleRate: profile.sampleRate, deviceUID: profile.outputDeviceUID, channelCount: channelCount)
+                : nil
         )
         var usedStageIDs = Set<UUID>()
         if profile.hasPhysicalSpeakerRoute,
@@ -477,6 +483,12 @@ package struct ProcessingGraphBuilder {
         }
         if let bandwidth = band.bandwidth, (!bandwidth.isFinite || bandwidth <= 0) {
             throw ProcessingGraphError.invalidFilterBandwidth(bandwidth)
+        }
+        if band.q == nil, let bandwidth = band.bandwidth {
+            let q = band.resolvedQ(sampleRate: Double(sampleRate))
+            guard q.isFinite, q > 0 else {
+                throw ProcessingGraphError.invalidFilterBandwidth(bandwidth)
+            }
         }
         switch band.kind {
         case .peaking:

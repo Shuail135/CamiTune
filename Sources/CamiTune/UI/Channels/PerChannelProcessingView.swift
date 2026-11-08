@@ -66,30 +66,30 @@ struct PerChannelProcessingView: View {
             if convolutionOnly {
                 editorContent
             } else {
-                DisclosureGroup(isExpanded: $isExpanded) {
+                SectionDisclosure(isExpanded: $isExpanded) {
                     editorContent.padding(.top, 8)
                 } label: {
                     Text("Channel Processing").font(.headline)
                         .uiInteractionAnchor("channel-processing-disclosure")
                 }
-                .disclosureGroupStyle(SectionDisclosureStyle {
+                .trailingControls {
                     if isExpanded {
                         PerChannelResetButton(status: runtime.status,
                             presentation: equalizerPresentation, onReset: resetSelectedChannel)
                             .disabled(editableChannels.isEmpty || bandReduction.isRunning)
                     }
-                })
+                }
             }
         }
-        .alert("Recalculate Equalizer Bands?", isPresented: $showBandReductionConfirmation) {
-            Button("Cancel", role: .cancel) {
+        .appAlert("Recalculate Equalizer Bands?", isPresented: $showBandReductionConfirmation) {
+            AppAlertAction("Cancel", role: .cancel) {
                 pendingBandCount = nil
             }
-            Button("Recalculate", role: .destructive) {
+            AppAlertAction("Recalculate", role: .destructive) {
                 applyPendingBandReduction()
             }
         } message: {
-            Text(bandReductionConfirmationMessage)
+            bandReductionConfirmationMessage
         }
         .onAppear {
             refreshProcessingPresentation()
@@ -169,7 +169,7 @@ struct PerChannelProcessingView: View {
             }
 
             if editableChannels.isEmpty {
-                Label("Configure enabled physical channels in Profile Settings.", systemImage: "info.circle").foregroundStyle(.secondary)
+                Label("Configure enabled physical channels in Profile Settings.", systemImage: "info.circle").foregroundColor(.secondary)
             } else if profile.usesGroupedProcessingPresentation {
                 groupAndSpeakerSelector
             } else {
@@ -213,6 +213,7 @@ struct PerChannelProcessingView: View {
                 if equalizerPresentation != .simpleTone {
                     PerChannelBandsSection(
                         bands: runtime.bands,
+                        sampleRate: Double(profile.sampleRate),
                         responses: runtime.responses,
                         requestBandCount: requestBandCount,
                         setKind: EQEditorSupport.setKind,
@@ -252,7 +253,7 @@ struct PerChannelProcessingView: View {
                 HStack(alignment: .top) {
                     Text(group.members.compactMap { id in editableChannels.first { $0.physicalOutputID == id }?.displayName }
                         .joined(separator: ", "))
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                     Spacer()
                     Menu("Edit a speaker") {
                         ForEach(editableChannels.filter { group.members.contains($0.physicalOutputID) }) { channel in
@@ -266,7 +267,7 @@ struct PerChannelProcessingView: View {
                 }.frame(maxWidth: 360)
                 let inherited = editableGroups.filter { $0.members.contains(selectedChannel.physicalOutputID) }.map(\.name)
                 Text("Groups: \(inherited.joined(separator: ", "))")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
             }
         }
     }
@@ -358,6 +359,7 @@ private struct PerChannelResponseGraph: View {
 
 private struct PerChannelBandsSection: View {
     @ObservedObject var bands: PerChannelBandsState
+    let sampleRate: Double
     let responses: PerChannelResponseState
     let requestBandCount: @MainActor (Int) -> Void
     let setKind: (EQBand.Kind, inout EQBand) -> Void
@@ -383,7 +385,7 @@ private struct PerChannelBandsSection: View {
             if bands.isEmpty {
                 HStack {
                     Label("No EQ bands. Simple, gain, and delay still apply.", systemImage: "info.circle")
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                     Button("Add Bands") { requestBandCount(8) }
                 }
                 .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
@@ -391,6 +393,7 @@ private struct PerChannelBandsSection: View {
                 EqualizerBandScrollView(bandCount: bands.count) { columnWidth in
                     PerChannelGraphicEqualizerBands(
                         bands: bands,
+                        sampleRate: sampleRate,
                         responses: responses,
                         setKind: setKind,
                         columnWidth: columnWidth,

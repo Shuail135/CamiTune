@@ -16,7 +16,7 @@ struct PluginSidechainView: View {
     @State private var error: String?
     @State private var applied = false
     @State private var inspecting = false
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.presentationMode) private var dismiss
 
     init(state: AppState, profile: DeviceProfile, slot: AudioPluginSlot,
          apply: @escaping (PluginSidechainSource?, Int?) -> Void) {
@@ -44,17 +44,17 @@ struct PluginSidechainView: View {
             }
             if capabilities?.sidechainBuses.isEmpty == true {
                 Text("This plug-in does not expose a sidechain input.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
             }
             Picker("Source", selection: Binding(get: { sourceKey }, set: { select($0) })) {
                 Text("Off").tag("off")
                 if !applications.applications.isEmpty {
-                    Section("Apps") {
+                    Section(header: Text("Apps")) {
                         ForEach(applications.applications) { app in Text(app.displayName).tag("app:" + app.id) }
                     }
                 }
                 if !inputs.devices.isEmpty {
-                    Section("Audio Inputs") {
+                    Section(header: Text("Audio Inputs")) {
                         ForEach(inputs.devices) { input in Text(input.name).tag("input:" + input.id) }
                     }
                 }
@@ -79,14 +79,14 @@ struct PluginSidechainView: View {
                 }
             }
             if let message = error ?? source.flatMap({ inputs.errors[$0.id] }) {
-                Text(message).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Text(message).font(.caption).foregroundColor(.orange).fixedSize(horizontal: false, vertical: true)
                 if source?.kind == .audioInput, error == nil {
                     Button("Retry Input") { inputs.retry() }
                 }
             }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { dismiss.wrappedValue.dismiss() }.keyboardShortcut(.cancelAction)
                     .uiInteractionAnchor("plugin-sidechain-cancel")
                 Button("Apply") { applied = true; apply(source, source == nil ? nil : bus) }
                     .keyboardShortcut(.defaultAction)
@@ -95,7 +95,7 @@ struct PluginSidechainView: View {
             }
         }
         .padding(16).frame(width: 340)
-        .task {
+        .viewTask {
             inputs.refresh()
             guard capabilities == nil else { return }
             loading = true

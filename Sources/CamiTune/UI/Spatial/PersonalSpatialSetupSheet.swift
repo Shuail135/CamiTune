@@ -6,7 +6,7 @@ import SwiftUI
 struct PersonalSpatialSetupSheet: View {
     let state: AppState
     let profile: DeviceProfile
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.presentationMode) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var settings: PersonalSpatialSettings
     @StateObject private var device: SpatialDeviceSelection
@@ -52,11 +52,11 @@ struct PersonalSpatialSetupSheet: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: step)
             if let error {
-                Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                SelectableText(error, font: .preferredFont(forTextStyle: .callout), color: .systemRed)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 24).padding(.bottom, 12)
             }
         } actions: {
-            Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+            Button("Cancel") { dismiss.wrappedValue.dismiss() }.keyboardShortcut(.cancelAction)
                 .uiInteractionAnchor("spatial-setup-cancel")
             Spacer()
             if busy { ProgressView("Preparing…").controlSize(.small) }
@@ -67,12 +67,12 @@ struct PersonalSpatialSetupSheet: View {
             Button(step == lastStep ? "Finish Setup" : "Next") {
                 if step == lastStep { finish() } else { move(to: step + 1) }
             }
-            .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+            .buttonStyle(PrimaryActionButtonStyle()).keyboardShortcut(.defaultAction)
             .disabled(step >= 1 && !device.supports(device.signature))
             .uiInteractionAnchor("spatial-setup-next")
         }
-        .disabled(busy).interactiveDismissDisabled(busy)
-        .task { await device.load() }
+        .disabled(busy).sheetDismissalBlocked(busy)
+        .viewTask { await device.load() }
         .onDisappear { device.cancel(); saveTask?.cancel() }
         .sheet(isPresented: $choosingSpeaker) {
             SpatialSpeakerPicker(group: .front) { sound in
@@ -104,14 +104,13 @@ struct PersonalSpatialSetupSheet: View {
         let selected = settings.experience == experience
         return Button { settings.experience = experience } label: {
             VStack(spacing: 18) {
-                Image(systemName: symbol).font(.system(size: 40)).foregroundStyle(Color.accentColor)
+                Image(systemName: symbol).font(.system(size: 40)).foregroundColor(Color.accentColor)
                 Text(title).font(.headline)
                 Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(selected ? Color.accentColor : .secondary)
+                    .foregroundColor(selected ? Color.accentColor : .secondary)
             }
             .frame(maxWidth: .infinity).frame(height: 200)
-            .background(selected ? Color.accentColor.opacity(0.10) : Color.secondary.opacity(0.04),
-                        in: RoundedRectangle(cornerRadius: 12))
+            .background(RoundedRectangle(cornerRadius: 12).fill(selected ? Color.accentColor.opacity(0.10) : Color.secondary.opacity(0.04)))
             .overlay(RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(selected ? Color.accentColor : Color.secondary.opacity(0.25), lineWidth: selected ? 2 : 1))
             .contentShape(RoundedRectangle(cornerRadius: 12))
@@ -132,15 +131,15 @@ struct PersonalSpatialSetupSheet: View {
                         HStack {
                             Text("Speaker model")
                             Spacer()
-                            Text(settings.scene.speaker(for: .left)?.name ?? "Neutral Monitor").foregroundStyle(.secondary)
+                            Text(settings.scene.speaker(for: .left)?.name ?? "Neutral Monitor").foregroundColor(.secondary)
                             Button("Choose…") { choosingSpeaker = true }
                                 .uiInteractionAnchor("spatial-setup-speakers")
                         }
                         Text("Choose one model to build a matching set, or keep the neutral speakers.")
-                            .foregroundStyle(.secondary)
+                            .foregroundColor(.secondary)
                     } else {
                         Text("Hear the measured Genelec speakers in the SADIE II studio. Speaker positions and the room are fixed.")
-                            .foregroundStyle(.secondary)
+                            .foregroundColor(.secondary)
                     }
                     Picker("Speaker setup", selection: Binding(get: { settings.scene.layout }, set: { settings.scene.selectLayout($0) })) {
                         ForEach(VirtualSpeakerLayout.allCases, id: \.self) { Text($0.title).tag($0) }
@@ -148,7 +147,7 @@ struct PersonalSpatialSetupSheet: View {
                 }.padding(8)
             } label: { Text("Speakers to Mimic") }
             Text("Fine-tune lets you change the placement, add a subwoofer, or customize individual speakers later.")
-                .foregroundStyle(.secondary)
+                .foregroundColor(.secondary)
         }.font(.callout)
     }
 
@@ -169,7 +168,7 @@ struct PersonalSpatialSetupSheet: View {
                 var draft = ProfileSettingsDraft(profile: profile, activation: state.profiles.activationMode(for: profile))
                 draft.personalSpatial = value
                 try await state.saveProfileSettings(draft, historyAction: "Set Up Spatial Sound")
-                dismiss()
+                dismiss.wrappedValue.dismiss()
             } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
         }
     }

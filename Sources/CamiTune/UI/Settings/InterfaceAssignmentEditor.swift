@@ -15,7 +15,7 @@ struct InterfaceAssignmentEditor: View {
     private var matches: Bool { assignment?.deviceUID == output.uid }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if !matches { Text("Discover this interface to configure its channels.").foregroundStyle(.secondary) }
+            if !matches { Text("Discover this interface to configure its channels.").foregroundColor(.secondary) }
             if let value = assignment, matches {
                 Picker("Connected Device", selection: Binding(get: { value.connectedEndpoint }, set: {
                     if let onSelectConnectedEndpoint { onSelectConnectedEndpoint($0) }
@@ -35,9 +35,7 @@ struct InterfaceAssignmentEditor: View {
                                     else { next.hardware.enabledHardwareOutputs.remove(index) }
                                     next.finishMigration()
                                     assignment = next
-                                    if let endpoint = topology?.endpoints.firstIndex(where: { $0.id.channelIndex == index }) {
-                                        topology?.endpoints[endpoint].connectionState = selected ? .confirmedByUser : .disabledByUser
-                                    }
+                                    topology?.setOutputEnabled(index, enabled: selected)
                                 }))
                         }
                     }
@@ -46,13 +44,13 @@ struct InterfaceAssignmentEditor: View {
                     stereoAssignment(.left, title: "Left")
                     stereoAssignment(.right, title: "Right")
                 }
-                if let problem = validationProblem { Text(problem).font(.caption).foregroundStyle(.secondary) }
+                if let problem = validationProblem { Text(problem).font(.caption).foregroundColor(.secondary) }
             }
             HStack {
                 Button("Discover Channels") { discover() }.disabled(discovering)
                 if discovering { ProgressView().controlSize(.small) }
             }
-            if let error { Text(error).foregroundStyle(.red) }
+            if let error { Text(error).foregroundColor(.red) }
         }
     }
     private var validationProblem: String? {
@@ -62,17 +60,11 @@ struct InterfaceAssignmentEditor: View {
 
     private func stereoAssignment(_ role: ChannelRole, title: String) -> some View {
         Picker(title, selection: Binding<Int?>(get: {
-            topology?.endpoints.first {
-                $0.role == role && assignment?.hardware.enabledHardwareOutputs.contains($0.id.channelIndex) == true
-            }?.id.channelIndex
+            topology?.stereoOutput(for: role)
         }, set: { physical in
             guard var topology else { return }
-            for index in topology.endpoints.indices where topology.endpoints[index].role == role {
-                topology.endpoints[index].role = .unknown
-            }
-            if let physical, let endpoint = topology.endpoints.first(where: { $0.id.channelIndex == physical }) {
-                SpeakerLayoutGeometry.setRole(role, for: endpoint.id, in: &topology)
-            }
+            topology.assignStereoOutput(physical, to: role)
+            assignment?.finishMigration()
             self.topology = topology
         })) {
             Text("Choose an output").tag(Int?.none)

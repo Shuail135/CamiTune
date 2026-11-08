@@ -173,12 +173,12 @@ struct SidebarView: View {
                 .padding(.horizontal, 9)
                 .padding(.vertical, 7)
                 .contentShape(Rectangle())
-                .background {
+                .background(Group {
                     if selection == .settings {
                         RoundedRectangle(cornerRadius: SidebarSelectionAppearance.cornerRadius)
-                            .fill(Color(nsColor: SidebarSelectionAppearance.color))
+                            .fill(Color( SidebarSelectionAppearance.color))
                     }
-                }
+                })
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 8)
@@ -187,12 +187,8 @@ struct SidebarView: View {
         }
         .frame(minWidth: SidebarLayout.minimumWidth)
         .navigationTitle("CamiTune")
-        .navigationSplitViewColumnWidth(
-            min: SidebarLayout.minimumWidth,
-            ideal: SidebarLayout.minimumWidth + 15,
-            max: 260
-        )
-        .background {
+
+        .background(Group {
             FolderDeletionAlert(request: folderDeletion) { confirmed in
                 guard let request = folderDeletion else { return }
                 folderDeletion = nil
@@ -208,19 +204,19 @@ struct SidebarView: View {
                     }
                 }
             }
-        }
-        .alert("Deactivate Profile?", isPresented: Binding(
+        })
+        .appAlert("Deactivate Profile?", isPresented: Binding(
             get: { pendingOffProfileID != nil },
             set: { if !$0 { pendingOffProfileID = nil } }
         )) {
-            Button("Cancel", role: .cancel) { pendingOffProfileID = nil }
-            Button("Deactivate") {
+            AppAlertAction("Cancel", role: .cancel) { pendingOffProfileID = nil }
+            AppAlertAction("Deactivate") {
                 guard let id = pendingOffProfileID else { return }
                 pendingOffProfileID = nil
                 Task { await state.setProfileRuntimeActive(profileID: id, active: false, physicalOutputConfirmed: true) }
             }
         } message: {
-            Text("Automatic activation will change from Physical output to Profile audio device. Audio will return to the original physical output.")
+            "Automatic activation will change from Physical output to Profile audio device. Audio will return to the original physical output."
         }
     }
 
@@ -924,7 +920,7 @@ private final class SidebarCell: NSTableCellView {
 }
 
 @MainActor
-private enum SidebarLayout {
+enum SidebarLayout {
     // Measure the fixed labels once, not twice on every sidebar publication.
     static let minimumWidth: CGFloat = {
         let appAudioFont = NSFont.systemFont(ofSize: NSFont.systemFontSize)
@@ -967,9 +963,9 @@ private struct DeletionUndoNotice: View {
                 }.padding(10)
             }
         }
-        .task(id: history.undoStack.last?.id) {
+        .viewTask(id: history.undoStack.last?.id) {
             visibleEntry = history.undoStack.last?.id
-            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            do { try await RuntimeClock.sleep(seconds: 8) } catch { return }
             visibleEntry = nil
         }
     }

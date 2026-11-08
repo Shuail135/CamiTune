@@ -185,7 +185,7 @@ package struct AudioRuntimePlanCompiler {
         let assignment = try profile.validatedInterfaceConfiguration()
         if topology != nil || assignment != nil {
             guard let detected = hardware.speakerTopology else { throw SpeakerTopologyError.hardwareLayoutChanged }
-            try topology?.validateHardware(detected)
+            try (topology ?? profile.speakerTopology)?.validateHardware(detected)
             try profile.validateMultichannelHardware(detected)
             if let assignment, assignment.hardwareChannelCount != detected.declaredChannelCount {
                 throw SpeakerTopologyError.hardwareLayoutChanged

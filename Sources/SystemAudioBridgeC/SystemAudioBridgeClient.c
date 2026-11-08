@@ -1242,7 +1242,19 @@ Boolean sabr_client_transport_wait_for_notification(SABRClientTransportRef trans
     do {
         result = sem_wait(transport->notification);
     } while (result != 0 && errno == EINTR);
-    return result == 0;
+    if (result != 0) { return false; }
+    /* The reader drains the ring after waking. Coalesce notifications already
+     * posted for that work instead of replaying one empty read per record.
+     * Bound this loop so continuous producer/registry activity cannot delay
+     * cancellation or delivery. Coalesced posts precede the next ring drain;
+     * a post after draining still wakes the next wait. */
+    for (uint32_t count = 1; count < SABR_TRANSPORT_PACKET_CAPACITY; ++count) {
+        do {
+            result = sem_trywait(transport->notification);
+        } while (result != 0 && errno == EINTR);
+        if (result != 0) { return errno == EAGAIN; }
+    }
+    return true;
 }
 
 void sabr_client_transport_signal(SABRClientTransportRef transport) {

@@ -13,7 +13,7 @@ extension AppState {
         multichannelAutosaveErrors[profileID] = nil
         multichannelAutosaveTasks[profileID] = Task { @MainActor [weak self] in
             defer { history.endPendingEdit(historyPosition) }
-            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+            do { try await RuntimeClock.sleep(seconds: 0.35) } catch { return }
             guard let self else { return }
             defer {
                 if self.multichannelAutosaveRevisions[profileID] == revision {
@@ -23,7 +23,7 @@ extension AppState {
             }
             while self.isSavingProfileSettings || self.profiles.hasDurableCommit || self.transitionInProgress
                     || self.runtimeCoordinator.hasLiveApplyWork || self.spatialCalibrationContext != nil {
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                do { try await RuntimeClock.sleep(seconds: 0.1) } catch { return }
             }
             guard !Task.isCancelled, self.editGeneration == generation,
                   self.multichannelAutosaveRevisions[profileID] == revision,

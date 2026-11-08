@@ -164,7 +164,7 @@ extension PerformanceBaseline {
         func ms(_ value: Double) -> String { String(format: "%.3f", value) }
         var lines = ["CamiTune Performance Baseline", "Build: \(env.version) (\(env.build)) · \(env.configuration)",
             "macOS: \(env.macOS) · \(env.architecture)", "Commit: \(env.gitCommit ?? "Unavailable")",
-            "Capture: \(captureID) · \(startedAt.ISO8601Format())",
+            "Capture: \(captureID) · \(DatePresentation.iso8601(startedAt))",
             "Measured duration: \(ms(Double(PerformanceClock.duration(from: measurementStart, to: ended)) / 1e9)) s; warm-up: \(options.warmUp) s",
             "Scenario: \(options.scenario.label)", "Detailed audio tracing: \(options.detailedAudioTracing ? "ON" : "OFF (coarse counters and CPU only)")", "Stop: \(stopReason)",
             "Output: \(env.outputName ?? "Inactive") · UID: \(env.outputUID ?? "None")",

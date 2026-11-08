@@ -25,14 +25,14 @@ struct SpatialAudioEditorView: View {
                 .disabled(state.transitionInProgress || state.isSavingProfileSettings || state.spatialCalibrationContext != nil)
 
                 if let description = playbackModeDescription {
-                    Text(description).font(.caption).foregroundStyle(.secondary)
+                    Text(description).font(.caption).foregroundColor(.secondary)
                 }
                 if let reason = profile.playbackReadiness(displayedMode).reason {
-                    Text(reason).font(.callout).foregroundStyle(.secondary)
+                    Text(reason).font(.callout).foregroundColor(.secondary)
                 }
                 if modePreview != nil && displayedMode != profile.playbackMode {
                     Text("The saved mode is still \(profile.playbackMode.compactDisplayName).")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                 }
 
                 if profile.isPersonalListening {
@@ -49,7 +49,7 @@ struct SpatialAudioEditorView: View {
         }
         .onChange(of: profile.id) { _ in modePreview = nil }
         .onChange(of: profile.playbackMode) { _ in modePreview = nil }
-        .task(id: SetupContext(id: profile.id, device: profile.deviceTypeConfigurationKey, mode: profile.playbackMode)) {
+        .viewTask(id: SetupContext(id: profile.id, device: profile.deviceTypeConfigurationKey, mode: profile.playbackMode)) {
             setupProfile = profile.playbackMode == .spatialRender && profile.needsPersonalSpatialSetup ? profile : nil
         }
         .sheet(item: $setupProfile) { profile in

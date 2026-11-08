@@ -27,7 +27,7 @@ struct AppUpdatePanel<Content: View, Actions: View>: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title).font(.title2.bold()).accessibilityAddTraits(.isHeader)
                     HStack(spacing: 12) {
-                        Text(subtitle).font(.callout).foregroundStyle(.secondary)
+                        Text(subtitle).font(.callout).foregroundColor(.secondary)
                         if let updateChecker { AppUpdateCheckStatusView(checker: updateChecker) }
                     }
                 }
@@ -47,7 +47,7 @@ struct AppUpdatePanel<Content: View, Actions: View>: View {
             .padding(.horizontal, 24).padding(.vertical, 16)
         }
         .frame(width: 520)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color(.windowBackgroundColor))
         .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -72,18 +72,18 @@ private struct AppUpdateCheckStatusView: View {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.mini)
                     Text("Checking for updates…")
-                }.foregroundStyle(.secondary)
+                }.foregroundColor(.secondary)
             } else {
                 switch checker.lastCheckResult {
                 case .upToDate:
                     Label("Up to date", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
+                        .foregroundColor(.green)
                 case .updateAvailable:
                     Label("Update available", systemImage: "arrow.down.circle")
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                 case .failed:
                     Label("Couldn’t check for updates", systemImage: "exclamationmark.circle")
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                 case nil:
                     EmptyView()
                 }
@@ -138,7 +138,7 @@ struct AppUpdateProgressView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         ProgressView(value: checker.downloadProgress).progressViewStyle(.linear)
                             .accessibilityLabel("Download progress")
-                        Text(downloadDescription).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                        Text(downloadDescription).font(.caption.monospacedDigit()).foregroundColor(.secondary)
                     }.padding(6).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 explanation("CamiTune will stay open. You’ll choose when to restart once the update is ready.")
@@ -165,26 +165,26 @@ struct AppUpdateProgressView: View {
             case .idle:
                 AppUpdateOfferActions(checker: checker)
             case .downloading:
-                Button("Cancel Download", role: .cancel) { checker.dismissUpdate() }
+                Button("Cancel Download") { checker.dismissUpdate() }.keyboardShortcut(.cancelAction)
                 Spacer()
             case .ready:
-                Button("Cancel Update", role: .cancel) { checker.dismissUpdate() }
+                Button("Cancel Update") { checker.dismissUpdate() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Install & Restart") { checker.installAndRestart() }
-                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                    .buttonStyle(PrimaryActionButtonStyle()).keyboardShortcut(.defaultAction)
             case .failed:
-                Button("Close", role: .cancel) { checker.dismissUpdate() }
+                Button("Close") { checker.dismissUpdate() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 if checker.canRetry {
                     Button("Try Again") { checker.retryUpdate() }
-                        .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                        .buttonStyle(PrimaryActionButtonStyle()).keyboardShortcut(.defaultAction)
                 }
             case .completed:
                 Spacer()
                 Button("Done") { checker.dismissUpdate() }
-                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                    .buttonStyle(PrimaryActionButtonStyle()).keyboardShortcut(.defaultAction)
             default:
-                Text("Please wait…").font(.caption).foregroundStyle(.secondary)
+                Text("Please wait…").font(.caption).foregroundColor(.secondary)
                 Spacer()
             }
         }
@@ -202,14 +202,14 @@ struct AppUpdateProgressView: View {
         GroupBox {
             HStack(spacing: 10) {
                 if working { ProgressView().controlSize(.small) }
-                else { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
+                else { Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
                 Text(message).font(.callout.weight(.medium))
             }.padding(6).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private func explanation(_ message: String) -> some View {
-        Text(message).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        Text(message).font(.callout).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -220,9 +220,9 @@ private struct AppUpdateOfferActions: View {
     var body: some View {
         Button("Skip Version") { checker.skipAvailableVersion() }
         Spacer()
-        Button("Later", role: .cancel) { checker.remindLater() }
+        Button("Later") { checker.remindLater() }.keyboardShortcut(.cancelAction)
         Button("Download Update") { checker.beginUpdate() }
-            .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+            .buttonStyle(PrimaryActionButtonStyle()).keyboardShortcut(.defaultAction)
     }
 }
 

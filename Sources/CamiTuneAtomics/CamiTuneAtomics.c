@@ -29,18 +29,18 @@ struct CMTOutputRing {
     float* samples;
     _Atomic(uint64_t) read, write, accepting, underruns, rendered, clipped;
     _Atomic(uint64_t) sequence, host, sample, flags, callback, signal_host;
-    _Atomic(uint32_t) peak[32], rms[32];
+    _Atomic(uint32_t) peak[CMT_OUTPUT_MAX_CHANNELS], rms[CMT_OUTPUT_MAX_CHANNELS];
     dispatch_semaphore_t writer_signal;
     _Atomic(int) writer_waiting;
     // Render-callback-owned ramp and startup state.
-    float last[32];
+    float last[CMT_OUTPUT_MAX_CHANNELS];
     uint32_t ramp, waiting_frames;
     int primed;
 };
 static uint32_t cmt_float_bits(float value) { uint32_t bits; memcpy(&bits, &value, sizeof(bits)); return bits; }
 static float cmt_bits_float(uint32_t bits) { float value; memcpy(&value, &bits, sizeof(value)); return value; }
 CMTOutputRingRef cmt_output_ring_create(uint32_t channels, uint32_t capacity, uint32_t preroll) {
-    if (!channels || channels > 32 || !capacity || capacity > 1048576 || !preroll || preroll > capacity) return NULL;
+    if (!channels || channels > CMT_OUTPUT_MAX_CHANNELS || !capacity || capacity > 1048576 || !preroll || preroll > capacity) return NULL;
     CMTOutputRingRef r = calloc(1, sizeof(*r));
     if (!r) return NULL;
     r->samples = calloc((size_t)channels * capacity, sizeof(float));
@@ -110,7 +110,9 @@ void cmt_output_ring_render(CMTOutputRingRef r, float* output, uint32_t frames, 
     }
     int was_primed = r->primed;
     uint32_t count = r->primed && cmt_output_ring_accepting(r) ? (available < frames ? available : frames) : 0;
-    float peaks[32] = {0}; double sums[32] = {0}; uint64_t clipped = 0;
+    // The constructor bounds channels. Clear only the active width on each callback.
+    float peaks[r->channels]; double sums[r->channels]; uint64_t clipped = 0;
+    memset(peaks, 0, sizeof(peaks)); memset(sums, 0, sizeof(sums));
     for (uint32_t f = 0; f < frames; ++f) {
         if (f == count && r->primed) { r->primed = 0; r->ramp = 32; }
         for (uint32_t c = 0; c < r->channels; ++c) {

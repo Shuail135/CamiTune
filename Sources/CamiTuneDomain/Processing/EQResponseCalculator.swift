@@ -1,6 +1,6 @@
 import Foundation
 
-package struct EQResponsePoint: Identifiable, Sendable {
+package struct EQResponsePoint: Identifiable, Equatable, Sendable {
     package init(frequency: Double, gainDB: Double) { self.frequency = frequency; self.gainDB = gainDB }
     package let frequency: Double
     package let gainDB: Double
@@ -38,9 +38,8 @@ package struct EQResponseCalculator {
     }
 
     private func coefficients(for band: EQBand, sampleRate: Double) -> BiquadCoefficients {
-        let q = band.q ?? band.bandwidth.map(BiquadCoefficients.q(fromBandwidth:)) ?? 0.70710678
         return BiquadCoefficients(kind: band.kind, frequency: band.frequency,
-            gainDB: band.gain ?? 0, q: q, sampleRate: sampleRate)
+            gainDB: band.gain ?? 0, q: band.resolvedQ(sampleRate: sampleRate), sampleRate: sampleRate)
     }
 
     private func responseDB(coefficients c: BiquadCoefficients, frequency f: Double, sampleRate fs: Double) -> Double {

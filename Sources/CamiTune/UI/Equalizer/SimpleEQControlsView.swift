@@ -7,7 +7,7 @@ struct SimpleEQControlsView: View {
 
     var body: some View {
         ValueKnobRow {
-            ForEach(SimpleEQRange.allCases) { range in
+            controlLayoutItems(SimpleEQRange.allCases, id: \.id) { range in
                 ValueKnob(title: range.title, value: binding(for: range),
                     range: SimpleToneSettings.gainRange, step: SimpleToneSettings.step, resetValue: 0,
                     formattedValue: String(format: "%+.1f dB", settings[range]),

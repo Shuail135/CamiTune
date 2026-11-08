@@ -50,7 +50,11 @@ package struct BiquadCoefficients: Sendable {
         self.a0 = a0; self.a1 = a1; self.a2 = a2
     }
 
-    package static func q(fromBandwidth bandwidth: Double) -> Double {
-        1 / (2 * sinh(log(2) / 2 * bandwidth))
+    /// RBJ digital octave bandwidth includes the bilinear frequency warping.
+    /// Resolve at the rendering rate; persisting this Q would lose bandwidth
+    /// semantics when the sample rate or center frequency changes.
+    package static func q(fromBandwidth bandwidth: Double, frequency: Double, sampleRate: Double) -> Double {
+        let omega = 2 * Double.pi * frequency / sampleRate
+        return 1 / (2 * sinh(log(2) / 2 * bandwidth * omega / sin(omega)))
     }
 }

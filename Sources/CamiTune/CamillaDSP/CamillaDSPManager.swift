@@ -132,7 +132,7 @@ final class CamillaDSPManager: ObservableObject {
                     // Missing evidence expires in the writer's clock contract.
                     // A failed RPC cannot make the last sample appear fresh.
                 }
-                try? await Task.sleep(for: .milliseconds(500))
+                try? await RuntimeClock.sleep(seconds: 0.5)
             }
         }
     }
@@ -252,7 +252,7 @@ final class CamillaDSPManager: ObservableObject {
             } catch {
                 finalError = error
                 await rpc.disconnect()
-                try? await Task.sleep(for: .milliseconds(150))
+                try? await RuntimeClock.sleep(seconds: 0.15)
             }
         }
         throw finalError ?? CamillaError.connectionTimeout

@@ -27,7 +27,12 @@ extension ActiveAudioRoute {
 
     package static func validateFrame(_ frame: PCMFrame) throws {
         do { try frame.channelLayout.validate() } catch { throw AudioRouteFormatError.malformedFrame }
-        guard (1...32).contains(frame.channelCount), frame.sampleRate.isFinite, frame.sampleRate > 0,
+        guard frame.channelCount <= AudioFormatDescriptor.maximumProcessingChannels else { throw AudioRouteFormatError.malformedFrame }
+        try validateFrameStorage(frame)
+    }
+
+    private static func validateFrameStorage(_ frame: PCMFrame) throws {
+        guard frame.channelCount > 0, frame.sampleRate.isFinite, frame.sampleRate > 0,
               frame.channelLayout.channelCount == frame.channelCount, !frame.interleaved.isEmpty,
               frame.interleaved.count.isMultiple(of: frame.channelCount),
               frame.cohortSamples.values.allSatisfy({ $0.count == frame.interleaved.count }) else {
@@ -48,7 +53,9 @@ extension ActiveAudioRoute {
     }
 
     package func preparePhysicalCompatibilityFrame(_ frame: PCMFrame) throws -> PCMFrame {
-        try Self.validateFrame(frame)
+        // Internal speaker rendering and audition use hardware slot order,
+        // which can be wider than the source/plug-in bus selected below.
+        try Self.validateFrameStorage(frame)
         guard usesPhysicalSpeakerBus, !usesSourceProcessingBus, frame.channelCount == hardwareOutputFormat.channelCount,
               frame.sampleRate == Double(dspInputFormat.sampleRate) else { throw AudioRouteFormatError.incompatibleOutput }
         let slots = try dspInputFormat.channels.map { channel -> Int in

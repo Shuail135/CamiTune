@@ -30,7 +30,7 @@ struct ProfileConnectionStatusView: View {
         if coreAudio.cachedDevice(uid: outputDeviceUID) == nil {
             Label("Disconnected", systemImage: "exclamationmark.triangle.fill")
                 .font(.caption.bold())
-                .foregroundStyle(.orange)
+                .foregroundColor(.orange)
         }
     }
 }

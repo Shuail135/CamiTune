@@ -256,8 +256,7 @@ enum PluginDiscovery {
             let url = bundle.appendingPathComponent(relative)
             guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 2 * 1024 * 1024,
                   let data = try? Data(contentsOf: url) else { continue }
-            let decoder = JSONDecoder(); decoder.allowsJSON5 = true
-            guard let module = try? decoder.decode(Module.self, from: data) else { continue }
+            guard let module = try? PluginModuleJSON.decode(Module.self, from: data) else { continue }
             let entries: [AudioPluginDescriptor] = module.classes.compactMap { record in
                 guard let entry = record.entry else { return nil }
                 guard entry.category == "Audio Module Class",

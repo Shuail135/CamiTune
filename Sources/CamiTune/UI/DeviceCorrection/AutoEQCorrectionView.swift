@@ -45,11 +45,11 @@ struct AutoEQCorrectionView: View {
                 ProgressView().controlSize(.small).frame(maxWidth: .infinity, minHeight: 120)
             }
             if let error = draftStore.errorMessage {
-                Text(error).font(.caption).foregroundStyle(.orange)
+                Text(error).font(.caption).foregroundColor(.orange)
             }
         }
         .disabled(state.isSavingProfileSettings || state.history.isReplaying)
-        .task {
+        .viewTask {
             reload()
             if !draftLoaded {
                 let saved = await draftStore.loadWithoutBlockingUI()

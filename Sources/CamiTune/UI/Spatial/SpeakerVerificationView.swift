@@ -7,7 +7,7 @@ struct SpeakerVerificationView: View {
     @ObservedObject var state: AppState
     @Binding var profile: DeviceProfile
     var previewOnly = false
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.presentationMode) private var dismiss
     @StateObject private var audition = SpeakerOutputAudition()
     @State private var session: SpeakerVerificationSession?
     @State private var original: DeviceProfile?
@@ -19,14 +19,14 @@ struct SpeakerVerificationView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Text("Verify Speakers").font(.title2.bold()); Spacer(); Button("Close") { dismiss() } }
+            HStack { Text("Verify Speakers").font(.title2.bold()); Spacer(); Button("Close") { dismiss.wrappedValue.dismiss() } }
             if let session {
                 Text(previewOnly ? "Simulated verification. Speaker tests are silent." : "Listen to each test and confirm which speaker plays.")
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
                 if let current = session.current {
                     Text(current.displayName).font(.title.bold())
                     Text("Hardware output \(current.id.channelIndex + 1) · \(session.confirmed.count + 1) of \(session.outputs.count)")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                     Button(audition.output == current.id ? "Stop Test" : "Play Again") { play(current.id, topology: session.topology) }
                         .disabled(audition.preparing)
                     HStack {
@@ -38,7 +38,7 @@ struct SpeakerVerificationView: View {
                     if wrongSpeaker {
                         if profile.multichannel.crossover.enabled {
                             Text("Review the active hardware map and protection settings before correcting driver assignments.")
-                                .foregroundStyle(.orange)
+                                .foregroundColor(.orange)
                         } else {
                             Picker("Which speaker played?", selection: $heard) {
                                 ForEach(session.outputs.filter { $0.id != current.id }) { Text($0.displayName).tag(Optional($0.id)) }
@@ -56,11 +56,11 @@ struct SpeakerVerificationView: View {
                     Text("All \(session.outputs.count) speakers confirmed.").font(.headline)
                     Button("Save verification") { save() }.disabled(saving)
                 } else {
-                    Text("Enable physical speakers before starting verification.").foregroundStyle(.secondary)
+                    Text("Enable physical speakers before starting verification.").foregroundColor(.secondary)
                 }
             }
             if audition.preparing || saving { ProgressView().controlSize(.small) }
-            if let message = message ?? audition.message { Text(message).font(.callout).foregroundStyle(.secondary) }
+            if let message = message ?? audition.message { Text(message).font(.callout).foregroundColor(.secondary) }
             Spacer(minLength: 0)
         }.padding(24).frame(minWidth: 520, minHeight: 360)
         .onAppear {
@@ -92,7 +92,7 @@ struct SpeakerVerificationView: View {
                     try await state.saveProfileSettings(settings)
                     profile = try state.historyProfile(original.id)
                 }
-                dismiss()
+                dismiss.wrappedValue.dismiss()
             } catch { message = error.localizedDescription }
         }
     }

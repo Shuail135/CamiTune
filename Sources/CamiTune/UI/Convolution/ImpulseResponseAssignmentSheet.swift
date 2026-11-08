@@ -24,14 +24,14 @@ struct ImpulseResponseAssignmentSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Import Impulse Response").font(.title2.bold())
-            Text("\(asset.displayName) · \(asset.channelCount) WAV channels").foregroundStyle(.secondary)
+            Text("\(asset.displayName) · \(asset.channelCount) WAV channels").foregroundColor(.secondary)
             Picker("Use", selection: $assignSpeakers) {
                 Text("Use one impulse channel").tag(false)
                 Text("Assign WAV channels to speakers").tag(true)
             }.pickerStyle(.radioGroup)
             if assignSpeakers {
                 Text("Destinations follow physical speaker order. Assigned speakers' existing FIRs will be replaced; unassigned speakers keep their current FIRs.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
                 if asset.channelCount != channels.count {
                     Label("This WAV has \(asset.channelCount) channels and the profile has \(channels.count) configured speakers. Review the mapping before applying.", systemImage: "info.circle")
                         .font(.caption)
@@ -50,13 +50,13 @@ struct ImpulseResponseAssignmentSheet: View {
                         }
                     }
                 }.frame(maxHeight: 310)
-                if let message = validationError { Text(message).font(.caption).foregroundStyle(.orange) }
+                if let message = validationError { Text(message).font(.caption).foregroundColor(.orange) }
             } else {
                 Picker("Impulse channel", selection: $impulseChannel) {
                     ForEach(0..<asset.channelCount, id: \.self) { Text("Channel \($0 + 1)").tag($0) }
                 }
             }
-            if let errorMessage { Text(errorMessage).font(.caption).foregroundStyle(.red) }
+            if let errorMessage { Text(errorMessage).font(.caption).foregroundColor(.red) }
             HStack {
                 Spacer()
                 Button("Cancel") { onCancel() }.keyboardShortcut(.cancelAction)

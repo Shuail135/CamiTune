@@ -162,7 +162,7 @@ package struct SpatialPlaybackDevice: Codable, Hashable, Sendable {
         guard strength.isFinite, (0...1).contains(strength), correction.map({
             $0.filters.count <= 20 && ReferenceCorrection.validFilters($0.filters, sampleRate: 44_100) &&
             $0.filters.allSatisfy { band in
-                let q = band.q ?? band.bandwidth.map { BiquadCoefficients.q(fromBandwidth: $0) } ?? 0.70710678
+                let q = band.resolvedQ(sampleRate: 44_100)
                 return band.kind.usesGain && (20...10_000).contains(band.frequency) &&
                     (-12...6).contains(band.gain ?? 0) && (0.3...6).contains(q)
             }

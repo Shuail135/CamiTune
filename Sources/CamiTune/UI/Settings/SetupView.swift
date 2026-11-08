@@ -59,7 +59,7 @@ struct SetupView: View {
                             await dependencies.installEverything(preparing: state.prepareForDependencyRepair)
                         }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PrimaryActionButtonStyle())
                     .disabled(dependencies.setupInProgress)
                 }
 
@@ -68,16 +68,16 @@ struct SetupView: View {
                         if dependencies.setupInProgress {
                             ProgressView().controlSize(.small)
                         } else if dependencies.setupFailed {
-                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
                         } else {
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
                         }
                         Text(dependencies.setupMessage)
                             .font(.callout.weight(.medium))
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color(.quaternaryLabelColor)))
                 }
 
                 if !embedded {
@@ -97,7 +97,7 @@ struct SetupView: View {
 
                             Text(loginItem.statusMessage)
                                 .font(.caption)
-                                .foregroundStyle(loginItem.requiresApproval ? .orange : .secondary)
+                                .foregroundColor(loginItem.requiresApproval ? .orange : .secondary)
                         }
                         .padding(6)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -126,7 +126,7 @@ struct SetupView: View {
                         Text(title).font(.title3.bold())
                     }
                     Text(statusText(status)).font(.callout)
-                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                    Text(detail).font(.caption).foregroundColor(.secondary)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 8) {
@@ -134,7 +134,7 @@ struct SetupView: View {
                         Button("Install", action: action)
                     }
                     if let uninstall {
-                        Button(uninstallTitle, role: .destructive, action: uninstall)
+                        Button(uninstallTitle, action: uninstall).buttonStyle(PrimaryActionButtonStyle(destructive: true))
                     }
                 }
                 .disabled(dependencies.setupInProgress)

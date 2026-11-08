@@ -5,7 +5,7 @@ import Combine
 struct AppOrderView: View {
     @ObservedObject var store: AppPresentationStore
     @ObservedObject var controller: PerAppAudioController
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.presentationMode) private var dismiss
 
     private var currentNames: [String: String] {
         Dictionary(uniqueKeysWithValues: controller.applications.map { ($0.id, $0.displayName) })
@@ -16,21 +16,21 @@ struct AppOrderView: View {
             Text("App Order").font(.title2.bold())
             if store.snapshot.orderedApplicationIDs.isEmpty {
                 Text("Auto detect application when audio played/")
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Text("All apps CamiTune detected before shown here. Audio settings still apply in Hidden.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
                 AppOrderList(store: store, systemNames: currentNames)
             }
             if let error = store.persistenceError {
-                Text(error).font(.caption).foregroundStyle(.orange)
+                Text(error).font(.caption).foregroundColor(.orange)
             }
             HStack {
                 SectionResetButton("Reset Order") { store.resetOrder(systemNames: currentNames) }
                     .disabled(store.snapshot.orderedApplicationIDs.isEmpty)
                 Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+                Button("Done") { dismiss.wrappedValue.dismiss() }.keyboardShortcut(.defaultAction)
             }
         }
         .padding(20)
@@ -252,7 +252,7 @@ final class AppOrderCellView: NSTableCellView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        handle.image = NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Reorder app")
+        handle.image = NSImage(systemSymbolName: "line.horizontal.3", accessibilityDescription: "Reorder app")
         handle.contentTintColor = .secondaryLabelColor
         bundleLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         bundleLabel.textColor = .secondaryLabelColor

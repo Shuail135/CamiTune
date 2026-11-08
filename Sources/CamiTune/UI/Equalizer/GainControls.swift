@@ -32,13 +32,13 @@ struct PreampGainControl: View {
                     .uiInteractionAnchor("channel-delay-slider")
                 HStack(spacing: 10) {
                     TextField("Channel delay", value: delayMilliseconds,
-                        format: .number.precision(.fractionLength(2)))
+                        formatter: DecimalFormat(2).formatter)
                         .textFieldStyle(.roundedBorder)
                         .multilineTextAlignment(.trailing)
-                        .monospacedDigit()
+                        .monospacedDigits()
                         .frame(width: delayValueWidth)
                         .accessibilityLabel("Channel delay in milliseconds")
-                    Text("ms").foregroundStyle(.secondary).fixedSize()
+                    Text("ms").foregroundColor(.secondary).fixedSize()
                 }
             }
         }
@@ -63,12 +63,12 @@ struct PreampGainControl: View {
             TextField(title, value: Binding(
                 get: { gainDB },
                 set: { gainDB = min(12, max(-12, $0)) }
-            ), format: .number.precision(.fractionLength(1)))
+            ), formatter: DecimalFormat(1).formatter)
             .textFieldStyle(.roundedBorder)
             .multilineTextAlignment(.trailing)
-            .monospacedDigit()
+            .monospacedDigits()
             .frame(width: delayMilliseconds == nil ? valueWidth : delayValueWidth)
-            Text("dB").foregroundStyle(.secondary).fixedSize()
+            Text("dB").foregroundColor(.secondary).fixedSize()
         }
     }
 
@@ -82,7 +82,7 @@ struct PreampGainControl: View {
         LiveGainPresentation(meters: meters, context: meterContext, limiterEnabled: limiterEnabled) { reading in
             Text("LIMIT")
                 .font(.caption.bold())
-                .foregroundStyle(Color.orange)
+                .foregroundColor(Color.orange)
                 .opacity(reading.atCeiling && !reading.clipping ? 1 : 0)
                 .accessibilityHidden(!reading.atCeiling || reading.clipping)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: reading.atCeiling && !reading.clipping)
@@ -246,7 +246,7 @@ private struct MeteredGainSlider: View {
                         )
                 }
                 .font(.system(size: 8).monospacedDigit())
-                .foregroundStyle(Color.secondary.opacity(0.72))
+                .foregroundColor(Color.secondary.opacity(0.72))
                 .allowsHitTesting(false)
             }
             .contentShape(Rectangle())
@@ -272,7 +272,7 @@ private struct MeteredGainSlider: View {
         .frame(height: PreampSliderLayout.totalHeight)
         .accessibilityElement()
         .accessibilityLabel(accessibilityTitle)
-        .accessibilityValue("\(gainDB, format: .number.precision(.fractionLength(1))) decibels")
+        .accessibilityValue("\(gainDB.decimalText(DecimalFormat(1))) decibels")
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment: gainDB = min(12, gainDB + 0.1)
@@ -304,7 +304,7 @@ struct GainControl: View {
                 set: { gainDB = min(12, max(-12, $0)) }
             ), in: -12...12, step: 0.1)
             .frame(minWidth: 140, idealWidth: 440, maxWidth: 440)
-            .overlay(alignment: .bottom) {
+            .overlay(Group {
                 HStack(spacing: 0) {
                     Text("−12")
                     Spacer()
@@ -313,21 +313,21 @@ struct GainControl: View {
                     Text("+12 dB")
                 }
                 .font(.system(size: 8).monospacedDigit())
-                .foregroundStyle(Color.secondary.opacity(0.72))
+                .foregroundColor(Color.secondary.opacity(0.72))
                 .padding(.horizontal, 6)
                 .offset(y: 8)
                 .allowsHitTesting(false)
-            }
+            }, alignment: .bottom)
             TextField(title, value: Binding(
                 get: { gainDB },
                 set: { gainDB = min(12, max(-12, $0)) }
-            ), format: .number.precision(.fractionLength(1)))
+            ), formatter: DecimalFormat(1).formatter)
             .textFieldStyle(.roundedBorder)
             .multilineTextAlignment(.trailing)
             .frame(width: 58)
             Text("dB")
                 .font(.body)
-                .foregroundStyle(.secondary)
+                .foregroundColor(.secondary)
                 .fixedSize()
             if let autoButtonTitle, let autoAction {
                 Button(autoButtonTitle, action: autoAction)
@@ -398,7 +398,7 @@ private struct ChannelDelaySlider: View {
         .frame(height: PreampSliderLayout.totalHeight)
         .accessibilityElement()
         .accessibilityLabel("Channel delay")
-        .accessibilityValue("\(value.formatted(.number.precision(.fractionLength(2)))) milliseconds")
+        .accessibilityValue("\(value.decimalText(DecimalFormat(2))) milliseconds")
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment: value = quantized(min(range.upperBound, value + step))

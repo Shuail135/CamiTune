@@ -40,7 +40,7 @@ struct SpeakerSetupPreview: View {
                     SectionResetButton("Reset simulated speakers") { reset() }
                 }
                 Text("Preview only. Edits stay in this window and speaker tests highlight the selected output without playing audio.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
                 JoinedSegmentedControl(options: ["Setup", "Processing", "Routing & Crossovers", "Meters"], selection: $section, title: { $0 })
                     .frame(width: 510)
                 if section == "Setup" {
@@ -54,10 +54,10 @@ struct SpeakerSetupPreview: View {
                     PreviewHistoryButtons(history: state.history)
                     MultichannelProcessingView(state: state, profile: $profile, previewOnly: true).id(editorID)
                 } else {
-                    Text("Simulated meter levels. No audio device is opened.").font(.caption).foregroundStyle(.secondary)
+                    Text("Simulated meter levels. No audio device is opened.").font(.caption).foregroundColor(.secondary)
                     SignalMetersView(meters: state.meters, profile: profile)
                 }
-                if let lastTest { Text(lastTest).font(.callout).foregroundStyle(.secondary) }
+                if let lastTest { Text(lastTest).font(.callout).foregroundColor(.secondary) }
             }.padding(24)
         }.frame(minWidth: 650, idealWidth: 850, minHeight: 650, idealHeight: 850)
             .onChange(of: capacity) { _ in reset() }

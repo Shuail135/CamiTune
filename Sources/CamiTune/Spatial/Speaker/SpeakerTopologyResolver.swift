@@ -4,7 +4,7 @@ import Foundation
 struct SpeakerTopologyResolver {
     func resolve(deviceUID: String, sampleRate: Double, channelCount: Int,
                  channels: [SpeakerChannelDescription]) throws -> SpeakerTopology {
-        guard (1...32).contains(channelCount) else {
+        guard (1...SpeakerTopology.maximumHardwareChannels).contains(channelCount) else {
             throw SpeakerTopologyError.unsupportedChannelCount(channelCount)
         }
         let endpoints = (0..<channelCount).map { index -> SpeakerEndpoint in

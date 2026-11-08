@@ -111,7 +111,7 @@ final class SpeakerAutoEQEditorModel: ObservableObject {
     }
     func searchCatalog() async {
         let query = search
-        do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
+        do { try await RuntimeClock.sleep(seconds: 0.12) } catch { return }
         let entries = catalog, cachedIndex = searchIndex
         let (index, results) = await Task.detached(priority: .utility) {
             let index = cachedIndex ?? AutoEQCatalogSearchIndex(entries: entries, name: { $0.name })
@@ -195,7 +195,7 @@ struct SpeakerAutoEQEditorView: View {
             DeviceCorrectionSectionHeader(title: "Auto EQ",
                 hint: "Generate correction from anechoic speaker measurements. Load into Equalizer to apply it. This corrects the speaker model. Recommend use room correction after.")
             VStack(alignment: .leading, spacing: 18) {
-                GroupBox("Device") {
+                GroupBox(label: Text("Device")) {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(alignment: .top, spacing: 8) {
                             AutoEQSearchField(placeholder: "Search speakers", query: $model.search,
@@ -216,17 +216,17 @@ struct SpeakerAutoEQEditorView: View {
                         if model.isLoadingCatalog {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
-                                Text("Loading device catalog…").font(.caption).foregroundStyle(.secondary)
+                                Text("Loading device catalog…").font(.caption).foregroundColor(.secondary)
                             }
                         }
                         if model.isLoading {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
-                                Text("Loading measurement sources…").font(.caption).foregroundStyle(.secondary)
+                                Text("Loading measurement sources…").font(.caption).foregroundColor(.secondary)
                             }
                         }
                         if model.selectedVersion?.supportsCEA2034 == false {
-                            Text("This version has no CEA2034 data. Choose another source.").font(.caption).foregroundStyle(.orange)
+                            Text("This version has no CEA2034 data. Choose another source.").font(.caption).foregroundColor(.orange)
                         }
 
                         Divider()
@@ -243,7 +243,7 @@ struct SpeakerAutoEQEditorView: View {
 
                         JoinedSegmentedControl(options: SpeakerListeningMode.allCases, selection: $model.mode, title: { $0.title })
                             .accessibilityLabel("Speaker listening setup")
-                        DisclosureGroup("Advanced", isExpanded: $presentation.advancedExpanded) {
+                        SectionDisclosure("Advanced", isExpanded: $presentation.advancedExpanded) {
                             VStack(alignment: .leading, spacing: 10) {
                                 Picker("Measurement source/version", selection: $model.versionID) {
                                     ForEach(model.versions) { Text("\($0.sourceDisplayName) · \($0.id)").tag($0.id) }
@@ -276,7 +276,7 @@ struct SpeakerAutoEQEditorView: View {
                                 }, selectedBandID: $selectedBandID, visibleCurves: $presentation.visibleCurves, showControlPoints: $presentation.showControlPoints)
                                     .frame(height: 300)
                             } else {
-                                Text("Enter a valid frequency below Nyquist, finite gain, and positive Q.").font(.caption).foregroundStyle(.orange)
+                                Text("Enter a valid frequency below Nyquist, finite gain, and positive Q.").font(.caption).foregroundColor(.orange)
                             }
                             Divider()
                             Text("Equalizer values").font(.headline)
@@ -286,30 +286,31 @@ struct SpeakerAutoEQEditorView: View {
                                 CorrectionFilterTable(filters: Binding(get: { self.displayed?.filters ?? [] }, set: { filters in
                                     guard let correction = self.displayed else { return }
                                     model.replaceFilters(filters, in: correction)
-                                }), selectedBandID: $selectedBandID)
+                                }), sampleRate: Double(profile.sampleRate), selectedBandID: $selectedBandID)
                             }
-                            DisclosureGroup("Details", isExpanded: $presentation.detailsExpanded) {
+                            SectionDisclosure("Details", isExpanded: $presentation.detailsExpanded) {
                                 if let source = displayed.speakerProvenance {
-                                    Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-                                        GridRow { Text("Sources"); Text("\(source.sourceDisplayName) · via Spinorama") }
-                                        GridRow { Text("Measurement version"); Text(source.measurementVersion) }
-                                        GridRow { Text("Listening setup"); Text(source.listeningMode.title) }
-                                        GridRow { Text("Engine"); Text("\(source.engineName) \(source.engineVersion)") }
-                                    }.font(.caption).foregroundStyle(.secondary).padding(.top, 6)
+                                    AlignedTable(horizontalSpacing: 16, verticalSpacing: 6) {
+                                        AlignedTableRow { Text("Sources"); Text("\(source.sourceDisplayName) · via Spinorama") }
+                                        AlignedTableRow { Text("Data license"); Link("Spinorama measurement terms", destination: URL(string: "https://www.spinorama.org/docs/05_faq.html")!) }
+                                        AlignedTableRow { Text("Measurement version"); Text(source.measurementVersion) }
+                                        AlignedTableRow { Text("Listening setup"); Text(source.listeningMode.title) }
+                                        AlignedTableRow { Text("Engine"); Text("\(source.engineName) \(source.engineVersion)") }
+                                    }.font(.caption).foregroundColor(.secondary).padding(.top, 6)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                             }
                         }
                     }
                 }
-                if let validationError { Label(validationError, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange) }
-                if let warning = model.warning { Label(warning, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange) }
-                if let error = model.error { Label(error, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange) }
+                if let validationError { Label(validationError, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundColor(.orange) }
+                if let warning = model.warning { Label(warning, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundColor(.orange) }
+                if let error = model.error { Label(error, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundColor(.orange) }
             }.padding(.bottom, 16)
             Divider()
             HStack(alignment: .top) {
                 Spacer()
-                AutoEQSaveTXTButton(correction: displayed) { model.error = $0 }
+                AutoEQSaveTXTButton(correction: displayed, sampleRate: Double(profile.sampleRate)) { model.error = $0 }
                     .disabled(displayed == nil || validationError != nil)
                 AutoEQLoadButton(isLoaded: isLoaded, draftLabel: model.hasManualEdits ? "Edited draft" : "Draft", action: loadIntoEqualizer)
                     .disabled(displayed == nil || model.isGenerating || model.isLoading || validationError != nil)
@@ -317,7 +318,7 @@ struct SpeakerAutoEQEditorView: View {
         }
         .groupBoxStyle(DeviceCorrectionCardStyle())
         .disabled(state.isSavingProfileSettings || state.history.isReplaying)
-        .task {
+        .viewTask {
             reload()
             if !draftLoaded {
                 let saved = await draftStore.loadWithoutBlockingUI()
@@ -329,14 +330,14 @@ struct SpeakerAutoEQEditorView: View {
             }
             await model.loadSources()
         }
-        .task(id: displayed?.filters) {
+        .viewTask(id: displayed?.filters) {
             guard let displayed else { return }
-            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            do { try await RuntimeClock.sleep(seconds: 0.15) } catch { return }
             let headroom = await state.automaticHeadroom(for: profile, correction: displayed)
             guard !Task.isCancelled else { return }
             model.headroomDB = headroom
         }
-        .task(id: model.search) { await model.searchCatalog() }
+        .viewTask(id: model.search) { await model.searchCatalog() }
         .onChange(of: model.catalog) { _ in Task { await model.searchCatalog() } }
         .onReceive(draftStore.$replayRevision.dropFirst()) { _ in
             guard draftLoaded else { return }

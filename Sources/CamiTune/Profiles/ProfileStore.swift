@@ -813,7 +813,7 @@ final class ProfileStore: ObservableObject {
         let stored = document, revision = libraryRevision
         pendingPersistence?.cancel()
         pendingPersistence = Task { @MainActor [weak self] in
-            do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+            do { try await RuntimeClock.sleep(seconds: 0.2) } catch { return }
             guard let self, !self.stopping, self.activeDurableCommit == nil, self.libraryRevision == revision else { return }
             let result = await self.repository.submit(stored, source: revision, kind: .autosave).value()
             if let gate = self.beforeAutosaveResult { await gate() }

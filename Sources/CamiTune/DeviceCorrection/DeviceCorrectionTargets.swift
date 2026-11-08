@@ -157,7 +157,7 @@ struct DeviceCorrectionTargetCatalog {
             base = try load("jm1-transfer-711", as: "JM-1 / PopAvg-DF transfer (711)")
         }
         return FrequencyResponse(
-            name: "JM-1 / PopAvg-DF \(tiltDBPerOctave.formatted(.number.precision(.fractionLength(1)))) dB/oct (\(family.title))",
+            name: "JM-1 / PopAvg-DF \(tiltDBPerOctave.decimalText(DecimalFormat(1))) dB/oct (\(family.title))",
             points: base.points.map {
                 .init(
                     frequency: $0.frequency,

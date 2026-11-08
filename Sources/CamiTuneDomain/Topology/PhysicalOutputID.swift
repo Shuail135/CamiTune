@@ -13,7 +13,7 @@ package struct PhysicalOutputID: Codable, Hashable, Sendable, Identifiable {
         guard !deviceUID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw SpeakerTopologyError.invalidDeviceUID
         }
-        guard (0..<SpeakerTopology.maximumOutputChannels).contains(channelIndex) else {
+        guard (0..<SpeakerTopology.maximumHardwareChannels).contains(channelIndex) else {
             throw SpeakerTopologyError.invalidChannelIndex(channelIndex)
         }
     }

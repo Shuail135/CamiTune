@@ -29,8 +29,8 @@ struct CoreAudioHALBackend: Sendable {
     var setDefaultOutput: @Sendable (AudioDeviceInfo) throws -> Void = { _ in throw CoreAudioService.AudioError.deviceNotFound("Unconfigured backend") }
     var readNominalRate: @Sendable (AudioDeviceInfo) -> Double? = { _ in nil }
     var setNominalRate: @Sendable (AudioDeviceInfo, Double) throws -> Void = { _, _ in throw CoreAudioService.AudioError.deviceNotFound("Unconfigured backend") }
-    var schedule: @Sendable (Duration, @escaping @Sendable () -> Void) -> CoreAudioListenerToken = { delay, action in
-        let task = Task { do { try await Task.sleep(for: delay); action() } catch {} }
+    var schedule: @Sendable (TimeInterval, @escaping @Sendable () -> Void) -> CoreAudioListenerToken = { delay, action in
+        let task = Task { do { try await RuntimeClock.sleep(seconds: delay); action() } catch {} }
         return CoreAudioListenerToken { task.cancel() }
     }
 
@@ -86,7 +86,7 @@ extension CoreAudioHALBackend {
         guard let device = resolve(uid) else { throw CoreAudioService.AudioError.deviceNotFound(uid) }
         try setDefaultOutput(device)
         let result = CoreAudioConditionWaiter.waitSynchronously(backend: self, events: [.defaultOutput],
-            timeout: .seconds(1), condition: { readDefaultOutput() == uid })
+            timeout: 1, condition: { readDefaultOutput() == uid })
         if result.source == .cancelled { throw CancellationError() }
         guard result.source != .timedOut else { throw CoreAudioService.AudioError.defaultOutputDidNotApply(uid) }
     }
@@ -94,7 +94,8 @@ extension CoreAudioHALBackend {
     func removeProfileEndpoints() throws {
         if let selected = readDefaultOutput(),
            selected == AudioDeviceInfo.systemAudioBridgeUID || ProfileRoutingDescriptor.isProfileRoutingUID(selected) {
-            guard let physical = enumerateOutputs().first(where: { !$0.isRoutingDevice }) else {
+            let outputs = enumerateOutputs().filter { !$0.isRoutingDevice }
+            guard let physical = outputs.first(where: \.selectsOnConnection) ?? outputs.first else {
                 throw CoreAudioService.AudioError.deviceNotFound("An available physical output")
             }
             try setDefaultOutputAndWaitSynchronously(uid: physical.id)
@@ -107,9 +108,11 @@ extension CoreAudioHALBackend {
 
 enum CoreAudioEvent: Hashable, Sendable {
     case devices, defaultOutput, nominalRate(UInt32), streamConfiguration(UInt32), channelLayout(UInt32)
+    case aggregateMembers(UInt32), activeAggregateMembers(UInt32)
     var objectID: AudioObjectID {
         switch self {
-        case .nominalRate(let id), .streamConfiguration(let id), .channelLayout(let id): return id
+        case .nominalRate(let id), .streamConfiguration(let id), .channelLayout(let id),
+             .aggregateMembers(let id), .activeAggregateMembers(let id): return id
         case .devices, .defaultOutput: return AudioObjectID(kAudioObjectSystemObject)
         }
     }
@@ -121,6 +124,8 @@ enum CoreAudioEvent: Hashable, Sendable {
         case .nominalRate: selector = kAudioDevicePropertyNominalSampleRate
         case .streamConfiguration: selector = kAudioDevicePropertyStreamConfiguration
         case .channelLayout: selector = kAudioDevicePropertyPreferredChannelLayout
+        case .aggregateMembers: selector = kAudioAggregateDevicePropertyFullSubDeviceList
+        case .activeAggregateMembers: selector = kAudioAggregateDevicePropertyActiveSubDeviceList
         }
         let scope: AudioObjectPropertyScope
         switch self {

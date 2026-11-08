@@ -300,17 +300,17 @@ final class VolumeHandoffService {
         let state = lease.controlSession.snapshot()
         return "Owner: \(lease.ownershipID.rawValue) • Lease: \(lease.id)\nMode: \(lease.mode) • Audibility: \(state.audibility.rawValue)\nPhysical ready: \(state.physicalReady) • Target: \(state.scalar) • Mute: \(state.muted)\nTarget revision: \(state.revision)"
     }
-    func acquire(ownershipID: RuntimeOwnershipID, routingDevice: AudioDeviceInfo, physicalUID: String,
+    func acquire(ownershipID: RuntimeOwnershipID, routingDevice: AudioDeviceInfo, physicalUID: String, scope: SystemVolumeScope,
                  coreAudio: CoreAudioService,
                  onVolume: @escaping @MainActor @Sendable (Double) -> Void,
                  onMasterGain: @escaping @Sendable (Float, Bool) -> Void,
                  onMirrorFailure: @escaping @MainActor @Sendable () -> Void) async throws -> VolumeHandoffLease {
         let operation = performanceRecorder?.begin("Volume incoming preparation")
         defer { operation?.finish(currentLease == nil ? "failed" : "success") }
-        let session = try await bind(routingDevice: routingDevice, physicalUID: physicalUID, coreAudio: coreAudio,
+        let session = try await bind(routingDevice: routingDevice, physicalUID: physicalUID, scope: scope, coreAudio: coreAudio,
             onVolume: onVolume, onMasterGain: onMasterGain, onMirrorFailure: onMirrorFailure)
         let lease = VolumeHandoffLease(id: sessionGeneration, ownershipID: ownershipID, routingUID: routingDevice.id,
-            physicalUID: physicalUID, controlSession: session, onMirrorFailure: onMirrorFailure)
+            physicalUID: physicalUID, scope: scope, controlSession: session, onMirrorFailure: onMirrorFailure)
         currentLease = lease
         return lease
     }
@@ -325,7 +325,7 @@ final class VolumeHandoffService {
     func rebind(_ lease: VolumeHandoffLease, binding: CoreAudioRuntimeBinding) async throws {
         guard currentLease === lease, let coreAudio else { throw CancellationError() }
         holdAudibility(lease)
-        _ = try await bind(routingDevice: binding.routing, physicalUID: binding.physical.id, coreAudio: coreAudio,
+        _ = try await bind(routingDevice: binding.routing, physicalUID: binding.physical.id, scope: lease.scope, coreAudio: coreAudio,
             onVolume: { _ in }, onMasterGain: { _, _ in }, onMirrorFailure: lease.onMirrorFailure,
             existingSession: lease.controlSession)
         guard currentLease === lease else { throw CancellationError() }
@@ -346,6 +346,7 @@ final class VolumeHandoffService {
     private func bind(
         routingDevice: AudioDeviceInfo,
         physicalUID: String,
+        scope: SystemVolumeScope,
         coreAudio: CoreAudioService,
         onVolume: @escaping @MainActor @Sendable (Double) -> Void,
         onMasterGain: @escaping @Sendable (Float, Bool) -> Void,
@@ -375,18 +376,22 @@ final class VolumeHandoffService {
         let capabilities = await coreAudio.outputVolumeCapabilitiesWithoutBlockingUI(
             deviceID: physical.objectID
         )
-        let selectedMode: SystemVolumeMode = capabilities.supportsHardwareMirroring
-            ? .hardwareMirrored : .softwareOnly
+        let selectedMode = scope.mode(capabilities: capabilities)
         // Hardware mirroring does not need hundreds of transfer-curve HAL reads.
         let snapshot: PhysicalVolumeTransferSnapshot
-        if selectedMode == .hardwareMirrored {
+        if scope == .selectedOutputs {
+            // The interface's physical gain is still in the signal path. Start
+            // at unity, without applying that gain or mute a second time in PCM.
+            snapshot = PhysicalVolumeTransferSnapshot(scalar: 1, decibels: [])
+        } else if selectedMode == .hardwareMirrored {
             let scalar = await coreAudio.volumeWithoutBlockingUI(deviceID: physical.objectID)
             guard let scalar, scalar.isFinite else { throw CoreAudioService.AudioError.volumeNotSettable }
             snapshot = PhysicalVolumeTransferSnapshot(scalar: scalar, decibels: [])
         } else {
             snapshot = await coreAudio.volumeTransferSnapshotWithoutBlockingUI(deviceID: physical.objectID)
         }
-        let physicalMute = await coreAudio.isMutedWithoutBlockingUI(deviceID: physical.objectID) ?? false
+        let physicalMute = scope == .selectedOutputs ? false
+            : (await coreAudio.isMutedWithoutBlockingUI(deviceID: physical.objectID) ?? false)
         let initialMute = existingSession?.snapshot().muted ?? physicalMute
         guard generation == sessionGeneration else { throw CancellationError() }
 
@@ -501,7 +506,7 @@ final class VolumeHandoffService {
         operation?.mark("latest volume captured")
         await physicalVolumeMirror?.flush()
         operation?.mark("mirror flushed")
-        try? await Task.sleep(for: .milliseconds(12))
+        try? await RuntimeClock.sleep(seconds: 0.012)
     }
 
     func setVolume(_ scalar: Float32, physicalUID requestedUID: String) async -> Bool {

@@ -3,10 +3,11 @@ import Combine
 import SwiftUI
 
 struct EQBandColumn: View {
+    private static let hasPowerCircleSymbols = NSImage(systemSymbolName: "power.circle", accessibilityDescription: nil) != nil
     var metrics = EQControlMetrics()
     @Binding var band: EQBand
-    let spectrum: SpectrumAnalyzer?
-    let profileID: UUID?
+    let sampleRate: Double
+    let spectrum: SpectrumDisplay?
     let audioDB: Double
     let responseDB: Double
     let setKind: (EQBand.Kind, inout EQBand) -> Void
@@ -14,49 +15,48 @@ struct EQBandColumn: View {
     let onGainEditingChanged: @MainActor (Bool) -> Void
 
     @State private var frequencyDraft: String
-    @FocusState private var frequencyFieldFocused: Bool
+    @State private var frequencyFieldFocused = false
     private var fieldWidth: CGFloat { 68 * metrics.scale }
-    private static let frequencyFormat = FloatingPointFormatStyle<Double>.number
-        .precision(.fractionLength(0))
+    private static let frequencyFormat = DecimalFormat(0)
 
     init(
         band: Binding<EQBand>,
+        sampleRate: Double,
         audioDB: Double,
         responseDB: Double,
         setKind: @escaping (EQBand.Kind, inout EQBand) -> Void,
         commitFrequency: @escaping @MainActor (Double) -> Void,
         onGainEditingChanged: @escaping @MainActor (Bool) -> Void = { _ in },
-        spectrum: SpectrumAnalyzer? = nil,
-        profileID: UUID? = nil
+        spectrum: SpectrumDisplay? = nil
     ) {
         _band = band
+        self.sampleRate = sampleRate
         self.spectrum = spectrum
-        self.profileID = profileID
         self.audioDB = audioDB
         self.responseDB = responseDB
         self.setKind = setKind
         self.commitFrequency = commitFrequency
         self.onGainEditingChanged = onGainEditingChanged
-        _frequencyDraft = State(initialValue: band.wrappedValue.frequency.formatted(Self.frequencyFormat))
+        _frequencyDraft = State(initialValue: band.wrappedValue.frequency.decimalText(Self.frequencyFormat))
     }
 
     var body: some View {
         VStack(spacing: 7 * metrics.scale) {
             HStack(spacing: 2 * metrics.scale) {
-                TextField("Hz", text: $frequencyDraft)
+                EditableTextField("Hz", text: $frequencyDraft, isFocused: $frequencyFieldFocused, alignment: .right, onCommit: commitDraftFrequency)
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
                     .frame(width: fieldWidth)
-                    .focused($frequencyFieldFocused)
-                    .onSubmit { commitDraftFrequency() }
+
+
                     .onChange(of: frequencyFieldFocused) { focused in
                         if !focused { commitDraftFrequency() }
                     }
                     .onChange(of: band.frequency) { frequency in
                         guard !frequencyFieldFocused else { return }
-                        frequencyDraft = frequency.formatted(Self.frequencyFormat)
+                        frequencyDraft = frequency.decimalText(Self.frequencyFormat)
                     }
-                Text("Hz").font(.caption2).foregroundStyle(.secondary)
+                Text("Hz").font(.caption2).foregroundColor(.secondary)
                     .fixedSize()
             }
             .frame(maxWidth: .infinity, minHeight: 24 * metrics.scale, maxHeight: 24 * metrics.scale)
@@ -69,10 +69,9 @@ struct EQBandColumn: View {
                 audioDB: audioDB,
                 responseDB: responseDB,
                 gainEnabled: band.kind.usesGain,
-                accessibilityTitle: "\(band.frequency.formatted(Self.frequencyFormat)) Hz gain",
+                accessibilityTitle: "\(band.frequency.decimalText(Self.frequencyFormat)) Hz gain",
                 onEditingChanged: onGainEditingChanged,
                 spectrum: spectrum,
-                profileID: profileID,
                 frequency: band.frequency
             )
             .frame(width: 80 * metrics.scale, height: metrics.sliderHeight)
@@ -80,11 +79,11 @@ struct EQBandColumn: View {
             VStack(spacing: 2) {
                 Text("Gain")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
                 TextField("Gain", value: Binding(
                     get: { band.gain ?? 0 },
                     set: { if $0.isFinite { band.gain = min(12, $0) } }
-                ), format: .number.precision(.fractionLength(1)))
+                ), formatter: DecimalFormat(1).formatter)
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.trailing)
                 .frame(width: fieldWidth)
@@ -95,11 +94,11 @@ struct EQBandColumn: View {
             VStack(spacing: 2) {
                 Text("Q")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
                 TextField("Q", value: Binding(
-                    get: { band.q ?? 0.707 },
+                    get: { band.resolvedQ(sampleRate: sampleRate) },
                     set: { if $0.isFinite && $0 > 0 { band.q = $0; band.bandwidth = nil } }
-                ), format: .number.precision(.fractionLength(2)))
+                ), formatter: DecimalFormat(2).formatter)
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.trailing)
                 .frame(width: fieldWidth)
@@ -110,8 +109,8 @@ struct EQBandColumn: View {
                 Button {
                     band.enabled.toggle()
                 } label: {
-                    Image(systemName: band.enabled ? "power.circle.fill" : "power.circle")
-                        .foregroundStyle(band.enabled ? Color.accentColor : Color.secondary)
+                    powerSymbol
+                        .foregroundColor(band.enabled ? Color.accentColor : Color.secondary)
                 }
                 .buttonStyle(.borderless)
                 .frame(width: 18 * metrics.scale)
@@ -137,25 +136,43 @@ struct EQBandColumn: View {
                     .frame(width: 62 * metrics.scale, height: 24 * metrics.scale, alignment: .trailing)
                 }
                 .menuStyle(.borderlessButton)
-                .menuIndicator(.visible)
+
                 .frame(width: 70 * metrics.scale, alignment: .center)
                 .accessibilityLabel("Filter type")
             }
             .frame(width: 90 * metrics.scale)
         }
-        .focusSection()
+        .editorFocusSection()
+    }
+
+    @ViewBuilder private var powerSymbol: some View {
+        if Self.hasPowerCircleSymbols {
+            Image(systemName: band.enabled ? "power.circle.fill" : "power.circle")
+        } else {
+            // Big Sur has the native power glyph but not its circled variants.
+            // Draw the surrounding circle directly; no exported image is needed.
+            ZStack {
+                if band.enabled { Circle().fill() }
+                else { Circle().strokeBorder(lineWidth: metrics.scale) }
+                Image(systemName: "power")
+                    .font(.system(size: 8 * metrics.scale, weight: .medium))
+                    .blendMode(band.enabled ? .destinationOut : .normal)
+            }
+            .frame(width: 13 * metrics.scale, height: 13 * metrics.scale)
+            .compositingGroup()
+        }
     }
 
     @MainActor
     private func commitDraftFrequency() {
         // Focusing an unchanged rounded display must preserve the stored precision.
-        guard frequencyDraft != band.frequency.formatted(Self.frequencyFormat) else { return }
-        guard let frequency = try? Self.frequencyFormat.parseStrategy.parse(frequencyDraft),
+        guard frequencyDraft != band.frequency.decimalText(Self.frequencyFormat) else { return }
+        guard let frequency = try? Self.frequencyFormat.parse(frequencyDraft),
               frequency.isFinite, frequency > 0 else {
-            frequencyDraft = band.frequency.formatted(Self.frequencyFormat)
+            frequencyDraft = band.frequency.decimalText(Self.frequencyFormat)
             return
         }
-        frequencyDraft = frequency.formatted(Self.frequencyFormat)
+        frequencyDraft = frequency.decimalText(Self.frequencyFormat)
         guard frequency != band.frequency else { return }
         commitFrequency(frequency)
     }
@@ -178,13 +195,13 @@ struct FilterShapeIcon: View {
     let kind: EQBand.Kind
 
     var body: some View {
-        Canvas { context, size in
+        PlotCanvas { context, size in
             let points = shapePoints(size: size)
             guard let first = points.first else { return }
             var path = Path()
             path.move(to: first)
             for point in points.dropFirst() { path.addLine(to: point) }
-            context.stroke(path, with: .color(.accentColor), lineWidth: 1.8)
+            context.stroke(path, color: .accentColor, lineWidth: 1.8)
         }
     }
 

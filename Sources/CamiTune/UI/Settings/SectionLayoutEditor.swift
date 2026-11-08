@@ -26,7 +26,7 @@ struct SectionLayoutEditor: View {
         VStack(alignment: .leading, spacing: 12) {
             if isExclusiveOutput {
                 Label("Exclusive mode hides native audio controls. Device Setup always remains visible. App Audio, Plug-ins, and Meters & Status can be shown or hidden without stopping audio. Switch back to Through CamillaDSP to restore your section layout.", systemImage: "info.circle")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
                 ForEach([ProfileSection.meters, .appAudio, .plugins]) { section in
                     Toggle("Show \(section.title)", isOn: Binding(
                         get: { !layout.hidden.contains(section) },
@@ -50,22 +50,22 @@ struct SectionLayoutEditor: View {
                         confirmedLayout.wrappedValue = updated
                     }))
                 Label("Drag the reorder symbol to arrange sections. Unchecked sections stop processing and keep their saved settings.", systemImage: "info.circle")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
                 SectionLayoutList(type: type, layout: confirmedLayout)
                     .frame(minHeight: 280)
             }
         }
-        .alert("Disable \(pendingSection?.title ?? "section")?", isPresented: $confirmingHide) {
-            Button("Disable", role: .destructive) {
+        .appAlert("Disable \(pendingSection?.title ?? "section")?", isPresented: $confirmingHide) {
+            AppAlertAction("Disable", role: .destructive) {
                 if let pendingLayout { layout = pendingLayout }
                 pendingSection = nil
                 pendingLayout = nil
             }
-            Button("Cancel", role: .cancel) { pendingSection = nil; pendingLayout = nil }
+            AppAlertAction("Cancel", role: .cancel) { pendingSection = nil; pendingLayout = nil }
         } message: {
-            Text(pendingSection == .mode
+            pendingSection == .mode
                 ? "Are you sure you want to uncheck Mode? Playback will use Direct only and the mode controls will be hidden. Your saved mode settings will be kept."
-                : "Are you sure you want to uncheck this section? Its enabled processing will stop when the layout is applied. Your saved settings will be kept.")
+                : "Are you sure you want to uncheck this section? Its enabled processing will stop when the layout is applied. Your saved settings will be kept."
         }
     }
 }
@@ -240,7 +240,7 @@ final class SectionLayoutCellView: NSTableCellView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        handle.image = NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Reorder section")
+        handle.image = NSImage(systemSymbolName: "line.horizontal.3", accessibilityDescription: "Reorder section")
         handle.contentTintColor = .secondaryLabelColor
         label.lineBreakMode = .byTruncatingTail
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -274,7 +274,7 @@ final class SectionLayoutCellView: NSTableCellView {
         NSLayoutConstraint.deactivate(automaticVisibilityConstraints)
         let locked = section == .deviceSetup
         label.stringValue = section.title
-        handle.image = NSImage(systemSymbolName: locked ? "lock.fill" : "line.3.horizontal",
+        handle.image = NSImage(systemSymbolName: locked ? "lock.fill" : "line.horizontal.3",
                                accessibilityDescription: locked ? "Locked section" : "Reorder section")
         handle.setAccessibilityLabel(locked ? "\(section.title), locked, always visible and first" : "Reorder \(section.title)")
         visibility.isHidden = locked

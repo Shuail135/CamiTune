@@ -58,15 +58,15 @@ struct PerAppPlaybackModeMenu: View {
         } label: {
             Color.clear.frame(width: 28, height: 22).contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden)
-        .overlay {
+        .menuStyle(BorderlessButtonMenuStyle(showsMenuIndicator: false))
+        .overlay(Group {
             HStack(spacing: 2) {
                 Image(systemName: displayed?.systemImageName ?? "waveform.circle")
                 Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
             }
-            .foregroundStyle(isLoading || (context == nil && !allowsStoredSelection) ? Color.secondary : Color.primary)
+            .foregroundColor(isLoading || (context == nil && !allowsStoredSelection) ? Color.secondary : Color.primary)
             .allowsHitTesting(false)
-        }
+        })
         .disabled(isLoading || (context == nil && !allowsStoredSelection))
         .accessibilityLabel("\(displayedName) playback mode: \(displayed?.compactDisplayName ?? (allowsStoredSelection ? "Default" : "No active profile"))")
     }

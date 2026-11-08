@@ -35,7 +35,7 @@ extension DeviceCorrectionEditorView {
 
     func updateSearch(_ request: DeviceCatalogSearch.Request, deviceMatch: Bool = false) async {
         let index = searchIndex
-        do { try await Task.sleep(for: .milliseconds(80)) } catch { return }
+        do { try await RuntimeClock.sleep(seconds: 0.08) } catch { return }
         let results = await Task.detached(priority: .userInitiated) {
             index.results(matching: request.query, compatibleKeys: request.compatibleKeys, excluding: request.excludedIdentity)
         }.value

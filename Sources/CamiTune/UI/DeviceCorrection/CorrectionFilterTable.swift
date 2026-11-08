@@ -3,10 +3,12 @@ import SwiftUI
 
 struct CorrectionFilterTable: View {
     @Binding var filters: [EQBand]
+    let sampleRate: Double
     @Binding var selectedBandID: UUID?
 
-    init(filters: Binding<[EQBand]>, selectedBandID: Binding<UUID?> = .constant(nil)) {
+    init(filters: Binding<[EQBand]>, sampleRate: Double, selectedBandID: Binding<UUID?> = .constant(nil)) {
         self._filters = filters
+        self.sampleRate = sampleRate
         self._selectedBandID = selectedBandID
     }
 
@@ -17,9 +19,9 @@ struct CorrectionFilterTable: View {
                 Text("Frequency (Hz)").frame(width: 115, alignment: .leading)
                 Text("Gain (dB)").frame(width: 90, alignment: .leading)
                 Text("Q").frame(width: 80, alignment: .leading)
-            }.font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            }.font(.caption.weight(.semibold)).foregroundColor(.secondary)
             ForEach(filters) { snapshot in
-                CorrectionFilterRow(band: binding(for: snapshot), isSelected: selectedBandID == snapshot.id,
+                CorrectionFilterRow(band: binding(for: snapshot), sampleRate: sampleRate, isSelected: selectedBandID == snapshot.id,
                     onSelect: { selectedBandID = snapshot.id },
                     onDelete: {
                         if selectedBandID == snapshot.id { selectedBandID = nil }
@@ -39,6 +41,7 @@ struct CorrectionFilterTable: View {
 
 private struct CorrectionFilterRow: View {
     @Binding var band: EQBand
+    let sampleRate: Double
     let isSelected: Bool
     let onSelect: () -> Void
     let onDelete: () -> Void
@@ -61,13 +64,13 @@ private struct CorrectionFilterRow: View {
                 }
             }
             .menuStyle(.borderlessButton)
-            .menuIndicator(.visible)
+
             .frame(width: 100)
             .accessibilityLabel("Filter type")
-            TextField("Frequency", value: $band.frequency, format: .number.precision(.fractionLength(0))).frame(width: 115)
-            TextField("Gain", value: Binding(get: { band.gain ?? 0 }, set: { if $0.isFinite { band.gain = min(12, $0) } }), format: .number.precision(.fractionLength(0...1)))
+            TextField("Frequency", value: $band.frequency, formatter: DecimalFormat(0).formatter).frame(width: 115)
+            TextField("Gain", value: Binding(get: { band.gain ?? 0 }, set: { if $0.isFinite { band.gain = min(12, $0) } }), formatter: DecimalFormat(0...1).formatter)
                 .frame(width: 90).disabled(![.peaking, .lowShelf, .highShelf].contains(band.kind))
-            TextField("Q", value: Binding(get: { band.q ?? 0.707 }, set: { if $0.isFinite && $0 > 0 { band.q = $0; band.bandwidth = nil } }), format: .number.precision(.fractionLength(0...2)))
+            TextField("Q", value: Binding(get: { band.resolvedQ(sampleRate: sampleRate) }, set: { if $0.isFinite && $0 > 0 { band.q = $0; band.bandwidth = nil } }), formatter: DecimalFormat(0...2).formatter)
                 .frame(width: 80)
             Toggle("Enabled", isOn: $band.enabled).toggleStyle(.checkbox).font(.caption)
             Button { band.isLocked.toggle() } label: { Image(systemName: band.isLocked ? "lock.fill" : "lock.open") }
@@ -77,7 +80,7 @@ private struct CorrectionFilterRow: View {
         }
         .textFieldStyle(.roundedBorder)
         .padding(.vertical, 3)
-        .background(isSelected ? Color.accentColor.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+        .background(RoundedRectangle(cornerRadius: 5).fill(isSelected ? Color.accentColor.opacity(0.08) : Color.clear))
         .simultaneousGesture(TapGesture().onEnded { onSelect() })
     }
 

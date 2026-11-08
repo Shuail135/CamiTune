@@ -186,7 +186,7 @@ extension PerChannelProcessingView {
         let snapshot = runtime.snapshot
         runtime.liveApplyTask = Task {
             do {
-                try await Task.sleep(for: .milliseconds(milliseconds))
+                try await RuntimeClock.sleep(seconds: Double(milliseconds) / 1000)
             } catch {
                 return
             }
@@ -320,8 +320,8 @@ extension PerChannelProcessingView {
             guard !Task.isCancelled,
                   profile.id == profileID,
                   selectedChannelIndex == channelIndex, selectedTarget == target else { return }
-            runtime.responses.filterResponse = responses.0
-            runtime.responses.totalResponse = responses.1
+            if runtime.responses.filterResponse != responses.0 { runtime.responses.filterResponse = responses.0 }
+            if runtime.responses.totalResponse != responses.1 { runtime.responses.totalResponse = responses.1 }
         }
     }
 }

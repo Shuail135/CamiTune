@@ -141,7 +141,7 @@ struct DeviceCorrectionEditorView: View {
                         Text("Auto EQ")
                             .font(.title2.bold())
                         Text("Generate correction from device measurements and a target response.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundColor(.secondary)
 
                     }
                     Spacer()
@@ -162,7 +162,7 @@ struct DeviceCorrectionEditorView: View {
             HStack(alignment: .top) {
                 Spacer()
                 if !embedded { Button("Cancel") { onCancel() } }
-                AutoEQSaveTXTButton(correction: generated) { errorMessage = $0 }
+                AutoEQSaveTXTButton(correction: generated, sampleRate: sampleRate) { errorMessage = $0 }
                     .disabled(generated == nil || !resultIsCurrent || !ReferenceCorrection.validFilters(generated?.filters ?? [], sampleRate: sampleRate))
                 AutoEQLoadButton(isLoaded: correctionIsLoaded, showsStatus: embedded, action: requestLoadIntoEqualizer)
                     .disabled(generated == nil || !resultIsCurrent || trimmedDeviceName.isEmpty || !ReferenceCorrection.validFilters(generated?.filters ?? [], sampleRate: sampleRate))
@@ -193,21 +193,21 @@ struct DeviceCorrectionEditorView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             onPersistDraft?(persistentDraft, true)
         }
-        .task { await loadCatalog() }
-        .task(id: sourceSearchRequest) { await updateSearch(sourceSearchRequest) }
-        .task(id: matchSearchRequest) { await updateSearch(matchSearchRequest, deviceMatch: true) }
+        .viewTask { await loadCatalog() }
+        .viewTask(id: sourceSearchRequest) { await updateSearch(sourceSearchRequest) }
+        .viewTask(id: matchSearchRequest) { await updateSearch(matchSearchRequest, deviceMatch: true) }
         .onChange(of: searchIndex.id) { _ in updateDeviceMatchAvailability() }
         .onChange(of: targetSources) { _ in updateDeviceMatchAvailability() }
         .onChange(of: targetSelection.deviceMatchTarget) { _ in updateDeviceMatchAvailability() }
-        .task(id: generated) {
+        .viewTask(id: generated) {
             guard let generated, ReferenceCorrection.validFilters(generated.filters, sampleRate: sampleRate) else { return }
-            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            do { try await RuntimeClock.sleep(seconds: 0.1) } catch { return }
             guard !Task.isCancelled else { return }
             await onPreview?(generated)
         }
-        .task(id: generated?.filters) {
+        .viewTask(id: generated?.filters) {
             guard let filters = generated?.filters else { generatedAutomaticHeadroomDB = 0; return }
-            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            do { try await RuntimeClock.sleep(seconds: 0.15) } catch { return }
             let result = await automaticHeadroom(filters)
             guard !Task.isCancelled, generated?.filters == filters else { return }
             generatedAutomaticHeadroomDB = result
@@ -238,16 +238,16 @@ struct DeviceCorrectionEditorView: View {
             generated = nil
             isLoadingDeviceMatch = false
         }
-        .alert(
+        .appAlert(
             "Replace existing equalizer?",
             isPresented: $showingReplacementConfirmation
         ) {
-            Button("Cancel", role: .cancel) {}
-            Button("Replace Equalizer", role: .destructive) {
+            AppAlertAction("Cancel", role: .cancel) {}
+            AppAlertAction("Replace Equalizer", role: .destructive) {
                 loadIntoEqualizer()
             }
         } message: {
-            Text("Loading Auto EQ replaces the current Equalizer bands. The change is saved automatically and can be undone.")
+            "Loading Auto EQ replaces the current Equalizer bands. The change is saved automatically and can be undone."
         }
         .fileImporter(
             isPresented: $showingMeasurementImporter,
@@ -274,7 +274,7 @@ struct DeviceCorrectionEditorView: View {
     private var editorContent: some View {
         let sourceSearchResults = selectedCatalogID == nil ? searchResults : []
         return VStack(alignment: .leading, spacing: 18) {
-            GroupBox("Device") {
+            GroupBox(label: Text("Device")) {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .top, spacing: 8) {
                         AutoEQSearchField(placeholder: catalogIsIEM ? "Search IEMs" : "Search headphones",
@@ -298,7 +298,7 @@ struct DeviceCorrectionEditorView: View {
                     if isLoadingCatalog {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
-                            Text("Loading device catalog…").font(.caption).foregroundStyle(.secondary)
+                            Text("Loading device catalog…").font(.caption).foregroundColor(.secondary)
                         }
                     }
 
@@ -307,7 +307,7 @@ struct DeviceCorrectionEditorView: View {
                             ProgressView().controlSize(.small)
                             Text("Combining compatible measurements…")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundColor(.secondary)
                         }
                     }
 
@@ -334,7 +334,7 @@ struct DeviceCorrectionEditorView: View {
                         }
                         if measurement != nil && availableTargets.isEmpty {
                             Label("No compatible target is available for this measurement data.", systemImage: "info.circle")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.caption).foregroundColor(.secondary)
                         }
 
                         if targetChosen && targetSelection.preset == .jm1PopAvgDFTilt {
@@ -342,7 +342,7 @@ struct DeviceCorrectionEditorView: View {
                                 Text("Tilt")
                                     .font(.caption.weight(.medium))
                                 SteppedValueSlider(value: targetTiltBinding, in: -2...1, step: 0.1, style: .preamp)
-                                Text("\(targetSelection.tiltDBPerOctave, format: .number.precision(.fractionLength(1))) dB/oct")
+                                Text("\(targetSelection.tiltDBPerOctave.decimalText(DecimalFormat(1))) dB/oct")
                                     .font(.caption.monospacedDigit())
                                     .frame(width: 92, alignment: .trailing)
                             }
@@ -396,17 +396,17 @@ struct DeviceCorrectionEditorView: View {
                         HStack(spacing: 10) {
                             Text("Bass")
                             SteppedValueSlider(value: modifierBinding(\.bassGainDB), in: -12...12, step: 0.5, style: .preamp)
-                            TextField("Bass", value: modifierBinding(\.bassGainDB), format: .number.precision(.fractionLength(0...1)))
+                            TextField("Bass", value: modifierBinding(\.bassGainDB), formatter: DecimalFormat(0...1).formatter)
                                 .textFieldStyle(.roundedBorder)
                                 .multilineTextAlignment(.trailing)
                                 .frame(width: gainValueWidth)
-                            Text("dB").foregroundStyle(.secondary).fixedSize()
+                            Text("dB").foregroundColor(.secondary).fixedSize()
                         }
                     }
                     if policy == .exactTarget {
                         advancedCorrectionControls
                     } else {
-                        DisclosureGroup("Advanced", isExpanded: $presentation.advancedExpanded) {
+                        SectionDisclosure("Advanced", isExpanded: $presentation.advancedExpanded) {
                             advancedCorrectionControls.padding(.top, 8)
                         }.uiInteractionAnchor("correction-auto-advanced")
                     }
@@ -442,7 +442,7 @@ struct DeviceCorrectionEditorView: View {
                             CorrectionResponseGraph(profile: generated, sampleRate: sampleRate, onEdit: { band in editBand(band) }, selectedBandID: $selectedBandID, visibleCurves: $presentation.visibleCurves, showControlPoints: $presentation.showControlPoints)
                                 .frame(height: 300)
                         } else {
-                            Text("Enter a valid frequency below Nyquist, finite gain, and positive Q.").foregroundStyle(.orange)
+                            Text("Enter a valid frequency below Nyquist, finite gain, and positive Q.").foregroundColor(.orange)
                         }
                         Divider()
                         generatedEqualizerValues(generated)
@@ -453,7 +453,7 @@ struct DeviceCorrectionEditorView: View {
             if let errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundColor(.orange)
             }
         }
         .padding(embedded ? 0 : 20)

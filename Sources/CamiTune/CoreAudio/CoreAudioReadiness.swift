@@ -13,14 +13,13 @@ struct CoreAudioWaitResult: Sendable, Equatable {
 enum CoreAudioConditionWaiter {
     enum Wake: Sendable { case notification, fallback, deadline, cancelled }
     static func wait(
-        backend: CoreAudioHALBackend, event: CoreAudioEvent, timeout: Duration,
+        backend: CoreAudioHALBackend, event: CoreAudioEvent, timeout: TimeInterval,
         condition: @escaping @Sendable () -> Bool,
         mutation: (@Sendable () throws -> Void)? = nil
     ) async throws -> CoreAudioWaitResult {
-        let start = ContinuousClock.now
+        let start = RuntimeClock.now
         func result(_ source: CoreAudioWaitResult.Source) -> CoreAudioWaitResult {
-            let elapsed = start.duration(to: .now).components
-            return .init(source: source, milliseconds: Double(elapsed.seconds) * 1000 + Double(elapsed.attoseconds) / 1e15)
+            return .init(source: source, milliseconds: (RuntimeClock.now - start) * 1000)
         }
         try Task.checkCancellation()
         if condition() { return result(.immediate) }
@@ -66,11 +65,10 @@ extension CoreAudioConditionWaiter {
         }
     }
     static func waitSynchronously(backend: CoreAudioHALBackend, events: [CoreAudioEvent],
-                                  timeout: Duration, condition: @escaping @Sendable () -> Bool) -> CoreAudioWaitResult {
-        let start = ContinuousClock.now
+                                  timeout: TimeInterval, condition: @escaping @Sendable () -> Bool) -> CoreAudioWaitResult {
+        let start = RuntimeClock.now
         func result(_ source: CoreAudioWaitResult.Source) -> CoreAudioWaitResult {
-            let elapsed = start.duration(to: .now).components
-            return .init(source: source, milliseconds: Double(elapsed.seconds) * 1000 + Double(elapsed.attoseconds) / 1e15)
+            return .init(source: source, milliseconds: (RuntimeClock.now - start) * 1000)
         }
         if condition() { return result(.immediate) }
         let signal = Signal()

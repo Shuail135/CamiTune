@@ -104,6 +104,7 @@ final class AppUpdateChecker: ObservableObject {
         case invalidBundle
         case invalidVersion
         case invalidSignature
+        case unsupportedOperatingSystem(String)
         case releaseUnavailable
 
         var errorDescription: String? {
@@ -122,6 +123,8 @@ final class AppUpdateChecker: ObservableObject {
                 return "The downloaded application version does not match the GitHub release."
             case .invalidSignature:
                 return "macOS could not validate the downloaded application bundle."
+            case .unsupportedOperatingSystem(let minimum):
+                return "This update requires macOS \(minimum) or later. Your current CamiTune installation has been kept."
             case .releaseUnavailable:
                 return "The latest release does not contain a compatible CamiTune update."
             }
@@ -414,6 +417,11 @@ final class AppUpdateChecker: ObservableObject {
     }
 
     private func downloadAndPrepare(_ update: AvailableAppUpdate, id: UUID) async {
+        let directory = CamiTunePaths.supportDirectory
+            .appendingPathComponent("PreparedUpdates/\(UUID().uuidString)", isDirectory: true)
+        let archiveURL = directory.appendingPathComponent("update.zip")
+        var retained = false
+        defer { if !retained { try? FileManager.default.removeItem(at: directory) } }
         do {
             let currentAppURL = Bundle.main.bundleURL.standardizedFileURL
             guard currentAppURL.pathExtension == "app", Bundle.main.bundleIdentifier == Self.bundleIdentifier else {
@@ -431,7 +439,7 @@ final class AppUpdateChecker: ObservableObject {
                 "CamiTune/\(Self.currentVersion)",
                 forHTTPHeaderField: "User-Agent"
             )
-            let progress = AppUpdateDownloadProgress { [weak self] written, expected in
+            let response = try await AppUpdateDownload.transfer(request, session: session, to: archiveURL) { [weak self] written, expected in
                 Task { @MainActor in
                     guard let self, self.phase == .downloading, self.downloadID == id else { return }
                     self.downloadedBytes = written
@@ -439,37 +447,34 @@ final class AppUpdateChecker: ObservableObject {
                     self.downloadProgress = expected > 0 ? min(1, Double(written) / Double(expected)) : nil
                 }
             }
-            let (temporaryArchive, response) = try await session.download(for: request, delegate: progress)
             try Task.checkCancellation()
+            guard downloadID == id else { return }
             guard let response = response as? HTTPURLResponse,
                   (200..<300).contains(response.statusCode) else {
                 throw UpdateError.downloadFailed
             }
 
             phase = .verifying
-            let directory = CamiTunePaths.supportDirectory
-                .appendingPathComponent("PreparedUpdates/\(UUID().uuidString)", isDirectory: true)
             let prepared = try await Task.detached {
                 try Self.prepareArchive(
-                    temporaryArchive,
                     expectedVersion: update.version,
                     updateRoot: directory
                 )
             }.value
-            preparedUpdate = PreparedUpdate(
-                appURL: prepared, directory: directory
-            )
+            try Task.checkCancellation()
+            guard downloadID == id else { return }
+            preparedUpdate = PreparedUpdate(appURL: prepared, directory: directory)
+            retained = true
             defaults.removeObject(forKey: Keys.remindAfter)
             phase = .ready
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, downloadID == id else { return }
             failureMessage = error.localizedDescription
             phase = .failed
         }
     }
 
     nonisolated private static func prepareArchive(
-        _ temporaryArchive: URL,
         expectedVersion: String,
         updateRoot: URL
     ) throws -> URL {
@@ -481,7 +486,6 @@ final class AppUpdateChecker: ObservableObject {
         var succeeded = false
         defer { if !succeeded { try? fileManager.removeItem(at: updateRoot) } }
         try fileManager.createDirectory(at: updateRoot, withIntermediateDirectories: true)
-        try fileManager.moveItem(at: temporaryArchive, to: archiveURL)
         try fileManager.createDirectory(at: unpackedURL, withIntermediateDirectories: true)
 
         let unzip = Process()
@@ -506,6 +510,7 @@ final class AppUpdateChecker: ObservableObject {
         guard version.map({ versionsAreEqual($0, expectedVersion) }) == true else {
             throw UpdateError.invalidVersion
         }
+        try validateOperatingSystem(bundle.infoDictionary ?? [:])
 
         let verify = Process()
         verify.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
@@ -526,6 +531,20 @@ final class AppUpdateChecker: ObservableObject {
     private static var currentVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
             ?? "0.0.0"
+    }
+
+    nonisolated static func validateOperatingSystem(_ info: [String: Any],
+        current: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion) throws {
+        guard let minimum = info["LSMinimumSystemVersion"] as? String else {
+            throw UpdateError.releaseUnavailable
+        }
+        let parts = numericVersionParts(minimum)
+        guard (1...3).contains(minimum.split(separator: ".", omittingEmptySubsequences: false).count),
+              !parts.isEmpty else { throw UpdateError.releaseUnavailable }
+        let running = "\(current.majorVersion).\(current.minorVersion).\(current.patchVersion)"
+        guard !isVersion(minimum, newerThan: running) else {
+            throw UpdateError.unsupportedOperatingSystem(minimum)
+        }
     }
 
     nonisolated static func archiveName(for version: String) -> String {
@@ -572,16 +591,4 @@ final class AppUpdateChecker: ObservableObject {
         while values.count > 1 && values.last == 0 { values.removeLast() }
         return values
     }
-}
-
-private final class AppUpdateDownloadProgress: NSObject, URLSessionDownloadDelegate {
-    private let progress: (Int64, Int64) -> Void
-    init(progress: @escaping (Int64, Int64) -> Void) { self.progress = progress }
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
-                    totalBytesExpectedToWrite: Int64) {
-        progress(totalBytesWritten, totalBytesExpectedToWrite)
-    }
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                    didFinishDownloadingTo location: URL) {}
 }

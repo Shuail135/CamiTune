@@ -27,7 +27,7 @@ struct ContentDetailView: View {
             VStack(spacing: 10) {
                 Image(systemName: "speaker.wave.2").font(.largeTitle)
                 Text("Add an output to get started").font(.title2)
-                Text("Click + Add Output in the sidebar.").foregroundStyle(.secondary)
+                Text("Click + Add Output in the sidebar.").foregroundColor(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .settings:
@@ -46,7 +46,7 @@ struct ContentDetailView: View {
                     Image(systemName: "slider.horizontal.3").font(.largeTitle)
                     Text("Choose a profile").font(.title2)
                 }
-                .foregroundStyle(.secondary)
+                .foregroundColor(.secondary)
             }
         }
     }

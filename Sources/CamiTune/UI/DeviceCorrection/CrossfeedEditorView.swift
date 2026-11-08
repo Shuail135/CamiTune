@@ -1,5 +1,6 @@
 import CamiTuneDomain
 import SwiftUI
+import AppKit
 
 /// Listening presets and fine-tuning controls share one undoable settings draft.
 @MainActor
@@ -84,7 +85,7 @@ struct CrossfeedEditorView: View {
             }
             .disabled(!isEnabled)
         }
-        .focusSection()
+        .editorFocusSection()
         .onChange(of: state.historyReplayRevision) { _ in load() }
         .onAppear { loadIfNeeded() }
         .onChange(of: profile.id) { _ in
@@ -135,13 +136,13 @@ struct CrossfeedEditorView: View {
                 }
             )
             .accessibilityLabel("Crossfeed " + title)
-            .accessibilityValue(value.wrappedValue.formatted(.number.precision(.fractionLength(0...3))) + " " + unit)
+            .accessibilityValue(value.wrappedValue.decimalText(DecimalFormat(0...3)) + " " + unit)
             .accessibilityIdentifier("crossfeed-" + title.lowercased())
             HStack(spacing: 4) {
                 CrossfeedValueField(title: title, value: value, range: range, unit: unit)
                     .id(profile.id)
                     .frame(width: valueWidth)
-                Text(unit).foregroundStyle(.secondary).frame(width: 22, alignment: .leading)
+                Text(unit).foregroundColor(.secondary).frame(width: 22, alignment: .leading)
             }
         }
     }
@@ -206,7 +207,7 @@ struct CrossfeedEditorView: View {
         let profileID = profile.id
         liveApplyTask = Task { @MainActor in
             do {
-                try await Task.sleep(for: .milliseconds(milliseconds))
+                try await RuntimeClock.sleep(seconds: Double(milliseconds) / 1000)
             } catch {
                 return
             }
@@ -276,41 +277,37 @@ private struct CrossfeedValueField: View {
     let range: ClosedRange<Double>
     let unit: String
     @State private var draft: String
-    @FocusState private var focused: Bool
+    @State private var focused = false
 
-    private static let format = FloatingPointFormatStyle<Double>.number
-        .grouping(.never).precision(.fractionLength(0...3))
+    private static let format = DecimalFormat(0...3, grouping: false)
 
     init(title: String, value: Binding<Double>, range: ClosedRange<Double>, unit: String) {
         self.title = title
         _value = value
         self.range = range
         self.unit = unit
-        _draft = State(initialValue: value.wrappedValue.formatted(Self.format))
+        _draft = State(initialValue: value.wrappedValue.decimalText(Self.format))
     }
 
     var body: some View {
-        TextField(title, text: $draft)
+        EditableTextField(title, text: $draft, isFocused: $focused, font: .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular), alignment: .right, onCommit: commitDraft, onCancel: { draft = value.decimalText(Self.format); focused = false })
             .textFieldStyle(.roundedBorder)
             .multilineTextAlignment(.trailing)
-            .monospacedDigit()
-            .focused($focused)
-            .onSubmit { commitDraft() }
+            .monospacedDigits()
+
+
             .onChange(of: focused) { if !$0 { commitDraft() } }
-            .onChange(of: value) { draft = $0.formatted(Self.format) }
-            .onExitCommand {
-                draft = value.formatted(Self.format)
-                focused = false
-            }
+            .onChange(of: value) { draft = $0.decimalText(Self.format) }
+
             .accessibilityLabel("Crossfeed \(title) (\(unit))")
             .accessibilityIdentifier("crossfeed-\(title.lowercased())-value")
     }
 
     private func commitDraft() {
-        guard draft != value.formatted(Self.format) else { return }
-        if let number = try? Double(draft, format: Self.format, lenient: false), number.isFinite {
+        guard draft != value.decimalText(Self.format) else { return }
+        if let number = try? Self.format.parse(draft), number.isFinite {
             value = min(range.upperBound, max(range.lowerBound, number))
         }
-        draft = value.formatted(Self.format)
+        draft = value.decimalText(Self.format)
     }
 }

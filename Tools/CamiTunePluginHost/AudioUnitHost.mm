@@ -261,7 +261,7 @@ public:
             if (parameterObserver) parameterObserver(identifier, applied, true);
         }
     }
-    void scheduleParameter(uint64_t identifier, double value) override {
+    void scheduleParameter(uint64_t identifier, double value, uint64_t gestureTime) override {
         if (std::isfinite(value)) {
             auto found = scheduledParameters->find(identifier);
             if (found != scheduledParameters->end()) {
@@ -277,7 +277,7 @@ public:
         if (!scheduleMIDI) return;
         uint8_t bytes[3]{message.status, message.data1, message.data2};
         int kind = message.status & 0xf0;
-        scheduleMIDI(AUEventSampleTimeImmediate, 0, kind == 0xc0 || kind == 0xd0 ? 2 : 3, bytes);
+        scheduleMIDI(AUEventSampleTimeImmediate + message.sampleOffset, 0, kind == 0xc0 || kind == 0xd0 ? 2 : 3, bytes);
     }
     void clearMIDI() override {
         if (!scheduleMIDI) return;

@@ -39,7 +39,8 @@ package final class DirectCoreAudioOutput: PCMOutputSink, @unchecked Sendable {
     package init(deviceID: AudioDeviceID, sampleRate: Double, inputChannels: Int,
                  outputChannels: Int, channelMap: [Int], requestedFrames: Int) throws {
         guard sampleRate.isFinite, (8000...384000).contains(sampleRate),
-              (1...32).contains(inputChannels), (1...32).contains(outputChannels),
+              (1...AudioFormatDescriptor.maximumProcessingChannels).contains(inputChannels),
+              (1...SpeakerTopology.maximumHardwareChannels).contains(outputChannels),
               channelMap.count == inputChannels, Set(channelMap).count == inputChannels,
               channelMap.allSatisfy({ (0..<outputChannels).contains($0) }),
               (32...8192).contains(requestedFrames) else { throw Failure("Unsupported direct output format.") }

@@ -33,15 +33,15 @@ struct ProfileRoutingAndDeviceView: View {
                             .frame(width: 6, height: 6)
                         Text(profileIsActive ? "Active" : "Inactive").font(.callout)
                     }
-                    .foregroundStyle(profileIsActive ? Color.green : Color.secondary)
+                    .foregroundColor(profileIsActive ? Color.green : Color.secondary)
                 }
-                Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 10) {
-                    GridRow {
-                        Text("CamiTune Output:").foregroundStyle(.secondary)
-                        Text(profileRoutingName).textSelection(.enabled)
+                AlignedTable(horizontalSpacing: 20, verticalSpacing: 10) {
+                    AlignedTableRow {
+                        Text("CamiTune Output:").foregroundColor(.secondary)
+                        SelectableText(profileRoutingName)
                     }
-                    GridRow {
-                        Text("Output Device:").foregroundStyle(.secondary)
+                    AlignedTableRow {
+                        Text("Output Device:").foregroundColor(.secondary)
                         Picker("Output Device", selection: Binding(
                             get: { profile.outputDeviceUID },
                             set: { uid in
@@ -62,12 +62,12 @@ struct ProfileRoutingAndDeviceView: View {
                 }
                 if profileIsActive && state.activeVolumeMode == .softwareOnly {
                     Label("This output uses software volume. Apps playing directly to it bypass CamiTune’s volume control.", systemImage: "info.circle")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                 }
                 Divider()
                 Text("Activation Mode").font(.headline)
                 Text("To activate CamiTune, choose the audio device from macOS Sound Settings.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(.callout).foregroundColor(.secondary)
                 activationRow(.physicalOutput, title: "When I select", emphasizedName: profile.outputDeviceName)
                 activationRow(.profileAudioDevice, title: "When I select", emphasizedName: profileRoutingName)
                 activationRow(.manual, title: "Only when I activate it in CamiTune")
@@ -92,8 +92,7 @@ struct ProfileRoutingAndDeviceView: View {
                         else { await state.activate(profile: profile) }
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.blue)
+                .buttonStyle(PrimaryActionButtonStyle(tint: .systemBlue))
                 .disabled(activation != .manual || (!profileIsActive && (!profile.isEnabled || coreAudio.cachedDevice(uid: profile.outputDeviceUID) == nil)))
             }
         }

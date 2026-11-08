@@ -144,7 +144,7 @@ enum SystemDiagnostics {
     static func telemetryObservation(_ status: AudioRuntimeStatus, at now: Date = Date()) -> DiagnosticObservation {
         let assessment = status.telemetryAssessment(at: now)
         var evidence = [DiagnosticEvidence(name: "Polling", value: status.telemetryPollingActive ? "Active" : "Paused"),
-                        .init(name: "Last output status update", value: status.lastTelemetryUpdatedAt?.ISO8601Format() ?? "None")]
+                        .init(name: "Last output status update", value: status.lastTelemetryUpdatedAt.map(DatePresentation.iso8601) ?? "None")]
         if status.hasFreshTelemetry(at: now) {
             evidence += [.init(name: "Output engine state", value: status.engineState),
                          .init(name: "Output stop reason", value: status.stopReason),

@@ -30,8 +30,7 @@ struct DeviceCorrectionSectionView: View {
         Button { select(page) } label: {
             Text(title(page)).frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 9).padding(.vertical, 7)
-                .background(selected == page ? Color.accentColor.opacity(0.18) : .clear,
-                            in: RoundedRectangle(cornerRadius: 6))
+                .background(RoundedRectangle(cornerRadius: 6).fill(selected == page ? Color.accentColor.opacity(0.18) : .clear))
                 .contentShape(Rectangle())
         }.buttonStyle(.plain)
         .uiInteractionAnchor("correction-page-\(page.rawValue)")
@@ -62,7 +61,7 @@ struct DeviceCorrectionSectionView: View {
                         if !advancedPages.isEmpty {
                             Text("Advanced")
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                                .foregroundColor(.secondary)
                                 .padding(.horizontal, 9)
                                 .padding(.top, standardPages.isEmpty ? 0 : 12)
                                 .padding(.bottom, 2)
@@ -76,7 +75,7 @@ struct DeviceCorrectionSectionView: View {
                     Picker("Correction method", selection: Binding(get: { selected }, set: { select($0) })) {
                         ForEach(standardPages) { page in Text(title(page)).tag(page) }
                         if !advancedPages.isEmpty {
-                            Section("Advanced") {
+                            Section(header: Text("Advanced")) {
                                 ForEach(advancedPages) { page in Text(title(page)).tag(page) }
                             }
                         }

@@ -11,6 +11,7 @@ package enum HardwareTopologyReview: Equatable, Sendable {
         let compatible = previous.deviceUID == current.deviceUID && previous.channelCount == current.channelCount
             && (previous.reportedRoles == nil || previous.reportedRoles == current.reportedRoles)
             && (previous.reportedPositions == nil || previous.reportedPositions == current.reportedPositions)
+            && previous.reportedOutputIDs == current.reportedOutputIDs
         self = compatible ? .unchanged : .needsReview(previous: previous, current: current)
     }
 }

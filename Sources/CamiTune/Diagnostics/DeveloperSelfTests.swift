@@ -139,7 +139,7 @@ enum DeveloperSelfTests {
                 while try reader.seekToEnd() == before {
                     try Task.checkCancellation()
                     guard PerformanceClock.now() < limit else { throw DiagnosticFailure(message: "Fixture writer made no progress") }
-                    try await Task.sleep(for: .milliseconds(1))
+                    try await RuntimeClock.sleep(seconds: 0.001)
                 }
             }
             do {
@@ -157,13 +157,13 @@ enum DeveloperSelfTests {
                         start: record.start, end: record.end, channels: record.channels, layout: record.layout,
                         rate: record.rate, contributions: [record], terminal: false, beginsEpoch: index == 0))
                     try await routeAndWait(frame)
-                    try await Task.sleep(for: .milliseconds(11))
+                    try await RuntimeClock.sleep(seconds: 0.011)
                 }
-                try await Task.sleep(for: .milliseconds(20))
+                try await RuntimeClock.sleep(seconds: 0.02)
                 if tracing, let capture = router.performanceSource.snapshot()?.capture {
                     let limit = PerformanceClock.now().advanced(seconds: 2)
                     while capture.counts().audio < outputBlocks && PerformanceClock.now() < limit {
-                        try await Task.sleep(for: .milliseconds(1))
+                        try await RuntimeClock.sleep(seconds: 0.001)
                     }
                     try diagnosticRequire(capture.counts().audio == outputBlocks, "Writer failed to record a completed block")
                     await recorder.stop()

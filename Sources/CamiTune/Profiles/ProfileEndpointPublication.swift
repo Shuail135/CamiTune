@@ -169,7 +169,7 @@ struct NativeProfileEndpointBackend: ProfileEndpointPublicationBackend {
             guard id != kAudioObjectUnknown else { return [] }
             return [.nominalRate(id), .streamConfiguration(id), .channelLayout(id)]
         }
-        let result = CoreAudioConditionWaiter.waitSynchronously(backend: .live, events: events, timeout: .seconds(3)) {
+        let result = CoreAudioConditionWaiter.waitSynchronously(backend: .live, events: events, timeout: 3) {
             present ? endpointsAreReady(endpoints) : endpoints.allSatisfy { Self.resolve($0.uid) == kAudioObjectUnknown }
         }
         waitObserver(result)

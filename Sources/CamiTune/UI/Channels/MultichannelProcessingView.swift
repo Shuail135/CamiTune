@@ -81,7 +81,7 @@ struct MultichannelProcessingView: View {
                 Divider()
                 HStack(alignment: .top) {
                     if let message = state.multichannelAutosaveErrors[profile.id] ?? message {
-                        Text(message).font(.callout).foregroundStyle(.orange)
+                        Text(message).font(.callout).foregroundColor(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer()
@@ -167,7 +167,7 @@ struct MultichannelProcessingView: View {
                 }
                 if draft.routing.routes.isEmpty {
                     Label("Press + to add route.", systemImage: "info.circle")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                 }
                 ForEach(draft.routing.routes) { route in
                     routingRow(routeBinding(route))
@@ -179,28 +179,28 @@ struct MultichannelProcessingView: View {
     private func routingRow(_ route: Binding<SpeakerRoute>) -> some View {
         let number = (draft.routing.routes.firstIndex { $0.id == route.wrappedValue.id } ?? 0) + 1
         let expanded = routeExpanded(route.wrappedValue.id)
-        return DisclosureGroup(isExpanded: expanded) {
+        return SectionDisclosure(isExpanded: expanded) {
             routingDetails(route)
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Route \(number)").font(.subheadline.weight(.semibold))
                 if !expanded.wrappedValue {
-                    Text(routeSummary(route.wrappedValue)).font(.caption).foregroundStyle(.secondary)
+                    Text(routeSummary(route.wrappedValue)).font(.caption).foregroundColor(.secondary)
                 }
             }.padding(.trailing, 30)
         }
-        .disclosureGroupStyle(SectionDisclosureStyle())
-        .overlay(alignment: .topTrailing) {
+
+        .overlay(Group {
             Button {
                 finishEditing()
                 draft.routing.routes.removeAll { $0.id == route.wrappedValue.id }
             } label: { Image(systemName: "minus.circle").frame(width: 22, height: 22) }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Remove route \(number)")
-        }
+        }, alignment: .topTrailing)
         .padding(12)
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.18), lineWidth: 0.5))
-        .focusSection()
+        .editorFocusSection()
     }
 
     private func routeExpanded(_ id: UUID) -> Binding<Bool> {
@@ -226,7 +226,7 @@ struct MultichannelProcessingView: View {
         VStack(alignment: .leading, spacing: 12) {
             ResponsiveStackLayout(minimumHorizontalWidth: 560, horizontalSpacing: 16, verticalSpacing: 10) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Source channel").font(.caption).foregroundStyle(.secondary)
+                    Text("Source channel").font(.caption).foregroundColor(.secondary)
                     Picker("Source channel", selection: route.sourceChannel) {
                         if !(0..<source.channelCount).contains(route.wrappedValue.sourceChannel) {
                             Text("Unavailable source \(route.wrappedValue.sourceChannel + 1)").tag(route.wrappedValue.sourceChannel)
@@ -236,10 +236,10 @@ struct MultichannelProcessingView: View {
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 HStack(alignment: .lastTextBaseline, spacing: 16) {
                     Image(systemName: "arrow.right")
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("Destination speaker").font(.caption).foregroundStyle(.secondary)
+                        Text("Destination speaker").font(.caption).foregroundColor(.secondary)
                         Picker("Destination speaker", selection: route.destination) {
                             if !routingEndpoints.contains(where: { $0.id == route.wrappedValue.destination }) {
                                 Text("Unavailable output \(route.wrappedValue.destination.channelIndex + 1)").tag(route.wrappedValue.destination)
@@ -254,7 +254,7 @@ struct MultichannelProcessingView: View {
                 SteppedValueSlider(value: route.gainDB, in: -120...24, step: 0.5)
                     .accessibilityLabel("Route gain")
                 numeric("Route gain dB", value: route.gainDB)
-                Text("dB").font(.callout).foregroundStyle(.secondary)
+                Text("dB").font(.callout).foregroundColor(.secondary)
             }
             WrappingControlLayout {
                 Toggle("Mute route", isOn: route.muted)
@@ -346,13 +346,13 @@ struct MultichannelProcessingView: View {
                 .padding(12)
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.18), lineWidth: 0.5))
                 .id(driver.id)
-                .focusSection()
+                .editorFocusSection()
                 Divider()
                 Label(hardwareMapConfirmed
                       ? "Hardware map confirmed; hardware changes block activation."
                       : "Hardware map needs confirmation.",
                       systemImage: hardwareMapConfirmed ? "checkmark.circle" : "info.circle")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
                 Button("Confirm this hardware map") {
                     finishEditing()
                     do {
@@ -408,13 +408,13 @@ struct MultichannelProcessingView: View {
             Spacer(minLength: 8)
             numeric(fieldTitle, value: optionalValue(value, fallback: defaultValue))
                 .disabled(value.wrappedValue == nil)
-            Text(unit).font(.callout).foregroundStyle(.secondary).frame(width: 22, alignment: .leading)
+            Text(unit).font(.callout).foregroundColor(.secondary).frame(width: 22, alignment: .leading)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func numeric(_ title: String, value: Binding<Double>) -> some View {
-        TextField(title, value: value, format: .number.precision(.fractionLength(0...2)))
-            .textFieldStyle(.roundedBorder).monospacedDigit().multilineTextAlignment(.trailing)
+        TextField(title, value: value, formatter: DecimalFormat(0...2).formatter)
+            .textFieldStyle(.roundedBorder).monospacedDigits().multilineTextAlignment(.trailing)
             .frame(width: 78).accessibilityLabel(title)
     }
     private func finishEditing() { NSApp.keyWindow?.makeFirstResponder(nil) }
@@ -501,12 +501,12 @@ struct BassManagementControlsView: View {
                         }
                     }
                     if bass.enabled {
-                        DisclosureGroup {
+                        SectionDisclosure {
                             advancedControls.disabled(muted)
                         } label: {
                             Text("Advanced Settings").font(.subheadline.weight(.semibold))
                         }
-                        .disclosureGroupStyle(SectionDisclosureStyle())
+
                     }
                 }
             }
@@ -556,7 +556,7 @@ struct BassManagementControlsView: View {
                         HStack(spacing: 8) {
                             Text("Crossover")
                             numeric("Crossover Hz", value: $group.crossoverHz)
-                            Text("Hz").foregroundStyle(.secondary)
+                            Text("Hz").foregroundColor(.secondary)
                         }
                         Picker("Slope", selection: $group.slope) {
                             ForEach(CrossoverSlope.allCases, id: \.self) { Text($0.title).tag($0) }
@@ -575,7 +575,7 @@ struct BassManagementControlsView: View {
             }.fixedSize().disabled(availableBassGroups.isEmpty)
             if bass.groups.isEmpty {
                 Label("No speaker bass is redirected. Subwoofers receive only the source's LFE channel, when present.", systemImage: "info.circle")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -585,7 +585,7 @@ struct BassManagementControlsView: View {
             HStack(spacing: 8) {
                 Text("LFE trim")
                 numeric("LFE trim dB", value: $bass.lfeGainDB)
-                Text("dB").foregroundStyle(.secondary)
+                Text("dB").foregroundColor(.secondary)
             }
             if subs.count > 1 || subs.contains(where: { !bass.subwooferEndpointIDs.contains($0.id) }) {
                 Menu("Subwoofer outputs") {
@@ -616,12 +616,12 @@ struct BassManagementControlsView: View {
                         HStack(spacing: 8) {
                             Text("Trim")
                             numeric("\(sub.displayName) trim dB", value: subBinding(sub.id, \.gainDB))
-                            Text("dB").foregroundStyle(.secondary)
+                            Text("dB").foregroundColor(.secondary)
                         }
                         HStack(spacing: 8) {
                             Text("Delay")
                             numeric("\(sub.displayName) delay ms", value: subBinding(sub.id, \.delayMilliseconds))
-                            Text("ms").foregroundStyle(.secondary)
+                            Text("ms").foregroundColor(.secondary)
                         }
                         Picker("Polarity", selection: subBinding(sub.id, \.inverted)) {
                             Text("Normal").tag(false)
@@ -649,7 +649,7 @@ struct BassManagementControlsView: View {
     }
 
     private func numeric(_ title: String, value: Binding<Double>) -> some View {
-        TextField(title, value: value, format: .number.precision(.fractionLength(0...2)))
+        TextField(title, value: value, formatter: DecimalFormat(0...2).formatter)
             .textFieldStyle(.roundedBorder).frame(width: 78).accessibilityLabel(title)
     }
     private func subBinding<T>(_ id: PhysicalOutputID, _ key: WritableKeyPath<SubwooferSettings, T>) -> Binding<T> {
@@ -689,10 +689,10 @@ struct SubwooferControlView: View {
                     .disabled(!hasSubwoofer || state.isSavingProfileSettings)
                 if settings.subwooferControl.mode == .reduce {
                     Text("Bass management settings remain unchanged.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                 } else if settings.subwooferControl.mode == .mute {
                     Label("Bass management is off.", systemImage: "info.circle")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                 }
                 if settings.subwooferControl.mode == .reduce {
                     HStack(spacing: 12) {
@@ -706,19 +706,19 @@ struct SubwooferControlView: View {
                 }
                 if !hasSubwoofer {
                     Label("Assign a Subwoofer in Device Configuration to use these controls.", systemImage: "info.circle")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                 } else {
                     BassManagementControlsView(profile: editingProfile, bass: settingsBinding(\.bass))
                         .disabled(state.isSavingProfileSettings)
                 }
                 if let error = state.multichannelAutosaveErrors[profile.id] {
-                    Text(error).font(.callout).foregroundStyle(.orange)
+                    Text(error).font(.callout).foregroundColor(.orange)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(6)
         }
-        .focusSection()
+        .editorFocusSection()
     }
 
     private func controlBinding<Value>(_ key: WritableKeyPath<SubwooferControlSettings, Value>) -> Binding<Value> {

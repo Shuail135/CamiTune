@@ -108,8 +108,7 @@ enum EQEditorSupport {
 
     static func setKind(_ kind: EQBand.Kind, for band: inout EQBand) {
         band.kind = kind
-        band.q = band.q ?? 0.707
-        band.bandwidth = nil
+        if band.q == nil && band.bandwidth == nil { band.q = 0.707 }
         band.gain = kind.usesGain ? (band.gain ?? 0) : nil
     }
 
@@ -143,12 +142,13 @@ enum EQEditorSupport {
         return abs(log(max(band.frequency, 1) / expected)) < 0.015
             && abs((band.gain ?? 0)) < 0.0001
             && abs((band.q ?? 1) - 1) < 0.0001
+            && band.bandwidth == nil
             && band.enabled
             && band.kind == expectedKind
     }
 
     private static func isUntouchedValues(_ band: EQBand) -> Bool {
-        abs((band.gain ?? 0)) < 0.0001 && abs((band.q ?? 1) - 1) < 0.0001
+        abs((band.gain ?? 0)) < 0.0001 && abs((band.q ?? 1) - 1) < 0.0001 && band.bandwidth == nil
     }
 
 }

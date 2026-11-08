@@ -5,6 +5,22 @@ enum SystemVolumeMode: Sendable, Equatable {
     case softwareOnly
 }
 
+/// Device-wide HAL controls are safe only when the profile owns every output.
+/// A sparse pair uses PCM gain so other applications' monitor/cue pairs retain
+/// their hardware levels and mute state.
+enum SystemVolumeScope: Sendable, Equatable {
+    case wholeDevice, selectedOutputs
+
+    init(outputIndices: Set<Int>, hardwareChannelCount: Int) {
+        self = hardwareChannelCount > 0 && outputIndices == Set(0..<hardwareChannelCount)
+            ? .wholeDevice : .selectedOutputs
+    }
+
+    func mode(capabilities: OutputVolumeCapabilities) -> SystemVolumeMode {
+        self == .wholeDevice && capabilities.supportsHardwareMirroring ? .hardwareMirrored : .softwareOnly
+    }
+}
+
 struct PhysicalVolumeTarget: Sendable, Equatable {
     let scalar: Float32
     let muted: Bool

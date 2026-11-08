@@ -4,9 +4,11 @@ import SwiftUI
 
 @MainActor
 struct PluginPickerView: View {
+    private static let emptyStateSymbol = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: nil) == nil
+        ? "puzzlepiece" : "puzzlepiece.extension"
     @ObservedObject var catalog: PluginCatalog
     let onAdd: (AudioPluginDescriptor) -> Void
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.presentationMode) private var dismiss
     @State private var search = ""
     @State private var format = "All"
     @State private var selectedID: String?
@@ -32,7 +34,7 @@ struct PluginPickerView: View {
             VStack(alignment: .leading, spacing: 12) {
                 pluginList.frame(minHeight: 80, idealHeight: 280, maxHeight: .infinity)
                 if let message = selectionMessage ?? catalog.errorMessage {
-                    Text(message).font(.caption).foregroundStyle(.secondary)
+                    Text(message).font(.caption).foregroundColor(.secondary)
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }
                 if !catalog.failures.isEmpty { scanFailures.fixedSize(horizontal: false, vertical: true) }
@@ -40,7 +42,7 @@ struct PluginPickerView: View {
             footer.fixedSize(horizontal: false, vertical: true)
         }
         .padding(24).frame(minWidth: 600, idealWidth: 700, minHeight: 560, idealHeight: 620)
-        .task {
+        .viewTask {
             await catalog.load()
             if catalog.plugins.isEmpty && !catalog.isBusy { catalog.scan() }
         }
@@ -53,7 +55,7 @@ struct PluginPickerView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Add Plug-in").font(.title2.bold()).uiInteractionAnchor("plugin-picker-title")
             Text("Choose an installed effect or instrument. AU and VST3 versions are listed separately.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 12) {
                 TextField("Search", text: $search).textFieldStyle(.roundedBorder)
                 Picker("Format", selection: $format) {
@@ -86,13 +88,13 @@ struct PluginPickerView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(plugin.name).font(.headline)
-                        Text(plugin.manufacturer).font(.caption).foregroundStyle(.secondary)
+                        Text(plugin.manufacturer).font(.caption).foregroundColor(.secondary)
                     }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 3) {
                         Text(plugin.format.rawValue).font(.caption.weight(.medium))
                         if plugin.isInstrument { Text("Instrument").font(.caption) }
-                    }.foregroundStyle(.secondary)
+                    }.foregroundColor(.secondary)
                 }.padding(.vertical, 4).contentShape(Rectangle()).tag(row.id)
                     .onTapGesture { selectedID = row.id }
                     .simultaneousGesture(TapGesture(count: 2).onEnded { add(plugin) })
@@ -100,21 +102,21 @@ struct PluginPickerView: View {
             }
         }
         .disabled(catalog.resolvingName != nil)
-        .overlay {
+        .overlay(Group {
             if filtered.isEmpty {
                 VStack(spacing: 8) {
-                    Image(systemName: "puzzlepiece.extension").font(.title)
+                    Image(systemName: Self.emptyStateSymbol).font(.title)
                     Text(catalog.isScanning ? "Finding plug-ins…" : search.isEmpty ? "No plug-ins found" : "No matching plug-ins")
                     if !catalog.isScanning && search.isEmpty {
                         Text("Install a macOS AU or VST3 plug-in, then scan again.").font(.caption)
                     }
-                }.foregroundStyle(.secondary).allowsHitTesting(false)
+                }.foregroundColor(.secondary).allowsHitTesting(false)
             }
-        }
+        })
     }
 
     private var scanFailures: some View {
-        DisclosureGroup(isExpanded: $showFailures) {
+        SectionDisclosure(isExpanded: $showFailures) {
             // Only the details scroll. The title, filters and action row keep
             // their space when this section expands in a short sheet.
             ScrollView {
@@ -122,19 +124,19 @@ struct PluginPickerView: View {
                     ForEach(catalog.failures.keys.sorted(), id: \.self) { path in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(URL(fileURLWithPath: path).lastPathComponent).font(.caption.bold())
-                            Text(catalog.failures[path] ?? "").font(.caption).foregroundStyle(.secondary)
+                            Text(catalog.failures[path] ?? "").font(.caption).foregroundColor(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                     Text("Select a plug-in and choose Add to try it again.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundColor(.secondary)
                     Button("Clear List") { Task { await catalog.clearFailures() } }.disabled(catalog.isBusy)
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.frame(height: 100).uiInteractionAnchor("plugin-picker-failure-details")
         } label: {
             Text("\(catalog.failures.count) plug-in bundle(s) could not be scanned")
                 .uiInteractionAnchor("plugin-picker-failures")
-        }.disclosureGroupStyle(SectionDisclosureStyle())
+        }
     }
 
     private var footer: some View {
@@ -148,10 +150,10 @@ struct PluginPickerView: View {
                         .accessibilityLabel(catalog.resolvingName == nil ? "Scanning plug-ins" : "Loading plug-in")
                         .uiInteractionAnchor("plugin-picker-progress")
                     Text(catalog.resolvingName.map { "Loading \($0)…" } ?? catalog.progress)
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        .font(.caption).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else { Spacer(minLength: 0) }
-                Button("Cancel") { addingTask?.cancel(); catalog.cancelScan(); dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { addingTask?.cancel(); catalog.cancelScan(); dismiss.wrappedValue.dismiss() }.keyboardShortcut(.cancelAction)
                     .uiInteractionAnchor("plugin-picker-cancel")
                 Button("Add") { if let selected { add(selected) } }
                     .keyboardShortcut(.defaultAction).disabled(selected == nil || catalog.resolvingName != nil || addingTask != nil)
@@ -190,13 +192,13 @@ private struct PluginScanFoldersView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Scan Folders").font(.headline)
             Text("Standard plug-in locations are included automatically. Add custom VST3 folders below; subfolders are included. Audio Units are discovered through macOS.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             List {
                 ForEach(catalog.customDirectories, id: \.path) { url in
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(url.lastPathComponent).font(.body)
-                            Text(url.path).font(.caption).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
+                            Text(url.path).font(.caption).foregroundColor(.secondary).lineLimit(2).truncationMode(.middle)
                         }
                         Spacer(minLength: 0)
                         Button {
@@ -207,13 +209,13 @@ private struct PluginScanFoldersView: View {
                         .disabled(catalog.isBusy || editing)
                     }.padding(.vertical, 3)
                 }
-            }.overlay {
-                if catalog.customDirectories.isEmpty { Text("No custom folders added").font(.caption).foregroundStyle(.secondary).allowsHitTesting(false) }
-            }
+            }.overlay(Group {
+                if catalog.customDirectories.isEmpty { Text("No custom folders added").font(.caption).foregroundColor(.secondary).allowsHitTesting(false) }
+            })
             HStack {
                 Button("Add Folders…") { chooseFolders() }.disabled(catalog.isBusy || editing)
                 Spacer()
-                Text("Scans automatically after you close this panel.").font(.caption).foregroundStyle(.secondary)
+                Text("Scans automatically after you close this panel.").font(.caption).foregroundColor(.secondary)
             }
         }.padding(16).frame(width: 440, height: 310).uiInteractionAnchor("plugin-scan-folders")
     }

@@ -628,7 +628,6 @@ final class SpeakerRoomNSView: NSView {
     }
     private func symbol(_ name: String, rect: CGRect, color: NSColor) {
         let configuration = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [color.withAlphaComponent(1), color.withAlphaComponent(1), color.withAlphaComponent(1)]))
         guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
             .withSymbolConfiguration(configuration) else { return }
         // Preserve the SF Symbol's native aspect ratio instead of stretching its bitmap.
@@ -636,7 +635,14 @@ final class SpeakerRoomNSView: NSView {
         let size = CGSize(width: image.size.width * factor, height: image.size.height * factor)
         let destination = CGRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2,
                                  width: size.width, height: size.height)
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.saveGState()
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
         image.draw(in: destination, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        color.withAlphaComponent(1).setFill()
+        destination.fill(using: .sourceIn)
+        context.endTransparencyLayer()
+        context.restoreGState()
     }
 
     private func guide(from: CGPoint, to: CGPoint) {

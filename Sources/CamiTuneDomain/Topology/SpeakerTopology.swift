@@ -18,7 +18,7 @@ package enum SpeakerTopologyError: Error, Equatable, LocalizedError {
         case .hardwareLayoutChanged: return "The device channel layout changed. Discover and check its channels again."
         case .invalidDeviceUID, .foreignDevice: return "The speaker map belongs to another output device. Discover this device's channels again."
         case .invalidSampleRate: return "The speaker map uses a different sample rate. Rediscover it at the profile's processing rate."
-        case .unsupportedChannelCount(let count): return "This output has \(count) channels. CamiTune supports 1 through 32."
+        case .unsupportedChannelCount(let count): return "This output has \(count) channels. CamiTune supports 1 through \(SpeakerTopology.maximumHardwareChannels) hardware outputs."
         case .unsupportedVersion: return "This speaker map uses an unsupported version. Discover the channels again."
         case .invalidChannelIndex, .duplicateOutput: return "The speaker map has invalid or duplicate physical channel indices."
         case .invalidPosition: return "Speaker positions must use finite angles and a positive distance when supplied."
@@ -33,7 +33,7 @@ package enum SpeakerTopologyError: Error, Equatable, LocalizedError {
 /// It is not necessarily one visible enclosure or one driver.
 /// Validate after decoding or editing and before using a topology for DSP.
 package struct SpeakerTopology: Codable, Hashable, Sendable {
-    package static let maximumOutputChannels = 32
+    package static let maximumHardwareChannels = 256
     package static let currentVersion = 2
 
     package var version: Int = currentVersion
@@ -43,6 +43,8 @@ package struct SpeakerTopology: Codable, Hashable, Sendable {
     package var endpoints: [SpeakerEndpoint]
     package var hardwareRoles: [ChannelRole]? = nil
     package var hardwarePositions: [SpatialPosition?]? = nil
+    /// Aggregate stream order, expressed in the underlying devices' physical slots.
+    package var hardwareOutputIDs: [PhysicalOutputID]? = nil
     package var createdAt: Date = Date()
     package var updatedAt: Date = Date()
     package var groups: [SpeakerGroup] = []
@@ -50,18 +52,20 @@ package struct SpeakerTopology: Codable, Hashable, Sendable {
 
     package init(version: Int = Self.currentVersion, deviceUID: String, sampleRate: Double,
          declaredChannelCount: Int, endpoints: [SpeakerEndpoint], hardwareRoles: [ChannelRole]? = nil,
-         hardwarePositions: [SpatialPosition?]? = nil, createdAt: Date = Date(), updatedAt: Date = Date(),
+         hardwarePositions: [SpatialPosition?]? = nil, hardwareOutputIDs: [PhysicalOutputID]? = nil,
+         createdAt: Date = Date(), updatedAt: Date = Date(),
          groups: [SpeakerGroup] = [], layoutTemplateID: SpeakerLayoutTemplateID? = nil) {
         self.version = version; self.deviceUID = deviceUID; self.sampleRate = sampleRate
         self.declaredChannelCount = declaredChannelCount; self.endpoints = endpoints
         self.hardwareRoles = hardwareRoles; self.hardwarePositions = hardwarePositions
+        self.hardwareOutputIDs = hardwareOutputIDs
         self.createdAt = createdAt; self.updatedAt = updatedAt
         self.groups = groups; self.layoutTemplateID = layoutTemplateID
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, deviceUID, sampleRate, declaredChannelCount, endpoints
-        case hardwareRoles, hardwarePositions, createdAt, updatedAt, groups, layoutTemplateID
+        case hardwareRoles, hardwarePositions, hardwareOutputIDs, createdAt, updatedAt, groups, layoutTemplateID
     }
 
     package init(from decoder: Decoder) throws {
@@ -77,6 +81,7 @@ package struct SpeakerTopology: Codable, Hashable, Sendable {
         endpoints = try values.decode([SpeakerEndpoint].self, forKey: .endpoints)
         hardwareRoles = try values.decodeIfPresent([ChannelRole].self, forKey: .hardwareRoles)
         hardwarePositions = try values.decodeIfPresent([SpatialPosition?].self, forKey: .hardwarePositions)
+        hardwareOutputIDs = try values.decodeIfPresent([PhysicalOutputID].self, forKey: .hardwareOutputIDs)
         createdAt = try values.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date(timeIntervalSince1970: 0)
         updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
         groups = try values.decodeIfPresent([SpeakerGroup].self, forKey: .groups) ?? []
@@ -112,13 +117,18 @@ package struct SpeakerTopology: Codable, Hashable, Sendable {
         guard !deviceUID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw SpeakerTopologyError.invalidDeviceUID
         }
-        guard (1...Self.maximumOutputChannels).contains(declaredChannelCount) else {
+        guard (1...Self.maximumHardwareChannels).contains(declaredChannelCount) else {
             throw SpeakerTopologyError.unsupportedChannelCount(declaredChannelCount)
         }
         guard sampleRate.isFinite, sampleRate > 0 else {
             throw SpeakerTopologyError.invalidSampleRate
         }
         if let hardwareRoles, hardwareRoles.count != declaredChannelCount { throw SpeakerTopologyError.hardwareLayoutChanged }
+        if let hardwareOutputIDs {
+            guard hardwareOutputIDs.count == declaredChannelCount,
+                  Set(hardwareOutputIDs).count == declaredChannelCount else { throw SpeakerTopologyError.hardwareLayoutChanged }
+            for output in hardwareOutputIDs { try output.validate() }
+        }
         if let hardwarePositions {
             guard hardwarePositions.count == declaredChannelCount else { throw SpeakerTopologyError.hardwareLayoutChanged }
             for position in hardwarePositions { try position?.validate() }

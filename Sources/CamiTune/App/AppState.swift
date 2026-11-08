@@ -150,7 +150,7 @@ final class AppState: NSObject, ObservableObject {
     lazy var pluginReorderApplies = PluginRackReorderApply { [weak self] id, isCurrent in
         guard let self else { return true }
         while (self.isSavingProfileSettings || self.transitionInProgress || self.profiles.hasDurableCommit), isCurrent() {
-            try? await Task.sleep(for: .milliseconds(100))
+            try? await RuntimeClock.sleep(seconds: 0.1)
         }
         guard isCurrent() else { return false }
         guard self.profiles.profiles.contains(where: { $0.id == id }) else { return true }
@@ -280,13 +280,13 @@ final class AppState: NSObject, ObservableObject {
         startupConfigurationTask = Task { @MainActor [weak self] in
             // The first suspension guarantees AppKit has a chance to order the
             // main window and install the status item before driver setup.
-            try? await Task.sleep(for: .milliseconds(250))
+            try? await RuntimeClock.sleep(seconds: 0.25)
             guard let self, !Task.isCancelled else { return }
             // Keep startup probes away from the main actor until HAL has
             // produced a device snapshot. The editor is usable immediately and
             // renders only from cached device state while this task waits.
             for _ in 0..<100 where !self.coreAudio.hasCompletedInitialRefresh {
-                try? await Task.sleep(for: .milliseconds(100))
+                try? await RuntimeClock.sleep(seconds: 0.1)
                 if Task.isCancelled { return }
             }
             guard self.coreAudio.hasCompletedInitialRefresh else { return }
@@ -505,7 +505,7 @@ final class AppState: NSObject, ObservableObject {
             await setProfileEnabled(id: profileID, enabled: false, recordHistory: false)
         }
         while transitionInProgress {
-            try? await Task.sleep(for: .milliseconds(25))
+            try? await RuntimeClock.sleep(seconds: 0.025)
         }
         if let activeProfileID, confirmedProfileIDs.contains(activeProfileID) {
             await deactivate(manual: true)
@@ -596,7 +596,7 @@ final class AppState: NSObject, ObservableObject {
             var observedRevision: RuntimeIntentRevision?
             var observedSession: UUID?
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                do { try await RuntimeClock.sleep(seconds: 1) } catch { return }
                 guard let self else { return }
                 guard !self.transitionInProgress, self.spatialCalibrationContext == nil,
                       let profile = self.runtimeCoordinator.appliedProfile,
@@ -1271,7 +1271,7 @@ extension AppState {
                             let snapshot = output.snapshot()
                             if let clock = snapshot.clock { consume(clock) }
                             self?.directOutputError = snapshot.error
-                            do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+                            do { try await RuntimeClock.sleep(seconds: 0.05) } catch { return }
                         }
                     }
                 } else if plan.deliveryConfiguration.queue.rateTargetMode == .clockTracked {
@@ -1309,7 +1309,7 @@ extension AppState {
             deliveryError: { [unowned self] in pcmRouter.statistics.deliveryError ?? directOutputError },
             notifyActivation: { [unowned self] in notifications.activated(profileName: $0) },
             notifyDeactivation: { [unowned self] in notifications.deactivated(profileName: $0) },
-            sleep: { try await Task.sleep(for: $0) },
+            sleep: { try await RuntimeClock.sleep(seconds: $0) },
             transitionFinished: { _ in }
         )
     }

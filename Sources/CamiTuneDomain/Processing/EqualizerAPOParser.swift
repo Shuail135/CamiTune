@@ -202,15 +202,17 @@ package struct EqualizerAPOParser {
             throw ParseError(line: lineNumber, message: "Shelf slope must be greater than 0 and no more than 12 dB/oct")
         }
 
-        // The graphical editor and CamillaDSP graph are Q-based. Normalize APO's
-        // BW Oct and shelf-slope forms now so later editing/serialization cannot
-        // silently change their response.
+        // Preserve octave bandwidth until a rendering sample rate is known.
+        // Shelf slope has a rate-independent Q conversion. An explicit Q or
+        // shelf slope takes precedence over the retained bandwidth form.
         var normalizedFrequency = fc
-        var q = explicitQ ?? bw.map(BiquadCoefficients.q(fromBandwidth:))
+        var q = explicitQ
+        var bandwidth = explicitQ == nil ? bw : nil
         if kind == .lowShelf || kind == .highShelf {
             guard gain != nil else { throw ParseError(line: lineNumber, message: "Shelf filter needs Gain") }
             if let declaredShelfSlope {
                 q = qFromShelfSlope(declaredShelfSlope, gainDB: gain ?? 0)
+                bandwidth = nil
 
                 // LS/HS 6dB and 12dB use corner frequency, whereas LSC/HSC use
                 // center frequency. Equalizer APO applies this same conversion.
@@ -230,9 +232,9 @@ package struct EqualizerAPOParser {
         switch kind {
         case .peaking:
             guard gain != nil else { throw ParseError(line: lineNumber, message: "Peaking filter needs Gain") }
-            guard q != nil else { throw ParseError(line: lineNumber, message: "Peaking filter needs Q or BW Oct") }
+            guard q != nil || bandwidth != nil else { throw ParseError(line: lineNumber, message: "Peaking filter needs Q or BW Oct") }
         case .allPass:
-            guard q != nil else { throw ParseError(line: lineNumber, message: "All-pass filter needs Q") }
+            guard q != nil || bandwidth != nil else { throw ParseError(line: lineNumber, message: "All-pass filter needs Q or BW Oct") }
         default:
             break
         }
@@ -242,7 +244,8 @@ package struct EqualizerAPOParser {
             kind: kind,
             frequency: normalizedFrequency,
             gain: gain,
-            q: q
+            q: q,
+            bandwidth: bandwidth
         ))
     }
 

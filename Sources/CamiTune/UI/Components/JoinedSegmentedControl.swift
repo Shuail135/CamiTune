@@ -24,7 +24,7 @@ struct JoinedSegmentedControl<Value: Hashable>: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: controlHeight)
                     .contentShape(Rectangle())
-                    .foregroundStyle(isEnabled && selection == option ? Color.white : Color.primary)
+                    .foregroundColor(isEnabled && selection == option ? Color.white : Color.primary)
                     .background(selection == option
                         ? (isEnabled ? Color.blue : Color.secondary.opacity(0.25))
                         : Color.clear)
@@ -42,7 +42,7 @@ struct JoinedSegmentedControl<Value: Hashable>: View {
                 }
             }
         }
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(Color(.controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 5))
         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
         .opacity(isEnabled ? 1 : 0.65)

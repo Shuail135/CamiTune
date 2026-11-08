@@ -1,13 +1,13 @@
 import SwiftUI
 
-struct ValueKnobRow<Content: View>: View {
+struct ValueKnobRow: View {
     @ScaledMetric(relativeTo: .body) private var spacing: CGFloat = 24
     @ScaledMetric(relativeTo: .body) var minimumHorizontalWidth: CGFloat = 372
-    @ViewBuilder var content: Content
+    @ControlLayoutItems var content: () -> [ControlLayoutItem]
 
     var body: some View {
         ResponsiveStackLayout(minimumHorizontalWidth: minimumHorizontalWidth,
-            horizontalSpacing: spacing, verticalSpacing: spacing, centered: true) { content }
+            horizontalSpacing: spacing, verticalSpacing: spacing, centered: true) { content() }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 5)
     }
@@ -46,17 +46,19 @@ struct ValueKnob: View {
     var body: some View {
         VStack(spacing: 5) {
             HStack(alignment: .top, spacing: 4) {
-                Text(title)
-                    .font(.headline)
-                    .lineLimit(titleLines, reservesSpace: true)
-                    .multilineTextAlignment(.center)
+                ZStack(alignment: .top) {
+                    Text(Array(repeating: " ", count: titleLines).joined(separator: "\n")).hidden()
+                    Text(title).lineLimit(titleLines)
+                }
+                .font(.headline)
+                .multilineTextAlignment(.center)
                 if let help {
                     DeviceCorrectionHelpIcon(title: title, message: help)
                 }
             }
             ZStack {
                 Circle()
-                    .fill(Color(nsColor: .controlBackgroundColor))
+                    .fill(Color(.controlBackgroundColor))
                     .shadow(color: .black.opacity(0.2), radius: 3, y: 2)
                 Circle()
                     .stroke(Color.secondary.opacity(0.35), lineWidth: 2)

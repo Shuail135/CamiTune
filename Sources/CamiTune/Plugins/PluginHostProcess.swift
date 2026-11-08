@@ -9,6 +9,9 @@ struct PluginHostError: LocalizedError {
 /// Control traffic is read independently of audio. Plug-in stdout is redirected
 /// by the helper before loading any vendor code.
 final class PluginHostProcess: @unchecked Sendable {
+    // The helper accepts up to 65,536 VST3 parameters. Their 127-code-unit
+    // names can expand sixfold in JSON; a complete list must fit one message.
+    private static let maximumMessageBytes = 64 * 1024 * 1024
     private let process = Process()
     private let input = Pipe()
     private let output = Pipe()
@@ -68,12 +71,16 @@ final class PluginHostProcess: @unchecked Sendable {
             while true {
                 let bytes = handle.availableData
                 if bytes.isEmpty { break }
+                var searchFrom = pending.endIndex
                 pending.append(bytes)
-                if pending.count > 8 * 1024 * 1024 { self?.stop(); break }
-                while let newline = pending.firstIndex(of: 10) {
+                if pending.count > Self.maximumMessageBytes { self?.stop(); break }
+                // Scan each received byte once, including large parameter
+                // lists split across many pipe reads.
+                while let newline = pending[searchFrom...].firstIndex(of: 10) {
                     let line = pending.prefix(upTo: newline)
                     if let event = try? JSONSerialization.jsonObject(with: line) as? [String: Any] { self?.receive(event) }
                     pending.removeSubrange(...newline)
+                    searchFrom = pending.startIndex
                 }
             }
             if let owner = self {

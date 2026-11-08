@@ -132,11 +132,15 @@ final class AudioRuntimeCoordinator: ObservableObject {
             "Automatic retry: \(automaticActivationRetry.map { "Attempt \($0.failureCount), after \($0.retryAfter)" } ?? "None")"
         ].joined(separator: "\n")
     }
-    private func phase(_ name: String, status: AudioRuntimeStatusKind) {
+    private func phase(_ name: String, status: AudioRuntimeStatusKind, persist: Bool = false) {
         self.status = status
         if let executingGeneration { reconciliationOperations[executingGeneration]?.mark(name) }
-        transition = .init(id: transition?.id ?? .init(rawValue: transitionSequence),
+        let snapshot = RuntimeTransitionSnapshot(id: transition?.id ?? .init(rawValue: transitionSequence),
             generation: executingGeneration ?? desiredRuntime.generation, phase: name)
+        transition = snapshot
+        // Startup/retirement explicitly persist their existing phase state.
+        // Live edits keep capture-only tracing; neither path adds a timer.
+        if persist { runtimeServices.recordLifecyclePhase(snapshot) }
         publishSnapshot()
     }
     private func checkCurrent(_ generation: RuntimeIntentGeneration) throws {
@@ -561,19 +565,30 @@ final class AudioRuntimeCoordinator: ObservableObject {
         let switchOperation = switching ? performanceRecorder.begin("Profile switch", reason: "profileSwitch", parent: intent.parentOperation) : nil
         let operation = performanceRecorder.begin("Activation", reason: intent.reason, parent: switchOperation?.id ?? intent.parentOperation)
         var result = "failed"
-        defer { operation?.finish(result); switchOperation?.finish(result) }
-        phase("Preparing", status: .preparing)
+        defer {
+            operation?.finish(result); switchOperation?.finish(result)
+            if let transition {
+                runtimeServices.recordLifecyclePhase(.init(id: transition.id, generation: intent.generation,
+                    phase: "Activation finished: \(result)"))
+            }
+        }
+        phase("Cancelling previous startup", status: .preparing, persist: true)
         await callbacks.cancelStartup(); try checkCurrent(intent.generation)
         guard profile.isEnabled else { throw AppState.AppError.profileDisabled(profile.name) }
+        phase("Checking dependencies", status: .preparing, persist: true)
         await runtimeServices.refreshDependencies(); try checkCurrent(intent.generation)
         operation?.mark("dependencies checked")
+        phase("Validating capture availability", status: .preparing, persist: true)
         try await runtimeServices.captureBackend.validateAvailability(); try checkCurrent(intent.generation)
+        phase("Preparing runtime plan", status: .preparing, persist: true)
         let plan: AudioRuntimePlan
         if let supplied = supplied ?? intent.preparedPlan { plan = supplied }
         else { plan = try await prepareRuntimePlan(profile: profile, reason: "activation", parentOperation: operation?.id) }
         if !plan.usesExclusivePluginOutput { try runtimeServices.processingBackend.validateAvailability() }
         try checkCurrent(intent.generation)
+        phase("Validating hardware and profile", status: .preparing, persist: true)
         try await AudioRuntimePlanPreparer().validateCurrent(plan, services: runtimeServices); try checkCurrent(intent.generation)
+        phase("Resolving physical output", status: .preparing, persist: true)
         guard let output = await runtimeServices.resolveOutput(plan.hardwareEvidence.output.uid) else {
             throw AppState.AppError.outputMissing(plan.hardwareEvidence.output.name)
         }
@@ -587,6 +602,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
             try checkCurrent(intent.generation)
         }
         ownershipSequence &+= 1
+        phase("Reading current output", status: .activating, persist: true)
         let currentDefault = await runtimeServices.freshDefaultOutput(); try checkCurrent(intent.generation)
         let previous = currentDefault.flatMap { runtimeServices.captureBackend.isCaptureDevice($0) ? nil : $0 }
         let ownershipID = RuntimeOwnershipID(rawValue: ownershipSequence)
@@ -597,12 +613,12 @@ final class AudioRuntimeCoordinator: ObservableObject {
         let routingProfiles = callbacks.profiles().map { $0.id == profile.id ? plan.intent : $0 }
         func current() throws { try checkCurrent(intent.generation); guard owns(owner.ownershipID) else { throw CancellationError() } }
         do {
-            phase("Acquiring route", status: .activating)
+            phase("Acquiring route", status: .activating, persist: true)
             try await capture.prepareRoute(profiles: routingProfiles, validateHardware: {
                 try await AudioRuntimePlanPreparer().validateCurrent(plan, services: self.runtimeServices)
             }, checkCurrent: current, operation: operation)
             let sampleRate = Double(plan.sourceFormat.sampleRate)
-            phase("Starting engine", status: .activating)
+            phase("Starting engine", status: .activating, persist: true)
             if plan.usesExclusivePluginOutput {
                 try await acquire(.engine, owner: owner) { try await runtimeServices.startDirectOutput(plan) }; try current()
                 operation?.mark("Direct Core Audio output ready")
@@ -610,36 +626,45 @@ final class AudioRuntimeCoordinator: ObservableObject {
                 try await acquire(.engine, owner: owner) { try await runtimeServices.processingBackend.start() }; try current()
                 operation?.mark("Processing engine ready")
                 runtimeServices.processingBackend.resetRuntime()
+                phase("Validating processing output", status: .activating, persist: true)
                 try await runtimeServices.processingBackend.validateOutput(uid: plan.hardwareEvidence.output.uid); try current()
             }
             operation?.mark("playback UID verified")
-            phase("Applying backend", status: .activating)
+            phase("Applying backend", status: .activating, persist: true)
             try await applyPlanGraph(plan, operation: operation); try current()
             operation?.mark("graph acknowledged")
             owner.resources.insert(.observations); runtimeServices.startObservations(owner.publicSession)
+            phase("Starting output control", status: .activating, persist: true)
             try await capture.startControl(); try current()
             operation?.mark("volume session ready")
-            phase("Starting PCM", status: .activating)
+            phase("Starting PCM", status: .activating, persist: true)
             try await acquire(.pcm, owner: owner) { try await runtimeServices.startPCM(plan, owner.publicSession) }; try current()
             operation?.mark("PCM writer ready")
             perAppAudio.setPlaybackContext(plan.playbackContext, profileID: plan.revision.profileID)
-            phase("Starting transport", status: .activating)
+            phase("Starting transport", status: .activating, persist: true)
             try await capture.connect(checkCurrent: current, operation: operation); try current()
             operation?.mark("transport connected")
+            phase("Preparing incoming volume", status: .activating, persist: true)
             try await capture.prepareIncoming(); try current()
             operation?.mark("volume handoff ready")
-            phase("Switching output", status: .activating)
+            phase("Switching output", status: .activating, persist: true)
             try await capture.selectRoute(checkCurrent: current); try current()
             operation?.mark("default output switched")
+            phase("Starting spectrum observation", status: .activating, persist: true)
             try await acquire(.spectrum, owner: owner) { await runtimeServices.startSpectrum(owner.publicSession) }; try current()
+            phase("Synchronizing active profiles", status: .activating, persist: true)
             try await runtimeServices.captureBackend.synchronizeProfiles(routingProfiles, active: profile.id, visible: [], prepared: [profile.id: plan]); try current()
+            phase("Refreshing capture binding", status: .activating, persist: true)
             try await refreshBinding(owner, permit: false); try current()
             operation?.mark("post-activation routing sync")
+            phase("Validating final hardware state", status: .activating, persist: true)
             try await AudioRuntimePlanPreparer().validateCurrent(plan, services: runtimeServices); try current()
+            phase("Reading output sample rate", status: .activating, persist: true)
             let nominal = await runtimeServices.nominalRate(output.id); try current()
             if let nominal, abs(nominal - sampleRate) >= 0.5 {
                 throw AppState.AppError.runtimeSampleRateMismatch(expected: plan.sourceFormat.sampleRate, actual: nominal, device: output.name)
             }
+            phase("Confirming selected output", status: .activating, persist: true)
             let actualDefault = await runtimeServices.freshDefaultOutput(); try current()
             guard actualDefault == capture.selectionUID else { throw CancellationError() }
             if let failure = (runtimeServices.captureBackend.runtimeError ?? runtimeServices.deliveryError()) { throw ProfileSettingsError.runtime(failure) }
@@ -649,14 +674,17 @@ final class AudioRuntimeCoordinator: ObservableObject {
             operation?.mark("audibility permitted")
             owner.acknowledgedPlan = acknowledgeOnSuccess ? plan : nil
             ownedSession = owner; provisionalSession = nil
-            phase("Session acknowledged", status: .active)
+            phase("Session acknowledged", status: .active, persist: true)
             operation?.mark(acknowledgeOnSuccess ? "active runtime acknowledged" : "runtime ready for settings commit")
             automaticActivationRetry = nil; suppressedAutoUID = nil
             callbacks.clearError(); runtimeServices.notifyActivation(plan.intent.name); result = "success"
         } catch {
             operation?.mark("cleanup started")
             var actualDefault = runtimeServices.defaultOutput()
-            if !terminated { actualDefault = await runtimeServices.freshDefaultOutput() }
+            if !terminated {
+                phase("Reading output before cleanup", status: .stopping, persist: true)
+                actualDefault = await runtimeServices.freshDefaultOutput()
+            }
             let restore: Bool
             switch desiredRuntime.target {
             case .inactive(let requestedRestore): restore = requestedRestore
@@ -667,7 +695,9 @@ final class AudioRuntimeCoordinator: ObservableObject {
             operation?.mark("cleanup complete")
             if provisionalSession?.ownershipID == owner.ownershipID { provisionalSession = nil }
             if !terminated {
+                phase("Updating capture presentation after cleanup", status: .stopping, persist: true)
                 try? await runtimeServices.captureBackend.updatePresentation()
+                phase("Synchronizing profiles after cleanup", status: .stopping, persist: true)
                 try? await runtimeServices.captureBackend.synchronizeProfiles(callbacks.profiles(), active: nil, visible: [], prepared: [:])
             }
             publishSnapshot()
@@ -840,67 +870,89 @@ final class AudioRuntimeCoordinator: ObservableObject {
             callbacks.profiles().first { $0.id == owner.publicSession.profileID }?.name ?? owner.appliedPlan.intent.name
         }
         let operation = performanceRecorder.begin("Deactivation", reason: reason, parent: parent)
-        phase("Retiring", status: .stopping)
+        phase("Retiring", status: .stopping, persist: true)
         if let owner = ownedSession {
             await retire(owner, restoreOutput: restoreOutput, operation: operation)
         }
         guard !terminated else { operation?.finish("terminated"); return }
         operation?.mark("physical output restoration complete")
-        try? await runtimeServices.sleep(.milliseconds(150))
+        phase("Waiting for post-stop settling", status: .stopping, persist: true)
+        try? await runtimeServices.sleep(0.15)
         guard !terminated else { operation?.finish("terminated"); return }
         operation?.mark("intentional post-stop delay")
+        phase("Updating stopped capture presentation", status: .stopping, persist: true)
         try? await runtimeServices.captureBackend.updatePresentation()
         var cleanupError: Error?
+        phase("Removing inactive profile endpoints", status: .stopping, persist: true)
         for attempt in 0..<10 where !terminated {
             do { try await runtimeServices.captureBackend.synchronizeProfiles(callbacks.profiles(), active: nil, visible: [], prepared: [:]); cleanupError = nil; break }
-            catch { cleanupError = error; if attempt < 9 { try? await runtimeServices.sleep(.milliseconds(75)) } }
+            catch { cleanupError = error; if attempt < 9 { try? await runtimeServices.sleep(0.075) } }
         }
         if let cleanupError { callbacks.reportMessage("EQ stopped, but its macOS audio device could not be updated: \(cleanupError.localizedDescription)") }
         ownedSession = nil
         operation?.mark("routing cleanup complete"); operation?.mark("inactive acknowledged")
         operation?.finish(cleanupError == nil ? "success" : "stopped with cleanup error")
         if !terminated, let profileName { runtimeServices.notifyDeactivation(profileName) }
-        publishSnapshot()
+        phase(cleanupError == nil ? "Inactive acknowledged" : "Stopped with endpoint cleanup error", status: .inactive, persist: true)
     }
     private func retire(_ owner: OwnedRuntimeSession, restoreOutput: Bool, operation: PerformanceOperation?) async {
         guard currentOwnershipID == owner.ownershipID else { return }
         if terminated { retireSynchronously(owner); return }
         owner.capture.holdAudibility()
         operation?.mark("outgoing audibility held")
+        phase("Preparing outgoing volume", status: .stopping, persist: true)
         await owner.capture.beginOutgoing()
         guard owns(owner.ownershipID) else { return }
         operation?.mark("volume handoff prepared")
         callbacks.retireOverlays(); perAppAudio.setPlaybackContext(nil)
         if owner.resources.remove(.observations) != nil { runtimeServices.stopObservations() }
+        phase("Stopping capture", status: .stopping, persist: true)
         await owner.capture.stopCapture()
         guard owns(owner.ownershipID) else { return }
         operation?.mark("transport stopped")
+        phase("Resetting per-app processing", status: .stopping, persist: true)
         await perAppAudio.resetRuntimeWithoutBlockingUI()
         guard owns(owner.ownershipID) else { return }
         operation?.mark("per-app runtime reset")
-        if owner.resources.contains(.pcm) { await runtimeServices.stopPCM(); owner.resources.remove(.pcm) }
+        if owner.resources.contains(.pcm) {
+            phase("Stopping PCM writer", status: .stopping, persist: true)
+            await runtimeServices.stopPCM(); owner.resources.remove(.pcm)
+        }
         guard owns(owner.ownershipID) else { return }
         operation?.mark("PCM writer stopped")
-        if owner.resources.contains(.engine) { await runtimeServices.closeEngineInput() }
+        if owner.resources.contains(.engine) {
+            phase("Closing processing input", status: .stopping, persist: true)
+            await runtimeServices.closeEngineInput()
+        }
         guard owns(owner.ownershipID) else { return }
         operation?.mark("Processing input closed")
-        if owner.resources.contains(.spectrum) { await runtimeServices.stopSpectrum(); owner.resources.remove(.spectrum) }
+        if owner.resources.contains(.spectrum) {
+            phase("Stopping spectrum observation", status: .stopping, persist: true)
+            await runtimeServices.stopSpectrum(); owner.resources.remove(.spectrum)
+        }
         guard owns(owner.ownershipID) else { return }
-        if owner.resources.contains(.engine) { await runtimeServices.stopEngine(); owner.resources.remove(.engine); runtimeServices.processingBackend.resetRuntime() }
+        if owner.resources.contains(.engine) {
+            phase("Stopping processing engine", status: .stopping, persist: true)
+            await runtimeServices.stopEngine(); owner.resources.remove(.engine); runtimeServices.processingBackend.resetRuntime()
+        }
         guard owns(owner.ownershipID) else { return }
         operation?.mark("engine stopped")
+        phase("Releasing output control", status: .stopping, persist: true)
         await owner.capture.stopControl()
         guard owns(owner.ownershipID) else { return }
         operation?.mark("volume bridge stopped")
         if restoreOutput {
             var restore = owner.restoration.physicalOutputUID
+            phase("Resolving output restoration", status: .stopping, persist: true)
             if let preferred = owner.restoration.previousDefaultUID,
                await runtimeServices.resolveOutput(preferred) != nil { restore = preferred }
             guard owns(owner.ownershipID) else { return }
             // Retirement and output discovery can suspend. Restore only while
             // macOS still selects this session's route, preserving a newer choice.
+            phase("Checking output selection before restoration", status: .stopping, persist: true)
             let selected = await runtimeServices.freshDefaultOutput()
             guard owns(owner.ownershipID), selected == owner.capture.selectionUID else { return }
+            phase("Restoring physical output", status: .stopping, persist: true)
             do { try await runtimeServices.setDefaultOutput(restore) }
             catch { callbacks.reportMessage("EQ stopped, but macOS could not switch back to the physical output: \(error.localizedDescription)") }
         }
@@ -1112,6 +1164,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
         endpointRequests.removeAll()
         callbacks.retireOverlays()
         if let owner = ownedSession ?? provisionalSession { retireSynchronously(owner) }
+        phase("Removing capture devices for termination", status: .stopping, persist: true)
         do { try runtimeServices.captureBackend.shutdownSynchronously() }
         catch { callbacks.reportMessage("Audio stopped, but its macOS devices could not be removed: \(error.localizedDescription)") }
         ownedSession = nil
@@ -1122,6 +1175,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
         activeTransaction?.rollbackContinuation?.resume(returning: .superseded)
         activeTransaction?.rollbackContinuation = nil; activeTransaction = nil
         pendingPersistence.removeAll()
+        phase("Synchronous shutdown complete", status: .inactive, persist: true)
         transition = nil; publishSnapshot()
     }
     private func retireSynchronously(_ owner: OwnedRuntimeSession) {
@@ -1130,18 +1184,35 @@ final class AudioRuntimeCoordinator: ObservableObject {
         let sync = runtimeServices.synchronous
         callbacks.retireOverlays(); perAppAudio.setPlaybackContext(nil)
         if owner.resources.remove(.observations) != nil { runtimeServices.stopObservations() }
+        phase("Stopping capture synchronously", status: .stopping, persist: true)
         owner.capture.stopCaptureSynchronously()
+        phase("Resetting per-app processing synchronously", status: .stopping, persist: true)
         perAppAudio.resetRuntime()
-        if owner.resources.remove(.pcm) != nil { sync.stopPCM() }
-        if owner.resources.contains(.engine) { sync.closeEngineInput() }
-        if owner.resources.remove(.spectrum) != nil { sync.stopSpectrum() }
-        if owner.resources.remove(.engine) != nil { sync.stopEngine(); runtimeServices.processingBackend.resetRuntime() }
+        if owner.resources.remove(.pcm) != nil {
+            phase("Stopping PCM writer synchronously", status: .stopping, persist: true)
+            sync.stopPCM()
+        }
+        if owner.resources.contains(.engine) {
+            phase("Closing processing input synchronously", status: .stopping, persist: true)
+            sync.closeEngineInput()
+        }
+        if owner.resources.remove(.spectrum) != nil {
+            phase("Stopping spectrum observation synchronously", status: .stopping, persist: true)
+            sync.stopSpectrum()
+        }
+        if owner.resources.remove(.engine) != nil {
+            phase("Stopping processing engine synchronously", status: .stopping, persist: true)
+            sync.stopEngine(); runtimeServices.processingBackend.resetRuntime()
+        }
+        phase("Releasing output control synchronously", status: .stopping, persist: true)
         owner.capture.stopControlSynchronously()
         // Termination can run before the MainActor receives a default-output
         // notification. Read HAL now so we restore our route without overriding
         // an output the user has already selected independently.
+        phase("Checking output selection for termination", status: .stopping, persist: true)
         if sync.readDefaultOutput() == owner.capture.selectionUID {
             let preferred = owner.restoration.previousDefaultUID ?? owner.restoration.physicalOutputUID
+            phase("Restoring physical output synchronously", status: .stopping, persist: true)
             do {
                 do { try sync.setDefaultOutput(preferred) }
                 catch {
@@ -1151,6 +1222,7 @@ final class AudioRuntimeCoordinator: ObservableObject {
                 }
             } catch { callbacks.reportMessage("Audio stopped, but macOS could not restore the physical output: \(error.localizedDescription)") }
         }
+        phase("Updating capture presentation synchronously", status: .stopping, persist: true)
         owner.capture.updatePresentationSynchronously()
     }
     func monitorRouting() async {
@@ -1185,7 +1257,8 @@ final class AudioRuntimeCoordinator: ObservableObject {
         guard let previous else { return }
         let added = current.subtracting(previous)
         let selected = runtimeServices.defaultOutput()
-        guard let uid = selected.flatMap({ added.contains($0) ? $0 : nil }) ?? added.sorted().first,
+        let hardwareAdded = Set(outputs.filter(\.selectsOnConnection).map(\.id)).intersection(added)
+        guard let uid = selected.flatMap({ added.contains($0) ? $0 : nil }) ?? hardwareAdded.sorted().first,
               uid != activePhysicalOutputUID else { return }
         pendingPhysicalOutputConnection = .init(uid: uid, generation: desiredRuntime.generation, defaultUID: selected)
     }
@@ -1262,6 +1335,12 @@ final class AudioRuntimeCoordinator: ObservableObject {
             if let outputUID = activePhysicalOutputUID,
                runtimeServices.hasSnapshot(), runtimeServices.cachedDevice(outputUID) == nil {
                 await deactivate(manual: false, restoreOutput: false, performanceReason: "deviceDisappeared")
+                return
+            }
+            if let owner = ownedSession, let device = runtimeServices.cachedDevice(owner.appliedPlan.hardwareEvidence.output.uid),
+               device.hardwareOutputIDs != owner.appliedPlan.hardwareFingerprint.reportedOutputIDs {
+                errorMessage = SpeakerTopologyError.hardwareLayoutChanged.localizedDescription
+                await deactivate(manual: false, performanceReason: "hardwareLayoutChanged")
                 return
             }
             if let owner = ownedSession, owner.capture.needsBindingRefresh {

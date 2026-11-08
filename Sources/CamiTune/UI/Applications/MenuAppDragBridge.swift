@@ -27,8 +27,7 @@ struct MenuAppDropIndicator: View {
         Rectangle().fill(Color.accentColor)
             .frame(height: 2)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: bottom ? .bottom : .top)
-            .background(highlightsArea ? Color.accentColor.opacity(0.10) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 6))
+            .background(RoundedRectangle(cornerRadius: 6).fill(highlightsArea ? Color.accentColor.opacity(0.10) : Color.clear))
             .opacity(target == nil ? 0 : 1)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
@@ -159,11 +158,6 @@ struct MenuAppDropBridge<Content: View>: NSViewRepresentable {
         view.coordinator = coordinator
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: DestinationView<Content>, context: Context) -> CGSize? {
-        guard let width = proposal.width, let height = proposal.height else { return nil }
-        return CGSize(width: width, height: height)
-    }
-
     final class DestinationView<Hosted: View>: NSView {
         let host: NSHostingView<Hosted>
         var applicationID: String?
@@ -178,7 +172,7 @@ struct MenuAppDropBridge<Content: View>: NSViewRepresentable {
             host = NSHostingView(rootView: rootView)
             // Every drop row has an explicit height and receives its width from
             // the list. Meter ticks must not recalculate intrinsic window sizes.
-            host.sizingOptions = []
+            if #available(macOS 13, *) { host.sizingOptions = [] }
             super.init(frame: .zero)
             host.translatesAutoresizingMaskIntoConstraints = false
             addSubview(host)

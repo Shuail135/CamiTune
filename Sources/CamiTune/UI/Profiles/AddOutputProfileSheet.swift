@@ -7,11 +7,88 @@ struct AddOutputDraft: Equatable {
     static let incompleteMessage = "Configure all required items before adding the profile."
     var profile = DeviceProfile(name: "", outputDeviceUID: "", outputDeviceName: "")
     var deviceType: ProfileEndpointKind?
-    var discovered: SpeakerTopology?
-    var connectedEndpoint: ProfileEndpointKind?
-    var leftOutput: Int?
-    var rightOutput: Int?
-    var selectedOutputs: Set<Int> = []
+    private(set) var discovered: SpeakerTopology?
+    private(set) var connectedEndpoint: ProfileEndpointKind?
+    private var personalTopology: SpeakerTopology?
+
+    var leftOutput: Int? {
+        get { displayedInterfaceTopology?.stereoOutput(for: .left) }
+        set { assignStereoOutput(newValue, to: .left) }
+    }
+    var rightOutput: Int? {
+        get { displayedInterfaceTopology?.stereoOutput(for: .right) }
+        set { assignStereoOutput(newValue, to: .right) }
+    }
+    var selectedOutputs: Set<Int> {
+        get { profile.speakerTopology?.enabledOutputIndices ?? [] }
+        set {
+            guard var topology = profile.speakerTopology else { return }
+            for endpoint in topology.endpoints {
+                topology.setOutputEnabled(endpoint.id.channelIndex, enabled: newValue.contains(endpoint.id.channelIndex), confirmation: .unknown)
+            }
+            profile.speakerTopology = topology
+        }
+    }
+    private var interfaceTopology: SpeakerTopology? {
+        connectedEndpoint == .speakers ? profile.speakerTopology : personalTopology
+    }
+    private var displayedInterfaceTopology: SpeakerTopology? {
+        guard let topology = interfaceTopology else { return nil }
+        return connectedEndpoint == .speakers ? SpeakerLayoutGeometry.acceptingDefaultRoles(topology) : topology
+    }
+
+    private mutating func assignStereoOutput(_ channel: Int?, to role: ChannelRole) {
+        guard var topology = displayedInterfaceTopology else { return }
+        for endpoint in topology.endpoints where endpoint.role == role && endpoint.id.channelIndex != channel {
+            topology.setOutputEnabled(endpoint.id.channelIndex, enabled: false)
+        }
+        topology.assignStereoOutput(channel, to: role)
+        if connectedEndpoint == .speakers { profile.speakerTopology = topology }
+        else { personalTopology = topology }
+    }
+
+    mutating func selectConnectedEndpoint(_ endpoint: ProfileEndpointKind?) {
+        // The pair controls precede the endpoint picker. On its first selection,
+        // carry that explicit pair into the speaker map; later switches restore
+        // the separate speaker/personal drafts without copying hidden choices.
+        let initialPair = connectedEndpoint == nil ? [leftOutput, rightOutput] : []
+        connectedEndpoint = endpoint
+        if endpoint == .speakers, initialPair.count == 2 {
+            if let left = initialPair[0] { assignStereoOutput(left, to: .left) }
+            if let right = initialPair[1] { assignStereoOutput(right, to: .right) }
+        }
+    }
+
+    mutating func acceptDiscovery(_ found: SpeakerTopology) throws {
+        try found.validate()
+        guard found.deviceUID == profile.outputDeviceUID else { throw SpeakerTopologyError.invalidDeviceUID }
+        let unchanged = discovered.map { (try? $0.validateHardware(found)) != nil } ?? false
+        discovered = found
+        if unchanged {
+            profile.speakerTopology?.sampleRate = Double(profile.sampleRate)
+            personalTopology?.sampleRate = Double(profile.sampleRate)
+            return
+        }
+        var speakers = SpeakerLayoutGeometry.arrangedForEditing(found)
+        speakers.sampleRate = Double(profile.sampleRate)
+        if deviceType == .audioInterface {
+            for index in speakers.endpoints.indices { speakers.endpoints[index].connectionState = .disabledByUser }
+        }
+        profile.speakerTopology = speakers
+        profile.spatialSettings = .init()
+        profile.spatialSettings.seating = SpatialSeatingCalibration(outputDeviceUID: found.deviceUID, name: "Default")
+        profile.multichannel = .init()
+        profile.physicalChannelProcessing = [:]
+        var personal = found
+        personal.sampleRate = Double(profile.sampleRate)
+        personal.layoutTemplateID = nil
+        for index in personal.endpoints.indices {
+            personal.endpoints[index].role = .unknown
+            personal.endpoints[index].connectionState = .disabledByUser
+        }
+        personal.refreshStandardGroups()
+        personalTopology = personal
+    }
 
     var needsSpeakers: Bool { deviceType == .speakers || (deviceType == .audioInterface && connectedEndpoint == .speakers) }
     var canAdd: Bool { (try? candidate()) != nil }
@@ -22,9 +99,9 @@ struct AddOutputDraft: Equatable {
         profile.speakerTopology = nil
         profile.spatialSettings = SpatialRenderSettings()
         discovered = nil
-        leftOutput = nil
-        rightOutput = nil
-        selectedOutputs = []
+        personalTopology = nil
+        profile.multichannel = .init()
+        profile.physicalChannelProcessing = [:]
     }
 
     mutating func selectDevice(_ device: AudioDeviceInfo, name: String) {
@@ -51,17 +128,19 @@ struct AddOutputDraft: Equatable {
             candidate.physicalChannelProcessing = [:]
         }
         if deviceType == .audioInterface {
-            guard let discovered, let connectedEndpoint else {
+            guard let connectedEndpoint, var topology = interfaceTopology else {
                 throw ProfileSettingsError.runtime(Self.incompleteMessage)
             }
-            let assignment = AudioInterfaceConfiguration(deviceUID: discovered.deviceUID,
-                hardwareChannelCount: discovered.declaredChannelCount,
-                outputChannels: selectedOutputs.isEmpty ? [leftOutput, rightOutput].compactMap { $0 } : selectedOutputs.sorted(), connectedEndpoint: connectedEndpoint)
+            topology.sampleRate = Double(candidate.sampleRate)
+            let assignment = AudioInterfaceConfiguration(hardware: HardwareOutputConfiguration(
+                deviceUID: topology.deviceUID, hardwareChannelCount: topology.declaredChannelCount,
+                enabledHardwareOutputs: topology.enabledOutputIndices), connectedEndpoint: connectedEndpoint)
             try assignment.validate(deviceUID: candidate.outputDeviceUID)
             candidate.audioInterface = assignment
+            candidate.speakerTopology = topology
         }
         if needsSpeakers {
-            guard var topology = candidate.speakerTopology,
+            guard let topology = candidate.speakerTopology,
                   topology.deviceUID == candidate.outputDeviceUID,
                   topology.sampleRate == Double(candidate.sampleRate),
                   let seat = candidate.spatialSettings.seating,
@@ -71,11 +150,6 @@ struct AddOutputDraft: Equatable {
                   seat.leftDistanceMeters > 0, seat.rightDistanceMeters > 0 else {
                 throw ProfileSettingsError.runtime(Self.incompleteMessage)
             }
-            if let assignment = candidate.audioInterface, deviceType == .audioInterface {
-                for index in topology.endpoints.indices where !assignment.hardware.enabledHardwareOutputs.contains(topology.endpoints[index].id.channelIndex) {
-                    topology.endpoints[index].connectionState = .disabledByUser
-                }
-            }
             try topology.validate()
             let enabled = topology.endpoints.filter { $0.connectionState != .disabledByUser }
             guard !enabled.isEmpty, enabled.allSatisfy({ $0.role != .unknown || $0.position != nil }) else {
@@ -83,7 +157,7 @@ struct AddOutputDraft: Equatable {
             }
             candidate.speakerTopology = SpeakerLayoutGeometry.acceptingDefaultRoles(topology)
         }
-        try candidate.migrateInterfaceTopology()
+        if deviceType == .audioInterface { _ = try candidate.validatedInterfaceOutputIndices() }
         return candidate
     }
 }
@@ -101,7 +175,7 @@ struct AddOutputProfileSheet: View {
     @State private var movingForward = true
     @State private var busy = false
     @State private var message: String?
-    @FocusState private var nameFocused: Bool
+    @State private var nameFocused = false
     @State private var editingName = false
     @State private var nameHovered = false
     @State private var deviceTypePickerWidth: CGFloat?
@@ -162,11 +236,11 @@ struct AddOutputProfileSheet: View {
             .clipped()
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: step)
             if let message {
-                Text(message).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                SelectableText(message, font: .preferredFont(forTextStyle: .callout), color: .systemRed)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 24).padding(.bottom, 12)
             }
             if !connected && !draft.profile.outputDeviceUID.isEmpty {
-                Text("Connect the selected output device to continue.").font(.callout).foregroundStyle(.secondary)
+                Text("Connect the selected output device to continue.").font(.callout).foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 24).padding(.bottom, 12)
             }
         } actions: {
@@ -182,7 +256,7 @@ struct AddOutputProfileSheet: View {
                 guard canProceed else { incomplete(); return }
                 if step == lastStep { add() } else { move(to: step + 1) }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PrimaryActionButtonStyle())
             .keyboardShortcut(.defaultAction)
             .disabled(!canProceed)
             .uiInteractionAnchor("add-output-next")
@@ -190,7 +264,7 @@ struct AddOutputProfileSheet: View {
         .modifier(EditorHistoryCommands(history: history, isExclusive: true))
         .environment(\.undoCommandRouter, state.undoCommands)
         .disabled(busy)
-        .interactiveDismissDisabled(busy)
+        .sheetDismissalBlocked(busy)
         .onAppear {
             history.current = draft
             history.restore = { restored in
@@ -225,18 +299,18 @@ struct AddOutputProfileSheet: View {
                 }
             }
             // The device list can overflow independently of the page.
-            .environment(\.isScrollEnabled, true)
+
             .listStyle(.inset)
             .frame(height: min(228, max(163, CGFloat(audio.physicalOutputDevices.count) * 40 + 12)))
-            .overlay {
+            .overlay(Group {
                 if audio.physicalOutputDevices.isEmpty {
                     VStack(spacing: 10) {
-                        Image(systemName: "speaker.slash").font(.largeTitle).foregroundStyle(.secondary)
+                        Image(systemName: "speaker.slash").font(.largeTitle).foregroundColor(.secondary)
                         Text("No Audio Outputs").font(.headline)
-                        Text("Connect an audio device, then click Refresh.").foregroundStyle(.secondary)
+                        Text("Connect an audio device, then click Refresh.").foregroundColor(.secondary)
                     }.allowsHitTesting(false)
                 }
-            }
+            })
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .accessibilityLabel("Available audio outputs")
             HStack {
@@ -265,12 +339,12 @@ struct AddOutputProfileSheet: View {
                         Spacer()
                         Group {
                             if editingName {
-                                TextField("Choose an output", text: $draft.profile.name)
+                                EditableTextField("Choose an output", text: $draft.profile.name, isFocused: $nameFocused, style: .plain, onCommit: { nameFocused = false })
                                     .labelsHidden()
                                     .textFieldStyle(.plain)
                                     .multilineTextAlignment(.leading)
-                                    .focused($nameFocused)
-                                    .onSubmit { nameFocused = false }
+
+
                                     .accessibilityLabel("Profile Name")
                             } else {
                                 Button { beginNameEdit() } label: {
@@ -284,14 +358,14 @@ struct AddOutputProfileSheet: View {
                             }
                         }
                         .frame(width: deviceTypePickerWidth, alignment: .leading)
-                        .background {
+                        .background(Group {
                             WizardNameEditBoundary(isEditing: editingName) {
                                 nameFocused = false
                                 editingName = false
                             }
-                        }
+                        })
                         Image(systemName: "pencil")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundColor(.secondary)
                             .frame(width: pencilWidth)
                             .opacity(nameHovered || nameFocused ? 1 : 0.6)
                             .accessibilityHidden(true)
@@ -308,11 +382,11 @@ struct AddOutputProfileSheet: View {
                         Text("Device Type")
                         Spacer()
                         WizardDeviceTypePicker(selection: $draft.deviceType).fixedSize()
-                            .background {
+                            .background(Group {
                                 GeometryReader { picker in
                                     Color.clear.preference(key: OutputProfilePickerWidthKey.self, value: picker.size.width)
                                 }
-                            }
+                            })
                             .padding(.trailing, pencilColumnWidth)
                     }.padding(.horizontal, 12).padding(.vertical, 10)
                 }
@@ -378,23 +452,23 @@ struct AddOutputProfileSheet: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 14) {
                         Text("Choose the stereo channel pair and the device connected to it.")
-                            .font(.callout).foregroundStyle(.secondary)
-                        Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 12) {
+                            .font(.callout).foregroundColor(.secondary)
+                        AlignedTable(horizontalSpacing: 20, verticalSpacing: 12) {
                             if let topology = draft.discovered {
-                                GridRow {
+                                AlignedTableRow {
                                     Text("Left Channel")
                                     Picker("Left Channel", selection: $draft.leftOutput) { outputOptions(topology) }
                                         .labelsHidden()
                                 }
-                                GridRow {
+                                AlignedTableRow {
                                     Text("Right Channel")
                                     Picker("Right Channel", selection: $draft.rightOutput) { outputOptions(topology) }
                                         .labelsHidden()
                                 }
                             }
-                            GridRow {
+                            AlignedTableRow {
                                 Text("Connected Device")
-                                Picker("Connected Device", selection: $draft.connectedEndpoint) {
+                                Picker("Connected Device", selection: Binding(get: { draft.connectedEndpoint }, set: { draft.selectConnectedEndpoint($0) })) {
                                     Text("Choose what is connected").tag(ProfileEndpointKind?.none)
                                     ForEach(ProfileEndpointKind.allCases.filter { $0 != .audioInterface }, id: \.self) {
                                         Text($0.displayName).tag(Optional($0))
@@ -430,12 +504,12 @@ struct AddOutputProfileSheet: View {
                             else { history.endGesture(draft) }
                         })
                 } else if !busy {
-                    Text("Channels could not be discovered. Check the connection and try again.").foregroundStyle(.secondary)
+                    Text("Channels could not be discovered. Check the connection and try again.").foregroundColor(.secondary)
                     Button("Discover Channels") { discover() }
                 }
             } else if draft.deviceType != .audioInterface {
                 Text("No additional configuration is required for \(draft.deviceType?.displayName ?? "this output").")
-                Text("The profile starts in Direct. You can adjust its processing after adding it.").foregroundStyle(.secondary)
+                Text("The profile starts in Direct. You can adjust its processing after adding it.").foregroundColor(.secondary)
             }
     }
 
@@ -448,7 +522,7 @@ struct AddOutputProfileSheet: View {
     private var discoveryControls: some View {
         HStack {
             if let discovered = draft.discovered {
-                Text("\(discovered.declaredChannelCount) hardware channels").font(.caption).foregroundStyle(.secondary)
+                Text("\(discovered.declaredChannelCount) hardware channels").font(.caption).foregroundColor(.secondary)
             }
             Spacer()
             Button("Refresh Channels") { discover() }.controlSize(.small)
@@ -475,13 +549,9 @@ struct AddOutputProfileSheet: View {
             defer { busy = false }
             do {
                 guard let device = await state.coreAudioService.resolveDeviceWithoutBlockingUI(uid: uid) else { throw AppState.AppError.outputMissing(draft.profile.outputDeviceName) }
-                var topology = try await state.coreAudioService.probeSpeakerTopology(uid: device.id)
+                let topology = try await state.coreAudioService.probeSpeakerTopology(uid: device.id)
                 guard draft.profile.outputDeviceUID == uid else { return }
-                topology.sampleRate = Double(draft.profile.sampleRate)
-                draft.discovered = topology
-                draft.profile.speakerTopology = SpeakerLayoutGeometry.arrangedForEditing(topology)
-                draft.profile.spatialSettings.seating = SpatialSeatingCalibration(outputDeviceUID: uid, name: "Default")
-                draft.leftOutput = nil; draft.rightOutput = nil
+                try draft.acceptDiscovery(topology)
             } catch { message = error.localizedDescription }
         }
     }
@@ -505,9 +575,6 @@ struct WizardDeviceTypePicker: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
     func makeNSView(context: Context) -> NSPopUpButton { context.coordinator.makeButton() }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> CGSize? {
-        nsView.intrinsicContentSize
-    }
     func updateNSView(_ button: NSPopUpButton, context: Context) {
         context.coordinator.selection = $selection
         context.coordinator.updateSelection(button)

@@ -58,7 +58,7 @@ struct PersonalSpatialEditorView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(profile.effectiveEndpointKind == .iem ? "Earphones" : "Headphones")
-                Text(draft.playbackDevice.flatMap { $0.id == nil ? nil : $0.name } ?? "My model isn’t listed").foregroundStyle(.secondary).lineLimit(1)
+                Text(draft.playbackDevice.flatMap { $0.id == nil ? nil : $0.name } ?? "My model isn’t listed").foregroundColor(.secondary).lineLimit(1)
                 Spacer()
                 Button("Set Up…", action: openSetup)
                     .disabled(state.spatialCalibrationContext != nil)
@@ -66,13 +66,13 @@ struct PersonalSpatialEditorView: View {
             }
             HStack {
                 Text(draft.playbackDevice?.resolvedType.summary ?? "Device type not identified")
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
                 Spacer()
                 Button("Change type…", action: openSetup)
                     .disabled(state.spatialCalibrationContext != nil)
             }.font(.caption)
             if let device = draft.playbackDevice {
-                Text(device.typeProvenance).font(.caption).foregroundStyle(.secondary)
+                Text(device.typeProvenance).font(.caption).foregroundColor(.secondary)
             }
             JoinedSegmentedControl(options: PersonalSpatialExperience.allCases, selection: Binding(
                 get: { draft.experience }, set: { draft.experience = $0; resetViewport(); commit() }
@@ -80,10 +80,10 @@ struct PersonalSpatialEditorView: View {
                 .accessibilityLabel("Spatial experience")
                 .uiInteractionAnchor("personal-spatial-experience")
             Text("Automatic input: up to \(SpatialSourceFormat(layout: draft.inputLayout).displayName) · \(activeInputChannelCount) channels with recent signal → headphones")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
             if draft.experience == .gaming {
                 Text("Keep the game's directions and timing intact.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
                 Picker("Game audio", selection: Binding(get: { draft.gamingRendering }, set: {
                     draft.gamingRendering = $0; commit()
                 })) {
@@ -91,16 +91,16 @@ struct PersonalSpatialEditorView: View {
                 }
                 Text("System audio supplies decoded channels, without game-object positions."
                     + (preservesHeadphoneMix ? " Spatial filtering is bypassed." : " Rendering declared speaker channels."))
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             } else if draft.experience == .movie {
                 Text("Channel rendering with optional dialogue and loud-moment control. Adaptive layout expansion is not available yet.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if !preservesHeadphoneMix {
             HStack {
                 Text("Listening distance")
                 if adjustable {
-                    if distanceSelection == nil { Text("Custom").font(.caption).foregroundStyle(.secondary) }
+                    if distanceSelection == nil { Text("Custom").font(.caption).foregroundColor(.secondary) }
                     Spacer()
                     JoinedSegmentedControl(options: ListeningDistance.allCases.map(Optional.some), selection: Binding(
                         get: { distanceSelection }, set: { if let preset = $0 { loadDistance(preset); resetViewport(); commit() } }
@@ -119,7 +119,7 @@ struct PersonalSpatialEditorView: View {
                         .uiInteractionAnchor("personal-spatial-distance")
                 } else {
                     Spacer()
-                    Text("1.5 m · measured room").foregroundStyle(.secondary)
+                    Text("1.5 m · measured room").foregroundColor(.secondary)
                 }
             }
             HStack {
@@ -132,7 +132,7 @@ struct PersonalSpatialEditorView: View {
                     if active { state.pcmRouter.setPersonalRoom(draft.room) }
                 }), in: 0...1, step: 0.01, style: .preamp, onEditingChanged: { if !$0 { commit() } })
                     .accessibilityLabel("Room")
-                Text("\(Int((draft.room * 100).rounded()))%").monospacedDigit().frame(width: 38, alignment: .trailing)
+                Text("\(Int((draft.room * 100).rounded()))%").monospacedDigits().frame(width: 38, alignment: .trailing)
             }
             }
             if draft.experience == .movie {
@@ -141,31 +141,31 @@ struct PersonalSpatialEditorView: View {
                 HStack {
                     Text("Apps")
                     Spacer()
-                    Text(scopeLabel).foregroundStyle(.secondary)
+                    Text(scopeLabel).foregroundColor(.secondary)
                     Button(draft.movie.scope == .allApplications ? "Choose…" : "Change…") { sheet = .applications }
                         .accessibilityLabel("Choose Movie apps")
                 }
                 if active {
-                    Text(movieAnalysis.title).font(.caption).foregroundStyle(.secondary)
+                    Text(movieAnalysis.title).font(.caption).foregroundColor(.secondary)
                     if case .unavailable(let reason) = movieAnalysis {
-                        Text(reason).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                        Text(reason).font(.caption).foregroundColor(.orange).fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
             if !preservesHeadphoneMix {
-            DisclosureGroup("Fine-tune", isExpanded: $fineTune) {
+            SectionDisclosure("Fine-tune", isExpanded: $fineTune) {
                 fineTuneControls
-            }.disclosureGroupStyle(SectionDisclosureStyle())
+            }
                 .uiInteractionAnchor("personal-spatial-fine-tune")
             }
 
             if pendingSettings != nil || (active && preparation == .preparing) {
-                Text("Preparing…").font(.caption).foregroundStyle(.secondary)
+                Text("Preparing…").font(.caption).foregroundColor(.secondary)
             }
             if active, !preservesHeadphoneMix, case .unavailable(let reason) = preparation {
-                Text(reason).font(.caption).foregroundStyle(.orange)
+                Text(reason).font(.caption).foregroundColor(.orange)
             }
-            if let error { Text(error).font(.caption).foregroundStyle(.orange) }
+            if let error { Text(error).font(.caption).foregroundColor(.orange) }
 
         }
         .font(.callout)
@@ -339,7 +339,7 @@ struct PersonalSpatialEditorView: View {
                     .disabled(!canAudition)
             }
             if listening, let source = listeningSources.first(where: { $0.id.rawValue == selected }) {
-                Text(source.origin.title).font(.caption).foregroundStyle(.secondary)
+                Text(source.origin.title).font(.caption).foregroundColor(.secondary)
             }
             if adjustable {
                 valueSlider("Azimuth", value: Binding(get: { Double(selectedPosition.azimuthDegrees) }, set: { moveSelected(azimuth: Float($0)) }),
@@ -355,11 +355,11 @@ struct PersonalSpatialEditorView: View {
             } else {
                 Text(String(format: "%+.0f° azimuth · %.2f m · %+.0f° elevation", selectedPosition.azimuthDegrees,
                     selectedPosition.distanceMeters ?? 0, selectedPosition.elevationDegrees))
-                    .foregroundStyle(.secondary).monospacedDigit()
+                    .foregroundColor(.secondary).monospacedDigits()
             }
             } else {
                 Text("This input has no directional sources to place.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundColor(.secondary)
             }
             if !listening && draft.scene.layout.hasSubwoofer {
                 valueSlider("Bass crossover", value: Binding(get: { Double(draft.scene.crossoverHz) }, set: { draft.scene.crossoverHz = Float($0) }),
@@ -367,7 +367,7 @@ struct PersonalSpatialEditorView: View {
                 if adjustable, let recommended = draft.scene.recommendedCrossoverHz {
                     HStack {
                         Text(String(format: "Suggested from the speakers' measured bass extension: %.0f Hz", recommended))
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundColor(.secondary)
                         Spacer()
                         Button("Use suggestion") { draft.scene.crossoverHz = recommended; commit() }
                     }
@@ -389,7 +389,12 @@ struct PersonalSpatialEditorView: View {
                     }
                 }
                 Picker("Detection", selection: Binding(get: { draft.movie.detector }, set: { draft.movie.detector = $0; commit() })) {
-                    ForEach(MovieDetector.allCases, id: \.self) { Text($0.title).tag($0) }
+                    ForEach(MovieDetector.allCases.filter { MovieAnalysisSession.supports($0) }, id: \.self) {
+                        Text($0.title).tag($0)
+                    }
+                    if !MovieAnalysisSession.supports(draft.movie.detector) {
+                        Text("Local AI (requires macOS 12)").tag(MovieDetector.localAI).disabled(true)
+                    }
                 }
                 Picker("Dynamics", selection: Binding(get: { draft.movie.dynamics }, set: { draft.movie.dynamics = $0; commit() })) {
                     ForEach(MovieDynamics.allCases, id: \.self) { Text($0.title).tag($0) }
@@ -416,7 +421,7 @@ struct PersonalSpatialEditorView: View {
     private var speakerSetup: some View {
         VStack(alignment: .leading, spacing: 10) {
             if draft.scene.layout.hasSurrounds || draft.scene.layout == .source {
-                DisclosureGroup("Customize speakers", isExpanded: $customizeSpeakers) {
+                SectionDisclosure("Customize speakers", isExpanded: $customizeSpeakers) {
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(VirtualSpeakerGroup.allCases.filter { $0 != .front && $0.roles.contains(where: draft.scene.layout.roles.contains) }, id: \.self) {
                             speakerModelRow($0)
@@ -428,7 +433,7 @@ struct PersonalSpatialEditorView: View {
                             }
                         }
                     }.padding(.top, 6)
-                }.disclosureGroupStyle(SectionDisclosureStyle())
+                }
                     .uiInteractionAnchor("personal-speaker-customize")
             }
         }
@@ -440,8 +445,8 @@ struct PersonalSpatialEditorView: View {
         return VStack(alignment: .leading, spacing: 3) {
             HStack {
                 Text(group == .front ? "Speakers" : group.title).frame(width: 105, alignment: .leading)
-                Text(sound?.name ?? "Neutral Monitor").foregroundStyle(.secondary).lineLimit(1)
-                if matches { Text("Matching").font(.caption).foregroundStyle(.secondary) }
+                Text(sound?.name ?? "Neutral Monitor").foregroundColor(.secondary).lineLimit(1)
+                if matches { Text("Matching").font(.caption).foregroundColor(.secondary) }
                 Spacer(minLength: 4)
                 Button("Change…") { sheet = .speaker(group) }
                     .accessibilityLabel(group == .front ? "Change speaker model" : "Change \(group.title.lowercased()) model")
@@ -451,7 +456,7 @@ struct PersonalSpatialEditorView: View {
                 }
             }
             if let specs = sound?.specifications, !specs.summary.isEmpty {
-                Text(specs.summary).font(.caption).foregroundStyle(.secondary)
+                Text(specs.summary).font(.caption).foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -527,7 +532,7 @@ struct PersonalSpatialEditorView: View {
                 if let help { DeviceCorrectionHelpIcon(title: title, message: help) }
             }.frame(width: 145, alignment: .leading)
             SteppedValueSlider(value: value, in: range, step: step, style: .preamp, onEditingChanged: { if !$0 { commit() } }).accessibilityLabel(title)
-            Text(text).monospacedDigit().frame(width: 65, alignment: .trailing)
+            Text(text).monospacedDigits().frame(width: 65, alignment: .trailing)
         }.uiInteractionAnchor("personal-spatial-\(title)")
     }
     private func moveSelected(azimuth: Float? = nil, distance: Float? = nil) {

@@ -169,12 +169,12 @@ struct SpatialDeviceSelectionContent: View {
                     case .idle, .loading:
                         ProgressView("Loading models…").controlSize(.small)
                     case .failed(let error):
-                        Text(error).font(.callout).foregroundStyle(.orange)
+                        Text(error).font(.callout).foregroundColor(.orange)
                         Button("Retry models") { selection.retryCatalog() }
                     case .ready:
                         if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                            selection.results(matching: query).isEmpty {
-                            Text("No matching models. Try a brand or a shorter name.").foregroundStyle(.secondary)
+                            Text("No matching models. Try a brand or a shorter name.").foregroundColor(.secondary)
                         }
                     }
                     HStack {
@@ -234,7 +234,7 @@ struct SpatialSoundSignatureContent: View {
                 ProgressView("Loading sound signatures…").controlSize(.small)
             case .failed(let entry, let error):
                 HStack {
-                    Text("Sound signatures couldn’t be loaded.").foregroundStyle(.secondary)
+                    Text("Sound signatures couldn’t be loaded.").foregroundColor(.secondary)
                     Button("Retry") { selection.select(entry) }
                     AutoEQDeviceInfoIcon(message: error)
                 }
