@@ -173,7 +173,7 @@ else
         CAMILLADSP_SLICES=()
         for target in aarch64-apple-darwin x86_64-apple-darwin; do
             RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-mmacosx-version-min=$MIN_MACOS" \
-                cargo build --release --locked --target "$target" --manifest-path "$CAMILLADSP_SOURCE/Cargo.toml"
+                cargo build --release --target "$target" --manifest-path "$CAMILLADSP_SOURCE/Cargo.toml"
             CAMILLADSP_SLICES+=("$CAMILLADSP_SOURCE/target/$target/release/camilladsp")
         done
         /usr/bin/lipo -create "${CAMILLADSP_SLICES[@]}" -output "$CAMILLADSP_BINARY"
