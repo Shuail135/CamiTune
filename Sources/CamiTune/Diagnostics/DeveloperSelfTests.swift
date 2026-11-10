@@ -187,7 +187,7 @@ enum DeveloperSelfTests {
         try diagnosticRequire(!baseline.samples.isEmpty && baseline.samples.allSatisfy { $0.rateMatch != nil },
             "Writer rate evidence missing from detailed tracing")
         for name in ["Per-client processing", "Mixer policy wait", "Mixer emission work", "PCM queue residence",
-                     "Rendering (including analysis/reset)", "Resampling/rate-match", "System master", "Payload preparation", "Pipe write", "Receipt → Camilla input"] {
+                     "Rendering (including analysis/reset)", "Resampling/rate-match", "System master", "Payload preparation", "Processing sink write", "Receipt → sink write completion"] {
             try diagnosticRequire(baseline.audio[name]?.sampleCount ?? 0 > 0, "Missing timing stage: \(name)")
         }
         baseline.overheadComparison = .init(workload: "48 × 512-frame packets at 48 kHz, 2 channels; file sink; simulated transport receipt; no hardware or CamillaDSP", identicalPCM: off.bytes == on.bytes,

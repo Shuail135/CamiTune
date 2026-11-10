@@ -206,7 +206,9 @@ final class AppState: NSObject, ObservableObject {
         self.coreAudioService = audio
         self.coreAudio = audio.snapshots
         self.suppliedCaptureBackend = captureBackend
-        self.processingBackend = runtimeServices?.processingBackend ?? processingBackend ?? CamillaDSPController(manager: CamillaDSPManager(), binary: dependencies.camillaDSPBinary)
+        // The engine belongs to this app lifetime; preference changes apply at the next launch.
+        self.processingBackend = runtimeServices?.processingBackend ?? processingBackend
+            ?? AudioProcessingEngine.selectedForLaunch(defaults: profiles.userDefaults).makeBackend(binary: dependencies.camillaDSPBinary)
         self.profiles = profiles
         self.perAppAudio = perAppAudio
         self.dependencies = dependencies

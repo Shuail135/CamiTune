@@ -205,6 +205,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
             guard let self else { return }
             self.stateLock.lock()
             self.clientRegistry.recordWorkspace(running: running, audio: audio)
+            // Retain packet owners across registry gaps, but not process exit.
+            self.observedAudioSourcesByKey = self.observedAudioSourcesByKey.filter {
+                $0.value.processID <= 0 || PerAppClientRegistry.isProcessRunning($0.value.processID)
+            }
             self.presentationRevision &+= 1
             self.stateLock.unlock()
             self.presentationPublisher.request(.immediate)
@@ -749,7 +753,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
         audioLock.unlock()
         if let performance, let processingCompleted {
             performance.capture.append(.packet(.init(identity: performance.identity, received: performance.received,
-                processed: processingCompleted, timeline: work, reorder: nil)))
+                processed: processingCompleted, timeline: work, reorder: nil,
+                deliveryStarted: performance.deliveryStarted, policyTick: performance.policyTick,
+                recordPrepared: performance.recordPrepared, completion: performance.completion,
+                producer: .init(clientID: packet.clientID, processID: packet.processID))))
         }
 
         var presentationObservation: AppPresentationObservation?
@@ -793,6 +800,10 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
     /// Called only by the transport reader after ordered producer evidence has
     /// closed this interval. Per-client DSP consumes each released slice once.
     func ingestCompletedInterval(_ interval: ProducerCompletedInterval) throws -> PCMFrame {
+        // One interval observation before policy/storage work. A contribution's
+        // capture may begin mid-interval, so do not inspect only its first source.
+        let deliveryStarted = interval.contributions.contains { $0.performance != nil }
+            ? PerformanceClock.now() : nil
         // A scope/mode edit becomes effective at one completed interval boundary.
         stateLock.lock()
         let policy = (context: playbackContext, settings: settingsStore.snapshot.settings)
@@ -811,6 +822,7 @@ final class PerAppAudioController: ObservableObject, @unchecked Sendable {
                 interleaved: source.samples, channelCount: source.channels, sampleRate: source.rate,
                 channelLayout: source.layout)
             var performance = source.performance
+            performance?.deliveryStarted = deliveryStarted
             performance?.identity.startSampleTime = source.start
             performance?.identity.frameCount = source.frames
             let accepted = try processApplicationPacket(packet, streamEpoch: interval.epoch, performance: performance, intervalPolicy: policy) { processed in

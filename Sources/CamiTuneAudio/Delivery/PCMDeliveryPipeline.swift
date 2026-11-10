@@ -54,6 +54,11 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
     private var pluginProcessor: (any PluginAudioProcessor)?
     private var pluginResetNeeded = true
     private var pluginTailFrames = 0
+    // Writer-owned scheduling receipt from the sink's local DSP tail.
+    private var processingTail: PCMOutputTailState = .complete
+    // A receipt only: command state and acknowledgement belong to the sink.
+    // condition coalesces notifications without reading its mutable DSP state.
+    private var sinkControlPending = false
     private var pluginProtection = PluginOutputProtection()
     private var pluginWasFailing = false
     private var pluginWasActive = false
@@ -302,16 +307,25 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
             recordDeliveryFailure("Audio paused: invalid prepared backend chunk size.")
             return
         }
-        guard sink != nil else {
+        guard let sink else {
             recordWriteFailure()
             return
         }
+
+        sink.setControlWakeup { [weak self] in self?.requestSinkControl() }
 
         let thread = Thread { [weak self] in self?.run() }
         thread.name = "CamiTune PCM Output Writer"
         thread.qualityOfService = .userInteractive
         worker = thread
         thread.start()
+    }
+
+    private func requestSinkControl() {
+        condition.lock(); defer { condition.unlock() }
+        guard !stopping, !workerFinished, sink != nil else { return }
+        sinkControlPending = true
+        condition.signal()
     }
 
     package func beginSpatialCalibration(id: UUID) -> Bool {
@@ -441,12 +455,17 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
         // or freeing memory beneath the render callback.
         let performance = performanceSource.snapshot()
         condition.lock()
-        sink?.cancel()
         stopping = true
+        let retiring = sink
         calibrationID = nil
         calibrationPlayback = nil
         resetQueue(reason: .runtimeReset, performance: performance)
         condition.broadcast()
+        condition.unlock()
+        // Cancellation can publish a final control notification. Never call a
+        // sink while holding the condition that its notification must acquire.
+        retiring?.cancel()
+        condition.lock()
         let deadline = Date().addingTimeInterval(0.5)
         while !workerFinished, condition.wait(until: deadline) {}
         // A timed-out writer retains its sink until the write finishes or
@@ -474,6 +493,7 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
             condition.lock()
             let retired = sink; sink = nil
             condition.unlock()
+            retired?.setControlWakeup(nil)
             retired?.finish()
             condition.lock()
             workerFinished = true
@@ -488,7 +508,7 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
                 producerEnded && calibrationID == nil && !measurementHold
                     && pluginProcessor?.requiresContinuousRendering == true
             }
-            while queue.isEmpty && calibrationPlayback == nil && pendingPersonalBank == nil && pluginTailFrames == 0 && !stopping && !instrumentClockNeeded() && !wasGeneratingInstrument {
+            while queue.isEmpty && calibrationPlayback == nil && pendingPersonalBank == nil && !sinkControlPending && pluginTailFrames == 0 && processingTail == .complete && !stopping && !instrumentClockNeeded() && !wasGeneratingInstrument {
                 condition.wait()
             }
             // A test owns a stable scene until its final faded block. Admit the
@@ -521,6 +541,13 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
                 condition.unlock()
                 return
             }
+            if sinkControlPending {
+                sinkControlPending = false
+                condition.unlock()
+                do { processingTail = try sink.processPendingControl() }
+                catch { failWrite(error); return }
+                continue
+            }
             if queue.isEmpty, calibrationPlayback == nil, instrumentClockNeeded() {
                 let now = DispatchTime.now().uptimeNanoseconds
                 if !sink.pacesContinuousRendering && nextInstrumentTick > now {
@@ -551,7 +578,7 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
                     do { try sink.waitForInstrumentCapacity(frames: frames) }
                     catch { failWrite(error); return }
                     condition.lock()
-                    guard !stopping, queue.isEmpty, instrumentClockNeeded() else {
+                    guard !stopping, queue.isEmpty, !sinkControlPending, instrumentClockNeeded() else {
                         condition.unlock()
                         continue
                     }
@@ -579,6 +606,7 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
                 condition.unlock()
                 do {
                     try sink.write(generated.withUnsafeBytes { Data($0) })
+                    processingTail = .complete
                     recordTransit(received: started)
                     backendRemainderFrames = (backendRemainderFrames + frames) % backendChunkFrames
                 } catch { failWrite(error); return }
@@ -595,6 +623,26 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
                 do {
                     try sink.write(silence.withUnsafeBytes { Data($0) })
                     recordBackendWrite(frames: frames)
+                    processingTail = pluginTailFrames == 0 ? try sink.finishProducer(discard: false) : .complete
+                } catch { failWrite(error); return }
+                continue
+            }
+            if queue.isEmpty, calibrationPlayback == nil, processingTail == .pending {
+                let frames = min(sink.processingBlockFrames ?? 256, backendChunkFrames)
+                condition.unlock()
+                do {
+                    if sink.pacesContinuousRendering {
+                        // Tail PCM shares the existing device-consumption runway
+                        // with instruments. Recheck source/control work after
+                        // the bounded wait so a resumed source has priority.
+                        try sink.waitForInstrumentCapacity(frames: frames)
+                        condition.lock()
+                        let ready = !stopping && queue.isEmpty && !sinkControlPending && calibrationPlayback == nil
+                            && pendingPersonalBank == nil && pluginTailFrames == 0 && !instrumentClockNeeded()
+                        condition.unlock()
+                        if !ready { continue }
+                    }
+                    processingTail = try sink.drainProducerTail(maximumFrames: frames)
                 } catch { failWrite(error); return }
                 continue
             }
@@ -677,6 +725,10 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
                         } catch { failWrite(error); return }
                         remaining -= frames
                     }
+                    if !continuous, pluginTailFrames == 0 {
+                        do { processingTail = try sink.finishProducer(discard: discard) }
+                        catch { failWrite(error); return }
+                    }
                     // Renderer history has drained and retired before resampler
                     // completion and backend padding seal this producer epoch.
                     condition.lock()
@@ -689,6 +741,7 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
                 nextFrame = entry?.frame
                 if nextFrame != nil {
                     pluginTailFrames = 0
+                    processingTail = .complete
                     wasGeneratingInstrument = false; instrumentStopPadding = false
                 }
             }
@@ -753,8 +806,12 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
                 trace.capture.append(.queue(.init(identity: trace.identity, timestamp: queueLeft, isEntry: false,
                     queuedFrames: queuedFrames, capacityFrames: trace.capacity)))
             }
-            if shouldResetPCMDiscontinuity { rateStage.reset() }
-            if shouldResetPCMDiscontinuity { movieAnalysis?.suspend() }
+            if shouldResetPCMDiscontinuity {
+                rateStage.reset()
+                movieAnalysis?.suspend()
+                do { processingTail = try sink.finishProducer(discard: true) }
+                catch { failWrite(error); return }
+            }
             let movieScores = movieAnalysis?.offer(frame, movieSamples: movieInput)
             let renderedFrame = routeRenderer.render(frame, mode: isAcousticMeasurement ? .direct : currentMode,
                 settings: renderSettings, output: renderOutput, correction: correction,
@@ -814,6 +871,7 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
                     let payload = samples.withUnsafeBytes { Data($0) }
                     if trace != nil && pipeWriteStarted == nil { pipeWriteStarted = PerformanceClock.now() }
                     try sink.write(payload)
+                    processingTail = .complete
                 }
                 if let frames = sink.processingBlockFrames, frames > 0, frames < adjustedFrame.frameCount {
                     let blockSamples = frames * adjustedFrame.channelCount
@@ -854,9 +912,12 @@ package final class PCMDeliveryPipeline: @unchecked Sendable {
                         queueFramesBeforeEntry: trace.queueBefore, queueFramesAtEntry: trace.queueAfter,
                         queueFramesAfterDequeue: queuedFrames, queueCapacityFrames: trace.capacity,
                         blockFrames: adjustedFrame.frameCount, contributorCount: interval?.contributingPackets ?? 0,
-                        rateMatch: rateObservation)))
+                        rateMatch: rateObservation, producerWork: interval?.producerWork)))
                 }
-                calibrationCompletion?()
+                if let calibrationCompletion {
+                    processingTail = try sink.finishProducer(discard: false)
+                    calibrationCompletion()
+                }
             } catch {
                 failWrite(error)
                 return

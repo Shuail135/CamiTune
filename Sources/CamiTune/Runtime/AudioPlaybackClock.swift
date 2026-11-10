@@ -15,12 +15,16 @@ struct AudioPlaybackClock: Codable, Sendable {
     // Optional so earlier captures retain unknown rather than invented zeroes.
     let callbackFrames: Int?
     let bufferedFrames: Int?
+    // Native ring-render entry after platform buffer validation, in Mach ticks.
+    // Presentation time can be later; this observation never drives clock control.
+    let renderEntryHostTime: UInt64?
 
     enum CodingKeys: String, CodingKey {
         case epoch
         case sampleTime = "sample_time", hostTime = "host_time", nominalRate = "nominal_rate"
         case timestampFlags = "timestamp_flags", demandFrames = "demand_frames", underrunFrames = "underrun_frames"
         case callbackFrames = "callback_frames", bufferedFrames = "buffered_frames"
+        case renderEntryHostTime = "render_entry_host_time"
     }
 
     func observation(received: PerformanceTick) -> AudioClockObservation {

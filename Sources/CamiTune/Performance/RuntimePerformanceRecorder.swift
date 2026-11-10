@@ -135,14 +135,14 @@ final class RuntimePerformanceRecorder: ObservableObject {
         isCapturing = false; isAggregating = true
         let observationValues = observations; let operationValues = operations
         let options = options; let startedAt = startedAt
-        let drops = capture.telemetryDrops + sourceDrops - sourceDropsAtStart + extraDrops
+        let externalDrops = sourceDrops - sourceDropsAtStart + extraDrops
         baseline = await Task.detached(priority: .utility) {
             PerformanceAggregator.build(capture: capture, startedAt: startedAt, end: end, options: options,
                 environment: initialEnvironment, observations: observationValues, operations: operationValues,
-                drops: drops, stopReason: reason)
+                externalDrops: externalDrops, stopReason: reason)
         }.value
         self.capture = nil; environmentProvider = nil; isAggregating = false
-        telemetryDrops = drops
+        telemetryDrops = baseline?.telemetryDrops ?? 0
     }
 
     static func cpuSeconds() -> Double {

@@ -25,18 +25,36 @@ package struct AudioTraceIdentity: Sendable, Codable, Equatable {
     package let channelCount: Int
 }
 
+package struct ProducerCompletionTiming: Sendable, Codable, Equatable {
+    package init(received: PerformanceTick, applied: PerformanceTick) {
+        self.received = received
+        self.applied = applied
+    }
+
+    // A closure can arrive before a missing earlier PCM reservation. Its raw
+    // receipt is distinct from application after the sequence becomes complete.
+    package let received: PerformanceTick
+    package let applied: PerformanceTick
+}
+
 package struct PacketPerformanceContext: Sendable {
-    package init(capture: AudioLatencyCapture, identity: AudioTraceIdentity, received: PerformanceTick, policyTick: PerformanceTick? = nil) {
+    package init(capture: AudioLatencyCapture, identity: AudioTraceIdentity, received: PerformanceTick, policyTick: PerformanceTick? = nil, deliveryStarted: PerformanceTick? = nil, recordPrepared: PerformanceTick? = nil, completion: ProducerCompletionTiming? = nil) {
         self.capture = capture
         self.identity = identity
         self.received = received
         self.policyTick = policyTick
+        self.deliveryStarted = deliveryStarted
+        self.recordPrepared = recordPrepared
+        self.completion = completion
     }
 
     package let capture: AudioLatencyCapture
     package var identity: AudioTraceIdentity
     package let received: PerformanceTick
     package var policyTick: PerformanceTick? = nil
+    package var deliveryStarted: PerformanceTick? = nil
+    package var recordPrepared: PerformanceTick? = nil
+    package var completion: ProducerCompletionTiming? = nil
 }
 
 package struct TraceContribution: Sendable {
@@ -51,6 +69,15 @@ package struct TraceContribution: Sendable {
     package let endSampleTime: Int64
     package let received: PerformanceTick
     package let processingCompleted: PerformanceTick
+}
+
+package struct ProducerWorkTiming: Sendable, Codable, Equatable {
+    package init(started: PerformanceThreadSample, emitted: PerformanceThreadSample, admitted: PerformanceThreadSample? = nil) {
+        self.started = started; self.emitted = emitted; self.admitted = admitted
+    }
+    package let started: PerformanceThreadSample
+    package let emitted: PerformanceThreadSample
+    package var admitted: PerformanceThreadSample?
 }
 
 package struct AudioIntervalTraceContext: Sendable {
@@ -76,6 +103,7 @@ package struct AudioIntervalTraceContext: Sendable {
     package let lastPacketProcessed: PerformanceTick
     package let becameEligible: PerformanceTick
     package var emitted: PerformanceTick
+    package var producerWork: ProducerWorkTiming? = nil
     package let contributingPackets: Int
     package let idleDeadline: PerformanceTick?
     package let idleFlushStarted: PerformanceTick?
@@ -131,13 +159,29 @@ package struct TimelineWorkSample: Sendable, Codable {
     package var policyMilliseconds: Double? = nil
 }
 
+/// Raw capture identity for one contribution, never for a mixed output interval.
+package struct AudioPacketProducer: Sendable, Codable, Equatable {
+    package init(clientID: UInt32, processID: Int32) {
+        self.clientID = clientID
+        self.processID = processID
+    }
+
+    package let clientID: UInt32
+    package let processID: Int32
+}
+
 package struct PacketLatencySample: Sendable, Codable {
-    package init(identity: AudioTraceIdentity, received: PerformanceTick, processed: PerformanceTick, timeline: TimelineWorkSample? = nil, reorder: TimelineReorderEvidence? = nil) {
+    package init(identity: AudioTraceIdentity, received: PerformanceTick, processed: PerformanceTick, timeline: TimelineWorkSample? = nil, reorder: TimelineReorderEvidence? = nil, deliveryStarted: PerformanceTick? = nil, policyTick: PerformanceTick? = nil, recordPrepared: PerformanceTick? = nil, completion: ProducerCompletionTiming? = nil, producer: AudioPacketProducer? = nil) {
         self.identity = identity
         self.received = received
         self.processed = processed
         self.timeline = timeline
         self.reorder = reorder
+        self.deliveryStarted = deliveryStarted
+        self.policyTick = policyTick
+        self.recordPrepared = recordPrepared
+        self.completion = completion
+        self.producer = producer
     }
 
     package let identity: AudioTraceIdentity
@@ -145,10 +189,17 @@ package struct PacketLatencySample: Sendable, Codable {
     package let processed: PerformanceTick
     package var timeline: TimelineWorkSample? = nil
     package var reorder: TimelineReorderEvidence? = nil
+    // Observation boundaries only. Older reports leave missing values unknown.
+    package let deliveryStarted: PerformanceTick?
+    package let policyTick: PerformanceTick?
+    package let recordPrepared: PerformanceTick?
+    package let completion: ProducerCompletionTiming?
+    // Older reports leave this unknown; a raw zero PID is not a registry guess.
+    package let producer: AudioPacketProducer?
 }
 
 package struct AudioLatencySample: Sendable, Codable {
-    package init(identity: AudioTraceIdentity, packetReceived: PerformanceTick? = nil, lastPacketReceived: PerformanceTick? = nil, firstPacketProcessed: PerformanceTick? = nil, packetProcessed: PerformanceTick? = nil, mixEligible: PerformanceTick? = nil, mixEmitted: PerformanceTick? = nil, idleDeadline: PerformanceTick? = nil, idleFlushStarted: PerformanceTick? = nil, queueEntered: PerformanceTick, queueLeft: PerformanceTick, renderCompleted: PerformanceTick, resampleCompleted: PerformanceTick, masterCompleted: PerformanceTick, pipeWriteStarted: PerformanceTick, pipeWriteCompleted: PerformanceTick, queueFramesBeforeEntry: Int, queueFramesAtEntry: Int, queueFramesAfterDequeue: Int, queueCapacityFrames: Int, blockFrames: Int, contributorCount: Int, rateMatch: RateMatchMeasurement? = nil) {
+    package init(identity: AudioTraceIdentity, packetReceived: PerformanceTick? = nil, lastPacketReceived: PerformanceTick? = nil, firstPacketProcessed: PerformanceTick? = nil, packetProcessed: PerformanceTick? = nil, mixEligible: PerformanceTick? = nil, mixEmitted: PerformanceTick? = nil, idleDeadline: PerformanceTick? = nil, idleFlushStarted: PerformanceTick? = nil, queueEntered: PerformanceTick, queueLeft: PerformanceTick, renderCompleted: PerformanceTick, resampleCompleted: PerformanceTick, masterCompleted: PerformanceTick, pipeWriteStarted: PerformanceTick, pipeWriteCompleted: PerformanceTick, queueFramesBeforeEntry: Int, queueFramesAtEntry: Int, queueFramesAfterDequeue: Int, queueCapacityFrames: Int, blockFrames: Int, contributorCount: Int, rateMatch: RateMatchMeasurement? = nil, producerWork: ProducerWorkTiming? = nil) {
         self.identity = identity
         self.packetReceived = packetReceived
         self.lastPacketReceived = lastPacketReceived
@@ -172,6 +223,7 @@ package struct AudioLatencySample: Sendable, Codable {
         self.blockFrames = blockFrames
         self.contributorCount = contributorCount
         self.rateMatch = rateMatch
+        self.producerWork = producerWork
     }
 
     package let identity: AudioTraceIdentity
@@ -181,6 +233,7 @@ package struct AudioLatencySample: Sendable, Codable {
     package let packetProcessed: PerformanceTick?
     package let mixEligible: PerformanceTick?
     package let mixEmitted: PerformanceTick?
+    package let producerWork: ProducerWorkTiming?
     package let idleDeadline: PerformanceTick?
     package let idleFlushStarted: PerformanceTick?
     package let queueEntered: PerformanceTick

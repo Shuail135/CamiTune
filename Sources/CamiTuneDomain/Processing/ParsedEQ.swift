@@ -1,6 +1,6 @@
 import Foundation
 
-package struct ParsedEQ: Sendable {
+package struct ParsedEQ: Equatable, Sendable {
     package init(preampDB: Double = 0, bands: [EQBand] = [], warnings: [String] = [], importedDirectiveCount: Int = 0) {
         self.preampDB = preampDB; self.bands = bands; self.warnings = warnings
         self.importedDirectiveCount = importedDirectiveCount

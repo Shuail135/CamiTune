@@ -2,7 +2,9 @@
 - UI & Audio Latency Optimization
 - Room Correction Simple mode guide
 - Some UI adjustment
-- Better compatibility with multi-channels 
+- Better compatibility with multi-channels(IINA choose core audio, auto output)
+- Beta native DSP(ctDSP)
+- MacOS 11+ Universal APP(Need further user compatibility test)
 
 ***
 

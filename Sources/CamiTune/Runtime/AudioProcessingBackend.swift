@@ -2,6 +2,45 @@ import CamiTuneAudio
 import CamiTuneDomain
 import Foundation
 
+enum AudioProcessingEngine: String, CaseIterable, Sendable {
+    case camillaDSP = "camilla"
+    case ctDSP = "ctdsp"
+
+    static let storageKey = "audioProcessingEngine"
+
+    var displayName: String {
+        switch self {
+        case .camillaDSP: return "CamillaDSP"
+        case .ctDSP: return "ctDSP"
+        }
+    }
+
+    static func saved(in defaults: UserDefaults) -> Self {
+        defaults.string(forKey: storageKey).flatMap(Self.init(rawValue:)) ?? .camillaDSP
+    }
+
+    static func selectedForLaunch(
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Self {
+        #if DEBUG
+        // Local qualification selects either engine without changing the saved preference.
+        if let value = environment["CAMITUNE_DEVELOPMENT_DSP"], let engine = Self(rawValue: value) {
+            return engine
+        }
+        #endif
+        return saved(in: defaults)
+    }
+
+    @MainActor
+    func makeBackend(binary: URL) -> any AudioProcessingBackend {
+        switch self {
+        case .camillaDSP: return CamillaDSPController(manager: CamillaDSPManager(), binary: binary)
+        case .ctDSP: return CTDSPBackend()
+        }
+    }
+}
+
 struct AudioBackendWork: Sendable {
     var loadPercent: Double?
     var clockEpoch: UInt64?

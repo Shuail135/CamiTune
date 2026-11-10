@@ -3,12 +3,12 @@ import CamiTuneDomain
 import Foundation
 
 extension AppState {
-    func eqDraft(for id: UUID) -> String? { processingDrafts[id]?.equalizer.text }
+    func eqDraft(for id: UUID) -> ParsedEQ? { processingDrafts[id]?.equalizer.parameters }
     func toneDraft(for id: UUID) -> SimpleToneSettings? { processingDrafts[id]?.equalizer.tone }
     func limiterDraft(for id: UUID) -> Bool? { processingDrafts[id]?.equalizer.limiter }
 
-    func setEQDraft(_ text: String, for id: UUID) {
-        setProcessingDraft(text, for: id, at: \.equalizer.text, measure: true)
+    func setEQDraft(_ parameters: ParsedEQ, for id: UUID) {
+        setProcessingDraft(parameters, for: id, at: \.equalizer.parameters, measure: true)
     }
 
     func setToneDraft(_ tone: SimpleToneSettings, for id: UUID) {
@@ -40,8 +40,8 @@ extension AppState {
         processingDrafts[id]?.channels[channelIndex]?.tone
     }
 
-    func channelEQDraft(for id: UUID, channelIndex: Int) -> String? {
-        processingDrafts[id]?.channels[channelIndex]?.text
+    func channelEQDraft(for id: UUID, channelIndex: Int) -> ParsedEQ? {
+        processingDrafts[id]?.channels[channelIndex]?.parameters
     }
 
     func channelLimiterDraft(for id: UUID, channelIndex: Int) -> Bool? {
@@ -58,10 +58,10 @@ extension AppState {
         setProcessingDraft(channel, for: id, at: \.channels[channelIndex])
     }
 
-    func setChannelProcessingDraft(eqText: String, limiterEnabled: Bool, delayMilliseconds: Double,
+    func setChannelProcessingDraft(equalizer: ParsedEQ, limiterEnabled: Bool, delayMilliseconds: Double,
         simpleTone: SimpleToneSettings? = nil, for id: UUID, channelIndex: Int) {
         var channel = processingDrafts[id]?.channels[channelIndex] ?? .init()
-        channel.text = eqText
+        channel.parameters = equalizer
         channel.limiter = limiterEnabled
         channel.delay = delayMilliseconds
         if let simpleTone { channel.tone = simpleTone }
@@ -89,7 +89,7 @@ extension AppState {
 
     func setGlobalEQHistoryDraft(_ snapshot: GlobalEQHistoryState, for id: UUID) {
         var draft = ProfileProcessingDraft.Equalizer()
-        draft.text = EqualizerAPOSerializer().serialize(ParsedEQ(preampDB: snapshot.preampDB, bands: snapshot.bands))
+        draft.parameters = ParsedEQ(preampDB: snapshot.preampDB, bands: snapshot.bands)
         draft.limiter = snapshot.limiterEnabled
         draft.tone = snapshot.simpleTone
         draft.replacesDeviceCorrection = snapshot.replacesDeviceCorrection

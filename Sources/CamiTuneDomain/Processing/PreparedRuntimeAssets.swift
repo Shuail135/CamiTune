@@ -1,5 +1,19 @@
 import Foundation
 
+/// Exact selected coefficients and their graph identity. File acquisition lives
+/// in the app; the numerical owner consumes these immutable preparation inputs.
+package struct NativeFIRAsset: Sendable {
+    package init(source: ProcessingGraph.Processor.Implementation.Convolution,
+                 sampleRate: Int, coefficients: [Double]) {
+        self.source = source
+        self.sampleRate = sampleRate
+        self.coefficients = coefficients
+    }
+    package var source: ProcessingGraph.Processor.Implementation.Convolution
+    package var sampleRate: Int
+    package var coefficients: [Double]
+}
+
 package struct PreparedRuntimeAssets: Hashable, Sendable {
     package init(impulseResponses: [UUID: Asset]) {
         self.impulseResponses = impulseResponses

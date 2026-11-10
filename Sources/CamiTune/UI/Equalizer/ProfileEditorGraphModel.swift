@@ -16,7 +16,7 @@ final class ProfileEditorGraphModel: ObservableObject {
         do {
             let processing = try profile.resolvedProcessing()
             if let draft = state.eqDraft(for: profile.id) {
-                parsed = try EqualizerAPOParser().parse(draft)
+                parsed = draft
             } else if processing.deviceCorrection != nil {
                 parsed = processing.globalEqualizerIncludingDeviceCorrection
             } else {
@@ -40,7 +40,7 @@ final class ProfileEditorGraphModel: ObservableObject {
 
     func calculate(parsed: ParsedEQ, sampleRate: Double) {
         // Persistence and editor notifications can describe the same response.
-        // Ignore band IDs: parsing a draft may regenerate them without changing sound.
+        // Band identity does not affect the analytical response.
         if let previous = requestedResponse,
            previous.sampleRate == sampleRate, previous.parsed.preampDB == parsed.preampDB,
            previous.parsed.bands.elementsEqual(parsed.bands, by: { lhs, rhs in

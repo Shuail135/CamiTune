@@ -16,7 +16,7 @@ struct ReferenceCorrectionView: View {
     @State private var importing = false
     @State private var confirmTransfer = false
     @State private var pendingProfile: DeviceProfile?
-    @State private var pendingEQ: String?
+    @State private var pendingEQ: ParsedEQ?
     @State private var busy = false
     @State private var message: String?
     @State private var selectedBandID: UUID?

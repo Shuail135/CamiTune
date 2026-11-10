@@ -118,6 +118,7 @@ package final class PerAppTimelineMixer {
         if trace?.capture.isStopped == true { trace = nil }
         let intervalTrace = trace?.emit(start: interval.start, count: current.storage.frameCount,
             eligible: PerformanceClock.now(), deadline: nil, flushStarted: nil)
+        let workStarted = intervalTrace.flatMap { _ in PerformanceThreadSample.now() }
         let wrappedBefore = current.storage.wrappedReads
         let materialized = current.storage.materializePrefix(current.storage.frameCount)
         statistics.wrappedReads += current.storage.wrappedReads - wrappedBefore
@@ -125,6 +126,9 @@ package final class PerAppTimelineMixer {
             sampleRate: interval.rate, channelLayout: interval.layout)
         output.cohortSamples = materialized.modes
         output.performanceTrace = intervalTrace
+        if let workStarted, let workEmitted = PerformanceThreadSample.now() {
+            output.performanceTrace?.producerWork = .init(started: workStarted, emitted: workEmitted)
+        }
         output.performanceTrace?.emitted = PerformanceClock.now()
         current.storage.discardPrefix(current.storage.frameCount)
         batch = nil

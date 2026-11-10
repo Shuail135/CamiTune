@@ -305,7 +305,8 @@ package final class ProducerCompletionAssembler {
         case .close:
             if let closed = epoch.closedEnd, record.start != closed { try fail("host closure is discontinuous or revisits closed time") }
             if epoch.pieces.contains(where: { $0.start < record.start }) { try fail("host closure skips pending source input") }
-            result.append(extract(&epoch, device: record.device, start: record.start, end: record.end, terminal: false))
+            result.append(extract(&epoch, device: record.device, start: record.start, end: record.end,
+                terminal: false, completionReceived: record.received))
             epoch.closedEnd = record.end
             epoch.emitted = true
             statistics.closures += 1
@@ -317,13 +318,15 @@ package final class ProducerCompletionAssembler {
                 let start = epoch.closedEnd ?? first
                 let span = end.subtractingReportingOverflow(start)
                 guard first >= start, !span.overflow, span.partialValue <= Int64(maximumFrames) else { try fail("terminal source interval exceeds its bound") }
-                result.append(extract(&epoch, device: record.device, start: start, end: end, terminal: true))
+                result.append(extract(&epoch, device: record.device, start: start, end: end,
+                    terminal: true, completionReceived: record.received))
                 statistics.terminalDrains += 1
                 statistics.terminalFrames += UInt64(end - start)
                 epoch.closedEnd = end
             } else {
                 let end = epoch.closedEnd ?? record.start
-                result.append(extract(&epoch, device: record.device, start: end, end: end, terminal: true))
+                result.append(extract(&epoch, device: record.device, start: end, end: end,
+                    terminal: true, completionReceived: record.received))
             }
             epoch.sealed = true
         case .fault: break // handled above
@@ -333,7 +336,11 @@ package final class ProducerCompletionAssembler {
         return result
     }
 
-    private func extract(_ epoch: inout Epoch, device: UInt32, start: Int64, end: Int64, terminal: Bool) -> ProducerCompletedInterval {
+    private func extract(_ epoch: inout Epoch, device: UInt32, start: Int64, end: Int64,
+                         terminal: Bool, completionReceived: PerformanceTick) -> ProducerCompletedInterval {
+        let completion: ProducerCompletionTiming? = epoch.pieces.contains {
+            $0.record.performance != nil && max($0.start, start) < min($0.end, end)
+        } ? .init(received: completionReceived, applied: PerformanceClock.now()) : nil
         var inputs: [ProducerCompletionRecord] = []
         var retained: [Piece] = []
         var clockSource: ProducerCompletionRecord?
@@ -350,7 +357,9 @@ package final class ProducerCompletionAssembler {
                    clockSource.map({ source.start > $0.start }) ?? true {
                     clockSource = source
                 }
-                inputs.append(piece.slice(lower, upper))
+                var input = piece.slice(lower, upper)
+                input.performance?.completion = completion
+                inputs.append(input)
                 let consumed = Int(upper - piece.start)
                 piece.first += consumed; piece.count -= consumed
             }

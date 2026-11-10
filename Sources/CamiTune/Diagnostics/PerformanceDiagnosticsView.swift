@@ -64,7 +64,7 @@ struct PerformanceDiagnosticsView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Measured latency ends at the Camilla input boundary, before physical playback.")
+            Text("Timing ends at processing-sink write completion; it does not measure physical playback latency.")
                 .font(.caption).foregroundColor(.secondary)
             if !recorder.isCapturing && !recorder.isAggregating {
                 Picker("Duration", selection: $duration) {

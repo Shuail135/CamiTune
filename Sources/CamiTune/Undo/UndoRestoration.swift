@@ -20,6 +20,13 @@ extension AppState: HistoryRestoring {
             before: .appearance(before), after: .appearance(value.rawValue))
     }
 
+    func setProcessingEngine(_ value: AudioProcessingEngine) {
+        let before = AudioProcessingEngine.saved(in: profiles.userDefaults)
+        profiles.userDefaults.set(value.rawValue, forKey: AudioProcessingEngine.storageKey)
+        history.record(actionName: "Change DSP Engine", target: .preference(.processingEngine),
+            before: .processingEngine(before), after: .processingEngine(value))
+    }
+
     func setClosingReminder(_ enabled: Bool) {
         let before = !profiles.userDefaults.bool(forKey: "hideCloseKeepsRunningHint")
         profiles.userDefaults.set(!enabled, forKey: "hideCloseKeepsRunningHint")
@@ -153,6 +160,8 @@ extension AppState: HistoryRestoring {
             return .globalAudioBuffer(try audioBufferHistoryState(profileIDs: Set(value.overrides.keys)))
         case (.appearance, .preference(.appearance)):
             return .appearance(profiles.userDefaults.string(forKey: AppAppearance.storageKey) ?? AppAppearance.system.rawValue)
+        case (.processingEngine, .preference(.processingEngine)):
+            return .processingEngine(AudioProcessingEngine.saved(in: profiles.userDefaults))
         case (.boolean, .preference(let preference)):
             switch preference {
             case .closingReminder: return .boolean(!profiles.userDefaults.bool(forKey: "hideCloseKeepsRunningHint"))
@@ -160,7 +169,7 @@ extension AppState: HistoryRestoring {
             case .automaticUpdates: return .boolean(updateChecker.automaticallyChecksForUpdates)
             case .notifications: return .boolean(notifications.isEnabled)
             case .loginStartup: return .boolean(loginItem.isEnabled)
-            case .appearance: throw HistoryRestoreError.invalidStateForTarget
+            case .appearance, .processingEngine: throw HistoryRestoreError.invalidStateForTarget
             }
         case (.pluginOrder, .profile(let id)): return .pluginOrder(try historyProfile(id).pluginRack.slots.map(\.id))
         case (.pluginState, .plugin(let id, let slotID)):
@@ -286,6 +295,8 @@ extension AppState: HistoryRestoring {
         case (.appearance(let raw), .preference(.appearance)):
             guard let value = AppAppearance(rawValue: raw) else { throw HistoryRestoreError.invalidStateForTarget }
             setAppearance(value)
+        case (.processingEngine(let value), .preference(.processingEngine)):
+            setProcessingEngine(value)
         case (.boolean(let value), .preference(let preference)):
             switch preference {
             case .closingReminder: setClosingReminder(value)
@@ -294,7 +305,7 @@ extension AppState: HistoryRestoring {
             case .notifications: notifications.isEnabled = value
             case .loginStartup:
                 if let notice = loginItem.setEnabled(value) { throw ProfileSettingsError.runtime(notice.message) }
-            case .appearance: throw HistoryRestoreError.invalidStateForTarget
+            case .appearance, .processingEngine: throw HistoryRestoreError.invalidStateForTarget
             }
         case let (.pluginOrder(order), .profile(id)):
             try storePluginOrder(order, profileID: id)
@@ -337,7 +348,7 @@ extension AppState: HistoryRestoring {
         case let (.channel(value), .profileChannel(id, channel)):
             let profile = try historyProfile(id)
             guard channel >= 0, channel < profile.processingChannelCount else { throw HistoryRestoreError.invalidStateForTarget }
-            setChannelProcessingDraft(eqText: EqualizerAPOSerializer().serialize(ParsedEQ(preampDB: value.gainDB, bands: value.bands)),
+            setChannelProcessingDraft(equalizer: ParsedEQ(preampDB: value.gainDB, bands: value.bands),
                 limiterEnabled: value.limiterEnabled, delayMilliseconds: value.delayMilliseconds,
                 simpleTone: value.simpleTone, for: id, channelIndex: channel)
             try persistEqualizerEdits(for: id)

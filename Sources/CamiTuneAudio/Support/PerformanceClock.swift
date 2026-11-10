@@ -1,5 +1,6 @@
 import Foundation
 import CamiTuneAtomics
+import Darwin
 
 package struct PerformanceTick: Sendable, Codable, Comparable, Equatable {
     package init(rawValue: UInt64) {
@@ -20,6 +21,34 @@ package enum PerformanceClock {
     }
     package static func milliseconds(_ start: PerformanceTick, _ end: PerformanceTick) -> Double {
         Double(duration(from: start, to: end)) / 1_000_000
+    }
+}
+
+/// An observation of this thread, never a scheduling or audio clock.
+package struct PerformanceThreadSample: Sendable, Codable, Equatable {
+    package init(threadID: UInt64, observed: PerformanceTick, cpuNanoseconds: UInt64) {
+        self.threadID = threadID; self.observed = observed; self.cpuNanoseconds = cpuNanoseconds
+    }
+    package let threadID: UInt64
+    package let observed: PerformanceTick
+    package let cpuNanoseconds: UInt64
+
+    /// Called only during detailed tracing. The wall observation precedes the
+    /// CPU query; the pair is not an atomic hardware timestamp.
+    package static func now() -> Self? {
+        var threadID: UInt64 = 0
+        guard pthread_threadid_np(nil, &threadID) == 0 else { return nil }
+        let observed = PerformanceClock.now()
+        var cpu = timespec()
+        guard clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu) == 0 else { return nil }
+        return .init(threadID: threadID, observed: observed,
+            cpuNanoseconds: UInt64(cpu.tv_sec) * 1_000_000_000 + UInt64(cpu.tv_nsec))
+    }
+
+    package func cpuMilliseconds(until end: Self) -> Double? {
+        guard threadID == end.threadID, observed <= end.observed,
+              cpuNanoseconds <= end.cpuNanoseconds else { return nil }
+        return Double(end.cpuNanoseconds - cpuNanoseconds) / 1_000_000
     }
 }
 

@@ -105,7 +105,7 @@ extension AppState {
         try await saveProfileSettings(draft)
     }
 
-    func importReferenceToEqualizer(profile original: DeviceProfile, expectedDraft: String?) async throws {
+    func importReferenceToEqualizer(profile original: DeviceProfile, expectedDraft: ParsedEQ?) async throws {
         let position = history.beginPendingEdit()
         defer { history.endPendingEdit(position) }
         guard eqDraft(for: original.id) == expectedDraft,

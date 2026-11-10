@@ -4,9 +4,12 @@ import Foundation
 enum CamiTunePaths {
     static let supportDirectory: URL = {
 #if DEBUG
-        if NSClassFromString("XCTestCase") != nil {
-            let directory = ProcessInfo.processInfo.environment["CAMITUNE_UI_TEST_SUPPORT_DIRECTORY"]
-                .map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let testDirectory = ProcessInfo.processInfo.environment["CAMITUNE_UI_TEST_SUPPORT_DIRECTORY"]
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+        // A normal Debug launch can use isolated documents without disabling
+        // background services or substituting the XCTest presentation host.
+        if testDirectory != nil || NSClassFromString("XCTestCase") != nil {
+            let directory = testDirectory
                 ?? FileManager.default.temporaryDirectory.appendingPathComponent("CamiTune-UI-Support-\(UUID().uuidString)", isDirectory: true)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             return directory

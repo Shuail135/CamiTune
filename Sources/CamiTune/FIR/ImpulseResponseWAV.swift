@@ -19,6 +19,18 @@ struct ImpulseResponseWAV {
         catch { throw ImpulseResponseImportError.unreadableWAV(error.localizedDescription) }
     }
 
+    /// Native preparation hashes and decodes this same owned byte snapshot.
+    /// Managed coefficients are PCM; a compressed container must be imported
+    /// before preparation, rather than reopening a mutable path for conversion.
+    static func read(snapshot: Data, maximumSamples: Int,
+                     checkCancellation: @escaping @Sendable () throws -> Void) throws -> Self {
+        let reader = WAVChunks(snapshot: snapshot, checkCancellation: checkCancellation)
+        guard let decoded = try reader.decode(maximumSamples: maximumSamples) else {
+            throw ImpulseResponseImportError.unreadableWAV("The managed impulse response is not supported PCM. Import it again before playback.")
+        }
+        return decoded
+    }
+
     /// A canonical little-endian float64 WAVE keeps integer/float precision and
     /// strips container quirks and metadata unsupported by the DSP's WAV reader.
     func encoded() throws -> Data {
@@ -84,27 +96,70 @@ struct ImpulseResponseWAV {
 }
 
 private final class WAVChunks {
-    private let file: FileHandle
-    private let fileSize: UInt64
+    private enum Source {
+        case file(FileHandle, UInt64)
+        case snapshot(Data)
+    }
+    private let source: Source
+    private let checkCancellation: @Sendable () throws -> Void
+    private var fileSize: UInt64 {
+        switch source {
+        case .file(_, let size): return size
+        case .snapshot(let bytes): return UInt64(bytes.count)
+        }
+    }
     private var bigEndian = false
 
     init(url: URL) throws {
-        file = try FileHandle(forReadingFrom: url)
-        fileSize = try file.seekToEnd()
+        let file = try FileHandle(forReadingFrom: url)
+        do { source = .file(file, try file.seekToEnd()) }
+        catch { try? file.close(); throw error }
+        checkCancellation = {}
     }
-    deinit { try? file.close() }
+    init(snapshot: Data, checkCancellation: @escaping @Sendable () throws -> Void) {
+        source = .snapshot(snapshot)
+        self.checkCancellation = checkCancellation
+    }
+    deinit {
+        if case .file(let file, _) = source { try? file.close() }
+    }
 
     private func read(_ offset: UInt64, _ count: Int) throws -> Data {
+        try checkCancellation()
         guard count >= 0, offset <= fileSize, UInt64(count) <= fileSize - offset else {
             throw invalid("A WAV chunk is truncated.")
         }
-        try file.seek(toOffset: offset)
-        let data = try file.read(upToCount: count) ?? Data()
-        guard data.count == count else { throw invalid("A WAV chunk is truncated.") }
-        return data
+        switch source {
+        case .file(let file, _):
+            try file.seek(toOffset: offset)
+            let data = try file.read(upToCount: count) ?? Data()
+            guard data.count == count else { throw invalid("A WAV chunk is truncated.") }
+            return data
+        case .snapshot(let bytes):
+            return bytes.subdata(in: Int(offset)..<(Int(offset) + count))
+        }
     }
 
     private func integer(_ data: Data, _ offset: Int, _ bytes: Int) -> UInt64 {
+        data.withUnsafeBytes { integer($0, offset, bytes) }
+    }
+
+    private func integer(_ data: UnsafeRawBufferPointer, _ offset: Int, _ bytes: Int) -> UInt64 {
+        // Chunk fields and complete PCM frames have already been bounds checked.
+        // WAVE fields need not be aligned to the integer type they contain.
+        switch bytes {
+        case 1: return UInt64(data[offset])
+        case 2:
+            let value = data.loadUnaligned(fromByteOffset: offset, as: UInt16.self)
+            return UInt64(bigEndian ? UInt16(bigEndian: value) : UInt16(littleEndian: value))
+        case 4:
+            let value = data.loadUnaligned(fromByteOffset: offset, as: UInt32.self)
+            return UInt64(bigEndian ? UInt32(bigEndian: value) : UInt32(littleEndian: value))
+        case 8:
+            let value = data.loadUnaligned(fromByteOffset: offset, as: UInt64.self)
+            return bigEndian ? UInt64(bigEndian: value) : UInt64(littleEndian: value)
+        default: break
+        }
         var value: UInt64 = 0
         for i in 0..<bytes {
             let shift = (bigEndian ? bytes - i - 1 : i) * 8
@@ -259,35 +314,37 @@ private final class WAVChunks {
             while position < start + size {
                 let count = Int(min(UInt64(max(blockSize, 65536 / blockSize * blockSize)), start + size - position))
                 let samples = try read(position, count)
-                for base in stride(from: 0, to: count, by: blockSize) {
-                    for channel in 0..<channelCount {
-                        let raw = integer(samples, base + channel * sampleBytes, sampleBytes)
-                        let value: Double
-                        if encoding == 3 {
-                            value = bits == 32 ? Double(Float(bitPattern: UInt32(raw))) : Double(bitPattern: raw)
-                        } else if encoding == 7 {
-                            let code = Int(raw) ^ 0xff
-                            let magnitude = (((code & 15) * 8 + 132) << ((code >> 4) & 7)) - 132
-                            value = Double(code & 128 == 0 ? magnitude : -magnitude) / 32768
-                        } else if encoding == 6 {
-                            let code = Int(raw) ^ 0x55
-                            let exponent = (code >> 4) & 7
-                            let magnitude = exponent == 0 ? (code & 15) * 16 + 8
-                                : ((code & 15) * 16 + 264) << (exponent - 1)
-                            value = Double(code & 128 != 0 ? magnitude : -magnitude) / 32768
-                        } else if sampleBytes == 1 {
-                            let shift = 8 - validBits
-                            value = Double(Int(raw >> shift) - (1 << (validBits - 1))) / scale
-                        } else {
-                            // PCM valid bits are left-aligned, including 24-in-32.
-                            let shift = 64 - sampleBytes * 8
-                            let signed = Int64(bitPattern: raw << shift) >> (64 - validBits)
-                            value = Double(signed) / scale
+                try samples.withUnsafeBytes { buffer in
+                    for base in stride(from: 0, to: count, by: blockSize) {
+                        for channel in 0..<channelCount {
+                            let raw = integer(buffer, base + channel * sampleBytes, sampleBytes)
+                            let value: Double
+                            if encoding == 3 {
+                                value = bits == 32 ? Double(Float(bitPattern: UInt32(raw))) : Double(bitPattern: raw)
+                            } else if encoding == 7 {
+                                let code = Int(raw) ^ 0xff
+                                let magnitude = (((code & 15) * 8 + 132) << ((code >> 4) & 7)) - 132
+                                value = Double(code & 128 == 0 ? magnitude : -magnitude) / 32768
+                            } else if encoding == 6 {
+                                let code = Int(raw) ^ 0x55
+                                let exponent = (code >> 4) & 7
+                                let magnitude = exponent == 0 ? (code & 15) * 16 + 8
+                                    : ((code & 15) * 16 + 264) << (exponent - 1)
+                                value = Double(code & 128 != 0 ? magnitude : -magnitude) / 32768
+                            } else if sampleBytes == 1 {
+                                let shift = 8 - validBits
+                                value = Double(Int(raw >> shift) - (1 << (validBits - 1))) / scale
+                            } else {
+                                // PCM valid bits are left-aligned, including 24-in-32.
+                                let shift = 64 - sampleBytes * 8
+                                let signed = Int64(bitPattern: raw << shift) >> (64 - validBits)
+                                value = Double(signed) / scale
+                            }
+                            guard value.isFinite else { throw ImpulseResponseImportError.nonFiniteSamples(channel) }
+                            channels[channel][frame] = value
                         }
-                        guard value.isFinite else { throw ImpulseResponseImportError.nonFiniteSamples(channel) }
-                        channels[channel][frame] = value
+                        frame += 1
                     }
-                    frame += 1
                 }
                 position += UInt64(count)
             }

@@ -27,7 +27,7 @@ extension GlobalEqualizerEditorView {
             let processing = try profile.resolvedProcessing()
             persistedLimiterEnabled = processing.limiterEnabled
             if let draft {
-                parsed = try EqualizerAPOParser().parse(draft)
+                parsed = draft
             } else {
                 parsed = processing.globalEqualizer
             }
@@ -100,7 +100,7 @@ extension GlobalEqualizerEditorView {
     private func publishCurrentEQDraft() {
         // Replacement confirmation must see completed edits immediately, even
         // while the audio-application debounce is still pending.
-        state.setEQDraft(serializeGraphicEQ(), for: profile.id)
+        state.setEQDraft(ParsedEQ(preampDB: preampDB, bands: graphicBands), for: profile.id)
         state.setLimiterDraft(limiterEnabled, for: profile.id)
         state.setToneDraft(simpleTone, for: profile.id)
         do {
@@ -287,9 +287,4 @@ extension GlobalEqualizerEditorView {
         runtime.historyActionName = nil
     }
 
-    func serializeGraphicEQ() -> String {
-        EqualizerAPOSerializer().serialize(
-            ParsedEQ(preampDB: preampDB, bands: graphicBands, warnings: [])
-        )
-    }
 }

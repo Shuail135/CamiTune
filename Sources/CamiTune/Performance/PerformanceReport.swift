@@ -6,11 +6,12 @@ enum PerformanceAggregator {
     static func build(capture: AudioLatencyCapture, startedAt: Date, end: PerformanceTick,
                       options: PerformanceCaptureOptions, environment: PerformanceEnvironment,
                       observations: [PerformanceEnvironmentObservation], operations: [PerformanceOperationMeasurement],
-                      drops: UInt64, stopReason: String) -> PerformanceBaseline {
+                      externalDrops: UInt64, stopReason: String) -> PerformanceBaseline {
+        let snapshot = capture.snapshot()
         var packets: [PacketLatencySample] = []; var samples: [AudioLatencySample] = []; var recoveries: [PCMQueueRecoverySample] = []
         var queueEvents: [QueueTimingSample] = []
         var presentationSamples: [PresentationPerformanceSample] = []
-        for event in capture.events() where event.timestamp <= end {
+        for event in snapshot.events where event.timestamp <= end {
             switch event {
             case .packet(let packet): if packet.processed <= end { packets.append(packet) }
             case .audio(let sample): if sample.pipeWriteCompleted <= end { samples.append(sample) }
@@ -26,7 +27,13 @@ enum PerformanceAggregator {
         }
         var packetSizes: [Int: Int] = [:]; var emittedSizes: [Int: Int] = [:]
         for packet in packets {
-            add("Per-client processing", packet.received, packet.processed)
+            add("Receipt → per-client processing completion", packet.received, packet.processed)
+            add("Receipt → completed interval delivery", packet.received, packet.deliveryStarted)
+            add("Capture record preparation", packet.received, packet.recordPrepared)
+            add("Prepared PCM → completion application", packet.recordPrepared, packet.completion?.applied)
+            add("Completion application → interval delivery", packet.completion?.applied, packet.deliveryStarted)
+            add("Interval delivery → processing policy", packet.deliveryStarted, packet.policyTick)
+            add("Processing policy → completion", packet.policyTick, packet.processed)
             packetSizes[packet.identity.frameCount, default: 0] += 1
             if let policy = packet.reorder {
                 let scale = 1000 / policy.sampleRate
@@ -49,14 +56,22 @@ enum PerformanceAggregator {
             add("Idle flush wake lateness", sample.idleDeadline, sample.idleFlushStarted)
             add("Idle flush emission work", sample.idleFlushStarted, sample.mixEmitted)
             add("Route/enqueue overhead", sample.mixEmitted, sample.queueEntered)
+            if let work = sample.producerWork {
+                if let cpu = work.started.cpuMilliseconds(until: work.emitted) {
+                    values["Mixer emission CPU (producer thread)", default: []].append(cpu)
+                }
+                if let admitted = work.admitted, let cpu = work.emitted.cpuMilliseconds(until: admitted) {
+                    values["Emission → admission CPU (producer thread)", default: []].append(cpu)
+                }
+            }
             add("PCM queue residence", sample.queueEntered, sample.queueLeft)
             add("Rendering (including analysis/reset)", sample.queueLeft, sample.renderCompleted)
             add("Resampling/rate-match", sample.renderCompleted, sample.resampleCompleted)
             add("System master", sample.resampleCompleted, sample.masterCompleted)
             add("Payload preparation", sample.masterCompleted, sample.pipeWriteStarted)
-            add("Pipe write", sample.pipeWriteStarted, sample.pipeWriteCompleted)
-            add("Receipt → Camilla input", sample.packetReceived, sample.pipeWriteCompleted)
-            add("Last processing → Camilla input", sample.packetProcessed, sample.pipeWriteCompleted)
+            add("Processing sink write", sample.pipeWriteStarted, sample.pipeWriteCompleted)
+            add("Receipt → sink write completion", sample.packetReceived, sample.pipeWriteCompleted)
+            add("Last processing → sink write completion", sample.packetProcessed, sample.pipeWriteCompleted)
             add("Writer execution", sample.queueLeft, sample.pipeWriteCompleted)
         }
         // Include entries later discarded by queue recovery, and dequeues whose writes fail.
@@ -133,7 +148,7 @@ enum PerformanceAggregator {
             emittedFrameDistribution: FrameSizeDistribution(queueEvents.filter(\.isEntry).map { $0.identity.frameCount }),
             queueOccupancy: LatencyDistribution(queueEvents.filter(\.isEntry).map { Double($0.queuedFrames) * 1000 / $0.identity.sampleRate }),
             samples: samples, packets: packets, queueEvents: queueEvents.sorted { $0.timestamp < $1.timestamp }, recoveries: recoveries.sorted { $0.timestamp < $1.timestamp }, operations: operations,
-            telemetryDrops: drops, scenarioMismatches: mismatches.sorted(), recoveriesDuringCapture: recoveryDelta,
+            telemetryDrops: snapshot.telemetryDrops + externalDrops, scenarioMismatches: mismatches.sorted(), recoveriesDuringCapture: recoveryDelta,
             droppedFramesDuringCapture: dropDelta, transportDroppedFramesDuringCapture: transportDelta,
             processCPUPercent: duration > 0 ? cpu.map { $0 / duration * 100 } : nil, stopReason: stopReason)
         baseline.presentation = .init(statistics: observations.last?.environment.presentationStatistics.map { $0.delta(since: environment.presentationStatistics ?? .init()) },
@@ -176,7 +191,7 @@ extension PerformanceBaseline {
             "Mixer policy: \(env.timelineMixerStatistics?.policySummary ?? "No active timeline snapshot")",
             "Telemetry drops: \(telemetryDrops)\(telemetryDrops > 0 ? " — MEASUREMENT INCOMPLETE" : "")",
             "Coverage: \(packets.count) packets; \(samples.count) completed writes; \(samples.filter { $0.packetReceived != nil }.count) full receipt traces",
-            "In-process timing ends at Camilla input. It is not physical playback latency.", "",
+            "In-process timing ends at processing-sink write completion. Depending on the backend, this can include DSP and output-queue waits. It is not physical playback latency.", "",
             "Metric | count | median | p95 | p99 | max (ms)"]
         for (title, metrics) in [("Audio path", audio), ("Interactions", interactions), ("Transitions", transitions)] {
             lines.append(title)
@@ -227,13 +242,13 @@ extension PerformanceBaseline {
                     ("resample", active.renderCompleted, active.resampleCompleted),
                     ("master", active.resampleCompleted, active.masterCompleted),
                     ("payload", active.masterCompleted, active.pipeWriteStarted),
-                    ("pipe write", active.pipeWriteStarted, active.pipeWriteCompleted)]
+                    ("sink write", active.pipeWriteStarted, active.pipeWriteCompleted)]
                 if let phase = phases.first(where: { $0.1 <= recovery.timestamp && recovery.timestamp < $0.2 }) {
                     lines.append("  Writer phase active at recovery: \(phase.0), completed duration \(ms(PerformanceClock.milliseconds(phase.1, phase.2))) ms")
                 }
             }
             if let preceding = samples.filter({ $0.identity.runtimeSessionID == recovery.runtimeSessionID && $0.pipeWriteCompleted <= recovery.timestamp }).max(by: { $0.pipeWriteCompleted < $1.pipeWriteCompleted }) {
-                lines.append("  Preceding completed writer: queue \(ms(PerformanceClock.milliseconds(preceding.queueEntered, preceding.queueLeft))) ms, render \(ms(PerformanceClock.milliseconds(preceding.queueLeft, preceding.renderCompleted))) ms, pipe \(ms(PerformanceClock.milliseconds(preceding.pipeWriteStarted, preceding.pipeWriteCompleted))) ms")
+                lines.append("  Preceding completed writer: queue \(ms(PerformanceClock.milliseconds(preceding.queueEntered, preceding.queueLeft))) ms, render \(ms(PerformanceClock.milliseconds(preceding.queueLeft, preceding.renderCompleted))) ms, sink write \(ms(PerformanceClock.milliseconds(preceding.pipeWriteStarted, preceding.pipeWriteCompleted))) ms")
             }
         }
         func histogram(_ bins: [Int: Int]) -> String {

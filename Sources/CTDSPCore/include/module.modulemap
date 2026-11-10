@@ -1,0 +1,7 @@
+module CTDSPCore {
+    header "CTDSPCore.h"
+    header "CTDSPHandoff.h"
+    link "c++"
+    link framework "Accelerate"
+    export *
+}

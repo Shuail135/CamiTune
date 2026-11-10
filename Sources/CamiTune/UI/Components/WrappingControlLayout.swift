@@ -51,18 +51,20 @@ struct ArrangedControls: NSViewRepresentable {
     func makeNSView(context: Context) -> ControlLayoutSurface { ControlLayoutSurface() }
     func updateNSView(_ view: ControlLayoutSurface, context: Context) {
         view.fillsItemHeight = fillsItemHeight
-        view.update(items: items, environment: context.environment, selection: retainedSelection, arrange: arrange)
+        view.update(items: items, selection: retainedSelection, arrange: arrange)
     }
 }
 
 private struct ControlItemRoot: View {
     var content: AnyView
-    var inherited: EnvironmentValues
     var usesIdealWidth = true
     var usesIdealHeight = true
     var contentSizeChanged: (CGSize) -> Void
     var body: some View {
-        content.environment(\.self, inherited)
+        // Nested hosts inherit the live environment through their view hierarchy.
+        // Copying the entire environment here retains stale per-control transforms
+        // such as a button's disabled state after its owning state changes.
+        content
             .fixedSize(horizontal: usesIdealWidth, vertical: usesIdealHeight)
             .background(GeometryReader { geometry in
                 Color.clear
@@ -100,7 +102,7 @@ final class ControlLayoutSurface: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func update(items: [ControlLayoutItem], environment: EnvironmentValues, selection: Int?,
+    func update(items: [ControlLayoutItem], selection: Int?,
                 arrange: @escaping (CGFloat?, Int, ControlMeasurement) -> ControlArrangement) {
         self.items = items
         self.selection = selection
@@ -114,10 +116,9 @@ final class ControlLayoutSurface: NSView {
             if let host = hosts[item.id] {
                 var root = host.rootView
                 root.content = item.view
-                root.inherited = environment
                 host.rootView = root
             } else {
-                let host = NSHostingController(rootView: ControlItemRoot(content: item.view, inherited: environment,
+                let host = NSHostingController(rootView: ControlItemRoot(content: item.view,
                     contentSizeChanged: { [weak self] size in
                         guard let self, self.contentSizes[item.id] != size else { return }
                         self.contentSizes[item.id] = size

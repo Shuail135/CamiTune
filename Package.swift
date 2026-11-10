@@ -5,10 +5,14 @@ import Foundation
 var packageTargets: [Target] = [
     .target(name: "CamiTuneDomain", path: "Sources/CamiTuneDomain"),
     .target(name: "CamiTuneAtomics", path: "Sources/CamiTuneAtomics", publicHeadersPath: "include"),
+    .target(name: "CTDSPCore", path: "Sources/CTDSPCore", publicHeadersPath: "include",
+        cxxSettings: [.unsafeFlags(["-ffp-contract=off", "-fno-fast-math"]),
+                      .unsafeFlags(["-O3"], .when(configuration: .debug))],
+        linkerSettings: [.linkedFramework("Accelerate"), .linkedLibrary("c++")]),
     // Audio deadlines also apply when running the app from Xcode/SwiftPM Debug.
     // Keep the UI/domain debuggable while optimizing the DSP. SwiftPM owns the
     // compilation mode: injecting WMO into Debug breaks its clean-build output map.
-    .target(name: "CamiTuneAudio", dependencies: ["CamiTuneDomain", "CamiTuneAtomics"], path: "Sources/CamiTuneAudio",
+    .target(name: "CamiTuneAudio", dependencies: ["CamiTuneDomain", "CamiTuneAtomics", "CTDSPCore"], path: "Sources/CamiTuneAudio",
         swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
     .target(
         name: "SystemAudioBridgeC",
@@ -80,5 +84,6 @@ let package = Package(
     products: [
         .executable(name: "CamiTune", targets: ["CamiTune"])
     ],
-    targets: packageTargets
+    targets: packageTargets,
+    cxxLanguageStandard: .cxx17
 )

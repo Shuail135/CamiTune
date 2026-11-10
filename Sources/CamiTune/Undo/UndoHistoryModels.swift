@@ -14,7 +14,7 @@ enum HistoryTarget: Hashable, Sendable {
 }
 
 enum AppHistoryPreference: Hashable, Sendable {
-    case appearance, closingReminder, enabledExplanation, automaticUpdates, notifications, loginStartup
+    case appearance, processingEngine, closingReminder, enabledExplanation, automaticUpdates, notifications, loginStartup
 }
 
 struct ProfileSettingsHistoryState: Equatable, Sendable {
@@ -96,6 +96,7 @@ enum HistoryState: Equatable, Sendable {
     case defaultLayout(ProfileEndpointKind, ProfileSectionLayout), profileLayouts([ProfileLayoutHistoryState])
     case globalAudioBuffer(AudioBufferHistoryState)
     case boolean(Bool), appearance(String)
+    case processingEngine(AudioProcessingEngine)
     case appAudioScope(usesGlobal: Bool)
     case personalSpatial(context: String, settings: PersonalSpatialSettings)
     case pluginOrder([UUID])
@@ -170,7 +171,7 @@ extension HistoryState {
         case .profileSettings(let value):
             references = .init(profiles: [value.profile, value.replacing])
         case .autoEQDraft, .speakerAutoEQDraft, .profileEnabled, .routing,
-             .defaultLayout, .profileLayouts, .globalAudioBuffer, .boolean, .appearance, .appAudioScope:
+             .defaultLayout, .profileLayouts, .globalAudioBuffer, .boolean, .appearance, .processingEngine, .appAudioScope:
             break
         case .personalSpatial, .pluginOrder, .pluginRack, .pluginMIDI, .pluginState, .equalizerPresentation, .audioBuffer,
              .deviceCorrection, .globalEQ, .channel, .crossfeed, .perAppAudio, .perAppBatch,

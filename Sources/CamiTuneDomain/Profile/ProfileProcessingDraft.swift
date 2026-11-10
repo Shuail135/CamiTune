@@ -1,8 +1,10 @@
 import Foundation
 
+/// Internal edits retain band identity and precision. Text parsing belongs to
+/// import boundaries; reparsing a draft renames and reorders compiled filters.
 package struct ProfileProcessingDraft: Equatable, Sendable {
     package struct Equalizer: Equatable, Sendable {
-        package var text: String?
+        package var parameters: ParsedEQ?
         package var tone: SimpleToneSettings?
         package var limiter: Bool?
         package var replacesDeviceCorrection = false
@@ -22,7 +24,7 @@ package struct ProfileProcessingDraft: Equatable, Sendable {
     }
 
     package struct Channel: Equatable, Sendable {
-        package var text: String?
+        package var parameters: ParsedEQ?
         package var tone: SimpleToneSettings?
         package var limiter: Bool?
         package var delay: Double?
@@ -37,8 +39,7 @@ package struct ProfileProcessingDraft: Equatable, Sendable {
     package func applying(to profile: DeviceProfile, replacingGlobalEqualizer: Bool = false) throws -> DeviceProfile {
         var updated = profile
         if let tone = equalizer.tone { updated.processing.simpleTone = tone }
-        if !replacingGlobalEqualizer, let text = equalizer.text {
-            let parsed = try EqualizerAPOParser().parse(text)
+        if !replacingGlobalEqualizer, let parsed = equalizer.parameters {
             updated.setGlobalEqualizer(preampDB: parsed.preampDB, bands: parsed.bands)
             if equalizer.replacesDeviceCorrection { updated.processing.setDeviceCorrection(nil) }
         }
@@ -51,7 +52,7 @@ package struct ProfileProcessingDraft: Equatable, Sendable {
         }
         for (index, draft) in channels {
             let current = try updated.resolvedProcessing().settings(forChannel: index) ?? .identity
-            let parsed = try draft.text.map { try EqualizerAPOParser().parse($0) }
+            let parsed = draft.parameters
                 ?? ParsedEQ(preampDB: current.gainDB, bands: current.bands, warnings: [])
             let role = updated.processing.channels.first(where: { $0.index == index })?.role
                 ?? (index == 0 ? .left : (index == 1 ? .right : .unknown))

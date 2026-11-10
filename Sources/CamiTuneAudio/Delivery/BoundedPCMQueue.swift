@@ -65,7 +65,8 @@ package struct LowLatencyPCMQueue {
             let identity = interval?.identity ?? AudioTraceIdentity(captureID: capture.id, runtimeSessionID: session,
                 transportGeneration: 0, streamEpoch: 0, deviceObjectID: 0, startSampleTime: 0,
                 frameCount: count, sampleRate: rate, channelCount: frame.channelCount)
-            frame.writerTrace = PCMWriterTraceContext(capture: capture, identity: identity, interval: interval,
+            frame.performanceTrace?.producerWork?.admitted = PerformanceThreadSample.now()
+            frame.writerTrace = PCMWriterTraceContext(capture: capture, identity: identity, interval: frame.performanceTrace,
                 entered: PerformanceClock.now(), queueBefore: before, queueAfter: retained + count, capacity: maximum)
         }
         reserveSlot()

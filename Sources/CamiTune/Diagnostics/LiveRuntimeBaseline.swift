@@ -108,6 +108,18 @@ enum LiveRuntimeBaseline {
         var options = PerformanceCaptureOptions()
         let environment = ProcessInfo.processInfo.environment
         let workload = deliveryEvidence ? environment["CAMITUNE_DELIVERY_WORKLOAD"] ?? "current" : "current"
+        let requestedOutputScalar: Float32?
+        let originalVolume: PhysicalVolumeTarget?
+        if deliveryEvidence, let text = environment["CAMITUNE_DELIVERY_OUTPUT_SCALAR"] {
+            guard let scalar = Float32(text), scalar.isFinite, (0...0.25).contains(scalar),
+                  let originalScalar = await state.coreAudioService.volumeWithoutBlockingUI(uid: uid),
+                  let originalMute = await state.coreAudioService.isMutedWithoutBlockingUI(uid: uid) else {
+                throw DiagnosticFailure(message: "The live output level requires a volume-controlled device and a scalar from 0 through 0.25")
+            }
+            requestedOutputScalar = scalar
+            originalVolume = .init(scalar: originalScalar, muted: originalMute)
+            profile.outputVolumeScalar = Double(scalar)
+        } else { requestedOutputScalar = nil; originalVolume = nil }
         let originalHardwareRate: Double?
         if deliveryEvidence, let text = environment["CAMITUNE_DELIVERY_SAMPLE_RATE"] {
             guard let rate = Int(text), [44_100, 48_000, 88_200, 96_000, 176_400, 192_000].contains(rate),
@@ -122,19 +134,47 @@ enum LiveRuntimeBaseline {
             draft.sampleRate = rate
             profile = try draft.candidate()
         } else { originalHardwareRate = nil }
-        func restoreHardwareRate() async throws {
+        func restoreHardware() async throws {
+            var failures: [String] = []
             if let originalHardwareRate {
-                try await state.coreAudioService.setSampleRate(uid: uid, rate: originalHardwareRate)
+                do { try await state.coreAudioService.setSampleRate(uid: uid, rate: originalHardwareRate) }
+                catch { failures.append(error.localizedDescription) }
             }
+            if let originalVolume {
+                await state.coreAudioService.setMutedWithoutBlockingUI(uid: uid, muted: true)
+                do { try await state.coreAudioService.setVolumeWithoutBlockingUI(uid: uid, scalar: originalVolume.scalar) }
+                catch { failures.append(error.localizedDescription) }
+                await state.coreAudioService.setMutedWithoutBlockingUI(uid: uid, muted: originalVolume.muted)
+                if let scalar = await state.coreAudioService.volumeWithoutBlockingUI(uid: uid),
+                   let muted = await state.coreAudioService.isMutedWithoutBlockingUI(uid: uid),
+                   originalVolume.matches(.init(scalar: scalar, muted: muted)) {
+                    print("Live output restored: scalar=\(scalar), muted=\(muted)")
+                } else { failures.append("Original output volume/mute was not restored") }
+            }
+            guard failures.isEmpty else { throw DiagnosticFailure(message: failures.joined(separator: "; ")) }
         }
         switch workload {
         case "current": break
-        case "eq20":
+        case "bypass", "gain", "eq20":
+            // Explicit fixed-profile comparison on this computer. The user's
+            // saved profile stays in the original store; both engines receive
+            // the same isolated graph and upstream direct/stereo configuration.
             profile.setPlaybackMode(.direct)
-            let bands = (0..<20).map { index in
-                EQBand(kind: .peaking, frequency: 32 * pow(500, Double(index) / 19), gain: -1, q: 1)
+            profile.pluginRack = .init()
+            profile.physicalChannelProcessing = [:]
+            let stages: [ProcessingStage]
+            if workload == "gain" {
+                stages = [.init(processor: .gain(.init(gainDB: -6)))]
+            } else if workload == "eq20" {
+                let bands = (0..<20).map { index in
+                    EQBand(kind: .peaking, frequency: 32 * pow(500, Double(index) / 19), gain: -1, q: 1)
+                }
+                stages = [.init(processor: .equalizer(.init(bands: bands)))]
+            } else { stages = [] }
+            profile.replaceProcessing(.init(global: .init(stages: stages)))
+            for index in profile.spatialSettings.listeningPositions.indices {
+                profile.spatialSettings.listeningPositions[index].roomCorrectionEnabled = false
             }
-            profile.processing.global.stages.append(.init(processor: .equalizer(.init(bands: bands))))
         case "spatial": profile.setPlaybackMode(.spatialRender)
         case "reference": profile.setPlaybackMode(.referencePlayback)
         case "convolution":
@@ -208,6 +248,9 @@ enum LiveRuntimeBaseline {
         }
         let playbackSeconds = deliveryEvidence
             ? max(30, min(1_800, Int(environment["CAMITUNE_DELIVERY_SECONDS"] ?? "30") ?? 30)) : 30
+        let exercisesGraphEdits = !deliveryEvidence || environment["CAMITUNE_DELIVERY_GRAPH_EDITS"] != "0"
+        let idleSeconds = deliveryEvidence ? Int(environment["CAMITUNE_DELIVERY_IDLE_SECONDS"] ?? "0") : 0
+        guard let idleSeconds, (0...60).contains(idleSeconds) else { throw DiagnosticFailure(message: "Invalid idle observation duration") }
         // Explicit live qualification: each file runs in its own Core Audio
         // client, so mixed source rates exercise the host's real conversion.
         let additionalSources = try environment["CAMITUNE_DELIVERY_SOURCE_FILES"].map {
@@ -219,16 +262,17 @@ enum LiveRuntimeBaseline {
         }
         let stress = deliveryEvidence && environment["CAMITUNE_DELIVERY_STRESS"] == "1"
         guard !stress || playbackSeconds >= 60 else { throw DiagnosticFailure(message: "Stress comparison needs at least 60 seconds") }
-        options.duration = Double(playbackSeconds + 30); options.warmUp = 0
+        options.duration = Double(playbackSeconds + 30 + idleSeconds * 2); options.warmUp = 0
         // Long captures use bounded coarse observations. Run a separate short
         // detailed capture; never overflow the recorder and call it a clean soak.
         options.detailedAudioTracing = playbackSeconds <= 30
         let showsUI = deliveryEvidence && environment["CAMITUNE_DELIVERY_UI"] == "1"
-        options.scenario.label = "Live lifecycle baseline; \(playbackSeconds) seconds silent PCM through real bridge, CamillaDSP, and physical output; explicit DSP telemetry \(deliveryEvidence); SwiftUI rendering \(showsUI)"
+        options.scenario.label = "Live lifecycle baseline; \(playbackSeconds) seconds of \(URL(fileURLWithPath: silence).lastPathComponent) through real bridge, \(state.runtimeServices.processingBackend.name), and physical output; explicit DSP telemetry \(deliveryEvidence); SwiftUI rendering \(showsUI); graph edits \(exercisesGraphEdits); post-source idle \(idleSeconds)s visible and \(idleSeconds)s hidden"
         if !additionalSources.isEmpty {
             options.scenario.label += "; \(additionalSources.count + 1) continuous source processes; extra files: \(additionalSources.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: ", "))"
         }
         if deliveryEvidence { options.scenario.label += "; workload: \(workload) (isolated profile)" }
+        if let requestedOutputScalar { options.scenario.label += "; temporary physical scalar: \(requestedOutputScalar), unmuted; original target restored after deactivation" }
         let window: NSWindow?
         if showsUI {
             let view = ContentDetailView(state: state, profileStore: state.profiles,
@@ -270,6 +314,14 @@ enum LiveRuntimeBaseline {
         }
         func stopExtras() { for p in extraPlayers + continuousPlayers + cpuWorkers where p.isRunning { p.terminate() } }
         do {
+            if let requestedOutputScalar {
+                // This explicit live-test option owns its original target before
+                // the first mutation. The regular volume handoff then captures
+                // this physical value and retains its normal audibility rules.
+                await state.coreAudioService.setMutedWithoutBlockingUI(uid: uid, muted: true)
+                try await state.coreAudioService.setVolumeWithoutBlockingUI(uid: uid, scalar: requestedOutputScalar)
+                await state.coreAudioService.setMutedWithoutBlockingUI(uid: uid, muted: false)
+            }
             await state.activate(profile: profile)
             guard state.isActive else { throw DiagnosticFailure(message: state.errorMessage ?? "Live activation failed") }
             if deliveryEvidence { state.meters.setPresentationActive(true, profileID: profile.id) }
@@ -277,11 +329,13 @@ enum LiveRuntimeBaseline {
             player.arguments = [silence]
             try player.run()
             try await RuntimeClock.sleep(seconds: 2)
-            var edited = profile
-            edited.processing.global.stages.append(.init(processor: .gain(.init(gainDB: -1))))
-            await state.apply(profile: edited)
-            try diagnosticRequire(state.isActive, "Live EQ update stopped the runtime")
-            await state.apply(profile: profile)
+            if exercisesGraphEdits {
+                var edited = profile
+                edited.processing.global.stages.append(.init(processor: .gain(.init(gainDB: -1))))
+                await state.apply(profile: edited)
+                try diagnosticRequire(state.isActive, "Live EQ update stopped the runtime")
+                await state.apply(profile: profile)
+            }
             try await state.saveProfileSettings(.init(profile: profile, activation: box.profiles.activationMode(for: profile)))
             if deliveryEvidence {
                 try diagnosticRequire(state.runtimeCoordinator.appliedProfile == profile,
@@ -340,7 +394,7 @@ enum LiveRuntimeBaseline {
                 while state.pcmRouter.statistics.producerDrains.completedDrains <= priorDrains,
                       PerformanceClock.now() < deadline {
                     if let error = (state.captureBackend.runtimeError ?? state.runtimeServices.deliveryError()) { throw DiagnosticFailure(message: error) }
-                    try diagnosticRequire(state.pcmRouter.statistics.camillaWriteFailures == 0, "Terminal pipe write failed")
+                    try diagnosticRequire(state.pcmRouter.statistics.camillaWriteFailures == 0, "Terminal processing-sink write failed")
                     try await RuntimeClock.sleep(seconds: 0.01)
                 }
                 try diagnosticRequire(state.pcmRouter.statistics.producerDrains.completedDrains > priorDrains,
@@ -349,8 +403,20 @@ enum LiveRuntimeBaseline {
                 // resets the route. This is not a physical playback receipt.
                 state.performanceRecorder.recordObservation()
             }
+            if idleSeconds > 0 {
+                // Source termination, not quiet samples, defines this workload.
+                // Keep the active backend and UI cadence unchanged while idle.
+                try await RuntimeClock.sleep(seconds: Double(idleSeconds))
+                window?.orderOut(nil)
+                if showsUI { state.setMainWindowPresentationActive(false) }
+                state.meters.setPresentationActive(false, profileID: profile.id)
+                try await RuntimeClock.sleep(seconds: Double(idleSeconds))
+                if let error = state.captureBackend.runtimeError ?? state.runtimeServices.deliveryError() {
+                    throw DiagnosticFailure(message: error)
+                }
+            }
             await state.deactivate()
-            try await restoreHardwareRate()
+            try await restoreHardware()
             await state.performanceRecorder.stop()
             guard let result = state.performanceRecorder.baseline else { throw DiagnosticFailure(message: "Missing live capture") }
             try result.json().write(to: URL(fileURLWithPath: destination), options: .atomic)
@@ -377,9 +443,9 @@ enum LiveRuntimeBaseline {
                 try? result.json().write(to: URL(fileURLWithPath: destination), options: .atomic)
                 try? result.report().write(toFile: destination + ".txt", atomically: true, encoding: .utf8)
             }
-            do { try await restoreHardwareRate() }
+            do { try await restoreHardware() }
             catch let restorationError {
-                throw DiagnosticFailure(message: "\(error.localizedDescription); restoring the original sample rate failed: \(restorationError.localizedDescription)")
+                throw DiagnosticFailure(message: "\(error.localizedDescription); restoring the original output state failed: \(restorationError.localizedDescription)")
             }
             throw error
         }

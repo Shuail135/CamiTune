@@ -139,7 +139,12 @@ final class PerAppClientRegistry {
     func recordWorkspace(running: [String: ApplicationIdentity], audio: [Int32: ApplicationIdentity]) {
         runningApplicationsByID = running
         workspaceIdentitiesByProcessID = audio
+        identitiesByClientKey = identitiesByClientKey.filter { Self.isProcessRunning($0.value.processID) }
         pendingRunningApplicationRefresh = nil
+    }
+
+    static func isProcessRunning(_ processID: Int32) -> Bool {
+        processID > 0 && (Darwin.kill(processID, 0) == 0 || errno == EPERM)
     }
 
     struct ResolvedStreamIdentity {
@@ -350,10 +355,8 @@ final class PerAppClientRegistry {
             return nil
         }
 
-        let processExists = Darwin.kill(processID, 0) == 0 || errno == EPERM
-        let running = processExists
-            ? NSRunningApplication(processIdentifier: processID)
-            : nil
+        guard isProcessRunning(processID) else { return nil }
+        let running = NSRunningApplication(processIdentifier: processID)
         guard running?.isTerminated != true else { return nil }
 
         let processBundleURL = running?.bundleURL

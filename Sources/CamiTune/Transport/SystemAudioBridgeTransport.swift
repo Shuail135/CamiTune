@@ -407,10 +407,6 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
         var reportedSourceFormat: SpatialSourceFormat?
         var lastClientGeneration: UInt64 = .max
         var lastMasterControlGeneration: UInt64 = .max
-#if DEBUG
-        var loggedPacketIdentities = Set<String>()
-#endif
-
         while !context.shouldStop() {
             let transport = context.transport
 
@@ -464,15 +460,6 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                     }
                     let frames = Int(packet.frameCount)
                     let isPCM = kind == .pcm
-#if DEBUG
-                    if isPCM, loggedPacketIdentities.count < 16 {
-                        let signature = "\(packet.deviceObjectID):\(packet.clientID):\(packet.processID)"
-                        if loggedPacketIdentities.insert(signature).inserted {
-                            NSLog("[SABRIdentity] PCM device=%u client=%u pid=%d frames=%u",
-                                packet.deviceObjectID, packet.clientID, packet.processID, packet.frameCount)
-                        }
-                    }
-#endif
                     let sampleCount = isPCM ? frames * Int(packet.channelCount) : 0
                     guard sampleCount <= samples.count else { try context.completion.fail("source packet exceeds the negotiated storage") }
                     let performance = isPCM ? context.delivery.performanceSource.snapshot() : nil
@@ -485,13 +472,14 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                                 frameCount: frames, sampleRate: packet.sampleRate, channelCount: Int(packet.channelCount)),
                             received: tick)
                     }
-                    let record = ProducerCompletionRecord(generation: context.generation,
+                    var record = ProducerCompletionRecord(generation: context.generation,
                         sequence: packet.reservationSequence, epoch: packet.producerEpoch, kind: kind,
                         device: packet.deviceObjectID, client: packet.clientID, process: packet.processID,
                         cycle: packet.cycleCounter, start: Int64(packet.sampleTime), frames: frames,
                         channels: Int(packet.channelCount), layout: layout, rate: packet.sampleRate,
                         received: tick, samples: Array(samples.prefix(sampleCount)), performance: trace,
                         hostTime: packet.outputHostTime, timestampFlags: packet.timestampFlags)
+                    record.performance?.recordPrepared = PerformanceClock.now()
                     completed = try context.completion.ingest(record)
                     if isPCM {
                         context.packetCount &+= 1
@@ -651,11 +639,6 @@ final class SystemAudioBridgeTransport: ObservableObject, @unchecked Sendable {
                 generation: raw.generation
             )
         }
-#if DEBUG
-        let roster = clients.map { "\($0.deviceObjectID):\($0.clientID):\($0.processID):\($0.isActive ? 1 : 0)" }
-        NSLog("[SABRIdentity] roster generation=%llu count=%u entries=%@",
-            sabr_client_transport_client_generation(transport), count, roster.joined(separator: ","))
-#endif
         delivery.updateClients(clients)
         return true
     }

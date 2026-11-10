@@ -1,4 +1,5 @@
 import Foundation
+import CamiTuneAtomics
 
 package struct PerformanceCaptureBinding: Sendable {
     package init(capture: AudioLatencyCapture, sessionID: UUID? = nil) {
@@ -34,17 +35,22 @@ package final class PerformanceTraceSource: @unchecked Sendable {
     }
 }
 
-/// Fixed, preallocated storage. A contended/full recorder discards telemetry only.
+package struct PerformanceCaptureSnapshot: Sendable {
+    package let events: [PerformanceEvent]
+    package let telemetryDrops: UInt64
+}
+
+/// Fixed, preallocated storage. Writers reserve independent slots without waiting.
 package final class AudioLatencyCapture: @unchecked Sendable {
     package let id: UInt64
     package let start: PerformanceTick
     package let deadline: PerformanceTick
     package let capacity: Int
     private let storage: UnsafeMutablePointer<PerformanceEvent?>
-    private let lock = NSLock()
-    private let stopped = PerformanceAtomic()
-    private let dropped = PerformanceAtomic()
-    private var count = 0
+    private let publications: CMTPerformanceStoreRef
+    // Used only by stop/snapshot callers, never by an event writer.
+    private let snapshotLock = NSLock()
+    private var stoppedCount: Int?
     private let packets = PerformanceAtomic()
     private let audio = PerformanceAtomic()
 
@@ -52,39 +58,61 @@ package final class AudioLatencyCapture: @unchecked Sendable {
         self.id = id; self.start = start; self.deadline = deadline; self.capacity = max(1, capacity)
         storage = .allocate(capacity: self.capacity)
         storage.initialize(repeating: nil, count: self.capacity)
+        publications = cmt_performance_store_create(UInt64(self.capacity))!
     }
     private struct RetiredStorage: @unchecked Sendable {
         let pointer: UnsafeMutablePointer<PerformanceEvent?>
+        let publications: CMTPerformanceStoreRef
         let capacity: Int
-        func release() { pointer.deinitialize(count: capacity); pointer.deallocate() }
+        func release() {
+            pointer.deinitialize(count: capacity); pointer.deallocate()
+            cmt_performance_store_destroy(publications)
+        }
     }
     deinit {
         // A pending PCM sidecar can be the final owner. Free the large store off audio.
-        let retired = RetiredStorage(pointer: storage, capacity: capacity)
+        let retired = RetiredStorage(pointer: storage, publications: publications, capacity: capacity)
         DispatchQueue.global(qos: .utility).async { retired.release() }
     }
-    package var telemetryDrops: UInt64 { dropped.count }
-    package var isStopped: Bool { stopped.count != 0 }
-    package func discardMeasurement() { dropped.increment() }
-    package func accepts(_ tick: PerformanceTick) -> Bool { stopped.count == 0 && tick >= start && tick <= deadline }
+    package var telemetryDrops: UInt64 { cmt_performance_store_drops(publications) }
+    package var isStopped: Bool { cmt_performance_store_stopped(publications) != 0 }
+    package func discardMeasurement() { cmt_performance_store_discard(publications) }
+    package func accepts(_ tick: PerformanceTick) -> Bool { !isStopped && tick >= start && tick <= deadline }
     package func append(_ event: PerformanceEvent) {
         guard accepts(event.timestamp) else { return }
-        guard lock.try() else { dropped.increment(); return }
-        defer { lock.unlock() }
-        guard stopped.count == 0 else { return }
-        guard count < capacity else { dropped.increment(); return }
-        storage[count] = event; count += 1
+        let slot = cmt_performance_store_reserve(publications)
+        guard slot >= 0 else { return }
+        storage[Int(slot)] = event
         switch event { case .packet: packets.increment(); case .audio: audio.increment(); case .recovery, .queue, .presentation: break }
+        cmt_performance_store_publish(publications, UInt64(slot))
     }
     package func counts() -> (packets: Int, audio: Int) {
-        // Presentation polling must not contend with the nonblocking append.
+        // Presentation polling does not read payloads or join publisher settlement.
         (Int(packets.count), Int(audio.count))
     }
-    package func stop() { stopped.set(1) }
-    /// Only the non-audio aggregation worker copies/sorts recorded events.
-    package func events() -> [PerformanceEvent] {
-        lock.lock(); defer { lock.unlock() }
-        return (0..<count).compactMap { storage[$0] }
+    package func stop() {
+        snapshotLock.lock(); defer { snapshotLock.unlock() }
+        if stoppedCount == nil { stoppedCount = Int(cmt_performance_store_stop(publications)) }
+    }
+    /// Non-audio readers only. Live snapshots omit pending publications. After
+    /// stop, settle admitted writers for at most one second and count anything
+    /// still unpublished as lost, without accessing its unfinished payload.
+    package func snapshot() -> PerformanceCaptureSnapshot {
+        snapshotLock.lock()
+        let closedCount = stoppedCount
+        snapshotLock.unlock()
+        let settled = closedCount == nil || cmt_performance_store_wait(publications, 1_000_000_000) != 0
+        let count = closedCount ?? Int(cmt_performance_store_reserved(publications))
+        var events: [PerformanceEvent] = []
+        events.reserveCapacity(count)
+        for slot in 0..<count where cmt_performance_store_published(publications, UInt64(slot)) != 0 {
+            events.append(storage[slot]!)
+        }
+        // A timed-out full-store rejection or explicit discard may still be
+        // updating its counter even if every payload is ready. Keep that
+        // uncertainty visible as at least one incomplete measurement.
+        let pending = closedCount == nil ? 0 : max(count - events.count, settled ? 0 : 1)
+        return .init(events: events, telemetryDrops: telemetryDrops + UInt64(pending))
     }
 }
 

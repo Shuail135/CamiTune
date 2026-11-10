@@ -72,10 +72,10 @@ final class AudioRuntimeCoordinator: ObservableObject {
         target: .inactive(restoreOutput: true), source: .stop(.manual), preparedPlan: nil,
         reportErrors: false, reason: "initial", parentOperation: nil)
     @Published private(set) var stateSnapshot = AudioRuntimeStateSnapshot.inactive
-    @Published private(set) var coordinatorSummary = "Inactive"
-    @Published private(set) var candidatePlanRevision: RuntimeIntentRevision?
-    @Published private(set) var runtimePlanDiffSummary = "No runtime plan comparison has been made."
-    @Published private(set) var actualGraphUpdateSummary = "No backend update observed."
+    // Diagnostics reads these values on refresh; live presentation observes stateSnapshot.
+    private(set) var candidatePlanRevision: RuntimeIntentRevision?
+    private(set) var runtimePlanDiffSummary = "No runtime plan comparison has been made."
+    private(set) var actualGraphUpdateSummary = "No backend update observed."
     private(set) var lastRuntimePlanDelta: RuntimePlanDelta?
     var isActive: Bool { ownedSession != nil }
     var activeSession: AudioRuntimeSession? { ownedSession?.publicSession }
@@ -110,13 +110,15 @@ final class AudioRuntimeCoordinator: ObservableObject {
         stateSnapshot = .init(status: transition == nil ? (isActive ? .active : .inactive) : status,
             session: activeSession, acknowledgedPlanRevision: acknowledgedPlanRevision,
             volumeMode: activeVolumeMode, transition: transition)
+    }
+    var coordinatorSummary: String {
         let target: String
         switch desiredRuntime.target {
         case .inactive: target = "Inactive"
         case .active(let profile): target = "Active: " + profile.name
         case .physicalOutput(let uid, _): target = "Physical output: " + uid
         }
-        coordinatorSummary = [
+        return [
             "Desired: \(target)", "Intent generation: \(desiredRuntime.generation.rawValue)",
             "Source: \(desiredRuntime.source.description)", "Actual: \(stateSnapshot.status.rawValue)",
             "Session: \(activeSession?.id.uuidString ?? "None")",

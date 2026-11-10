@@ -42,6 +42,7 @@ struct SettingsView: View {
     @State private var loginItemNotice: LoginItemManager.Notice?
     @AppStorage("hideCloseKeepsRunningHint") private var hideCloseKeepsRunningHint = false
     @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system
+    @AppStorage(AudioProcessingEngine.storageKey) private var processingEngine = AudioProcessingEngine.camillaDSP
     private let categories = ["General", "App Audio", "Drivers & Components", "Section Layout", "Diagnostics"]
 
     init(state: AppState) {
@@ -129,6 +130,18 @@ struct SettingsView: View {
             }
             .pickerStyle(.menu)
             .fixedSize()
+            VStack(alignment: .leading, spacing: 4) {
+                Picker("DSP engine", selection: Binding(get: { processingEngine }, set: { state.setProcessingEngine($0) })) {
+                    ForEach(AudioProcessingEngine.allCases, id: \.self) { engine in
+                        Text(engine.displayName).tag(engine)
+                    }
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
+                Text("Changes take effect after restarting CamiTune.(ctDSP is still in absolute beta right now)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
             Toggle("Start CamiTune at login", isOn: Binding(
                 get: { loginItem.isEnabled }, set: { loginItemNotice = loginItem.setEnabled($0) }))
                 .disabled(loginItem.isUpdating)

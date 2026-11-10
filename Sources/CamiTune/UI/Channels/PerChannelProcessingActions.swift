@@ -105,11 +105,11 @@ extension PerChannelProcessingView {
             settings = draft?.processingSettings ?? processing.settings(forGroup: group.id) ?? .identity
         } else {
             var value = processing.settings(forChannel: selectedChannelIndex) ?? .identity
-            let text = state.channelEQDraft(for: profile.id, channelIndex: selectedChannelIndex)
+            let draft = state.channelEQDraft(for: profile.id, channelIndex: selectedChannelIndex)
             let limiter = state.channelLimiterDraft(for: profile.id, channelIndex: selectedChannelIndex)
             let delay = state.channelDelayDraft(for: profile.id, channelIndex: selectedChannelIndex)
             let tone = state.channelToneDraft(for: profile.id, channelIndex: selectedChannelIndex)
-            if let text, let parsed = try? EqualizerAPOParser().parse(text) {
+            if let parsed = draft {
                 value.gainDB = parsed.preampDB; value.bands = parsed.bands
             }
             value.limiterEnabled = limiter ?? value.limiterEnabled
@@ -225,20 +225,14 @@ extension PerChannelProcessingView {
         guard runtime.loadedProfileID == profile.id,
               snapshot != runtime.persistedSnapshot else { return }
         // Draft publication is synchronous. Keep this editor's accepted values
-        // while the disclosure observes the write, including APO rounding.
+        // while the disclosure observes the write.
         runtime.suppressChanges = true
         defer { runtime.suppressChanges = false }
         if let group = selectedGroup {
             state.setGroupProcessingDraft(snapshot, for: profile.id, groupID: group.id)
         } else {
             state.setChannelProcessingDraft(
-                eqText: EqualizerAPOSerializer().serialize(
-                    ParsedEQ(
-                        preampDB: snapshot.gainDB,
-                        bands: snapshot.bands,
-                        warnings: []
-                    )
-                ),
+                equalizer: ParsedEQ(preampDB: snapshot.gainDB, bands: snapshot.bands),
                 limiterEnabled: snapshot.limiterEnabled,
                 delayMilliseconds: snapshot.delayMilliseconds,
                 simpleTone: snapshot.simpleTone,

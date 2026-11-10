@@ -102,9 +102,9 @@ def verify(root, package, project, require_modules=False):
         if path.resolve() not in compiled_in:
             errors.append(f"Unowned Swift source: {path.relative_to(root)}")
 
-    graph = {"CamiTuneDomain": set(), "CamiTuneAudio": {"CamiTuneDomain", "CamiTuneAtomics"},
+    graph = {"CamiTuneDomain": set(), "CamiTuneAudio": {"CamiTuneDomain", "CamiTuneAtomics", "CTDSPCore"},
              "CamiTune": {"CamiTuneDomain", "CamiTuneAudio", "SystemAudioBridgeC"},
-             "CamiTuneAtomics": set(), "SystemAudioBridgeC": set()}
+             "CamiTuneAtomics": set(), "CTDSPCore": set(), "SystemAudioBridgeC": set()}
     final_modules_present = all(name in package_targets for name in graph)
     if require_modules or final_modules_present:
         for name, dependencies in graph.items():
